@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <style>
     html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
-    #bar { position: relative; width: 100vw; height: 100vh; -webkit-app-region: drag; cursor: move; }
+    #bar { position: relative; width: 100vw; height: 100vh; cursor: move; }
     canvas { display: block; }
     #ctrl {
-      position: fixed; right: 4px; bottom: 4px; display: flex; gap: 4px; -webkit-app-region: no-drag;
+      position: fixed; right: 4px; bottom: 4px; display: flex; gap: 4px;
     }
     #ctrl div {
       width: 18px; height: 18px; border-radius: 4px; background: rgba(22,93,255,0.85); color: #fff;
@@ -18,14 +18,14 @@
 </head>
 <body>
   <div id="bar"><canvas id="c"></canvas></div>
-  <div id="ctrl"><div id="toggle" title="横竖切换">⇄</div><div id="close" title="关闭(或双击标尺)">✕</div></div>
+  <div id="ctrl"><div id="toggle" title="横竖切换">⇄</div><div id="close" title="关闭(或双击标尺 / Esc)">✕</div></div>
   <div id="tip"></div>
   <script>
     const params = new URLSearchParams(location.search);
     let dir = params.get('dir') === 'v' ? 'v' : 'h';
     const canvas = document.getElementById('c');
     const tip = document.getElementById('tip');
-    const { ipcRenderer } = require('electron');
+
     function draw() {
       const dpr = window.devicePixelRatio || 1;
       const w = window.innerWidth, h = window.innerHeight;
@@ -60,24 +60,55 @@
           }
         }
       }
+      window.__drawn = true;
     }
-    window.addEventListener('resize', draw);
-    draw();
-    // measure mouse distance from bar origin
+
+    // 整个标尺都是拖动区，而 Electron 的 -webkit-app-region: drag 会吞掉鼠标事件，
+    // 所以这里用 IPC 手动拖动，mousemove / dblclick 才能正常工作
+    let dragging = false, grabDX = 0, grabDY = 0, pendingMove = null, moveRaf = 0;
+    function pushMove() {
+      if (moveRaf || !pendingMove || !window.hehe) return;
+      moveRaf = requestAnimationFrame(() => {
+        moveRaf = 0;
+        if (pendingMove && window.hehe) hehe.invoke('win:ruler:move', pendingMove[0], pendingMove[1]).catch(() => {});
+      });
+    }
+    window.addEventListener('mousedown', (e) => {
+      if (e.target && e.target.closest && e.target.closest('#ctrl')) return;
+      dragging = true;
+      grabDX = e.screenX - window.screenX;
+      grabDY = e.screenY - window.screenY;
+    });
     window.addEventListener('mousemove', (e) => {
+      if (dragging) {
+        pendingMove = [e.screenX - grabDX, e.screenY - grabDY];
+        pushMove();
+      }
       const v = dir === 'h' ? e.screenX - window.screenX : e.screenY - window.screenY;
       tip.style.display = 'block';
-      tip.style.left = (e.clientX + 10) + 'px';
-      tip.style.top = (e.clientY - 22) + 'px';
+      tip.style.left = (e.clientX + 12) + 'px';
+      tip.style.top = Math.max(2, e.clientY - 22) + 'px';
       tip.textContent = v + ' px';
     });
-    window.addEventListener('mouseleave', () => tip.style.display = 'none');
-    document.getElementById('close').addEventListener('click', () => window.close());
-    document.getElementById('toggle').addEventListener('click', () => {
-      ipcRenderer.invoke('win:ruler', dir === 'h' ? 'v' : 'h');
-      window.close();
+    window.addEventListener('mouseup', () => { dragging = false; pendingMove = null; });
+    window.addEventListener('mouseleave', () => { tip.style.display = 'none'; dragging = false; pendingMove = null; });
+
+    function closeRuler() {
+      try { if (window.hehe) hehe.invoke('win:ruler:close').catch(() => {}); } catch (e) {}
+      try { window.close(); } catch (e) {}
+    }
+    document.getElementById('close').addEventListener('click', closeRuler);
+    document.getElementById('bar').addEventListener('dblclick', closeRuler);
+    document.getElementById('toggle').addEventListener('click', async () => {
+      try {
+        if (window.hehe) { await hehe.invoke('win:ruler', dir === 'h' ? 'v' : 'h'); return; }
+      } catch (e) {}
+      closeRuler();
     });
-    window.addEventListener('dblclick', () => window.close());
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeRuler(); });
+
+    window.addEventListener('resize', draw);
+    draw();
   </script>
 </body>
 </html>

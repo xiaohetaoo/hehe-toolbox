@@ -1026,7 +1026,24 @@ handle('win:ruler', (e, dir) => {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false }
   });
   rulerWin.setAlwaysOnTop(true, 'screen-saver');
+  const self = rulerWin;
+  self.on('closed', () => { if (rulerWin === self) rulerWin = null; });
   rulerWin.loadFile('ruler.html', { query: { dir: horizontal ? 'h' : 'v' } });
+  return true;
+});
+handle('win:ruler:close', () => {
+  if (rulerWin && !rulerWin.isDestroyed()) rulerWin.close();
+  return true;
+});
+handle('win:ruler:move', (e, x, y) => {
+  if (!rulerWin || rulerWin.isDestroyed()) return false;
+  const px = Math.round(Number(x) || 0), py = Math.round(Number(y) || 0);
+  const disp = screen.getDisplayNearestPoint({ x: px + 20, y: py + 20 });
+  const wa = disp.workArea;
+  const [bw, bh] = rulerWin.getSize();
+  const cx = Math.min(Math.max(px, wa.x - bw + 40), wa.x + wa.width - 40);
+  const cy = Math.min(Math.max(py, wa.y), wa.y + wa.height - 40);
+  rulerWin.setPosition(cx, cy);
   return true;
 });
 
@@ -1469,6 +1486,8 @@ handle('sys:battery-detail', async () => {
 });
 
 /* ================= lifecycle ================= */
+// 测试隔离：HEHE_TEST_DATA 指定独立的 userData 目录（不影响正式数据与单实例锁）
+if (process.env.HEHE_TEST_DATA) app.setPath('userData', process.env.HEHE_TEST_DATA);
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); } else {
   app.on('second-instance', showMainWindow);
