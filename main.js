@@ -1579,6 +1579,240 @@ handle('sys:battery-detail', async () => {
   } catch (err) { return null; }
 });
 
+/* ================= IPC: 全局文件搜索（NTFS USN 索引 / es.exe / 快速扫描） ================= */
+const searchIndexes = new Map(); // 'C:' -> { map: Map(frn -> [parentFrn, name, isDir]), builtAt, count }
+function searchResolvePath(drive, frn) {
+  const idx = searchIndexes.get(drive);
+  if (!idx || frn === 5) return drive + '\\';
+  const parts = [];
+  let cur = frn, guard = 0;
+  while (cur !== 5 && guard++ < 256) {
+    const rec = idx.map.get(cur);
+    if (!rec) { parts.push('(已删除)'); break; }
+    parts.push(rec[1]);
+    cur = rec[0];
+  }
+  parts.reverse();
+  return drive + '\\' + parts.join('\\');
+}
+function findEsExe() {
+  const esDirs = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']];
+  for (const d of esDirs) {
+    if (!d) continue;
+    const c = path.join(d, 'Everything', 'es.exe');
+    try { if (fs.existsSync(c)) return c; } catch (err) {}
+  }
+  try {
+    const r = spawnSync('where', ['es'], { windowsHide: true, timeout: 5000, encoding: 'utf8' });
+    const p = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('es.exe'));
+    if (p) return p.trim();
+  } catch (e) {}
+  return null;
+}
+handle('search:env', async () => {
+  const admin = (() => { try { return spawnSync('net', ['session'], { windowsHide: true, timeout: 6000 }).status === 0; } catch (e) { return false; } })();
+  const es = findEsExe();
+  const volumes = [];
+  try {
+    const r = await ps(`@(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3") | Select-Object DeviceID,VolumeName,Size,FreeSpace | ConvertTo-Json -Compress`, 15000);
+    let arr = JSON.parse(r.stdout || '[]');
+    if (!Array.isArray(arr)) arr = [arr];
+    for (const d of arr) volumes.push({ drive: d.DeviceID, label: d.VolumeName || '', size: Number(d.Size) || 0, free: Number(d.FreeSpace) || 0 });
+  } catch (err) {}
+  return { admin, es, volumes };
+});
+handle('search:index-status', () => {
+  const out = {};
+  for (const [drive, idx] of searchIndexes) out[drive] = { count: idx.count, builtAt: idx.builtAt };
+  return out;
+});
+handle('search:free', () => { searchIndexes.clear(); return true; });
+handle('search:build', async (e, driveLetter) => {
+  const drive = String(driveLetter || '').toUpperCase();
+  if (!/^[A-Z]:$/.test(drive)) throw new Error('无效的盘符');
+  const id = 'usn' + (++jobSeq);
+  const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+    `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $ProgressPreference='SilentlyContinue'; ` +
+    `$src = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace HeheUsn {
+  public class Enumerator {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(IntPtr hDevice, uint dwIoControlCode, IntPtr lpInBuffer, uint nInBufferSize, IntPtr lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr hObject);
+    public static void Run(string driveRoot) {
+      IntPtr h = CreateFileW("\\\\\\\\.\\\\" + driveRoot, 0x80000000u, 1u, IntPtr.Zero, 3u, 0x02000000u, IntPtr.Zero);
+      if (h == (IntPtr)(-1)) { Console.Out.WriteLine("E\\t" + Marshal.GetLastWin32Error()); return; }
+      byte[] inData = new byte[8];
+      GCHandle pin = GCHandle.Alloc(inData, GCHandleType.Pinned);
+      byte[] outBuf = new byte[0x10000];
+      GCHandle pout = GCHandle.Alloc(outBuf, GCHandleType.Pinned);
+      long count = 0; int lastP = 0;
+      try {
+        while (true) {
+          uint ret;
+          bool ok = DeviceIoControl(h, 0x900B3u, pin.AddrOfPinnedObject(), 8u, pout.AddrOfPinnedObject(), (uint)outBuf.Length, out ret, IntPtr.Zero);
+          if (!ok) { int err = Marshal.GetLastWin32Error(); if (err == 38 || err == 0) break; Console.Out.WriteLine("E\\t" + err); break; }
+          if (ret == 0) break;
+          if (ret > 8) {
+            int off = 8; // 输出前 8 字节是下一次查询的起始 USN
+            while (off + 60 <= ret) {
+              uint recLen = BitConverter.ToUInt32(outBuf, off);
+              if (recLen == 0 || off + (int)recLen > ret) break;
+              long frn = BitConverter.ToInt64(outBuf, off + 8);
+              long parent = BitConverter.ToInt64(outBuf, off + 16);
+              uint attr = BitConverter.ToUInt32(outBuf, off + 52);
+              int nameLen = BitConverter.ToUInt16(outBuf, off + 56);
+              int nameOff = BitConverter.ToUInt16(outBuf, off + 58);
+              if (nameLen > 0 && off + nameOff + nameLen <= ret) {
+                string name = Encoding.Unicode.GetString(outBuf, off + nameOff, nameLen);
+                Console.Out.Write("F\\t" + frn + "\\t" + parent + "\\t" + attr + "\\t");
+                Console.Out.WriteLine(name);
+                count++;
+              }
+              off += (int)recLen;
+            }
+          }
+          Buffer.BlockCopy(outBuf, 0, inData, 0, 8);
+          int pct = (int)(count / 100000);
+          if (pct > lastP) { lastP = pct; Console.Out.WriteLine("P\\t" + count); }
+        }
+        Console.Out.WriteLine("D\\t" + count);
+      } finally { pin.Free(); pout.Free(); CloseHandle(h); }
+    }
+  }
+}
+'@
+Add-Type -TypeDefinition $src
+[HeheUsn.Enumerator]::Run('${drive}')`], { windowsHide: true });
+  const kill = () => { try { spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true }); } catch (err) {} };
+  jobs.set(id, { cancel: kill });
+  latestCancelable = kill;
+  const map = new Map();
+  let count = 0, errMsg = null, lastEmit = 0;
+  await new Promise((resolve, reject) => {
+    let out = '', errOut = '';
+    const handleLine = (line) => {
+      if (!line) return;
+      const tag = line[0];
+      if (tag === 'F') {
+        const i1 = line.indexOf('\t', 2), i2 = line.indexOf('\t', i1 + 1), i3 = line.indexOf('\t', i2 + 1);
+        if (i1 < 0 || i2 < 0 || i3 < 0) return;
+        const frn = Number(line.slice(2, i1)), parent = Number(line.slice(i1 + 1, i2));
+        const attr = Number(line.slice(i2 + 1, i3)), name = line.slice(i3 + 1);
+        if (name && name !== '.' && name !== '..' && Number.isFinite(frn)) { map.set(frn, [parent, name, !!(attr & 0x10)]); count++; }
+      } else if (tag === 'P') {
+        const now = Date.now();
+        if (now - lastEmit > 300) { lastEmit = now; send('job:stream', { id, data: JSON.stringify({ buildCount: Number(line.slice(2)) || 0 }) }); }
+      } else if (tag === 'E') { errMsg = Number(line.slice(2)); }
+    };
+    proc.stdout.on('data', (d) => {
+      out += d.toString('utf8');
+      let i;
+      while ((i = out.indexOf('\n')) >= 0) { const line = out.slice(0, i).replace(/\r$/, ''); out = out.slice(i + 1); handleLine(line); }
+    });
+    proc.stderr.on('data', (d) => { errOut += d.toString('utf8'); if (errOut.length > 8000) errOut = errOut.slice(-4000); });
+    proc.on('error', (err) => reject(err));
+    proc.on('exit', (code) => {
+      if (out.trim()) { for (const l of out.split(/\r?\n/)) if (l.trim()) handleLine(l.trim()); }
+      if (errMsg === 5) return reject(new Error('需要管理员权限：读取 NTFS 索引（USN）要求以管理员身份运行核核工具箱'));
+      if (errMsg != null) return reject(new Error('NTFS 索引失败（Win32 错误 ' + errMsg + '），该分区可能不是 NTFS 格式'));
+      if (code !== 0) return reject(new Error('索引进程退出码 ' + code + (errOut ? '：' + errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') : '')));
+      if (!count) return reject(new Error('未读取到任何文件记录（分区可能不是 NTFS）'));
+      resolve();
+    });
+  });
+  searchIndexes.set(drive, { map, count, builtAt: Date.now() });
+  return { drive, count };
+});
+handle('search:query', async (e, { q, drive, limit, stat }) => {
+  const query = String(q || '').trim().toLowerCase();
+  if (!query) return { rows: [], total: 0, ms: 0 };
+  const t0 = Date.now();
+  const cap = Math.min(2000, limit || 300);
+  const rows = [];
+  const scanIdx = (driveLetter, idx) => {
+    for (const [frn, rec] of idx.map) {
+      if (rec[1].toLowerCase().includes(query)) {
+        rows.push({ frn, drive: driveLetter, name: rec[1], dir: rec[2] });
+        if (rows.length >= cap) return true;
+      }
+    }
+    return false;
+  };
+  if (drive && searchIndexes.has(drive)) scanIdx(drive, searchIndexes.get(drive));
+  else for (const [driveLetter, idx] of searchIndexes) { if (scanIdx(driveLetter, idx)) break; }
+  for (const r of rows) { r.path = searchResolvePath(r.drive, r.frn); delete r.frn; }
+  if (stat) {
+    await Promise.all(rows.slice(0, 400).map(async (r) => {
+      if (r.dir) return;
+      try { const st = await fsp.stat(r.path); r.size = st.size; r.mtime = st.mtimeMs; } catch (err) {}
+    }));
+  }
+  return { rows, total: rows.length, ms: Date.now() - t0 };
+});
+handle('search:es', async (e, { q, limit }) => {
+  const es = findEsExe();
+  if (!es) throw new Error('未找到 es.exe（Everything 命令行工具），请安装 Everything 后重试');
+  const query = String(q || '').trim();
+  if (!query) return { rows: [], total: 0, ms: 0 };
+  const t0 = Date.now();
+  const r = await runCmd(es, ['-n', String(Math.min(2000, limit || 300)), query], { timeout: 15000, encoding: 'utf8' });
+  const rows = [];
+  for (const line of (r.stdout || '').split(/\r?\n/)) {
+    const p = line.trim();
+    if (!p) continue;
+    rows.push({ path: p, name: path.basename(p), dir: false });
+  }
+  await Promise.all(rows.slice(0, 400).map(async (row) => {
+    try { const st = await fsp.stat(row.path); row.dir = st.isDirectory(); if (!row.dir) { row.size = st.size; row.mtime = st.mtimeMs; } } catch (err) {}
+  }));
+  return { rows, total: rows.length, ms: Date.now() - t0 };
+});
+handle('search:quick', (e, { root, q, limit }) => {
+  const query = String(q || '').trim().toLowerCase();
+  if (!query) return { id: null };
+  const id = 'qs' + (++jobSeq);
+  const cancelRef = { canceled: false };
+  const kill = () => { cancelRef.canceled = true; };
+  jobs.set(id, { cancel: kill });
+  latestCancelable = kill;
+  (async () => {
+    const t0 = Date.now();
+    const cap = Math.min(3000, limit || 500);
+    let matched = 0, scanned = 0, lastSend = 0;
+    let batch = [];
+    const sendBatch = () => { if (batch.length) { send('job:stream', { id, data: JSON.stringify({ rows: batch }) }); batch = []; } };
+    const walk = async (dir, depth) => {
+      if (cancelRef.canceled || matched >= cap || depth > 32) return;
+      let entries;
+      try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch (err) { return; }
+      for (const ent of entries) {
+        if (cancelRef.canceled || matched >= cap) return;
+        const full = dir.replace(/[\\/]+$/, '') + '\\' + ent.name;
+        scanned++;
+        const now = Date.now();
+        if (now - lastSend > 500) { lastSend = now; send('job:stream', { id, data: JSON.stringify({ scanned }) }); }
+        if (ent.name.toLowerCase().includes(query)) {
+          matched++;
+          batch.push({ path: full, name: ent.name, dir: ent.isDirectory() });
+          if (batch.length >= 25) sendBatch();
+        }
+        if (ent.isDirectory() && !ent.isSymbolicLink()) await walk(full, depth + 1);
+      }
+    };
+    try { await walk(root, 0); } catch (err) { sendBatch(); send('job:stream', { id, data: JSON.stringify({ done: true, error: err.message }) }); return; }
+    sendBatch();
+    send('job:stream', { id, data: JSON.stringify({ done: true, matched, scanned, ms: Date.now() - t0, canceled: cancelRef.canceled }) });
+  })();
+  return { id };
+});
+
 /* ================= lifecycle ================= */
 // 测试隔离：HEHE_TEST_DATA 指定独立的 userData 目录（不影响正式数据与单实例锁）
 if (process.env.HEHE_TEST_DATA) app.setPath('userData', process.env.HEHE_TEST_DATA);

@@ -406,4 +406,145 @@
       page.appendChild(div('card', div('card-title', '解压 ZIP'), dz2, div('field-hint', '解压到同名文件夹')));
     }
   });
+
+  /* ---------- 全局文件搜索（Everything 式） ---------- */
+  register({
+    id: 'global-search', name: '全局文件搜索', module: MOD, icon: 'search',
+    desc: 'Everything 式全盘秒搜：NTFS 索引（管理员）/ es.exe / 快速扫描 三引擎',
+    keywords: ['everything', '搜索', '文件', '全盘', '查找', '秒搜'],
+    render(page) {
+      const envLine = div('field-hint', '检测环境中…');
+      const volRow = div('form-row', { style: { flexWrap: 'wrap' } });
+      const hint = div('field-hint', '「建索引」按 Everything 原理读取 NTFS USN 日志（需以管理员身份运行核核工具箱），建好后全盘即输即搜；若安装了 Everything 且有 es.exe 会自动优先使用；无管理员权限可用「快速扫描」逐层遍历（较慢，结果实时流出）。');
+      const inBox = h('input', { class: 'input', placeholder: '输入文件名关键词，即输即搜…', style: { flex: '1' } });
+      const rootSel = h('select', { class: 'select input-sm', style: { width: '110px' } });
+      const limitSel = h('select', { class: 'select input-sm' },
+        h('option', { value: '100' }, '100 条'), h('option', { value: '300', selected: true }, '300 条'), h('option', { value: '1000' }, '1000 条'));
+      const engTag = h('span', { class: 'tag tag-gray' }, '就绪');
+      const statsLine = h('span', { class: 'field-hint' }, '');
+      const listBox = div('');
+      const quickBtn = btn('📂 快速扫描（无需管理员）', 'btn-secondary btn-sm', startQuick);
+      let env = null, builtInfo = {}, searchTimer = 0, quickJob = null, quickUnsub = null, seq = 0;
+      async function refreshEnv() {
+        env = await invoke('search:env').catch(() => null);
+        builtInfo = (await invoke('search:index-status').catch(() => ({}))) || {};
+        envLine.innerHTML = '';
+        if (!env) { envLine.appendChild(div('field-err', '环境检测失败')); return; }
+        envLine.appendChild(h('span', { class: 'tag ' + (env.admin ? 'tag-green' : 'tag-orange') }, env.admin ? '管理员权限 ✓' : '无管理员权限'));
+        envLine.appendChild(h('span', { class: 'tag ' + (env.es ? 'tag-green' : 'tag-gray') }, env.es ? 'es.exe ✓（优先使用）' : 'es.exe 未检测到'));
+        const idxCount = Object.keys(builtInfo).length;
+        envLine.appendChild(h('span', { class: 'tag ' + (idxCount ? 'tag-blue' : 'tag-gray') }, idxCount ? `已建索引 ${idxCount} 个分区` : '未建索引'));
+        rootSel.innerHTML = '';
+        (env.volumes || []).forEach((v, i) => rootSel.appendChild(h('option', { value: v.drive + '\\', selected: i === 0 }, v.drive)));
+        renderVols();
+      }
+      function renderVols() {
+        volRow.innerHTML = '';
+        if (!env) return;
+        for (const v of (env.volumes || [])) {
+          const info = builtInfo[v.drive];
+          const gb = v.size ? (v.size / 1073741824).toFixed(0) + 'GB' : '';
+          const label = (info ? '↻ 重建 ' : '⬢ 建索引 ') + v.drive + (gb ? `（${gb}）` : '') + (info ? ` · ${info.count.toLocaleString()} 项` : '');
+          volRow.appendChild(btn(label, 'btn-sm ' + (info ? 'btn-secondary' : 'btn-primary'), () => buildIndex(v.drive)));
+        }
+        if (Object.keys(builtInfo).length) volRow.appendChild(btn('清空索引', 'btn-sm btn-text', async () => {
+          try { await invoke('search:free'); builtInfo = {}; await refreshEnv(); toast('已释放索引内存', 'success'); } catch (e) { toast(e.message, 'error'); }
+        }));
+      }
+      async function buildIndex(drive) {
+        engTag.textContent = '构建索引中…'; engTag.className = 'tag tag-orange';
+        statsLine.textContent = '正在读取 NTFS 索引…';
+        try {
+          const r = await invoke('search:build', drive);
+          toast(`索引完成：${r.count.toLocaleString()} 项`, 'success');
+        } catch (e) { statsLine.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+        engTag.textContent = '就绪'; engTag.className = 'tag tag-gray';
+        await refreshEnv();
+        doSearch();
+      }
+      function schedule() { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 200); }
+      function stopQuick() {
+        clearTimeout(searchTimer);
+        if (quickJob) { invoke('job:kill', quickJob).catch(() => {}); quickJob = null; }
+        if (quickUnsub) { quickUnsub(); quickUnsub = null; }
+      }
+      async function doSearch() {
+        const mySeq = ++seq;
+        stopQuick();
+        listBox.innerHTML = '';
+        statsLine.textContent = '';
+        const q = inBox.value.trim();
+        if (!q) { engTag.textContent = '就绪'; engTag.className = 'tag tag-gray'; return; }
+        const engine = env && env.es ? 'es' : (Object.keys(builtInfo).length ? 'mft' : null);
+        if (!engine) {
+          engTag.textContent = '无可用引擎'; engTag.className = 'tag tag-orange';
+          listBox.appendChild(div('empty-tip', '没有可用搜索引擎：请点击上方「建索引」（需管理员），安装 Everything（es.exe），或使用下方「快速扫描」'));
+          return;
+        }
+        engTag.textContent = engine === 'es' ? '引擎：Everything(es.exe)' : '引擎：NTFS 索引';
+        engTag.className = 'tag tag-blue';
+        try {
+          const r = engine === 'es' ? await invoke('search:es', { q, limit: +limitSel.value })
+            : await invoke('search:query', { q, limit: +limitSel.value, stat: true });
+          if (mySeq !== seq) return;
+          renderRows(r.rows, false);
+          statsLine.textContent = `${r.rows.length} 条 · ${r.ms}ms`;
+        } catch (e) {
+          if (mySeq !== seq) return;
+          engTag.textContent = '出错'; engTag.className = 'tag tag-red';
+          listBox.appendChild(div('field-err', '✗ ' + e.message));
+        }
+      }
+      function renderRows(rows, append) {
+        if (!rows.length && !append) { listBox.appendChild(div('empty-tip', '没有匹配的文件')); return; }
+        listBox.appendChild(renderTable({
+          columns: [
+            { key: 'name', title: '文件名', render: r => h('span', { class: 'mono', style: { wordBreak: 'break-all' } }, r.name + (r.dir ? ' 📁' : '')) },
+            { key: 'size', title: '大小', width: '90px', render: r => r.dir ? '📁' : (r.size != null ? fmtBytes(r.size) : '-') },
+            { key: 'path', title: '完整路径', render: r => h('span', { class: 'field-hint', style: { wordBreak: 'break-all', fontSize: '11px' } }, r.path) },
+            { key: 'act', title: '操作', width: '180px', render: (r, td) => {
+              td.appendChild(btn('打开', 'btn-sm btn-text', () => invoke('fs:open-path', r.path).catch(e2 => toast(e2.message, 'error'))));
+              td.appendChild(btn('位置', 'btn-sm btn-text', () => invoke('fs:show-item', r.path)));
+              td.appendChild(btn('复制路径', 'btn-sm btn-text', () => copyText(r.path)));
+            } }
+          ],
+          rows
+        }));
+      }
+      function startQuick() {
+        const q = inBox.value.trim();
+        if (!q) return toast('请先输入关键词', 'warn');
+        const root = rootSel.value || (env && env.volumes && env.volumes[0] ? env.volumes[0].drive + '\\' : '');
+        if (!root) return toast('未找到可扫描的分区', 'warn');
+        clearTimeout(searchTimer); seq++;
+        stopQuick();
+        listBox.innerHTML = ''; statsLine.textContent = '正在扫描…';
+        engTag.textContent = '快速扫描中'; engTag.className = 'tag tag-orange';
+        let rowCount = 0;
+        quickUnsub = window.api.on('job:stream', (d) => {
+          try {
+            const j = JSON.parse(d.data);
+            if (j.rows && j.rows.length) { rowCount += j.rows.length; renderRows(j.rows, true); statsLine.textContent = `已找到 ${rowCount} 条（扫描中…）`; }
+            else if (j.scanned != null && !j.done) statsLine.textContent = `已扫描 ${j.scanned.toLocaleString()} 项…`;
+            if (j.done) {
+              engTag.textContent = '就绪'; engTag.className = 'tag tag-gray';
+              statsLine.textContent = j.error ? ('✗ ' + j.error) : `完成：找到 ${j.matched} 条 · 扫描 ${(j.scanned || 0).toLocaleString()} 项 · ${j.ms}ms${j.canceled ? '（已停止）' : ''}`;
+              quickJob = null;
+            }
+          } catch (e) {}
+        });
+        invoke('search:quick', { root, q, limit: +limitSel.value }).then((r) => { quickJob = r.id; }).catch((e) => { toast(e.message, 'error'); engTag.textContent = '就绪'; engTag.className = 'tag tag-gray'; });
+      }
+      inBox.addEventListener('input', schedule);
+      window.App.onCleanup(stopQuick);
+      refreshEnv();
+      page.appendChild(div('card', div('card-title', '搜索引擎'), envLine, volRow, hint));
+      page.appendChild(div('card', div('card-title', '搜索'),
+        div('form-row', inBox, limitSel),
+        div('form-row', engTag, ' ', statsLine),
+        div('form-row', quickBtn, h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '扫描范围'), rootSel),
+        listBox));
+      setTimeout(() => { try { inBox.focus(); } catch (e) {} }, 100);
+    }
+  });
 })();
