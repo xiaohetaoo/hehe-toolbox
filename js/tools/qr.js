@@ -15,22 +15,26 @@
       const levelSel = h('select', { class: 'select input-sm' }, h('option', { value: 'L' }, '容错 L'), h('option', { value: 'M', selected: true }, '容错 M'), h('option', { value: 'Q' }, '容错 Q'), h('option', { value: 'H' }, '容错 H'));
       const imgBox = div('');
       imgBox.style.cssText = 'display:flex;justify-content:center;padding:20px;min-height:240px;align-items:center';
-      let lastB64 = null;
+      let lastB64 = null, genSeq = 0;
       async function gen() {
         if (!ta.value.trim()) { imgBox.innerHTML = '<span class="field-hint">输入内容后自动生成</span>'; return; }
+        const t = ++genSeq;
         try {
           const r = await invoke('qr:generate', ta.value, { size: parseInt(sizeSel.value), level: levelSel.value });
+          if (t !== genSeq) return; // 旧请求不覆盖新结果
           lastB64 = r.b64;
           imgBox.innerHTML = '';
           imgBox.appendChild(h('img', { src: 'data:image/png;base64,' + r.b64, style: { maxWidth: '320px', borderRadius: '8px', border: '1px solid var(--border)' } }));
-        } catch (e) { imgBox.innerHTML = `<span class="field-err">${e.message}</span>`; }
+        } catch (e) { if (t === genSeq) { imgBox.innerHTML = ''; imgBox.appendChild(div('field-err', '✗ ' + (e && e.message ? e.message : e))); } }
       }
       const saveBtn = btn('保存 PNG', 'btn-secondary btn-sm', async () => {
         if (!lastB64) return toast('请先生成二维码', 'warn');
-        const p = await invoke('dialog:save', { defaultPath: 'qrcode.png', filters: [{ name: 'PNG', extensions: ['png'] }] });
-        if (!p) return;
-        await invoke('fs:write-file-b64', p, lastB64);
-        toast('已保存：' + p, 'success');
+        try {
+          const p = await invoke('dialog:save', { defaultPath: 'qrcode.png', filters: [{ name: 'PNG', extensions: ['png'] }] });
+          if (!p) return;
+          await invoke('fs:write-file-b64', p, lastB64);
+          toast('已保存：' + p, 'success');
+        } catch (e) { toast(e.message || String(e), 'error'); }
       });
       ta.addEventListener('input', window.ui.debounce(gen, 400));
       [sizeSel, levelSel].forEach(el => el.addEventListener('change', gen));

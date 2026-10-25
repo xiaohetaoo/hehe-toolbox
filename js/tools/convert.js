@@ -67,6 +67,7 @@
 
       const outGrid = div('');
       const tsOut = h('input', { class: 'input mono', readonly: true, style: { flex: '1' } });
+      let tsEcho = null; // 「日期→时间戳」卡片中的回显 span，随 fireDate 同步更新
       const tsOutBtn = btn('复制', 'btn-sm btn-text', () => copyText(tsOut.value));
 
       function fmtD(date) {
@@ -96,6 +97,7 @@
         const d = new Date(dateIn.value + (useUTC ? 'Z' : ''));
         if (isNaN(d.getTime())) return;
         tsOut.value = unit === 's' ? String(Math.floor(d.getTime() / 1000)) : String(d.getTime());
+        if (tsEcho) tsEcho.textContent = tsOut.value;
       }
       tsInput.addEventListener('input', fireTs);
       dateIn.addEventListener('input', () => { fireDate(); });
@@ -109,7 +111,7 @@
         div('form-row', h('span', { class: 'form-label' }, '结果'), tsOut, tsOutBtn)));
       page.appendChild(div('card', div('card-title', '日期 → 时间戳'),
         div('form-row', dateIn, tzChk),
-        div('form-row', h('span', { class: 'form-label' }, '时间戳'), h('span', { class: 'mono', style: { userSelect: 'text' } }, tsOut.value || '')),
+        div('form-row', h('span', { class: 'form-label' }, '时间戳'), tsEcho = h('span', { class: 'mono', style: { userSelect: 'text' } }, tsOut.value || '')),
         div('form-row', btn('复制上方时间戳', 'btn-sm btn-text', () => copyText(tsOut.value)))));
     }
   });
@@ -213,6 +215,8 @@
         // 处理嵌套^: 简化处理 — 使用循环替换
         while (/\^\s*\(/.test(e)) e = e.replace(/\^\s*\(/g, '**(');
         e = e.replace(/\^/g, '**');
+        // 阻止访问全局对象/危险函数（字符白名单无法区分标识符）
+        if (/\b(document|location|window|globalThis|self|top|parent|alert|eval|Function|fetch|XMLHttpRequest|localStorage|sessionStorage|indexedDB|import|constructor|process|require|navigator|cookieStore)\b/i.test(e)) throw new Error('包含不允许的调用');
         // 安全检查
         if (!/^[-+*/%().,\d\sMathepowinaclsqrtbfgediupwinxomrPIE_,*]*$/i.test(e)) throw new Error('包含不允许的字符');
         const val = Function('"use strict"; return (' + e + ')')();

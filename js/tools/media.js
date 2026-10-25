@@ -2,7 +2,7 @@
 (function () {
   const { register } = window.Registry;
   const { div, btn, toast, copyText, dropzone, fmtBytes, progressEl } = window.ui;
-  const { invoke, isDesktop } = window.api;
+  const { invoke, on, isDesktop } = window.api;
   const MOD = 'media';
 
   function loadImg(path, blob) {
@@ -51,8 +51,8 @@
         if (!outDir) {
           const firstDir = paths[0].replace(/[\\/][^\\/]+$/, '');
           outDir = firstDir + '/hehe-processed';
-          await invoke('fs:mkdir', outDir);
-        } else await invoke('fs:mkdir', outDir);
+          try { await invoke('fs:mkdir', outDir); } catch (e) { prog.hide(); return toast('创建输出目录失败：' + e.message, 'error'); }
+        } else { try { await invoke('fs:mkdir', outDir); } catch (e) { prog.hide(); return toast('创建输出目录失败：' + e.message, 'error'); } }
         let ok = 0, fail = 0;
         preview.innerHTML = '';
         for (let i = 0; i < paths.length; i++) {
@@ -131,7 +131,7 @@
         prog.show();
         const firstDir = paths[0].replace(/[\\/][^\\/]+$/, '');
         const outDir = firstDir + '/hehe-watermark';
-        await invoke('fs:mkdir', outDir);
+        try { await invoke('fs:mkdir', outDir); } catch (e) { prog.hide(); return toast('创建输出目录失败：' + e.message, 'error'); }
         let ok = 0;
         for (let i = 0; i < paths.length; i++) {
           prog.set((i + 1) / paths.length * 100);
@@ -242,10 +242,12 @@
         const b64 = canvas.toDataURL('image/png').split(',')[1];
         const outDefault = (imgs[0].path.replace(/[\\/][^\\/]+$/, '')) + (isV ? '/stitch-v.png' : '/stitch-h.png');
         const saveBtn = btn('💾 保存 PNG', 'btn-primary btn-sm', async () => {
-          const p = await invoke('dialog:save', { defaultPath: outDefault });
-          if (!p) return;
-          await invoke('fs:write-file-b64', p, b64);
-          toast('已保存：' + p, 'success');
+          try {
+            const p = await invoke('dialog:save', { defaultPath: outDefault });
+            if (!p) return;
+            await invoke('fs:write-file-b64', p, b64);
+            toast('已保存：' + p, 'success');
+          } catch (e) { toast(e.message || String(e), 'error'); }
         });
         canvasBox.appendChild(div('form-row', saveBtn, h('span', { class: 'field-hint' }, `${canvas.width}×${canvas.height}px`)));
       }
@@ -284,7 +286,7 @@
               toast('已保存无 EXIF 副本：' + out, 'success');
             });
             result.appendChild(div('form-row', cleanBtn));
-          } catch (e) { result.innerHTML = `<div class="field-err">${e.message}</div>`; }
+          } catch (e) { result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
         }
       });
       function parseExif(buf) {
@@ -307,10 +309,8 @@
         } catch (e) { return null; }
       }
       function parseTiff(start) {
-        const dv = new DataView(buf2.buffer);
-        const buf2 = buf2View();
-        function buf2View() { return { buffer: buf.buffer, byteOffset: start, byteLength: buf.length - start }; }
-        // simpler: read via DataView on whole buffer with base offset
+        // DataView 基于完整 buffer，配合 base 偏移读取
+        const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
         const base = start;
         const little = dv.getUint16(base) === 0x4949;
         const g16 = (o) => dv.getUint16(base + o, little);
@@ -405,7 +405,7 @@
               '也可以从 ffmpeg.org 下载后手动导入。')));
           }
           statusBox.appendChild(card);
-        } catch (e) { statusBox.innerHTML = `<div class="field-err">${e.message}</div>`; }
+        } catch (e) { statusBox.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
       }
       const srcSel = h('select', { class: 'select input-sm', style: { flex: '1' } },
         h('option', { value: 'npmmirror' }, 'npmmirror 国内镜像（推荐，约 59MB，含 ffprobe）'),
@@ -428,7 +428,7 @@
           const r = await invoke('ffmpeg:download', srcSel.value);
           toast('FFmpeg 安装完成', 'success');
           status.textContent = '✓ 安装完成：' + (r.ffmpeg || '');
-        } catch (e) { status.innerHTML = `<span class="status-err">✗ ${e.message}</span>`; toast(e.message, 'error'); }
+        } catch (e) { status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; toast(e.message, 'error'); }
         finally { dlBtn.disabled = false; prog.hide(); if (unsub) unsub(); refresh(); }
       });
       const pickBtn = btn('📁 手动导入 ffmpeg.exe', 'btn-secondary', async () => {
@@ -501,7 +501,7 @@
           if (/ffprobe/.test(e.message)) {
             result.appendChild(window.ui.placeholder('film', '需要 FFmpeg 引擎', '音视频信息查看依赖 ffprobe。点击下方按钮前往安装（只需一次）。'));
             result.appendChild(div('form-row', btn('🛠 前往 FFmpeg 环境安装', 'btn-primary', () => window.App.openTool('ffmpeg-setup'))));
-          } else result.innerHTML = `<div class="field-err">${e.message}</div>`;
+          } else result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`;
         }
       }
       const dz = dropzone({ text: '拖入音视频文件查看信息', multiple: false, onFiles: (paths) => paths[0] && probe(paths[0]) });
@@ -583,6 +583,7 @@
             if (j.done && tag) { tag.textContent = j.ok ? '✓ 完成' : '✗ 失败'; tag.className = 'tag ' + (j.ok ? 'tag-green' : 'tag-red'); }
           } catch (e) {}
         });
+        if (window.App && App.onCleanup) App.onCleanup(unsub);
         try {
           const r = await invoke('ffmpeg:convert', {
             items: [...files], outDir,
@@ -605,7 +606,7 @@
           status.textContent = `完成：成功 ${okN} / 失败 ${r.results.length - okN}，输出目录 ${outDir}`;
           toast(`转换完成（${okN}/${r.results.length}）`, okN ? 'success' : 'error');
         } catch (e) {
-          status.innerHTML = `<span class="status-err">✗ ${e.message}</span>`;
+          status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
         } finally { running = false; startBtn.disabled = false; cancelBtn.disabled = true; unsub(); }
       }
@@ -661,7 +662,7 @@
           toast('识别完成', 'success');
         } catch (e) {
           prog.hide();
-          status.innerHTML = `<span class="status-err">✗ ${e.message}（语言包需联网下载一次，之后离线可用）</span>`;
+          status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}（语言包需联网下载一次，之后离线可用）</span>`;
           toast('识别失败：' + e.message, 'error');
         }
       }
@@ -705,6 +706,313 @@
         div('form-row', btn('🔍 开始识别', 'btn-primary', recognize), prog.el, status),
         result,
         div('form-row', btn('复制结果', 'btn-sm btn-secondary', () => result.value && copyText(result.value)))));
+    }
+  });
+
+  /* ---------- 图片压缩 ---------- */
+  register({
+    id: 'img-compress', name: '图片压缩', module: MOD, icon: 'image',
+    desc: '智能压缩 / 指定质量 / 压到目标体积，JPG·WebP·PNG 输出与前后大小对比',
+    keywords: ['压缩', '图片', '体积', 'webp', '缩小', '瘦身'],
+    render(page) {
+      const paths = [];
+      const dz = dropzone({ text: '拖入或选择要压缩的图片（可多选）', onFiles: (p) => { paths.push(...p); label.textContent = `已选 ${paths.length} 张图片`; } });
+      const label = div('field-hint', '未选择');
+      const modeSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'smart' }, '智能压缩（推荐）'),
+        h('option', { value: 'target' }, '压到目标体积'),
+        h('option', { value: 'quality' }, '指定质量'));
+      const qualityIn = h('input', { type: 'number', class: 'input input-sm', value: '80', min: '10', max: '100', style: { width: '70px' } });
+      const targetIn = h('input', { type: 'number', class: 'input input-sm', value: '200', min: '5', style: { width: '80px' }, title: '每张压到不超过该体积（KB），质量逐级自动降低' });
+      const maxWIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '不限', style: { width: '70px' }, title: '最大宽度（px），超出等比缩小' });
+      const fmtSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'smart' }, '智能（透明→WebP，其余→JPG）'),
+        h('option', { value: 'image/jpeg' }, 'JPG'),
+        h('option', { value: 'image/webp' }, 'WebP'),
+        h('option', { value: 'image/png' }, 'PNG'));
+      const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空 = 原图目录/hehe-compressed）', style: { flex: '1' } });
+      const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
+        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        if (d && d[0]) outDirIn.value = d[0];
+      });
+      const refreshMode = () => {
+        qualityIn.disabled = modeSel.value !== 'quality';
+        targetIn.disabled = modeSel.value !== 'target';
+      };
+      modeSel.addEventListener('change', refreshMode); refreshMode();
+      const listBox = div('');
+      const prog = progressEl(); prog.hide();
+      const status = h('span', { class: 'field-hint' }, '');
+      let running = false;
+      const startBtn = btn('🚀 开始压缩', 'btn-primary', run);
+
+      function hasAlpha(img) {
+        const c = document.createElement('canvas');
+        const w = c.width = Math.min(img.naturalWidth || 1, 64), hh = c.height = Math.min(img.naturalHeight || 1, 64);
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, hh);
+        const d = ctx.getImageData(0, 0, w, hh).data;
+        for (let i = 3; i < d.length; i += 4) if (d[i] < 250) return true;
+        return false;
+      }
+      function dataUrlBytes(du) { return Math.floor(du.length * 3 / 4); }
+      function drawTo(img, mime, q, dimScale) {
+        const mw = parseInt(maxWIn.value) || 0;
+        let w = img.naturalWidth * (dimScale || 1), h2 = img.naturalHeight * (dimScale || 1);
+        if (mw && w > mw) { h2 = h2 * mw / w; w = mw; }
+        w = Math.max(1, Math.round(w)); h2 = Math.max(1, Math.round(h2));
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h2;
+        const ctx = canvas.getContext('2d');
+        if (mime === 'image/jpeg') { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h2); }
+        ctx.drawImage(img, 0, 0, w, h2);
+        return canvas.toDataURL(mime, q);
+      }
+      function encodeTarget(img, mime, targetKB) {
+        const target = Math.max(5, targetKB) * 1024;
+        let dimScale = 1;
+        for (let round = 0; round < 4; round++) {
+          let lo = 5, hi = 95, best = null, bestSize = Infinity;
+          while (lo <= hi) {
+            const q = Math.round((lo + hi) / 2);
+            const du = drawTo(img, mime, q / 100, dimScale);
+            const size = dataUrlBytes(du);
+            if (size <= target) { if (best === null || size > bestSize) { best = du; bestSize = size; } lo = q + 1; }
+            else hi = q - 1;
+          }
+          if (best) return best;
+          if (round === 3) return drawTo(img, mime, 0.05, dimScale);
+          dimScale *= 0.7;
+        }
+      }
+      async function run() {
+        if (!paths.length) return toast('请先选择图片', 'warn');
+        if (running) return;
+        running = true; startBtn.disabled = true;
+        prog.show(); status.textContent = ''; listBox.innerHTML = '';
+        const outDir = outDirIn.value.trim() || (paths[0].replace(/[\\/][^\\/]+$/, '') + '/hehe-compressed');
+        try { await invoke('fs:mkdir', outDir); } catch (e) {}
+        let totalBefore = 0, totalAfter = 0, ok = 0, fail = 0;
+        for (let i = 0; i < paths.length; i++) {
+          prog.set((i + 1) / paths.length * 100);
+          const p = paths[i];
+          const name = p.split(/[\\/]/).pop();
+          const row = div('form-row', h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, name),
+            h('span', { class: 'field-hint comp-size' }, '…'),
+            h('span', { class: 'tag tag-gray', style: { minWidth: '64px', justifyContent: 'center' } }, '压缩中'));
+          listBox.appendChild(row);
+          try {
+            const img = await loadImg(p);
+            const orig = (await invoke('fs:stat', p)).size;
+            let mime;
+            if (fmtSel.value === 'smart') mime = hasAlpha(img) ? 'image/webp' : 'image/jpeg';
+            else mime = fmtSel.value;
+            let du;
+            if (modeSel.value === 'target') {
+              du = encodeTarget(img, mime, parseInt(targetIn.value) || 200);
+            } else if (modeSel.value === 'smart') {
+              const du80 = drawTo(img, mime, 0.8, 1);
+              if (dataUrlBytes(du80) < orig * 0.92) du = du80;
+              else {
+                const du60 = drawTo(img, mime, 0.6, 1);
+                du = dataUrlBytes(du60) < dataUrlBytes(du80) ? du60 : du80;
+              }
+            } else {
+              du = drawTo(img, mime, Math.min(100, Math.max(10, parseInt(qualityIn.value) || 80)) / 100, 1);
+            }
+            const ext = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png';
+            const outPath = outDir.replace(/[\\/]$/, '') + '/' + name.replace(/\.\w+$/, '') + ext;
+            await invoke('fs:write-file-b64', outPath, du.split(',')[1]);
+            const newSize = (await invoke('fs:stat', outPath)).size;
+            ok++; totalBefore += orig; totalAfter += newSize;
+            const pct = Math.round((1 - newSize / orig) * 100);
+            const sizeEl = row.querySelector('.comp-size'), tagEl = row.querySelector('.tag');
+            sizeEl.textContent = `${fmtBytes(orig)} → ${fmtBytes(newSize)}`;
+            tagEl.textContent = pct >= 0 ? `-${pct}%` : `+${-pct}%`;
+            tagEl.className = 'tag ' + (pct >= 0 ? 'tag-green' : 'tag-orange');
+          } catch (e) {
+            fail++;
+            const tagEl = row.querySelector('.tag'); tagEl.textContent = '✗'; tagEl.className = 'tag tag-red';
+            row.appendChild(h('span', { class: 'field-err', style: { fontSize: '11px', maxWidth: '220px' } }, (e && e.message) || String(e)));
+          }
+        }
+        prog.hide(); running = false; startBtn.disabled = false;
+        status.textContent = totalBefore ? `完成：成功 ${ok}，失败 ${fail}，合计 ${fmtBytes(totalBefore)} → ${fmtBytes(totalAfter)}（节省 ${fmtBytes(Math.max(0, totalBefore - totalAfter))}），输出目录 ${outDir}` : '';
+        toast(`压缩完成（${ok} 成功 / ${fail} 失败）`, fail ? 'warn' : 'success');
+      }
+      page.appendChild(div('card', div('card-title', '选择图片'), dz, label));
+      page.appendChild(div('card', div('card-title', '压缩参数'),
+        div('form-row', h('span', { class: 'form-label' }, '模式'), modeSel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '质量'), qualityIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '目标体积'), targetIn, h('span', { class: 'field-hint' }, 'KB'),
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '最大宽'), maxWIn),
+        div('form-row', h('span', { class: 'form-label' }, '输出格式'), fmtSel),
+        div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
+        div('form-row', startBtn, ' ', prog.el, status)));
+      page.appendChild(div('card', div('card-title', '压缩结果'), listBox));
+      // 测试钩子（无头 E2E 用；正常使用无副作用）
+      (window.__heheTest = window.__heheTest || {}).imgCompress = {
+        setPaths: (arr) => { paths.length = 0; paths.push(...arr); },
+        setOpts: (o) => {
+          if (o.mode) { modeSel.value = o.mode; modeSel.dispatchEvent(new Event('change')); }
+          if (o.quality != null) qualityIn.value = o.quality;
+          if (o.target != null) targetIn.value = o.target;
+          if (o.maxW != null) maxWIn.value = o.maxW;
+          if (o.fmt) fmtSel.value = o.fmt;
+        },
+        run: () => run()
+      };
+    }
+  });
+
+  /* ---------- 视频压制 ---------- */
+  register({
+    id: 'video-press', name: '视频压制', module: MOD, icon: 'film',
+    desc: 'H.264/H.265 重编码瘦身：预设、CRF、分辨率、音频码率，压完看省了多少',
+    keywords: ['压制', '视频', '压缩', 'h265', 'hevc', '瘦身', '体积'],
+    render(page) {
+      const files = [];
+      const dz = dropzone({ text: '拖入或选择要压制的视频（可多选）', onFiles: (p) => { files.push(...p); label.textContent = `已选 ${files.length} 个文件`; refreshList(); } });
+      const label = div('field-hint', '未选择');
+      const presetSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'balanced' }, '均衡推荐（H.264 · CRF23 · 中速）'),
+        h('option', { value: 'quality' }, '高画质（H.265 · CRF20 · 慢速）'),
+        h('option', { value: 'strong' }, '极限瘦身（H.265 · CRF28 · 中速）'),
+        h('option', { value: 'custom' }, '自定义'));
+      const codecSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'libx264' }, 'H.264（兼容最好）'), h('option', { value: 'libx265' }, 'H.265（体积更小）'));
+      const crfIn = h('input', { type: 'number', class: 'input input-sm', value: '23', min: '14', max: '36', style: { width: '64px' }, title: '质量：越小越清晰、体积越大' });
+      const speedSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'veryfast' }, '中速'), h('option', { value: 'ultrafast' }, '快速（体积略大）'),
+        h('option', { value: 'medium' }, '较慢（体积更小）'), h('option', { value: 'slow' }, '慢（体积最小）'));
+      const scaleSel = h('select', { class: 'select input-sm' },
+        h('option', { value: '' }, '保持原分辨率'), h('option', { value: '1920' }, '限 1080p'), h('option', { value: '1280' }, '限 720p'), h('option', { value: '854' }, '限 480p'));
+      const fpsIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '帧率', style: { width: '64px' } });
+      const audioSel = h('select', { class: 'select input-sm' },
+        h('option', { value: '128k' }, '音频重编码 128k'), h('option', { value: '96k' }, '音频重编码 96k'),
+        h('option', { value: 'copy' }, '音频直接复制'), h('option', { value: 'mute' }, '移除音频'));
+      const stripChk = h('input', { type: 'checkbox', class: 'checkbox' }); stripChk.checked = true;
+      const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空 = 源文件目录/hehe-pressed）', style: { flex: '1' } });
+      const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
+        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        if (d && d[0]) outDirIn.value = d[0];
+      });
+      const listBox = div('');
+      const status = h('span', { class: 'field-hint' }, '');
+      let running = false;
+      const startBtn = btn('🚀 开始压制', 'btn-primary', run);
+      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => invoke('job:cancel-latest').catch(() => {}));
+      cancelBtn.disabled = true;
+      function applyPreset() {
+        const v = presetSel.value;
+        const custom = v === 'custom';
+        codecSel.disabled = !custom; crfIn.disabled = !custom; speedSel.disabled = !custom;
+        if (v === 'balanced') { codecSel.value = 'libx264'; crfIn.value = '23'; speedSel.value = 'veryfast'; }
+        else if (v === 'quality') { codecSel.value = 'libx265'; crfIn.value = '20'; speedSel.value = 'slow'; }
+        else if (v === 'strong') { codecSel.value = 'libx265'; crfIn.value = '28'; speedSel.value = 'medium'; }
+      }
+      presetSel.addEventListener('change', applyPreset); applyPreset();
+      function refreshList() {
+        listBox.innerHTML = '';
+        files.forEach((f, i) => {
+          const row = div('form-row');
+          row.dataset.i = i;
+          const tag = h('span', { class: 'tag tag-gray av-tag', style: { width: '64px', justifyContent: 'center' } }, '等待中');
+          row.appendChild(tag);
+          row.appendChild(h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, f.split(/[\\/]/).pop()));
+          row.appendChild(h('span', { class: 'field-hint vp-size', style: { fontSize: '11px' } }, ''));
+          const bar = div('progress', { style: { width: '140px' } });
+          bar.appendChild(div('progress-fill'));
+          row.appendChild(bar);
+          row.appendChild(h('span', { class: 'field-err av-err', style: { fontSize: '11px', maxWidth: '200px' } }, ''));
+          listBox.appendChild(row);
+        });
+      }
+      async function run() {
+        if (!files.length) return toast('请先选择视频', 'warn');
+        if (running) return;
+        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        if (!st.ffmpeg) {
+          toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
+          window.App.openTool('ffmpeg-setup');
+          return;
+        }
+        running = true; startBtn.disabled = true; cancelBtn.disabled = false;
+        status.textContent = '';
+        const outDir = outDirIn.value.trim() || (files[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-pressed');
+        const unsub = on('job:stream', (d) => {
+          try {
+            const j = JSON.parse(d.data);
+            const row = listBox.querySelector(`[data-i="${j.i}"]`);
+            if (!row) return;
+            const tag = row.querySelector('.av-tag');
+            const bar = row.querySelector('.progress-fill');
+            if (j.stage === 'start') { if (tag) { tag.textContent = '压制中'; tag.className = 'tag tag-orange'; } return; }
+            if (j.pct != null && bar && !j.done) bar.style.width = (j.pct || 0) + '%';
+            if (j.done && tag) { tag.textContent = j.ok ? '✓ 完成' : '✗ 失败'; tag.className = 'tag ' + (j.ok ? 'tag-green' : 'tag-red'); }
+          } catch (e) {}
+        });
+        if (window.App && App.onCleanup) App.onCleanup(unsub);
+        try {
+          const r = await invoke('ffmpeg:press', {
+            items: [...files], outDir,
+            opts: {
+              vcodec: codecSel.value, crf: parseInt(crfIn.value) || 23, preset: speedSel.value,
+              scale: scaleSel.value, fps: fpsIn.value ? parseInt(fpsIn.value) : null,
+              audio: audioSel.value, stripMeta: stripChk.checked
+            }
+          });
+          let okN = 0, saveB = 0;
+          r.results.forEach((res, i) => {
+            const row = listBox.querySelector(`[data-i="${i}"]`);
+            if (!row) return;
+            const tag = row.querySelector('.av-tag'), errEl = row.querySelector('.av-err'), sizeEl = row.querySelector('.vp-size');
+            if (res.ok) {
+              okN++;
+              saveB += Math.max(0, (res.inSize || 0) - (res.outSize || 0));
+              if (sizeEl && res.inSize) {
+                const pct = Math.max(0, Math.round((1 - res.outSize / res.inSize) * 100));
+                sizeEl.textContent = `${fmtBytes(res.inSize)} → ${fmtBytes(res.outSize)}（-${pct}%）`;
+              }
+            } else {
+              if (tag) { tag.textContent = '✗ 失败'; tag.className = 'tag tag-red'; }
+              if (errEl) errEl.textContent = res.err;
+            }
+          });
+          status.textContent = `完成：成功 ${okN} / ${r.results.length}${r.canceled ? '（已取消）' : ''}，共节省 ${fmtBytes(saveB)}，输出目录 ${outDir}`;
+          toast(`压制完成（${okN}/${r.results.length}）`, okN ? 'success' : 'error');
+        } catch (e) {
+          status.textContent = '✗ ' + e.message;
+          toast(e.message, 'error');
+        } finally { running = false; startBtn.disabled = false; cancelBtn.disabled = true; unsub(); }
+      }
+      page.appendChild(div('card', div('card-title', '选择视频'), dz, label, listBox));
+      page.appendChild(div('card', div('card-title', '压制参数'),
+        div('form-row', h('span', { class: 'form-label' }, '预设'), presetSel),
+        div('form-row', h('span', { class: 'form-label' }, '编码'), codecSel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '质量CRF'), crfIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '速度'), speedSel),
+        div('form-row', h('span', { class: 'form-label' }, '分辨率'), scaleSel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '帧率'), fpsIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '音频'), audioSel),
+        div('form-row', h('label', { class: 'field-hint' }, stripChk, ' 清除元数据（减少体积）')),
+        div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
+        div('form-row', startBtn, ' ', cancelBtn, status)));
+      // 测试钩子（无头 E2E 用；正常使用无副作用）
+      (window.__heheTest = window.__heheTest || {}).videoPress = {
+        setFiles: (arr) => { files.length = 0; files.push(...arr); refreshList(); },
+        setOpts: (o) => {
+          if (o.preset) { presetSel.value = o.preset; presetSel.dispatchEvent(new Event('change')); }
+          if (o.codec) codecSel.value = o.codec;
+          if (o.crf != null) crfIn.value = o.crf;
+          if (o.speed) speedSel.value = o.speed;
+          if (o.scale != null) scaleSel.value = o.scale;
+          if (o.fps != null) fpsIn.value = o.fps;
+          if (o.audio) audioSel.value = o.audio;
+          if (o.outDir) outDirIn.value = o.outDir;
+        },
+        run: () => run()
+      };
     }
   });
 })();

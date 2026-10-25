@@ -28,8 +28,11 @@
           ops.appendChild(btn('打开', 'btn-sm btn-primary', () => open(it)));
           ops.appendChild(btn('删除', 'btn-sm btn-text', async () => {
             if (!(await confirmBox({ title: '删除快捷项', message: `删除「${it.name}」？` }))) return;
-            items.splice(i, 1);
-            await invoke('store:set', 'quicklaunch', items);
+            const cur = await invoke('store:get', 'quicklaunch', []);
+            const idx = cur.findIndex(x => x.id === it.id);
+            if (idx < 0) { load(); return; } // 索引可能因并发删除过期，避免误删
+            cur.splice(idx, 1);
+            await invoke('store:set', 'quicklaunch', cur);
             load();
           }));
           card.appendChild(ops);
@@ -122,7 +125,7 @@
       }
       async function run(r) {
         if (!isDesktop) return toast('桌面端可用', 'warn');
-        out.innerHTML = `<div class="t-dim">$ ${r.cmd}</div>`;
+        out.innerHTML = `<div class="t-dim">$ ${escapeHtml(r.cmd)}</div>`;
         try {
           const job = await invoke('exec:stream', { command: r.shell === 'ps' ? 'powershell.exe' : 'cmd.exe', args: r.shell === 'ps' ? ['-NoProfile', '-Command', r.cmd] : ['/c', r.cmd] });
           current = job;

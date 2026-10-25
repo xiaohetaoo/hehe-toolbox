@@ -81,7 +81,14 @@
     if (i >= 0) state.favorites.splice(i, 1); else state.favorites.unshift(toolId);
     await invoke('store:set', 'favorites', state.favorites);
     toast(i >= 0 ? '已取消收藏' : '已收藏', 'success', 1000);
-    render(); // 刷新星标
+    // 原地更新星标：不重建工具页，避免清空用户未保存的输入/结果
+    const starBtn = document.querySelector('.tool-header .th-star');
+    if (starBtn && state.view.type === 'tool' && state.view.toolId === toolId) {
+      const on = state.favorites.includes(toolId);
+      starBtn.replaceChildren(icon('star'), on ? '已收藏' : '收藏');
+    }
+    if (state.view.type === 'fav') render(); // 收藏页需刷新列表
+    else renderNav();
   }
   async function pushRecent(toolId) {
     state.recents = [toolId, ...state.recents.filter(x => x !== toolId)].slice(0, 12);
@@ -461,13 +468,15 @@
       { id: 'about', name: '关于', icon: 'info' }
     ];
     let current = 'general';
+    let drawToken = 0; // 快速切换分区时丢弃过期的异步绘制
     function drawBody() {
+      const token = ++drawToken;
       body.innerHTML = '';
       nav.querySelectorAll('.settings-nav-item').forEach(el => el.classList.toggle('active', el.dataset.sid === current));
-      if (current === 'general') drawGeneral(body);
-      else if (current === 'appearance') drawAppearance(body);
-      else if (current === 'data') drawData(body);
-      else drawAboutSetting(body);
+      if (current === 'general') drawGeneral(body, token);
+      else if (current === 'appearance') drawAppearance(body, token);
+      else if (current === 'data') drawData(body, token);
+      else drawAboutSetting(body, token);
     }
     for (const s of sections) {
       const item = div('settings-nav-item', icon(s.icon), ' ' + s.name);
@@ -479,7 +488,7 @@
     page.appendChild(wrap);
     drawBody();
   }
-  async function drawGeneral(body) {
+  async function drawGeneral(body, token) {
     const row1 = div('set-row', div('', div('set-label', '开机自动启动'), div('set-desc', '登录 Windows 后自动运行核核工具箱')));
     try {
       const enabled = await invoke('app:get-autostart');
@@ -504,6 +513,7 @@
     });
     row3.appendChild(div('set-control', hkInput, ' ', hkBtn));
 
+    if (token !== undefined && token !== drawToken) return; // 分区已切换，丢弃过期绘制
     body.appendChild(row1); body.appendChild(row2); body.appendChild(row3);
   }
   function drawAppearance(body) {
@@ -567,13 +577,18 @@
       if (v !== isCollapsed) sidebarEl.querySelector('.collapse-btn').click();
     });
     const syncSide = () => sideSw.set(sidebarEl.classList.contains('collapsed'));
-    sidebarEl.addEventListener('transitionend', syncSide);
+    if (!drawAppearance._sideHandler) { // 稳定监听引用，避免反复进入本分区时累积
+      drawAppearance._sideHandler = () => { if (drawAppearance._lastSw) drawAppearance._lastSw.set(sidebarEl.classList.contains('collapsed')); };
+      sidebarEl.addEventListener('transitionend', drawAppearance._sideHandler);
+    }
+    drawAppearance._lastSw = sideSw;
     row2.appendChild(div('set-control', sideSw));
     body.appendChild(row2);
   }
-  async function drawData(body) {
+  async function drawData(body, token) {
     let userData = '(浏览器演示模式)';
     if (isDesktop) { try { userData = (await invoke('app:get-info')).userData; } catch (e) {} }
+    if (token !== undefined && token !== drawToken) return;
     body.appendChild(div('set-row', div('', div('set-label', '数据目录'), div('set-desc', '配置、收藏、剪贴板历史等全部保存在本机，不上传云端'), div('set-desc mono', userData)), div('set-control', btn('打开目录', 'btn-sm btn-secondary', async () => {
       if (!isDesktop) return toast('浏览器模式不可用', 'warn');
       try { await invoke('fs:open-path', userData); } catch (e) { toast(e.message, 'error'); }
@@ -588,8 +603,9 @@
     }))));
     body.appendChild(div('set-row', div('', div('set-label', '隐私承诺'), div('set-desc', '核核工具箱不收集任何操作日志与个人信息；联网功能仅在主动触发时执行；所有本地数据仅存于用户电脑'))));
   }
-  async function drawAboutSetting(body) {
+  async function drawAboutSetting(body, token) {
     const info = await invoke('app:get-info');
+    if (token !== undefined && token !== drawToken) return;
     body.appendChild(div('set-row', div('',
       h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' } },
         h('img', { src: 'assets/icon.png', style: { width: '44px', height: '44px', borderRadius: '10px' } }),

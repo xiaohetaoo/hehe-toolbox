@@ -91,7 +91,10 @@
       tip.textContent = v + ' px';
     });
     window.addEventListener('mouseup', () => { dragging = false; pendingMove = null; });
-    window.addEventListener('mouseleave', () => { tip.style.display = 'none'; dragging = false; pendingMove = null; });
+    // 指针甩出窗口/失焦时复位，避免拖拽状态卡死
+    document.addEventListener('mouseout', (e) => { if (!e.relatedTarget) { tip.style.display = 'none'; dragging = false; pendingMove = null; } });
+    window.addEventListener('blur', () => { dragging = false; pendingMove = null; });
+    window.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
 
     function closeRuler() {
       try { if (window.hehe) hehe.invoke('win:ruler:close').catch(() => {}); } catch (e) {}

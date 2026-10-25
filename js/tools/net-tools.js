@@ -36,7 +36,7 @@
           ]));
         }
         result.appendChild(card);
-      }).catch(e => { result.innerHTML = `<div class="field-err">${e.message}</div>`; });
+      }).catch(e => { result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; });
       function icon(n) { const t = document.createElement('span'); t.innerHTML = window.iconSvg(n); return t.firstChild; }
       page.appendChild(div('card', div('card-title', '公网 IP（需主动联网查询）'), pubBtn, ' ', pubEl));
       page.appendChild(result);
@@ -80,6 +80,8 @@
         running = true; sent = 0; recv = 0; latencies = [];
         term.innerHTML = ''; startBtn.disabled = true; stopBtn.disabled = false;
         jobId = await invoke('exec:stream', { command: 'ping', args: ['-t', host] });
+        if (unsubStream) try { unsubStream(); } catch (e) {}
+        if (unsubExit) try { unsubExit(); } catch (e) {}
         unsubStream = on('job:stream', (d) => {
           if (d.id !== jobId) return;
           const lines = String(d.data).split(/\r?\n/).filter(Boolean);
@@ -137,6 +139,8 @@
         term.innerHTML = ''; startBtn.disabled = true;
         const args = noDns.checked ? ['-d', '-h', '30', host] : ['-h', '30', host];
         jobId = await invoke('exec:stream', { command: 'tracert', args });
+        if (unsubStream) try { unsubStream(); } catch (e) {}
+        if (unsubExit) try { unsubExit(); } catch (e) {}
         unsubStream = on('job:stream', (d) => {
           if (d.id !== jobId) return;
           for (const line of String(d.data).split(/\r?\n/).filter(Boolean)) {
@@ -165,6 +169,7 @@
       const portIn = h('input', { class: 'input mono input-sm', placeholder: '端口号（留空显示全部监听）', style: { width: '220px' } });
       const result = div('');
       async function query() {
+        try {
         result.innerHTML = '';
         result.appendChild(window.ui.loadingBlock('查询 netstat…'));
         const r = await invoke('exec:run', { cmd: 'netstat -ano -p tcp', shellType: 'cmd', timeoutMs: 15000 });
@@ -204,6 +209,10 @@
         });
         result.appendChild(table);
         if (rows.length > 300) result.appendChild(div('field-hint', `共 ${rows.length} 条，仅显示前 300 条`));
+        } catch (e) {
+          result.innerHTML = '';
+          result.appendChild(div('field-err', '查询失败：' + (e && e.message ? e.message : e)));
+        }
       }
       page.appendChild(div('card', div('card-title', '查询'),
         div('form-row', portIn, btn('查询', 'btn-primary', query), h('span', { class: 'field-hint' }, 'Windows: netstat -ano'))));
@@ -314,7 +323,7 @@
           status.innerHTML = '<span class="status-ok">✓ 已保存并刷新 DNS 缓存</span>';
           toast('Hosts 已保存', 'success');
         } catch (e) {
-          status.innerHTML = `<span class="status-err">✗ ${e.message}</span><br><span class="field-hint">提示：修改 hosts 需要管理员权限，请以管理员身份运行核核工具箱后再试。</span>`;
+          status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span><br><span class="field-hint">提示：修改 hosts 需要管理员权限，请以管理员身份运行核核工具箱后再试。</span>`;
           toast('保存失败：' + e.message, 'error');
         }
       });
@@ -322,13 +331,14 @@
         try { const r = await invoke('hosts:backup'); toast('已备份：' + r.name, 'success'); } catch (e) { toast(e.message, 'error'); }
       });
       const restoreBtn = btn('从备份还原…', 'btn-sm btn-secondary', async () => {
-        const list = await invoke('hosts:backups');
-        if (!list.length) return toast('暂无备份', 'warn');
-        const p = await invoke('dialog:open', { defaultPath: list[0], properties: ['openFile'] });
-        if (!p || !p[0]) return;
-        if (!(await window.ui.confirmBox({ title: '还原 Hosts', message: '将用备份覆盖当前 hosts 文件，确定？' }))) return;
-        try { await invoke('hosts:restore', p[0]); toast('已还原', 'success'); load(); }
-        catch (e) { toast(e.message, 'error'); }
+        try {
+          const list = await invoke('hosts:backups');
+          if (!list.length) return toast('暂无备份', 'warn');
+          const p = await invoke('dialog:open', { defaultPath: list[0], properties: ['openFile'] });
+          if (!p || !p[0]) return;
+          if (!(await window.ui.confirmBox({ title: '还原 Hosts', message: '将用备份覆盖当前 hosts 文件，确定？' }))) return;
+          await invoke('hosts:restore', p[0]); toast('已还原', 'success'); load();
+        } catch (e) { toast(e.message, 'error'); }
       });
       page.appendChild(div('card', div('card-title', 'Hosts 文件', pathEl),
         div('form-row', saveBtn, bakBtn, restoreBtn),

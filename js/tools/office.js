@@ -197,7 +197,7 @@
             await invoke('fs:write-file-b64', `${outDir}/page-${String(i).padStart(3, '0')}.png`, b64);
             status.textContent = `渲染中… ${i}/${pdf.numPages}`;
           }
-          status.innerHTML = `<span class="status-ok">✓ 完成</span> 共 ${pdf.numPages} 页，输出目录 ${outDir}`;
+          status.innerHTML = `<span class="status-ok">✓ 完成</span> 共 ${pdf.numPages} 页，输出目录 ${escapeHtml(outDir)}`;
           toast('PDF 转图片完成', 'success');
         } catch (e) { status.textContent = '✗ ' + e.message; }
       }
@@ -292,7 +292,7 @@
           }
           toast('转换完成', r.results.some(x => x.ok) ? 'success' : 'error');
         } catch (e) {
-          status.innerHTML = `<span class="status-err">✗ ${e.message}</span>`;
+          status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
         } finally { startBtn.disabled = false; }
       }

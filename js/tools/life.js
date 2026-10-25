@@ -136,7 +136,9 @@
       const header = div('form-row');
       const grid = div('');
       const info = div('');
+      let drawSeq = 0; // 连续点 ‹/› 时丢弃过期的绘制，避免两份日历交错
       async function draw() {
+        const t = ++drawSeq;
         header.innerHTML = '';
         header.appendChild(btn('‹', 'btn-sm btn-secondary', () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } draw(); }));
         header.appendChild(h('span', { style: { fontWeight: 600, fontSize: '16px', minWidth: '140px', textAlign: 'center' } }, `${viewYear} 年 ${viewMonth + 1} 月`));
@@ -155,6 +157,7 @@
           let lunarText = '';
           try {
             const l = await invoke('lunar:s2l', viewYear, viewMonth + 1, d);
+            if (t !== drawSeq) return;
             lunarText = l.isTerm ? l.term : (l.lDay === 1 ? l.monthCn : l.dayCn);
           } catch (e) { lunarText = ''; }
           const isToday = d === today.getDate() && viewMonth === today.getMonth() && viewYear === today.getFullYear();
@@ -167,6 +170,7 @@
         }
         if (row.children.length) tbody.appendChild(row);
         table.appendChild(thead); table.appendChild(tbody);
+        if (t !== drawSeq) return;
         grid.appendChild(table);
       }
       async function showInfo(y, m, d) {
@@ -189,9 +193,11 @@
       const sIn = h('input', { type: 'date', class: 'input input-sm' });
       sIn.value = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
       const sBtn = btn('公历 → 农历', 'btn-sm btn-primary', async () => {
-        const [y, m, d] = sIn.value.split('-').map(Number);
-        const l = await invoke('lunar:s2l', y, m, d);
-        sOut.textContent = `${l.yearCn}年 ${l.monthCn}${l.dayCn}（${l.animal}年 · ${l.gzYear}${l.gzMonth}${l.gzDay}）`;
+        try {
+          const [y, m, d] = sIn.value.split('-').map(Number);
+          const l = await invoke('lunar:s2l', y, m, d);
+          sOut.textContent = `${l.yearCn}年 ${l.monthCn}${l.dayCn}（${l.animal}年 · ${l.gzYear}${l.gzMonth}${l.gzDay}）`;
+        } catch (e) { toast(e.message || String(e), 'error'); }
       });
       const sOut = h('span', { style: { userSelect: 'text' } }, '');
       const lY = h('input', { type: 'number', class: 'input input-sm', value: String(today.getFullYear()), style: { width: '90px' } });
@@ -243,6 +249,7 @@
             btn('删除', 'btn-sm btn-text', async () => {
               const items = await invoke('store:get', 'notes', []);
               const idx = items.findIndex(x => x.id === it.id);
+              if (idx < 0) { load(); return; } // 重复点击时条目已删，避免 splice(-1) 误删末条
               items.splice(idx, 1);
               await invoke('store:set', 'notes', items);
               load();

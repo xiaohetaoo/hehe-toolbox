@@ -30,7 +30,7 @@
         const heads = box.el.querySelectorAll('.pane-head');
         heads[0].firstChild.textContent = decodeMode ? 'Base64 输入' : '原文';
         heads[1].firstChild.textContent = decodeMode ? '解码结果' : 'Base64';
-        box.fire();
+        run(); // 用双向转换逻辑刷新，box.fire() 只会单向编码
       });
       const origConvert = box.fire;
       const opts = div('form-row', swapBtn);
@@ -45,7 +45,10 @@
             const bin = atob(b64);
             out.value = bytesToUtf8(Uint8Array.from(bin, c => c.charCodeAt(0)));
           } else {
-            out.value = btoa(String.fromCharCode(...utf8ToBytes(ta.value)));
+            const bytes = utf8ToBytes(ta.value);
+            let bin = '';
+            for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); // 分块避免参数上限
+            out.value = btoa(bin);
           }
           box.el.parentElement && null;
         } catch (e) { out.value = ''; }
@@ -196,6 +199,7 @@
         try {
           if (decode) {
             const clean = ta.value.replace(/0x/gi, '').replace(/\\x/g, '').replace(/[\s,]/g, '');
+            if (!clean) { out.value = ''; return; }
             if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2) throw new Error('无效的十六进制输入');
             const bytes = new Uint8Array(clean.match(/.{2}/g).map(x => parseInt(x, 16)));
             out.value = bytesToUtf8(bytes);

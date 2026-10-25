@@ -13,11 +13,14 @@
     render(page) {
       const body = div('');
       body.appendChild(window.ui.loadingBlock('读取硬件信息（首次约需 2-3 秒）…'));
+      let loadSeq = 0; // 快速连点刷新时丢弃过期加载
       async function load(force) {
+        const t = ++loadSeq;
         body.innerHTML = '';
         body.appendChild(window.ui.loadingBlock('读取硬件信息（首次约需 2-3 秒）…'));
         try {
           const info = await invoke('sys:hw-info', !!force);
+          if (t !== loadSeq) return;
           body.innerHTML = '';
           body.appendChild(sectionCard('🖥 处理器 CPU', [
             ['型号', info.cpu.Name], ['物理核心', info.cpu.NumberOfCores], ['逻辑核心', info.cpu.NumberOfLogicalProcessors],
@@ -48,6 +51,7 @@
             ];
             try {
               const bat = await invoke('sys:battery-detail');
+              if (t !== loadSeq) return;
               if (bat && bat.designCap) {
                 batRows.push(['设计容量', bat.designCap + ' mWh']);
                 batRows.push(['当前满充容量', bat.fullCap + ' mWh']);
@@ -60,7 +64,9 @@
             body.appendChild(sectionCard('🌡 温度', info.temps.map(t => [t.name, t.celsius + ' °C'])));
           }
         } catch (e) {
-          body.innerHTML = `<div class="field-err">✗ ${e.message}</div>`;
+          if (t !== loadSeq) return;
+          body.innerHTML = '';
+          body.appendChild(div('field-err', '✗ ' + (e && e.message ? e.message : e)));
         }
       }
       function fmtTimeDur(s) {

@@ -202,10 +202,10 @@
         try {
           const fn = mode === 'encrypt' ? 'fs:encrypt-file' : 'fs:decrypt-file';
           const r = await invoke(fn, filePath, out, pwdIn.value);
-          status.innerHTML = `<span class="status-ok">✓ 完成</span> 输出：${r.outPath}（${fmtBytes(r.size)}）`;
+          status.innerHTML = `<span class="status-ok">✓ 完成</span> 输出：${escapeHtml(r.outPath)}（${fmtBytes(r.size)}）`;
           toast(mode === 'encrypt' ? '加密完成' : '解密完成', 'success');
         } catch (e) {
-          status.innerHTML = `<span class="status-err">✗ ${e.message}</span>`;
+          status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
         } finally { prog.hide(); unsub(); }
       }
@@ -258,9 +258,9 @@
             const unsub = window.api.on('job:progress', (d) => { if (d.id === spFile) spProg.set(d.done / d.total * 100); });
             try {
               const r = await invoke('fs:split-file', spFile, parseInt(sizeIn.value) || 10, outDir);
-              spStatus.innerHTML = `<span class="status-ok">✓ 分割完成</span>：${r.parts} 个分片，输出目录 ${r.outDir}`;
+              spStatus.innerHTML = `<span class="status-ok">✓ 分割完成</span>：${r.parts} 个分片，输出目录 ${escapeHtml(r.outDir)}`;
               toast('分割完成', 'success');
-            } catch (e) { spStatus.innerHTML = `<span class="status-err">✗ ${e.message}</span>`; }
+            } catch (e) { spStatus.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; }
             finally { spProg.hide(); unsub(); }
           })),
         spProg.el, spStatus));
@@ -279,9 +279,9 @@
           const unsub = window.api.on('job:progress', (d) => mgProg.set(d.total ? d.done / d.total * 100 : 0));
           try {
             const r = await invoke('fs:merge-parts', mgFile);
-            mgStatus.innerHTML = `<span class="status-ok">✓ 合并完成</span>：${r.outPath}（${fmtBytes(r.size)}，${r.parts} 片）`;
+            mgStatus.innerHTML = `<span class="status-ok">✓ 合并完成</span>：${escapeHtml(r.outPath)}（${fmtBytes(r.size)}，${r.parts} 片）`;
             toast('合并完成', 'success');
-          } catch (e) { mgStatus.innerHTML = `<span class="status-err">✗ ${e.message}</span>`; }
+          } catch (e) { mgStatus.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; }
           finally { mgProg.hide(); unsub(); }
         })),
         mgProg.el, mgStatus));
@@ -380,15 +380,15 @@
       const zipName = h('input', { class: 'input input-sm', placeholder: '输出 zip 路径（留空自动命名）', style: { flex: '1' } });
       const cBtn = btn('压缩', 'btn-primary', async () => {
         if (!cPaths.length) return toast('请选择文件', 'warn');
-        let out = zipName.value.trim();
-        if (!out) {
-          const first = cPaths[0];
-          const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/')) : first.slice(0, first.lastIndexOf('\\'));
-          out = await invoke('fs:unique-path', dir + '/archive.zip');
-        } else {
-          out = await invoke('fs:unique-path', out.endsWith('.zip') ? out : out + '.zip');
-        }
         try {
+          let out = zipName.value.trim();
+          if (!out) {
+            const first = cPaths[0];
+            const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/')) : first.slice(0, first.lastIndexOf('\\'));
+            out = await invoke('fs:unique-path', dir + '/archive.zip');
+          } else {
+            out = await invoke('fs:unique-path', out.endsWith('.zip') ? out : out + '.zip');
+          }
           const r = await invoke('zip:compress', cPaths, out);
           toast('压缩完成：' + fmtBytes(r.size), 'success');
         } catch (e) { toast(e.message, 'error'); }

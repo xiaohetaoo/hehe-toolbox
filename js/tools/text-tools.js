@@ -32,7 +32,6 @@
           h('span', { class: 'form-label', style: { minWidth: 'auto', marginLeft: '10px' } }, '合并分隔符'), joinIn,
           btn('合并为一行', 'btn-secondary btn-sm', () => {
             const j = joinIn.value.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-            out.value = out.value ? out.value : ta.value;
             apply(lines => [lines.join(j)]);
           }),
           btn('按分隔符拆分', 'btn-secondary btn-sm', async () => {
@@ -44,8 +43,9 @@
       page.appendChild(div('card', div('card-title', '结果', h('span', { class: 'pane-count', id: 'tb-count' })), out,
         div('form-row', btn('复制结果', 'btn-secondary btn-sm', () => copyText(out.value)), btn('替换输入', 'btn-secondary btn-sm', () => { ta.value = out.value; out.value = ''; updateCount(); }))));
       function apply(fn) {
-        if (!ta.value) return toast('请先输入文本', 'warn');
-        const result = fn(ta.value.split(/\r?\n/));
+        const src = out.value ? out.value : ta.value; // 有上次结果时基于其叠加执行
+        if (!src) return toast('请先输入文本', 'warn');
+        const result = fn(src.split(/\r?\n/));
         out.value = result.join('\n');
         updateCount();
       }

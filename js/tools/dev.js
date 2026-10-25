@@ -156,6 +156,7 @@
           }
           function onKey(e) { if (e.key === 'Escape') cleanup(); }
           function cleanup() { mask.remove(); mag.remove(); info.remove(); document.removeEventListener('mousemove', onMove); document.removeEventListener('keydown', onKey); mask.removeEventListener('click', onClick); }
+          if (window.App && App.onCleanup) App.onCleanup(cleanup); // 切页时清理取色覆盖层
           mask.addEventListener('mousemove', onMove);
           mask.addEventListener('click', onClick);
           document.addEventListener('keydown', onKey);
@@ -284,12 +285,12 @@
         const method = methodSel.value;
         try {
           const r = await invoke('net:http', { method, url, headers, body: bodyTa.value, timeoutMs: 30000 });
-          respStatus.innerHTML = `<span class="${r.status < 400 ? 'status-ok' : 'status-err'}">${r.status} ${r.statusText}</span> · ${r.ms}ms · ${fmtBytes(r.bytes)}`;
+          respStatus.innerHTML = `<span class="${r.status < 400 ? 'status-ok' : 'status-err'}">${r.status} ${escapeHtml(r.statusText)}</span> · ${r.ms}ms · ${fmtBytes(r.bytes)}`;
           let text = r.body;
           try { text = JSON.stringify(JSON.parse(r.body), null, 2); } catch (e) {}
           respTa.value = text;
         } catch (e) {
-          respStatus.innerHTML = `<span class="status-err">✗ ${e.message}</span>`;
+          respStatus.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           respTa.value = '';
         }
       }
@@ -324,7 +325,7 @@
         try {
           const r = await invoke('server:start', dirIn.value.trim(), parseInt(portIn.value) || 8128);
           running = true;
-          statusEl.innerHTML = `<span class="status-ok">● 运行中</span> <a href="#" id="srv-link" style="color:var(--primary)">${r.url}</a>`;
+          statusEl.innerHTML = `<span class="status-ok">● 运行中</span> <a href="#" id="srv-link" style="color:var(--primary)">${escapeHtml(r.url)}</a>`;
           statusEl.querySelector('#srv-link').addEventListener('click', (e) => { e.preventDefault(); invoke('shell:open-url', r.url); });
           startBtn.disabled = true; stopBtn.disabled = false;
         } catch (e) { toast(e.message, 'error'); }
@@ -373,11 +374,13 @@
       `);
       function renderMd() {
         if (!window.marked) { view.innerHTML = '<span class="field-err">marked 库未加载</span>'; return; }
-        try { view.innerHTML = window.marked.parse(ta.value || ''); }
-        catch (e) { view.innerHTML = '<span class="field-err">' + e.message + '</span>'; }
+        try { view.innerHTML = window.DOMPurify ? DOMPurify.sanitize(window.marked.parse(ta.value || '')) : window.marked.parse(ta.value || ''); }
+        catch (e) { view.innerHTML = '<span class="field-err">' + escapeHtml(e.message) + '</span>'; }
       }
       async function exportHtml() {
-        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Markdown</title></head><body style="max-width:800px;margin:40px auto;font-family:'Microsoft YaHei',sans-serif;line-height:1.7">${view.innerHTML}</body></html>`;
+        // 导出的 HTML 无 CSP 保护，必须净化防止存储型 XSS
+        const safe = window.DOMPurify ? DOMPurify.sanitize(view.innerHTML) : view.innerHTML;
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Markdown</title></head><body style="max-width:800px;margin:40px auto;font-family:'Microsoft YaHei',sans-serif;line-height:1.7">${safe}</body></html>`;
         const p = await invoke('dialog:save', { defaultPath: 'document.html' });
         if (!p) return;
         await invoke('fs:write-text', p, html);

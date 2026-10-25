@@ -5,7 +5,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
 const crypto = require('crypto');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, spawnSync } = require('child_process');
 const http = require('http');
 const zlib = require('zlib');
 const AdmZip = require('adm-zip');
@@ -31,9 +31,16 @@ function loadStore() {
 }
 function saveStore() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try { fs.writeFileSync(storeFile(), JSON.stringify(storeData, null, 2)); } catch (e) { console.error('store save failed', e); }
-  }, 200);
+  saveTimer = setTimeout(flushStore, 200);
+}
+function flushStore() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  try {
+    const tmp = storeFile() + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(storeData, null, 2));
+    fs.renameSync(tmp, storeFile()); // 原子替换，避免断电/崩溃截断数据
+  } catch (e) { console.error('store save failed', e); }
 }
 function storeGet(key, def) {
   const parts = String(key).split('.');
@@ -71,8 +78,8 @@ function runCmd(cmd, args, opts = {}) {
   });
 }
 // Windows PowerShell 输出默认是 OEM 代码页（GBK），强制其以 UTF-8 输出，避免中文乱码
-function ps(script, timeout = 30000) {
-  return runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + script], { timeout, encoding: 'utf8' });
+function ps(script, timeout = 30000, cwd) {
+  return runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + script], { timeout, encoding: 'utf8', cwd });
 }
 
 /* ---------------- window ---------------- */
@@ -105,7 +112,7 @@ function createWindow() {
   win.on('maximize', () => send('win:maximized', true));
   win.on('unmaximize', () => send('win:maximized', false));
   win.on('close', (e) => {
-    if (!isQuitting && storeGet('settings.closeToTray', true) && Tray) {
+    if (!isQuitting && storeGet('settings.closeToTray', true) && tray) {
       e.preventDefault(); win.hide();
     }
   });
@@ -136,14 +143,18 @@ function createTray() {
 /* ---------------- global hotkey ---------------- */
 let currentHotkey = null;
 function applyHotkey(acc) {
+  if (!acc) {
+    try { if (currentHotkey) globalShortcut.unregister(currentHotkey); } catch (e) {}
+    currentHotkey = null;
+    return true;
+  }
+  if (acc === currentHotkey) return true;
+  let ok = false;
+  try { ok = globalShortcut.register(acc, () => { showMainWindow(); send('hotkey:pressed', acc); }); } catch (e) { ok = false; }
+  if (!ok) return false; // 新键注册失败时保留旧热键
   try { if (currentHotkey) globalShortcut.unregister(currentHotkey); } catch (e) {}
-  currentHotkey = null;
-  if (!acc) return true;
-  try {
-    const ok = globalShortcut.register(acc, () => { showMainWindow(); send('hotkey:pressed', acc); });
-    if (ok) currentHotkey = acc;
-    return ok;
-  } catch (e) { return false; }
+  currentHotkey = acc;
+  return true;
 }
 
 /* ---------------- cpu sampler ---------------- */
@@ -216,7 +227,12 @@ const TEXT_LIMIT = 8 * 1024 * 1024, BIN_LIMIT = 64 * 1024 * 1024;
 handle('fs:read-text', async (e, p) => {
   const st = await fsp.stat(p);
   if (st.size > TEXT_LIMIT) throw new Error('文件超过 8MB，请使用文本分批读取或文件处理工具');
-  return { content: await fsp.readFile(p, 'utf8'), size: st.size };
+  const buf = await fsp.readFile(p);
+  let content = buf.toString('utf8');
+  if (content.includes('\uFFFD')) {
+    try { content = new TextDecoder('gbk').decode(buf); } catch (err) {}
+  }
+  return { content, size: st.size };
 });
 handle('fs:write-text', async (e, p, content) => { await fsp.writeFile(p, content, 'utf8'); return true; });
 handle('fs:read-file-b64', async (e, p) => {
@@ -449,41 +465,39 @@ handle('fs:hash-text', (e, text, algo = 'sha256') => {
 
 const ENC_MAGIC = Buffer.from('HEHEENC1');
 function deriveKey(password, salt) { return crypto.scryptSync(password, salt, 32, { N: 16384, r: 8, p: 1 }); }
-function cryptStream(p, outPath, password, decrypt) {
-  return new Promise(async (resolve, reject) => {
-    const st = fs.statSync(p);
-    const ws = fs.createWriteStream(outPath);
-    const fail = (err) => { try { ws.destroy(); } catch (e) {} reject(err); };
-    ws.on('error', fail);
-    let srcStart = 0;
-    const cipherOpts = {};
-    if (!decrypt) {
-      const salt = crypto.randomBytes(16), iv = crypto.randomBytes(16);
-      ws.write(ENC_MAGIC); ws.write(salt); ws.write(iv);
-      cipherOpts.cipher = crypto.createCipheriv('aes-256-cbc', deriveKey(password, salt), iv);
-    } else {
-      // 先读取 40 字节文件头，再从第 40 字节起进入解密管道
-      const fd = await new Promise((res, rej) => fs.open(p, 'r', (err, f) => err ? rej(err) : res(f)));
-      try {
-        const head = Buffer.alloc(40);
-        await new Promise((res, rej) => fs.read(fd, head, 0, 40, 0, (err) => err ? rej(err) : res()));
-        fs.close(fd, () => {});
-        if (!head.subarray(0, 8).equals(ENC_MAGIC)) { fail(new Error('不是有效的核核加密文件（缺少文件头）')); return; }
-        const salt = head.subarray(8, 24), iv = head.subarray(24, 40);
-        cipherOpts.cipher = crypto.createDecipheriv('aes-256-cbc', deriveKey(password, salt), iv);
-        srcStart = 40;
-      } catch (err) { try { fs.close(fd, () => {}); } catch (e) {} fail(err.message.includes('bad decrypt') ? new Error('解密失败：密码错误或文件已损坏') : err); return; }
-    }
-    const cipher = cipherOpts.cipher;
-    cipher.on('error', (err) => fail(decrypt ? new Error('解密失败：密码错误或文件已损坏') : err));
-    const rs = fs.createReadStream(p, { highWaterMark: 1 << 20, start: srcStart });
-    let done = 0;
-    const total = Math.max(1, st.size - srcStart);
-    rs.on('data', (chunk) => { done += chunk.length; send('job:progress', { id: p, done, total }); });
-    rs.on('error', fail);
-    rs.pipe(cipher).pipe(ws);
-    ws.on('finish', () => resolve({ outPath, size: fs.statSync(outPath).size }));
-  });
+async function cryptStream(p, outPath, password, decrypt) {
+  const st = await fsp.stat(p);
+  if (path.resolve(p) === path.resolve(outPath)) throw new Error('输出路径不能与源文件相同');
+  let srcStart = 0, cipher, header = null;
+  if (!decrypt) {
+    const salt = crypto.randomBytes(16), iv = crypto.randomBytes(16);
+    header = Buffer.concat([ENC_MAGIC, salt, iv]);
+    cipher = crypto.createCipheriv('aes-256-cbc', deriveKey(password, salt), iv);
+  } else {
+    // 先读取 40 字节文件头，再从第 40 字节起进入解密管道
+    const fh = await fsp.open(p, 'r');
+    const head = Buffer.alloc(40);
+    try { await fh.read(head, 0, 40, 0); } finally { await fh.close().catch(() => {}); }
+    if (!head.subarray(0, 8).equals(ENC_MAGIC)) throw new Error('不是有效的核核加密文件（缺少文件头）');
+    cipher = crypto.createDecipheriv('aes-256-cbc', deriveKey(password, head.subarray(8, 24)), head.subarray(24, 40));
+    srcStart = 40;
+  }
+  const rs = fs.createReadStream(p, { highWaterMark: 1 << 20, start: srcStart });
+  const ws = fs.createWriteStream(outPath);
+  if (header) ws.write(header);
+  let done = 0;
+  const total = Math.max(1, st.size - srcStart);
+  rs.on('data', (chunk) => { done += chunk.length; send('job:progress', { id: p, done, total }); });
+  try {
+    await new Promise((resolve, reject) => {
+      require('stream').pipeline(rs, cipher, ws, (err) => (err ? reject(err) : resolve()));
+    });
+  } catch (err) {
+    try { fs.rmSync(outPath, { force: true }); } catch (e) {}
+    if (decrypt && /bad decrypt|BAD_DECRYPT|wrong final block/.test(String(err.message))) throw new Error('解密失败：密码错误或文件已损坏');
+    throw err;
+  }
+  return { outPath, size: (await fsp.stat(outPath)).size };
 }
 handle('fs:encrypt-file', async (e, p, outPath, password) => {
   if (!password) throw new Error('请输入密码');
@@ -502,15 +516,19 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
   await fsp.mkdir(outDir, { recursive: true });
   await new Promise((resolve, reject) => {
     const rs = fs.createReadStream(p, { highWaterMark: 1 << 20 });
-    let idx = 1, ws = null, done = 0;
+    let idx = 1, ws = null, done = 0, pausedFor = null;
     const openPart = () => { ws = fs.createWriteStream(path.join(outDir, `${base}.part${String(idx).padStart(pad, '0')}`)); };
     openPart();
     rs.on('data', (chunk) => {
       let off = 0;
       while (off < chunk.length) {
-        if (ws.bytesWritten >= chunkSize) { ws.end(); idx++; openPart(); }
+        if (ws.bytesWritten >= chunkSize) { ws.end(); idx++; openPart(); if (pausedFor && pausedFor !== ws) { pausedFor = null; rs.resume(); } }
         const n = Math.min(chunk.length - off, chunkSize - ws.bytesWritten);
-        ws.write(chunk.subarray(off, off + n)); off += n;
+        const piece = chunk.subarray(off, off + n); off += n;
+        if (!ws.write(piece)) { // 背压：慢盘上防止内存无界堆积
+          pausedFor = ws; rs.pause();
+          ws.once('drain', () => { if (pausedFor === ws) { pausedFor = null; rs.resume(); } });
+        }
       }
       done += chunk.length; send('job:progress', { id: p, done, total: st.size });
     });
@@ -587,13 +605,19 @@ handle('fs:dedupe', async (e, root, opts = {}) => {
       const quick = new Map();
       for (const group of candidates) {
         for (const f of group) {
-          const fd = fs.openSync(f, 'r');
-          const len = Math.min(8192, fs.fstatSync(fd).size);
-          const buf = Buffer.alloc(len * 2);
-          fs.readSync(fd, buf, 0, len, 0);
-          fs.readSync(fd, buf, len, len, -len);
-          fs.closeSync(fd);
-          const k = crypto.createHash('md5').update(buf).digest('hex');
+          if (cancelRef.canceled) throw new Error('已取消');
+          let k = 'err' + f;
+          try {
+            const fd = fs.openSync(f, 'r');
+            try {
+              const sz = fs.fstatSync(fd).size;
+              const len = Math.min(8192, sz);
+              const buf = Buffer.alloc(len * 2);
+              fs.readSync(fd, buf, 0, len, 0);
+              fs.readSync(fd, buf, len, len, Math.max(0, sz - len));
+            } finally { fs.closeSync(fd); }
+            k = crypto.createHash('md5').update(buf).digest('hex');
+          } catch (err) { /* 文件被删/锁定：跳过快筛 */ }
           if (!quick.has(k)) quick.set(k, []);
           quick.get(k).push(f);
         }
@@ -644,7 +668,7 @@ handle('zip:extract', async (e, zipPath, outDir) => {
 
 /* ================= IPC: exec / process ================= */
 handle('exec:run', async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
-  if (shellType === 'ps') return await ps(cmd, timeoutMs || 30000);
+  if (shellType === 'ps') return await ps(cmd, timeoutMs || 30000, cwd);
   if (shellType === 'cmd') {
     return await runCmd('cmd.exe', ['/c', cmd], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk' });
   }
@@ -866,7 +890,7 @@ handle('server:start', async (e, root, port) => {
       let urlPath = decodeURIComponent(req.url.split('?')[0]);
       const absRoot = path.resolve(root);
       let fp = path.resolve(path.join(absRoot, urlPath));
-      if (!fp.startsWith(absRoot)) { res.writeHead(403); res.end('403'); return; }
+      if (fp !== absRoot && !fp.startsWith(absRoot + path.sep)) { res.writeHead(403); res.end('403'); return; }
       let st = await fsp.stat(fp).catch(() => null);
       if (st && st.isDirectory()) { fp = path.join(fp, 'index.html'); st = await fsp.stat(fp).catch(() => null); }
       if (!st) {
@@ -875,11 +899,13 @@ handle('server:start', async (e, root, port) => {
         return;
       }
       res.writeHead(200, { 'Content-Type': MIME[path.extname(fp).toLowerCase()] || 'application/octet-stream', 'Content-Length': st.size });
-      fs.createReadStream(fp).pipe(res);
+      const stream = fs.createReadStream(fp);
+      stream.on('error', () => { try { res.destroy(); } catch (e) {} });
+      stream.pipe(res);
       send('server:log', { time: Date.now(), text: `200  ${req.method} ${urlPath}  ${st.size}B` });
     } catch (err) { res.writeHead(500); res.end('500'); }
   });
-  await new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(p, () => resolve()); });
+  await new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(p, '127.0.0.1', () => resolve()); });
   serverMap.set('s', srv);
   return { port: p, url: `http://127.0.0.1:${p}` };
 });
@@ -926,7 +952,7 @@ $tmp = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperat
   const info = {
     cpu: maybeParse(j.cpu) || {},
     board: j.board || {}, bios: j.bios || {},
-    gpu: norm(j.gpu), disks: norm(j.dd),
+    gpu: norm(j.gpu), disks: norm(j.disks),
     os: j.os || {}, nic: norm(j.nic).filter(n => n.Name),
     battery: j.battery || null,
     temps: norm(j.temps).filter(t => t.CurrentTemperature).map(t => ({ name: t.InstanceName, celsius: Math.round((t.CurrentTemperature / 10 - 273.15) * 10) / 10 })),
@@ -1106,7 +1132,7 @@ function findFfmpeg() {
   if (custom && fs.existsSync(custom)) return custom;
   if (fs.existsSync(path.join(binDir(), 'ffmpeg.exe'))) return path.join(binDir(), 'ffmpeg.exe');
   try {
-    const r = runCmd('where', ['ffmpeg'], { timeout: 5000 });
+    const r = spawnSync('where', ['ffmpeg'], { windowsHide: true, timeout: 5000, encoding: 'utf8' });
     const p = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('ffmpeg.exe'));
     if (p) return p.trim();
   } catch (e) {}
@@ -1119,7 +1145,7 @@ function findFfprobe() {
   if (sameDir && fs.existsSync(sameDir)) return sameDir;
   if (fs.existsSync(path.join(binDir(), 'ffprobe.exe'))) return path.join(binDir(), 'ffprobe.exe');
   try {
-    const r = runCmd('where', ['ffprobe'], { timeout: 5000 });
+    const r = spawnSync('where', ['ffprobe'], { windowsHide: true, timeout: 5000, encoding: 'utf8' });
     const p = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('ffprobe.exe'));
     if (p) return p.trim();
   } catch (e) {}
@@ -1194,7 +1220,7 @@ function downloadToFile(url, dest, id, ctrl, label) {
           if (done) { ws.end(() => res()); return; }
           got += value.length;
           if (!ws.write(Buffer.from(value))) {
-            await new Promise((res2) => ws.once('drain', res2));
+            await new Promise((res2, rej2) => { ws.once('drain', res2); ws.once('error', rej2); });
           }
           emit();
         }
@@ -1320,7 +1346,7 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
       if (!isAudioOut) {
         if (opts.vcodec === 'copy') args.push('-c:v', 'copy');
         else if (opts.format === 'webm') { args.push('-c:v', 'libvpx-vp9', '-crf', String(opts.crf || 34), '-b:v', '0', '-row-mt', '1'); }
-        else if (opts.format === 'gif') { args.push('-vf', `fps=${opts.fps || 12},scale=${opts.gifWidth || 480}:-2:flags=lanczos`); }
+        else if (opts.format === 'gif') { args.push('-an', '-vf', `fps=${opts.fps || 12},scale=${opts.gifWidth || 480}:-2:flags=lanczos`); }
         else { args.push('-c:v', opts.vcodec === 'libx265' ? 'libx265' : 'libx264', '-crf', String(opts.crf || 23), '-preset', 'veryfast'); if (opts.scale) args.push('-vf', `scale=${opts.scale}:-2`); if (opts.fps) args.push('-r', String(opts.fps)); if (opts.format === 'mp4') args.push('-movflags', '+faststart'); }
       }
       args.push('-progress', 'pipe:1', out);
@@ -1349,6 +1375,72 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
   return { results, canceled: state.cancel };
 });
 
+/* 视频压制：重编码瘦身（预设/CRF/编码速度/分辨率/音频码率/去元数据） */
+handle('ffmpeg:press', async (e, { items, outDir, opts }) => {
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  const id = 'prs' + (++jobSeq);
+  const state = { cancel: false, proc: null };
+  const killProc = () => { try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {} if (isWin && state.proc && state.proc.pid) spawn('taskkill', ['/pid', String(state.proc.pid), '/t', '/f'], { windowsHide: true }); };
+  jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
+  latestCancelable = () => { state.cancel = true; killProc(); };
+  await fsp.mkdir(outDir, { recursive: true });
+  const results = [];
+  try {
+    for (let i = 0; i < items.length; i++) {
+      if (state.cancel) break;
+      const input = items[i];
+      const base = path.basename(input).replace(/\.[^.]+$/, '');
+      let out = path.join(outDir, `${base}_pressed.mp4`);
+      for (let k = 1; fs.existsSync(out); k++) out = path.join(outDir, `${base}_pressed(${k}).mp4`);
+      let dur = 0;
+      try {
+        const ffprobe = findFfprobe();
+        if (ffprobe) {
+          const r = await runCmd(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', input], { timeout: 15000 });
+          dur = parseFloat((JSON.parse(r.stdout).format || {}).duration) || 0;
+        }
+      } catch (err) {}
+      const args = ['-hide_banner', '-y', '-nostats', '-i', input,
+        '-c:v', opts.vcodec === 'libx265' ? 'libx265' : 'libx264',
+        '-crf', String(opts.crf || 23),
+        '-preset', String(opts.preset || 'veryfast'),
+        '-pix_fmt', 'yuv420p'];
+      if (opts.vcodec === 'libx265') args.push('-tag:v', 'hvc1');
+      if (opts.scale) args.push('-vf', `scale=${opts.scale}:-2`);
+      if (opts.fps) args.push('-r', String(opts.fps));
+      if (opts.stripMeta !== false) args.push('-map_metadata', '-1');
+      if (opts.audio === 'mute') args.push('-an');
+      else if (opts.audio === 'copy') args.push('-c:a', 'copy');
+      else args.push('-c:a', 'aac', '-b:a', opts.audio === '96k' ? '96k' : '128k');
+      args.push('-movflags', '+faststart', '-progress', 'pipe:1', out);
+      send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), stage: 'start' }) });
+      const r = await new Promise((resolve) => {
+        const proc = spawn(ffmpeg, args, { windowsHide: true });
+        state.proc = proc;
+        let lastPct = 0, errOut = '';
+        proc.stdout.on('data', (d) => {
+          const m = String(d).match(/out_time_us=(\d+)/);
+          if (m && dur > 0) {
+            lastPct = Math.min(99, parseInt(m[1]) / 1e6 / dur * 100);
+            send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: lastPct }) });
+          }
+        });
+        proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
+        proc.on('exit', (code) => resolve({ code, errOut }));
+        proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
+      });
+      if (state.cancel) { results.push({ input, out: null, ok: false, err: '已取消' }); break; }
+      const ok = r.code === 0 && fs.existsSync(out);
+      let inSize = 0, outSize = 0;
+      try { inSize = fs.statSync(input).size; if (ok) outSize = fs.statSync(out).size; } catch (err) {}
+      results.push({ input, out: ok ? out : null, ok, inSize, outSize, err: ok ? '' : (r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code)) });
+      send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok }) });
+    }
+  } finally { jobs.delete(id); }
+  return { results, canceled: state.cancel };
+});
+
 /* ================= IPC: Office 文档转换（LibreOffice / Office COM 双引擎） ================= */
 function findSoffice() {
   const candidates = [
@@ -1358,7 +1450,7 @@ function findSoffice() {
   ];
   for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch (err) {} }
   try {
-    const r = runCmd('where', ['soffice'], { timeout: 5000 });
+    const r = spawnSync('where', ['soffice'], { windowsHide: true, timeout: 5000, encoding: 'utf8' });
     const p = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('soffice.exe'));
     if (p) return p.trim();
   } catch (err) {}
@@ -1367,7 +1459,7 @@ function findSoffice() {
 handle('office:status', async () => {
   const soffice = findSoffice();
   let office = false;
-  try { await runCmd('powershell.exe', ['-NoProfile', '-Command', 'try{New-Object -ComObject Word.Application|Out-Null;exit 0}catch{exit 1}'], { timeout: 20000 }); office = true; } catch (err) {}
+  try { await runCmd('powershell.exe', ['-NoProfile', '-Command', 'try{$w=New-Object -ComObject Word.Application;$w.Quit();exit 0}catch{exit 1}'], { timeout: 20000 }); office = true; } catch (err) {}
   return { soffice, office };
 });
 handle('office:convert', async (e, { files, target, outDir }) => {
@@ -1397,13 +1489,13 @@ handle('office:convert', async (e, { files, target, outDir }) => {
       let script = '';
       const inP = f.replace(/'/g, "''"), outP = out.replace(/'/g, "''");
       if (isInPdf && target === 'docx') {
-        script = `$w=New-Object -ComObject Word.Application;$w.Visible=$false;$w.DisplayAlerts=0;$d=$w.Documents.Open('${inP}',$false,$true);$d.SaveAs2('${outP}',16);$d.Close($false);$w.Quit();[Console]::WriteLine('OK')`;
+        script = `$w=New-Object -ComObject Word.Application;$w.Visible=$false;$w.DisplayAlerts=0;try{$d=$w.Documents.Open('${inP}',$false,$true);$d.SaveAs2('${outP}',16);$d.Close($false);[Console]::WriteLine('OK')}finally{$w.Quit()}`;
       } else if (isMsDoc && target === 'pdf') {
-        script = `$w=New-Object -ComObject Word.Application;$w.Visible=$false;$w.DisplayAlerts=0;$d=$w.Documents.Open('${inP}',$false,$true);$d.SaveAs2('${outP}',17);$d.Close($false);$w.Quit();[Console]::WriteLine('OK')`;
+        script = `$w=New-Object -ComObject Word.Application;$w.Visible=$false;$w.DisplayAlerts=0;try{$d=$w.Documents.Open('${inP}',$false,$true);$d.SaveAs2('${outP}',17);$d.Close($false);[Console]::WriteLine('OK')}finally{$w.Quit()}`;
       } else if (isMsXls && target === 'pdf') {
-        script = `$e=New-Object -ComObject Excel.Application;$e.Visible=$false;$e.DisplayAlerts=$false;$b=$e.Workbooks.Open('${inP}',0,$true);$b.ExportAsFixedFormat(0,'${outP}');$b.Close($false);$e.Quit();[Console]::WriteLine('OK')`;
+        script = `$e=New-Object -ComObject Excel.Application;$e.Visible=$false;$e.DisplayAlerts=$false;try{$b=$e.Workbooks.Open('${inP}',0,$true);$b.ExportAsFixedFormat(0,'${outP}');$b.Close($false);[Console]::WriteLine('OK')}finally{$e.Quit()}`;
       } else if (isMsPpt && target === 'pdf') {
-        script = `$p=New-Object -ComObject PowerPoint.Application;$pres=$p.Presentations.Open('${inP}',$true,$false,$false);$pres.SaveAs('${outP}',32);$pres.Close();$p.Quit();[Console]::WriteLine('OK')`;
+        script = `$p=New-Object -ComObject PowerPoint.Application;try{$pres=$p.Presentations.Open('${inP}',$true,$false,$false);$pres.SaveAs('${outP}',32);$pres.Close();[Console]::WriteLine('OK')}finally{$p.Quit()}`;
       } else {
         results.push({ input: f, out: null, ok: false, err: `COM 引擎不支持 ${ext} → ${target}（安装 LibreOffice 可支持更多格式）` });
         continue;
@@ -1437,11 +1529,13 @@ handle('ctxmenu:list', async () => {
       for (const raw of r.stdout.split(/\r?\n/)) {
         const line = raw.replace(/\s+$/, '');
         if (/^HKEY_CLASSES_ROOT/i.test(line)) {
-          const sub = line.slice(key.length + 1).replace(/^\\/, '');
+          // reg 输出使用全称 HKEY_CLASSES_ROOT\...，而 CTX_ROOTS 里是 HKCR 短名；按全称前缀截取
+          const rootFull = key.replace(/^HKCR/i, 'HKEY_CLASSES_ROOT');
+          const sub = line.slice(rootFull.length).replace(/^\\/, '');
           if (sub && !sub.includes('\\')) {
             cur = { key, keyPath: line, name: sub, display: '', command: '', disabled: false, hasCommand: false };
             items.push(cur);
-          } else if (cur && sub === 'command') cur.hasCommand = true;
+          } else if (cur && sub === cur.name + '\\command') cur.hasCommand = true;
           continue;
         }
         const m = line.match(/^\s{4}(.+?)\s{2,4}REG_(\S+)\s*(.*)$/);
@@ -1497,8 +1591,7 @@ if (!gotLock) { app.quit(); } else {
     createTray();
     nativeTheme.themeSource = storeGet('settings.theme', 'system');
     applyHotkey(storeGet('settings.hotkey', 'Alt+Shift+H'));
-    // 离屏截图诊断（HEHE_SHOT=1 启用；HEHE_OPEN=id1,id2 依次打开工具并截图，不影响正常使用）
-    if (process.env.HEHE_SHOT) {
+if (process.env.HEHE_SHOT) {
       setTimeout(async () => {
         try {
           if (win && !win.isDestroyed()) {
@@ -1534,7 +1627,7 @@ if (!gotLock) { app.quit(); } else {
     }
   });
   app.on('before-quit', () => { isQuitting = true; });
-  app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch (err) {} });
+  app.on('will-quit', () => { flushStore(); try { globalShortcut.unregisterAll(); } catch (err) {} });
   app.on('window-all-closed', () => { app.quit(); });
 }
 process.on('uncaughtException', (err) => console.error('uncaught', err));
