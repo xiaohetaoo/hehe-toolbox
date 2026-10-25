@@ -821,7 +821,9 @@
               du = drawTo(img, mime, Math.min(100, Math.max(10, parseInt(qualityIn.value) || 80)) / 100, 1);
             }
             const ext = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png';
-            const outPath = outDir.replace(/[\\/]$/, '') + '/' + name.replace(/\.\w+$/, '') + ext;
+            // 同名不同扩展（a.png + a.jpg → 都是 a.jpg）时自动加序号，避免互相覆盖
+            let outPath = outDir.replace(/[\\/]$/, '') + '/' + name.replace(/\.\w+$/, '') + ext;
+            outPath = await invoke('fs:unique-path', outPath);
             await invoke('fs:write-file-b64', outPath, du.split(',')[1]);
             const newSize = (await invoke('fs:stat', outPath)).size;
             ok++; totalBefore += orig; totalAfter += newSize;

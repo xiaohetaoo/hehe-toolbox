@@ -468,6 +468,13 @@ function deriveKey(password, salt) { return crypto.scryptSync(password, salt, 32
 async function cryptStream(p, outPath, password, decrypt) {
   const st = await fsp.stat(p);
   if (path.resolve(p) === path.resolve(outPath)) throw new Error('输出路径不能与源文件相同');
+  // Windows 大小写不敏感 + 结尾点/空格差异：realpath 归一后按小写比较，防止同名变体绕过
+  let sameFile = false;
+  try {
+    const rp = fs.realpathSync(p), ro = fs.realpathSync(path.dirname(outPath)) + path.sep + path.basename(outPath);
+    sameFile = rp.toLowerCase() === ro.toLowerCase();
+  } catch (e) { /* 输出目录尚不存在等情况按字符串比较兜底 */ }
+  if (sameFile) throw new Error('输出路径不能与源文件相同');
   let srcStart = 0, cipher, header = null;
   if (!decrypt) {
     const salt = crypto.randomBytes(16), iv = crypto.randomBytes(16);
@@ -517,7 +524,10 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
   await new Promise((resolve, reject) => {
     const rs = fs.createReadStream(p, { highWaterMark: 1 << 20 });
     let idx = 1, ws = null, done = 0, pausedFor = null;
-    const openPart = () => { ws = fs.createWriteStream(path.join(outDir, `${base}.part${String(idx).padStart(pad, '0')}`)); };
+    const openPart = () => {
+      ws = fs.createWriteStream(path.join(outDir, `${base}.part${String(idx).padStart(pad, '0')}`));
+      ws.on('error', reject); // 磁盘满/权限错误时让 Promise 落定，而非悬挂
+    };
     openPart();
     rs.on('data', (chunk) => {
       let off = 0;
@@ -561,6 +571,7 @@ handle('fs:merge-parts', async (e, pickedPath, outPath) => {
   }
   await new Promise((resolve, reject) => {
     const ws = fs.createWriteStream(finalOut);
+    ws.on('error', reject);
     let i = 1, done = 0;
     const next = () => {
       if (i > man.parts) { ws.end(); ws.on('finish', resolve); return; }
@@ -1141,7 +1152,8 @@ function findFfmpeg() {
 function findFfprobe() {
   const custom = storeGet('settings.ffprobePath', null);
   if (custom && fs.existsSync(custom)) return custom;
-  const sameDir = findFfmpeg() && path.join(path.dirname(findFfmpeg()), 'ffprobe.exe');
+  const ff = findFfmpeg(); // 只探测一次，避免 PATH-only 环境下重复 where
+  const sameDir = ff && path.join(path.dirname(ff), 'ffprobe.exe');
   if (sameDir && fs.existsSync(sameDir)) return sameDir;
   if (fs.existsSync(path.join(binDir(), 'ffprobe.exe'))) return path.join(binDir(), 'ffprobe.exe');
   try {
@@ -1336,7 +1348,8 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
       if (opts.format === 'mp3' || opts.format === 'm4a' || opts.mute) args.push('-vn');
       if (opts.mute) { args.push('-an'); }
       else {
-        const ac = opts.acodec || (opts.format === 'webm' ? 'libopus' : opts.format === 'mp3' ? 'libmp3lame' : 'aac');
+        // 音频编码按容器选择：wav→PCM、flac→无损 flac（aac 进这两个容器会被拒绝/非标）
+        const ac = opts.acodec || (opts.format === 'webm' ? 'libopus' : opts.format === 'mp3' ? 'libmp3lame' : opts.format === 'wav' ? 'pcm_s16le' : opts.format === 'flac' ? 'flac' : 'aac');
         args.push('-c:a', ac);
         if (ac === 'aac') args.push('-b:a', '160k');
         if (ac === 'libmp3lame') args.push('-q:a', '2');
@@ -1354,20 +1367,26 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
       const r = await new Promise((resolve) => {
         const proc = spawn(ffmpeg, args, { windowsHide: true });
         state.proc = proc;
-        let lastPct = 0, errOut = '';
+        let lastPct = 0, errOut = '', progBuf = '';
         proc.stdout.on('data', (d) => {
-          const m = String(d).match(/out_time_us=(\d+)/);
-          if (m && dur > 0) {
-            lastPct = Math.min(99, parseInt(m[1]) / 1e6 / dur * 100);
-            send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: lastPct }) });
+          progBuf += String(d);
+          const lines = progBuf.split('\n');
+          progBuf = lines.pop() || ''; // 保留末行未完结部分，数字跨块分裂时不丢进度
+          for (const line of lines) {
+            const m = line.match(/out_time_us=(\d+)/);
+            if (m && dur > 0) {
+              lastPct = Math.min(99, parseInt(m[1]) / 1e6 / dur * 100);
+              send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: lastPct }) });
+            }
           }
         });
         proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
         proc.on('exit', (code) => resolve({ code, errOut }));
         proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
       });
-      if (state.cancel) { results.push({ input, out: null, ok: false, err: '已取消' }); break; }
+      if (state.cancel) { try { fs.rmSync(out, { force: true }); } catch (err) {} results.push({ input, out: null, ok: false, err: '已取消' }); break; }
       const ok = r.code === 0 && fs.existsSync(out);
+      if (!ok) { try { fs.rmSync(out, { force: true }); } catch (err) {} } // 清理半成品
       results.push({ input, out: ok ? out : null, ok, err: ok ? '' : (r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code)) });
       send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok }) });
     }
@@ -1418,20 +1437,26 @@ handle('ffmpeg:press', async (e, { items, outDir, opts }) => {
       const r = await new Promise((resolve) => {
         const proc = spawn(ffmpeg, args, { windowsHide: true });
         state.proc = proc;
-        let lastPct = 0, errOut = '';
+        let lastPct = 0, errOut = '', progBuf = '';
         proc.stdout.on('data', (d) => {
-          const m = String(d).match(/out_time_us=(\d+)/);
-          if (m && dur > 0) {
-            lastPct = Math.min(99, parseInt(m[1]) / 1e6 / dur * 100);
-            send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: lastPct }) });
+          progBuf += String(d);
+          const lines = progBuf.split('\n');
+          progBuf = lines.pop() || '';
+          for (const line of lines) {
+            const m = line.match(/out_time_us=(\d+)/);
+            if (m && dur > 0) {
+              lastPct = Math.min(99, parseInt(m[1]) / 1e6 / dur * 100);
+              send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: lastPct }) });
+            }
           }
         });
         proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
         proc.on('exit', (code) => resolve({ code, errOut }));
         proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
       });
-      if (state.cancel) { results.push({ input, out: null, ok: false, err: '已取消' }); break; }
+      if (state.cancel) { try { fs.rmSync(out, { force: true }); } catch (err) {} results.push({ input, out: null, ok: false, err: '已取消' }); break; }
       const ok = r.code === 0 && fs.existsSync(out);
+      if (!ok) { try { fs.rmSync(out, { force: true }); } catch (err) {} } // 清理半成品
       let inSize = 0, outSize = 0;
       try { inSize = fs.statSync(input).size; if (ok) outSize = fs.statSync(out).size; } catch (err) {}
       results.push({ input, out: ok ? out : null, ok, inSize, outSize, err: ok ? '' : (r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code)) });
@@ -1525,7 +1550,7 @@ handle('ctxmenu:list', async () => {
     const items = [];
     try {
       const r = await runCmd('reg', ['query', key, '/s'], { timeout: 20000, encoding: 'gbk' });
-      let cur = null;
+      let cur = null, inCommandKey = false; // 进入 Xxx\command 子键后，默认值归属 cur.command 而非 display
       for (const raw of r.stdout.split(/\r?\n/)) {
         const line = raw.replace(/\s+$/, '');
         if (/^HKEY_CLASSES_ROOT/i.test(line)) {
@@ -1535,27 +1560,25 @@ handle('ctxmenu:list', async () => {
           if (sub && !sub.includes('\\')) {
             cur = { key, keyPath: line, name: sub, display: '', command: '', disabled: false, hasCommand: false };
             items.push(cur);
-          } else if (cur && sub === cur.name + '\\command') cur.hasCommand = true;
+            inCommandKey = false;
+          } else if (cur && sub === cur.name + '\\command') { cur.hasCommand = true; inCommandKey = true; }
+          else inCommandKey = false;
           continue;
         }
         const m = line.match(/^\s{4}(.+?)\s{2,4}REG_(\S+)\s*(.*)$/);
         if (!m || !cur) continue;
         const vn = m[1].replace(/^\(默认\)$|^\(Default\)$/i, '');
         const vd = m[3].trim();
-        if (vn === '') cur.display = vd;
+        if (vn === '' && inCommandKey) cur.command = vd;
+        else if (vn === '') cur.display = vd;
         else if (vn === 'LegacyDisable') cur.disabled = true;
         else if (vn === 'Command' && !cur.command) cur.command = vd;
-      }
-      if (cur && cur.hasCommand && !cur.command) {
-        const cmdLine = r.stdout.match(new RegExp(escapeRegExp(cur.keyPath + '\\command') + '\\r?\\n\\s{4}(?:\\(默认\\)|\\(Default\\))\\s{2,4}REG_\\S+\\s{1,4}(.*)$', 'i'));
-        if (cmdLine) cur.command = cmdLine[1].trim();
       }
     } catch (err) { /* 键不存在或无权限读取 */ }
     groups.push({ key, label, items });
   }
   return groups;
 });
-function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 handle('ctxmenu:toggle', async (e, item, disable) => {
   if (disable) {
     await runCmd('reg', ['add', item.keyPath, '/v', 'LegacyDisable', '/t', 'REG_SZ', '/d', '', '/f'], { timeout: 10000 });
@@ -1602,16 +1625,21 @@ function findEsExe() {
     const c = path.join(d, 'Everything', 'es.exe');
     try { if (fs.existsSync(c)) return c; } catch (err) {}
   }
-  try {
-    const r = spawnSync('where', ['es'], { windowsHide: true, timeout: 5000, encoding: 'utf8' });
-    const p = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('es.exe'));
-    if (p) return p.trim();
-  } catch (e) {}
   return null;
 }
+async function findEsExeAsync() {
+  let p = findEsExe();
+  if (p) return p;
+  try {
+    const r = await runCmd('where', ['es'], { timeout: 5000 });
+    const hit = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('es.exe'));
+    if (hit) p = hit.trim();
+  } catch (e) {}
+  return p;
+}
 handle('search:env', async () => {
-  const admin = (() => { try { return spawnSync('net', ['session'], { windowsHide: true, timeout: 6000 }).status === 0; } catch (e) { return false; } })();
-  const es = findEsExe();
+  const admin = await (async () => { try { return (await runCmd('net', ['session'], { timeout: 6000 })).code === 0; } catch (e) { return false; } })();
+  const es = await findEsExeAsync();
   const volumes = [];
   try {
     const r = await ps(`@(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3") | Select-Object DeviceID,VolumeName,Size,FreeSpace | ConvertTo-Json -Compress`, 15000);
@@ -1646,9 +1674,11 @@ namespace HeheUsn {
     [DllImport("kernel32.dll")]
     static extern bool CloseHandle(IntPtr hObject);
     public static void Run(string driveRoot) {
-      IntPtr h = CreateFileW("\\\\\\\\.\\\\" + driveRoot, 0x80000000u, 1u, IntPtr.Zero, 3u, 0x02000000u, IntPtr.Zero);
+      IntPtr h = CreateFileW("\\\\\\\\.\\\\" + driveRoot, 0x80000000u, 3u, IntPtr.Zero, 3u, 0x02000000u, IntPtr.Zero);
       if (h == (IntPtr)(-1)) { Console.Out.WriteLine("E\\t" + Marshal.GetLastWin32Error()); return; }
-      byte[] inData = new byte[8];
+      byte[] inData = new byte[24]; // MFT_ENUM_DATA_V0：StartFileNumber(8) + LowUsn(8) + HighUsn(8)
+      inData[16] = 0xFF; inData[17] = 0xFF; inData[18] = 0xFF; inData[19] = 0xFF;
+      inData[20] = 0xFF; inData[21] = 0xFF; inData[22] = 0xFF; inData[23] = 0xFF; // HighUsn = MAXIMUM
       GCHandle pin = GCHandle.Alloc(inData, GCHandleType.Pinned);
       byte[] outBuf = new byte[0x10000];
       GCHandle pout = GCHandle.Alloc(outBuf, GCHandleType.Pinned);
@@ -1656,21 +1686,23 @@ namespace HeheUsn {
       try {
         while (true) {
           uint ret;
-          bool ok = DeviceIoControl(h, 0x900B3u, pin.AddrOfPinnedObject(), 8u, pout.AddrOfPinnedObject(), (uint)outBuf.Length, out ret, IntPtr.Zero);
+          bool ok = DeviceIoControl(h, 0x900B3u, pin.AddrOfPinnedObject(), 24u, pout.AddrOfPinnedObject(), (uint)outBuf.Length, out ret, IntPtr.Zero);
           if (!ok) { int err = Marshal.GetLastWin32Error(); if (err == 38 || err == 0) break; Console.Out.WriteLine("E\\t" + err); break; }
           if (ret == 0) break;
           if (ret > 8) {
             int off = 8; // 输出前 8 字节是下一次查询的起始 USN
             while (off + 60 <= ret) {
               uint recLen = BitConverter.ToUInt32(outBuf, off);
-              if (recLen == 0 || off + (int)recLen > ret) break;
+              if (recLen < 60 || off + (int)recLen > ret) break;
               long frn = BitConverter.ToInt64(outBuf, off + 8);
               long parent = BitConverter.ToInt64(outBuf, off + 16);
+              // USN_RECORD_V2（winioctl.h）：RecLen+0 Major+4 Minor+6 FRN+8 ParentFRN+16 Usn+24
+              // TimeStamp+32 Reason+40 SourceInfo+44 SecurityId+48 FileAttributes+52 FileNameLength+56 FileNameOffset+58 FileName+60
               uint attr = BitConverter.ToUInt32(outBuf, off + 52);
               int nameLen = BitConverter.ToUInt16(outBuf, off + 56);
               int nameOff = BitConverter.ToUInt16(outBuf, off + 58);
-              if (nameLen > 0 && off + nameOff + nameLen <= ret) {
-                string name = Encoding.Unicode.GetString(outBuf, off + nameOff, nameLen);
+              if (nameLen > 0 && off + nameOff + nameLen <= off + (int)recLen) {
+                string name = Encoding.Unicode.GetString(outBuf, off + nameOff, nameLen).TrimEnd('\\0');
                 Console.Out.Write("F\\t" + frn + "\\t" + parent + "\\t" + attr + "\\t");
                 Console.Out.WriteLine(name);
                 count++;
@@ -1695,6 +1727,7 @@ Add-Type -TypeDefinition $src
   latestCancelable = kill;
   const map = new Map();
   let count = 0, errMsg = null, lastEmit = 0;
+  try {
   await new Promise((resolve, reject) => {
     let out = '', errOut = '';
     const handleLine = (line) => {
@@ -1711,14 +1744,16 @@ Add-Type -TypeDefinition $src
         if (now - lastEmit > 300) { lastEmit = now; send('job:stream', { id, data: JSON.stringify({ buildCount: Number(line.slice(2)) || 0 }) }); }
       } else if (tag === 'E') { errMsg = Number(line.slice(2)); }
     };
+    const stdoutDec = new TextDecoder('utf-8'); // stream:true 语义由 decode 第二参提供，跨 64KB 块的多字节中文文件名不被截断
     proc.stdout.on('data', (d) => {
-      out += d.toString('utf8');
+      out += stdoutDec.decode(d, { stream: true });
       let i;
       while ((i = out.indexOf('\n')) >= 0) { const line = out.slice(0, i).replace(/\r$/, ''); out = out.slice(i + 1); handleLine(line); }
     });
     proc.stderr.on('data', (d) => { errOut += d.toString('utf8'); if (errOut.length > 8000) errOut = errOut.slice(-4000); });
     proc.on('error', (err) => reject(err));
     proc.on('exit', (code) => {
+      out += stdoutDec.decode();
       if (out.trim()) { for (const l of out.split(/\r?\n/)) if (l.trim()) handleLine(l.trim()); }
       if (errMsg === 5) return reject(new Error('需要管理员权限：读取 NTFS 索引（USN）要求以管理员身份运行核核工具箱'));
       if (errMsg != null) return reject(new Error('NTFS 索引失败（Win32 错误 ' + errMsg + '），该分区可能不是 NTFS 格式'));
@@ -1729,6 +1764,7 @@ Add-Type -TypeDefinition $src
   });
   searchIndexes.set(drive, { map, count, builtAt: Date.now() });
   return { drive, count };
+  } finally { jobs.delete(id); }
 });
 handle('search:query', async (e, { q, drive, limit, stat }) => {
   const query = String(q || '').trim().toLowerCase();
@@ -1757,7 +1793,7 @@ handle('search:query', async (e, { q, drive, limit, stat }) => {
   return { rows, total: rows.length, ms: Date.now() - t0 };
 });
 handle('search:es', async (e, { q, limit }) => {
-  const es = findEsExe();
+  const es = await findEsExeAsync();
   if (!es) throw new Error('未找到 es.exe（Everything 命令行工具），请安装 Everything 后重试');
   const query = String(q || '').trim();
   if (!query) return { rows: [], total: 0, ms: 0 };
@@ -1806,9 +1842,10 @@ handle('search:quick', (e, { root, q, limit }) => {
         if (ent.isDirectory() && !ent.isSymbolicLink()) await walk(full, depth + 1);
       }
     };
-    try { await walk(root, 0); } catch (err) { sendBatch(); send('job:stream', { id, data: JSON.stringify({ done: true, error: err.message }) }); return; }
+    try { await walk(root, 0); } catch (err) { sendBatch(); send('job:stream', { id, data: JSON.stringify({ done: true, error: err.message }) }); jobs.delete(id); return; }
     sendBatch();
     send('job:stream', { id, data: JSON.stringify({ done: true, matched, scanned, ms: Date.now() - t0, canceled: cancelRef.canceled }) });
+    jobs.delete(id);
   })();
   return { id };
 });

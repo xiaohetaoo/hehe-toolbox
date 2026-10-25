@@ -451,13 +451,17 @@
           try { await invoke('search:free'); builtInfo = {}; await refreshEnv(); toast('已释放索引内存', 'success'); } catch (e) { toast(e.message, 'error'); }
         }));
       }
+      let building = false; // 防止并发双建索引互相干扰
       async function buildIndex(drive) {
+        if (building) return toast('正在构建索引，请稍候', 'warn');
+        building = true;
         engTag.textContent = '构建索引中…'; engTag.className = 'tag tag-orange';
         statsLine.textContent = '正在读取 NTFS 索引…';
         try {
           const r = await invoke('search:build', drive);
           toast(`索引完成：${r.count.toLocaleString()} 项`, 'success');
         } catch (e) { statsLine.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+        building = false;
         engTag.textContent = '就绪'; engTag.className = 'tag tag-gray';
         await refreshEnv();
         doSearch();
@@ -495,21 +499,34 @@
           listBox.appendChild(div('field-err', '✗ ' + e.message));
         }
       }
+      // 持久单表：流式批次只追加行，不重复表头
+      let resTbody = null;
+      const COLS = [
+        { title: '文件名', render: (td, r) => td.appendChild(h('span', { class: 'mono', style: { wordBreak: 'break-all' } }, r.name + (r.dir ? ' 📁' : ''))) },
+        { title: '大小', w: '90px', render: (td, r) => td.append(r.dir ? '📁' : (r.size != null ? fmtBytes(r.size) : '-')) },
+        { title: '完整路径', render: (td, r) => td.appendChild(h('span', { class: 'field-hint', style: { wordBreak: 'break-all', fontSize: '11px' } }, r.path)) },
+        { title: '操作', w: '180px', render: (td, r) => {
+          td.appendChild(btn('打开', 'btn-sm btn-text', () => invoke('fs:open-path', r.path).catch(e2 => toast(e2.message, 'error'))));
+          td.appendChild(btn('位置', 'btn-sm btn-text', () => invoke('fs:show-item', r.path)));
+          td.appendChild(btn('复制路径', 'btn-sm btn-text', () => copyText(r.path)));
+        } }
+      ];
       function renderRows(rows, append) {
+        if (!append) { resTbody = null; }
         if (!rows.length && !append) { listBox.appendChild(div('empty-tip', '没有匹配的文件')); return; }
-        listBox.appendChild(renderTable({
-          columns: [
-            { key: 'name', title: '文件名', render: r => h('span', { class: 'mono', style: { wordBreak: 'break-all' } }, r.name + (r.dir ? ' 📁' : '')) },
-            { key: 'size', title: '大小', width: '90px', render: r => r.dir ? '📁' : (r.size != null ? fmtBytes(r.size) : '-') },
-            { key: 'path', title: '完整路径', render: r => h('span', { class: 'field-hint', style: { wordBreak: 'break-all', fontSize: '11px' } }, r.path) },
-            { key: 'act', title: '操作', width: '180px', render: (r, td) => {
-              td.appendChild(btn('打开', 'btn-sm btn-text', () => invoke('fs:open-path', r.path).catch(e2 => toast(e2.message, 'error'))));
-              td.appendChild(btn('位置', 'btn-sm btn-text', () => invoke('fs:show-item', r.path)));
-              td.appendChild(btn('复制路径', 'btn-sm btn-text', () => copyText(r.path)));
-            } }
-          ],
-          rows
-        }));
+        if (!resTbody) {
+          const table = h('table', { class: 'table' });
+          const thead = h('thead', h('tr', null, ...COLS.map(c => h('th', { style: c.w ? { width: c.w } : null }, c.title))));
+          resTbody = h('tbody');
+          table.appendChild(thead); table.appendChild(resTbody);
+          const wrap = div('table-scroll'); wrap.appendChild(table);
+          listBox.appendChild(wrap);
+        }
+        for (const r of rows) {
+          const tr = h('tr');
+          for (const c of COLS) { const td = h('td'); c.render(td, r); tr.appendChild(td); }
+          resTbody.appendChild(tr);
+        }
       }
       function startQuick() {
         const q = inBox.value.trim();
@@ -533,10 +550,14 @@
             }
           } catch (e) {}
         });
-        invoke('search:quick', { root, q, limit: +limitSel.value }).then((r) => { quickJob = r.id; }).catch((e) => { toast(e.message, 'error'); engTag.textContent = '就绪'; engTag.className = 'tag tag-gray'; });
+        invoke('search:quick', { root, q, limit: +limitSel.value }).then((r) => {
+          quickJob = r.id;
+          if (pageDead && quickJob) invoke('job:kill', quickJob).catch(() => {});
+        }).catch((e) => { toast(e.message, 'error'); engTag.textContent = '就绪'; engTag.className = 'tag tag-gray'; });
       }
       inBox.addEventListener('input', schedule);
-      window.App.onCleanup(stopQuick);
+      let pageDead = false; // 页面销毁后到达的 quick 任务 id 也要杀掉，避免孤儿扫描
+      window.App.onCleanup(() => { pageDead = true; stopQuick(); });
       refreshEnv();
       page.appendChild(div('card', div('card-title', '搜索引擎'), envLine, volRow, hint));
       page.appendChild(div('card', div('card-title', '搜索'),

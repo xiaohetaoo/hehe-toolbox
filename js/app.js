@@ -456,6 +456,7 @@
   }
 
   /* ============ 设置 ============ */
+  let drawToken = 0; // 模块级：drawBody 与闭包外的 drawGeneral/drawData/drawAboutSetting 共享
   function renderSettings(page) {
     page.appendChild(div('tool-header', div('th-icon', iconLg('settings')), div('', h('h2', null, '设置'), h('div', { class: 'th-desc' }, '个性化你的核核工具箱'))));
     const wrap = div('settings-wrap');
@@ -468,7 +469,6 @@
       { id: 'about', name: '关于', icon: 'info' }
     ];
     let current = 'general';
-    let drawToken = 0; // 快速切换分区时丢弃过期的异步绘制
     function drawBody() {
       const token = ++drawToken;
       body.innerHTML = '';
