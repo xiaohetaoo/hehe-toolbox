@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+diag-*
+_seg*
+.DS_Store
+Thumbs.db

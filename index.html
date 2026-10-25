@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; font-src 'self' data:; connect-src 'self' https: http:; media-src 'self' blob: file:">
+  <title>核核工具箱</title>
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="icon" href="assets/icon32.png">
+</head>
+<body>
+  <!-- 第三方库（本地离线加载） -->
+  <script src="node_modules/jsqr/dist/jsQR.js"></script>
+  <script src="node_modules/marked/marked.min.js"></script>
+  <script src="node_modules/pdf-lib/dist/pdf-lib.min.js"></script>
+  <script src="node_modules/pdfjs-dist/build/pdf.min.js"></script>
+  <script src="node_modules/opencc-js/dist/umd/full.js"></script>
+  <script src="node_modules/tesseract.js/dist/tesseract.min.js"></script>
+
+  <!-- 应用核心 -->
+  <script src="js/icons.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/registry.js"></script>
+
+  <!-- 工具模块 -->
+  <script src="js/tools/text-codec.js"></script>
+  <script src="js/tools/text-tools.js"></script>
+  <script src="js/tools/convert.js"></script>
+  <script src="js/tools/json-regex.js"></script>
+  <script src="js/tools/hash.js"></script>
+  <script src="js/tools/file-tools.js"></script>
+  <script src="js/tools/security.js"></script>
+  <script src="js/tools/dev.js"></script>
+  <script src="js/tools/net-tools.js"></script>
+  <script src="js/tools/sys-tools.js"></script>
+  <script src="js/tools/qr.js"></script>
+  <script src="js/tools/media.js"></script>
+  <script src="js/tools/office.js"></script>
+  <script src="js/tools/launch.js"></script>
+  <script src="js/tools/life.js"></script>
+
+  <!-- 外壳（最后加载） -->
+  <script src="js/app.js"></script>
+</body>
+</html>

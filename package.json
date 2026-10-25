@@ -1,0 +1,65 @@
+{
+  "name": "hehe-toolbox",
+  "productName": "核核工具箱",
+  "version": "0.0.1",
+  "description": "核核工具箱 —— 本地优先、轻量聚合的桌面效率工具箱",
+  "main": "main.js",
+  "author": "hehe",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable",
+    "dist:installer": "electron-builder --win nsis"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "jsqr": "^1.4.0",
+    "marked": "^12.0.2",
+    "opencc-js": "^1.0.5",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "3.11.174",
+    "qrcode": "^1.5.4",
+    "solarlunar": "^2.0.7",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.hehe.toolbox",
+    "productName": "核核工具箱",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "ruler.html",
+      "css/**/*",
+      "js/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "核核工具箱-Portable-${version}.exe"
+    },
+    "npmRebuild": false,
+    "compression": "maximum",
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    }
+  }
+}
