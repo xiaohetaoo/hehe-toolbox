@@ -133,6 +133,18 @@ function createTray() {
     const menu = Menu.buildFromTemplate([
       { label: '显示主界面', click: showMainWindow },
       { type: 'separator' },
+      { label: '✂️ 截图标注', click: () => { snipStart('annotate').catch(() => {}); } },
+      { label: '📌 贴剪贴板图片', click: () => { pinClipboardImage().catch((e2) => { showMainWindow(); send('tray:err', e2.message); }); } },
+      { label: '📝 记事', click: () => { showMainWindow(); send('app:open-tool', 'local-notes'); } },
+      { label: '🔍 OCR 剪贴板图片', click: async () => {
+          const img = clipboard.readImage();
+          if (img.isEmpty()) { showMainWindow(); send('tray:err', '剪贴板中没有图片'); return; }
+          const file = snipTmp();
+          fs.writeFileSync(file, img.toPNG());
+          showMainWindow();
+          send('snip:ocr', file);
+        } },
+      { type: 'separator' },
       { label: '退出', click: () => { isQuitting = true; app.quit(); } }
     ]);
     tray.setContextMenu(menu);
@@ -1913,38 +1925,112 @@ handle('search:quick', (e, { root, q, limit }) => {
   return { id };
 });
 
-/* ================= IPC: 屏幕录制（ffmpeg gdigrab） ================= */
-let recProc = null, recOut = null;
-handle('rec:start', async (e, { outPath, fps }) => {
+/* ================= IPC: 屏幕录制（ffmpeg gdigrab，区域/声音/暂停分段/GIF） ================= */
+let recProc = null, recOut = null, recSegs = [], recSegDir = null, recOpts = null;
+handle('rec:audio-devices', async () => {
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) return { devices: [] };
+  const r = await new Promise((resolve) => {
+    let out = '';
+    const p = spawn(ffmpeg, ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], { windowsHide: true });
+    p.stderr.on('data', d => { out += String(d); });
+    p.on('exit', () => resolve(out));
+    p.on('error', () => resolve(''));
+  });
+  const devices = [];
+  const audioSection = r.split('DirectShow audio devices')[1];
+  if (audioSection) {
+    for (const m of audioSection.matchAll(/"([^"]+)"\s*\[Audio\]/g)) devices.push(m[1]);
+  }
+  return { devices };
+});
+function recSpawnSeg(segPath) {
+  const ffmpeg = findFfmpeg();
+  const o = recOpts;
+  const args = ['-y', '-hide_banner', '-f', 'gdigrab', '-framerate', String(o.fps || 30)];
+  if (o.rect) args.push('-offset_x', String(o.rect.x), '-offset_y', String(o.rect.y), '-video_size', `${o.rect.w}x${o.rect.h}`);
+  args.push('-i', 'desktop');
+  if (o.audio) args.push('-f', 'dshow', '-i', `audio=${o.audio}`);
+  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
+  if (o.audio) args.push('-c:a', 'aac', '-b:a', '128k');
+  args.push('-movflags', '+faststart', segPath);
+  return spawn(ffmpeg, args, { windowsHide: true });
+}
+handle('rec:start', async (e, { outPath, fps, rect, audio }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   if (recProc && recProc.exitCode === null) throw new Error('已有录制进行中');
   recOut = outPath;
-  const proc = spawn(ffmpeg, ['-y', '-hide_banner', '-f', 'gdigrab', '-framerate', String(fps || 30), '-i', 'desktop',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { windowsHide: true });
+  // yuv420p 要求偶数尺寸/偏移，框选结果向下取偶
+  if (rect && typeof rect === 'object') {
+    rect = { x: Math.max(0, Math.round(rect.x)) & ~1, y: Math.max(0, Math.round(rect.y)) & ~1,
+      w: Math.max(64, Math.round(rect.w)) & ~1, h: Math.max(64, Math.round(rect.h)) & ~1 };
+  } else rect = null;
+  recOpts = { fps: fps || 30, rect, audio: audio || null };
+  recSegs = [];
+  recSegDir = path.join(app.getPath('temp'), 'hehe-rec-' + Date.now());
+  await fsp.mkdir(recSegDir, { recursive: true });
+  return await recStartSeg();
+});
+async function recStartSeg() {
+  const seg = path.join(recSegDir, `seg-${recSegs.length + 1}.mp4`);
+  const proc = recSpawnSeg(seg);
   recProc = proc;
   let errOut = '';
   proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 12000) errOut = errOut.slice(-6000); });
-  await new Promise(r => setTimeout(r, 1200)); // 确认进程没有立即退出（参数/权限错误）
-  if (recProc !== proc) return { ok: false };
+  await new Promise(r => setTimeout(r, 1200));
   if (proc.exitCode !== null) {
     recProc = null;
     throw new Error('录制启动失败：' + errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
   }
-  return { ok: true };
-});
-handle('rec:stop', async () => {
+  recSegs.push(seg);
+  return { ok: true, paused: false };
+}
+async function recStopSeg() {
   const proc = recProc;
-  if (!proc || proc.exitCode !== null) { recProc = null; return { ok: true, size: 0 }; }
+  recProc = null;
+  if (!proc || proc.exitCode !== null) return;
   await new Promise((resolve) => {
     proc.once('exit', resolve);
-    try { proc.stdin.write('q'); } catch (e) {} // 优雅停止，写完 MP4 索引
+    try { proc.stdin.write('q'); } catch (e) {}
     setTimeout(() => { try { spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true }); } catch (err) {} }, 5000);
   });
-  recProc = null;
-  await new Promise(r => setTimeout(r, 400));
+  await new Promise(r => setTimeout(r, 300));
+}
+handle('rec:pause', async () => { await recStopSeg(); return { ok: true, paused: true }; });
+handle('rec:resume', async () => {
+  if (!recOpts) throw new Error('没有进行中的录制会话');
+  return await recStartSeg();
+});
+handle('rec:stop', async (e, makeGif) => {
+  await recStopSeg();
+  if (!recSegs.length) return { ok: true, size: 0, outPath: recOut };
+  try {
+    if (recSegs.length === 1 && recSegs[0]) {
+      fs.copyFileSync(recSegs[0], recOut);
+    } else {
+      // 分段无损拼接（相同编码参数）
+      const listFile = path.join(recSegDir, 'list.txt');
+      await fsp.writeFile(listFile, recSegs.map(s => `file '${s.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+      const ffmpeg = findFfmpeg();
+      const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', recOut], { timeout: 120000 });
+      if (r.code !== 0) throw new Error('分段拼接失败：' + (r.stderr || '').split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+    }
+  } catch (err) {
+    try { if (recSegs[0]) fs.copyFileSync(recSegs[0], recOut); } catch (e2) {}
+  }
+  let gifOut = null;
+  if (makeGif) {
+    try {
+      gifOut = recOut.replace(/\.mp4$/i, '.gif');
+      const ffmpeg = findFfmpeg();
+      await runCmd(ffmpeg, ['-y', '-hide_banner', '-i', recOut, '-vf', 'fps=10,scale=480:-2:flags=lanczos', gifOut], { timeout: 300000 });
+    } catch (err) { gifOut = null; }
+  }
+  await fsp.rm(recSegDir, { recursive: true, force: true }).catch(() => {});
+  recOpts = null; recSegs = [];
   let size = 0; try { size = fs.statSync(recOut).size; } catch (e) {}
-  return { ok: true, size, outPath: recOut };
+  return { ok: true, size, outPath: recOut, gif: gifOut };
 });
 
 /* ================= IPC: 文件内容搜索（流式） ================= */
@@ -1997,7 +2083,7 @@ handle('content:search', (e, { root, q, useRegex, ci, exts, limit }) => {
 
 /* ================= IPC: 贴图置顶窗口 ================= */
 const pinWins = new Map();
-handle('win:pin-image', (e, srcPath) => {
+async function createPinWindow(srcPath) {
   const img = nativeImage.createFromPath(srcPath);
   const size = img.getSize();
   if (!size.width) throw new Error('无法读取图片');
@@ -2011,9 +2097,10 @@ handle('win:pin-image', (e, srcPath) => {
   bw.setAlwaysOnTop(true, 'screen-saver');
   pinWins.set(bw.id, bw);
   bw.on('closed', () => pinWins.delete(bw.id));
-  bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath } });
+  await bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath } });
   return { id: bw.id, w: size.width, h: size.height };
-});
+}
+handle('win:pin-image', (e, srcPath) => createPinWindow(srcPath));
 handle('win:pin-move', (e, id, x, y) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.setPosition(Math.round(x), Math.round(y)); return true; });
 handle('win:pin-resize', (e, id, w, h) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.setSize(Math.max(80, Math.round(w)), Math.max(60, Math.round(h))); return true; });
 handle('win:pin-close', (e, id) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.close(); return true; });
@@ -2179,6 +2266,243 @@ handle('net:download', (e, { url, out }) => {
   return { id };
 });
 
+/* ================= IPC: 区域截图 + 标注（snip.html 全屏覆盖窗） ================= */
+let snipWin = null;
+const snipTmp = () => path.join(app.getPath('temp'), 'hehe-snip-' + Date.now() + '.png');
+async function captureDisplay(display) {
+  const size = { width: Math.round(display.size.width * display.scaleFactor), height: Math.round(display.size.height * display.scaleFactor) };
+  let lastErr = null;
+  for (let i = 0; i < 2; i++) {
+    try {
+      // getSources 在连续调用时可能偶发挂起，加超时保护
+      const sources = await Promise.race([
+        desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('屏幕捕获超时')), 8000))
+      ]);
+      const src = sources.find(s => s.display_id === String(display.id)) || sources[0];
+      if (src) return src.thumbnail;
+      lastErr = new Error('屏幕捕获失败');
+    } catch (err) { lastErr = err; }
+  }
+  throw lastErr || new Error('屏幕捕获失败');
+}
+async function snipStart(mode) {
+  if (snipWin && !snipWin.isDestroyed()) { snipWin.close(); snipWin = null; }
+  const pt = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(pt);
+  const img = await captureDisplay(display);
+  const file = snipTmp();
+  fs.writeFileSync(file, img.toPNG());
+  snipWin = new BrowserWindow({
+    x: display.bounds.x, y: display.bounds.y, width: display.bounds.width, height: display.bounds.height,
+    frame: false, transparent: true, alwaysOnTop: true, resizable: false, skipTaskbar: true, hasShadow: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false }
+  });
+  snipWin.setAlwaysOnTop(true, 'screen-saver');
+  snipWin.setFullScreen(true);
+  snipWin.on('closed', () => { snipWin = null; });
+  await snipWin.loadFile('snip.html', { query: {
+    src: file, mode: mode === 'region' ? 'region' : 'annotate',
+    dx: String(display.bounds.x), dy: String(display.bounds.y),
+    scale: String(display.scaleFactor), w: String(display.bounds.width), h: String(display.bounds.height)
+  } });
+  snipWin.show();
+  return { ok: true };
+}
+handle('snip:start', (e, mode) => snipStart(mode));
+handle('snip:finish', async (e, { action, dataUrl, rect }) => {
+  const winToClose = snipWin;
+  snipWin = null;
+  try { if (winToClose && !winToClose.isDestroyed()) winToClose.close(); } catch (err) {}
+  if (action === 'cancel' || action === 'region') {
+    if (action === 'region' && rect) send('snip:region', rect); // 区域录制等用途
+    return { ok: true };
+  }
+  if (!dataUrl) return { ok: false };
+  if (action === 'copy') {
+    clipboard.writeImage(nativeImage.createFromDataURL(dataUrl));
+    return { ok: true };
+  }
+  const file = snipTmp();
+  fs.writeFileSync(file, Buffer.from(dataUrl.split(',')[1] || '', 'base64'));
+  if (action === 'pin') {
+    await new Promise(r => setTimeout(r, 120));
+    await createPinWindow(file);
+    return { ok: true, path: file };
+  }
+  if (action === 'ocr') { send('snip:ocr', file); return { ok: true, path: file }; }
+  if (action === 'save') {
+    const p = await dialog.showSaveDialog(win || null, { defaultPath: '截图-' + Date.now() + '.png', filters: [{ name: 'PNG', extensions: ['png'] }] });
+    if (!p.canceled && p.filePath) {
+      fs.copyFileSync(file, p.filePath);
+      return { ok: true, path: p.filePath };
+    }
+    return { ok: false };
+  }
+  return { ok: false };
+});
+// 贴剪贴板图片（托盘/工具用）
+async function pinClipboardImage() {
+  const img = clipboard.readImage();
+  if (img.isEmpty()) throw new Error('剪贴板中没有图片');
+  const file = snipTmp();
+  fs.writeFileSync(file, img.toPNG());
+  const r = await createPinWindow(file);
+  return { ok: true, ...r };
+}
+handle('snip:pin-clipboard', () => pinClipboardImage());
+
+/* ================= IPC: 检查更新（GitHub Releases；NSIS 安装版走 electron-updater） ================= */
+handle('update:check', async () => {
+  const current = app.getVersion();
+  // 安装版：electron-updater（可用则直接通知升级）
+  try {
+    if (process.env.HEHE_PORTABLE !== '1' && app.isPackaged && fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml'))) {
+      const { autoUpdater } = require('electron-updater');
+      const res = await autoUpdater.checkForUpdates();
+      if (res && res.updateInfo && res.updateInfo.version && cmpVer(res.updateInfo.version, current) > 0) {
+        return { current, latest: res.updateInfo.version, hasUpdate: true, engine: 'electron-updater', notes: String(res.updateInfo.releaseNotes || '').slice(0, 4000) };
+      }
+    }
+  } catch (e) { /* 回退 GitHub API */ }
+  // 便携版/兜底：查最新 Release
+  try {
+    const r = await fetch('https://api.github.com/repos/xiaohetaoo/hehe-toolbox/releases/latest', { headers: { 'User-Agent': 'hehe-update', Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error('GitHub API HTTP ' + r.status);
+    const j = await r.json();
+    const latest = (j.tag_name || '').replace(/^v/, '');
+    const asset = (j.assets || []).find(a => /^hehe-toolbox-Portable-.*\.exe$/.test(a.name));
+    return {
+      current, latest, hasUpdate: cmpVer(latest, current) > 0, engine: 'github',
+      notes: (j.body || '').slice(0, 4000), assetUrl: asset ? asset.browser_download_url : null, assetName: asset ? asset.name : null, htmlUrl: j.html_url || ''
+    };
+  } catch (err) {
+    throw new Error('检查更新失败（网络）：' + err.message);
+  }
+});
+function cmpVer(a, b) {
+  const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+/* ================= IPC: 周期任务（主进程持久化调度） ================= */
+const schedTimers = new Map(); // id -> {timeout, interval?}
+function schedFire(s) {
+  try {
+    if (s.type === 'clean') {
+      (async () => {
+        try {
+          const targets = [os.tmpdir()];
+          let bytes = 0;
+          for (const t of targets) { try { bytes += (await dirSizeFast(t)).size; } catch (e) {} }
+          for (const t of targets) {
+            try {
+              const entries = await fsp.readdir(t).catch(() => []);
+              for (const n of entries) await fsp.rm(path.join(t, n), { recursive: true, force: true });
+            } catch (e) {}
+          }
+          send('sched:fire', { id: s.id, type: s.type, message: `自动清理完成，释放 ${Math.round(bytes / 1048576)} MB（临时目录）` });
+        } catch (err) { send('sched:fire', { id: s.id, type: s.type, message: '自动清理失败：' + err.message }); }
+      })();
+    } else {
+      send('sched:fire', { id: s.id, type: s.type, message: s.message || '定时提醒' });
+    }
+  } catch (e) {}
+  armSchedule(s, true);
+}
+function armSchedule(s, isRefire) {
+  const t = schedTimers.get(s.id);
+  if (t) { clearTimeout(t.timeout); if (t.interval) clearInterval(t.interval); }
+  if (s.type === 'loop') {
+    const ms = Math.max(60000, (s.everyMin || 30) * 60000);
+    schedTimers.set(s.id, { interval: setInterval(() => schedFire(s), ms) });
+    if (!isRefire) schedFire(s); // 立即触发一次作为确认提示
+  } else {
+    // daily：计算下一次 hh:mm
+    const [hh, mm] = String(s.hhmm || '09:00').split(':').map(Number);
+    const now = new Date();
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh || 0, mm || 0, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    schedTimers.set(s.id, { timeout: setTimeout(() => schedFire(s), next - now) });
+  }
+}
+function armAllSchedules() {
+  const list = storeGet('settings.schedules', []);
+  for (const s of list) armSchedule(s, false);
+}
+handle('sched:list', () => storeGet('settings.schedules', []));
+handle('sched:add', (e, s) => {
+  s.id = 'sc' + Date.now();
+  const list = storeGet('settings.schedules', []);
+  list.push(s);
+  storeSet('settings.schedules', list);
+  armSchedule(s, false);
+  return list;
+});
+handle('sched:remove', (e, id) => {
+  const t = schedTimers.get(id);
+  if (t) { clearTimeout(t.timeout); if (t.interval) clearInterval(t.interval); schedTimers.delete(id); }
+  const list = storeGet('settings.schedules', []).filter(x => x.id !== id);
+  storeSet('settings.schedules', list);
+  return list;
+});
+
+/* ================= IPC: 7z 压缩包内容预览 ================= */
+handle('seven:list', async (e, { archive, password }) => {
+  const bin = findSevenFull() || sevenZa;
+  if (!bin) throw new Error('未找到 7z 引擎');
+  const args = ['l', '-bd', '-slt'];
+  args.push(password ? '-p' + password : '-p');
+  args.push(archive);
+  const r = await runCmd(bin, args, { timeout: 60000 });
+  if (r.code !== 0) throw new Error('读取压缩包失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+  const rows = [];
+  let cur = null;
+  for (const line of (r.stdout || '').split(/\r?\n/)) {
+    const m = line.match(/^(Path|Size|Attributes) = (.*)$/);
+    if (!m) continue;
+    if (m[1] === 'Path') { if (cur) rows.push(cur); cur = { path: m[2], size: 0, attr: '' }; }
+    else if (cur && m[1] === 'Size') cur.size = Number(m[2]) || 0;
+    else if (cur && m[1] === 'Attributes') cur.attr = m[2];
+  }
+  if (cur) rows.push(cur);
+  return { entries: rows.filter(x => x.path), total: rows.length };
+});
+
+/* ================= IPC: 笔记导出 PDF（离屏渲染 printToPDF） ================= */
+handle('notes:pdf', async (e, { title, html, outPath }) => {
+  let outFile = outPath || '';
+  if (!outFile) {
+    const out = await dialog.showSaveDialog(win || null, { defaultPath: (title || '笔记') + '.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (out.canceled || !out.filePath) return null;
+    outFile = out.filePath;
+  }
+  const bw = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  try {
+    await bw.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${(title || '').replace(/</g, '')}</title></head>` +
+      `<body style="max-width:720px;margin:32px auto;font-family:'Microsoft YaHei',sans-serif;line-height:1.75;font-size:14px;color:#222">` +
+      `${html}</body></html>`));
+    await new Promise(r => setTimeout(r, 300));
+    const buf = await bw.webContents.printToPDF({ printBackground: true, margins: { marginType: 'default' } });
+    fs.writeFileSync(outFile, buf);
+    return { out: outFile, size: buf.length };
+  } finally { bw.destroy(); }
+});
+
+/* ================= IPC: 剪贴板图片转文件（防 store JSON 膨胀） ================= */
+handle('clip:save-image', async (e, dataUrl) => {
+  const dir = path.join(app.getPath('userData'), 'clip-img');
+  await fsp.mkdir(dir, { recursive: true });
+  const name = 'clip-' + Date.now() + '.png';
+  await fsp.writeFile(path.join(dir, name), Buffer.from(dataUrl.split(',')[1] || '', 'base64'));
+  return { path: path.join(dir, name) };
+});
+
 /* ================= IPC: Win11 经典右键菜单切换 ================= */
 const WIN11_CTX_KEY = 'HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}';
 handle('ctxmenu:classic', async (e, on, restart) => {
@@ -2207,6 +2531,7 @@ if (!gotLock) { app.quit(); } else {
     createTray();
     nativeTheme.themeSource = storeGet('settings.theme', 'system');
     applyHotkey(storeGet('settings.hotkey', 'Alt+Shift+H'));
+    armAllSchedules(); // 周期任务（每日提醒/循环提醒/自动清理）
 if (process.env.HEHE_SHOT) {
       setTimeout(async () => {
         try {

@@ -710,6 +710,36 @@
         div('form-row', pwdIn, h('span', { class: 'field-hint' }, ' '), volIn, cBtn)));
       page.appendChild(div('card', div('card-title', '解压'), dz2, exLabel,
         div('form-row', exPwd, exBtn, h('span', { class: 'field-hint' }, '解压到压缩包旁的同名目录'))));
+      /* 预览：不解压直接列出内容 */
+      const pvPath = { p: null };
+      const dz3 = dropzone({ text: '拖入压缩包预览内容（不解压）', onFiles: (p) => { pvPath.p = p[0]; pvLabel.textContent = p[0]; listArchive(); } });
+      const pvLabel = h('span', { class: 'field-hint' }, '未选择');
+      const pvPwd = h('input', { class: 'input input-sm', placeholder: '密码（如有）', style: { width: '130px' } });
+      const pvBox = div('');
+      async function listArchive() {
+        if (!pvPath.p) return;
+        pvBox.innerHTML = '';
+        pvBox.appendChild(window.ui.loadingBlock('读取压缩包…'));
+        try {
+          const r = await invoke('seven:list', { archive: pvPath.p, password: pvPwd.value || '' });
+          pvBox.innerHTML = '';
+          const rows = r.entries.slice(0, 300);
+          pvBox.appendChild(div('field-hint', `共 ${r.total} 项${r.total > 300 ? '，显示前 300' : ''}`));
+          pvBox.appendChild(renderTable({
+            columns: [
+              { key: 'attr', title: '类型', width: '56px', render: x => h('span', { class: 'tag ' + (String(x.attr).includes('D') ? 'tag-blue' : 'tag-gray') }, String(x.attr).includes('D') ? '目录' : '文件') },
+              { key: 'size', title: '大小', width: '110px', render: x => x.attr.includes('D') ? '—' : fmtBytes(x.size) },
+              { key: 'path', title: '路径', render: x => h('span', { class: 'mono', style: { wordBreak: 'break-all', fontSize: '11px' } }, x.path) }
+            ],
+            rows
+          }));
+        } catch (e) {
+          pvBox.innerHTML = '';
+          pvBox.appendChild(div('field-err', '✗ ' + (e && e.message ? e.message : e)));
+        }
+      }
+      page.appendChild(div('card', div('card-title', '预览（不解压）'), dz3, pvLabel,
+        div('form-row', pvPwd, btn('📋 列出内容', 'btn-sm btn-secondary', listArchive)), pvBox));
     }
   });
 })();

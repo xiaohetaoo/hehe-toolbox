@@ -720,11 +720,54 @@
         countdown.textContent = '已取消'; countdown.className = 'tag tag-gray';
         status.textContent = '已取消定时任务（含系统关机计划）';
       }
-      page.appendChild(div('card', div('card-title', '定时任务'),
+      page.appendChild(div('card', div('card-title', '一次性定时'),
         div('form-row', h('span', { class: 'form-label' }, '动作'), modeSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '分钟'), minIn, msgIn),
         div('form-row', btn('⏲ 设置', 'btn-primary', apply), ' ', btn('取消', 'btn-danger-plain', cancel), countdown, status),
-        div('field-hint', '关机/重启走系统 shutdown 计划（关机前弹窗可跳过）；睡眠/锁屏/提醒在应用内计时（关闭工具箱页面不影响运行，但退出应用会终止提醒类任务）')));
+        div('field-hint', '关机/重启走系统 shutdown 计划（关机前弹窗可跳过）；睡眠/锁屏/提醒在应用内计时')));
+
+      /* ---- 周期任务（主进程持久化调度，重启应用后依然生效） ---- */
+      const rType = h('select', { class: 'select input-sm' },
+        h('option', { value: 'daily' }, '每天定时提醒'),
+        h('option', { value: 'loop' }, '循环提醒（每 N 分钟）'),
+        h('option', { value: 'clean' }, '每天自动清理临时文件'));
+      const rTime = h('input', { type: 'time', class: 'input input-sm', value: '09:00', style: { width: '100px' } });
+      const rEvery = h('input', { type: 'number', class: 'input input-sm', value: '60', min: '1', style: { width: '70px' } });
+      const rMsg = h('input', { class: 'input input-sm', placeholder: '提醒内容（提醒类必填）', style: { flex: '1' } });
+      const rList = div('');
+      async function loadRecurring() {
+        const list = await invoke('sched:list').catch(() => []);
+        rList.innerHTML = '';
+        if (!list.length) { rList.appendChild(div('empty-tip', '暂无周期任务')); return; }
+        for (const s of list) {
+          const desc = s.type === 'daily' ? `每天 ${s.hhmm} 提醒：${s.message}`
+            : s.type === 'loop' ? `每 ${s.everyMin} 分钟提醒：${s.message || '（循环提醒）'}`
+            : `每天 ${s.hhmm} 自动清理临时文件`;
+          rList.appendChild(div('form-row',
+            h('span', { class: 'tag ' + (s.type === 'clean' ? 'tag-green' : 'tag-blue'), style: { width: '48px', justifyContent: 'center' } }, s.type === 'clean' ? '清理' : '提醒'),
+            h('span', { style: { flex: '1', fontSize: '12px' } }, desc),
+            btn('删除', 'btn-sm btn-text', async () => { await invoke('sched:remove', s.id); loadRecurring(); })));
+        }
+      }
+      const rAddBtn = btn('＋ 添加周期任务', 'btn-primary', async () => {
+        const t = rType.value;
+        const s = { type: t };
+        if (t === 'daily') { s.hhmm = rTime.value || '09:00'; s.message = rMsg.value.trim(); if (!s.message) return toast('请输入提醒内容', 'warn'); }
+        else if (t === 'loop') { s.everyMin = Math.max(1, +rEvery.value || 60); s.message = rMsg.value.trim() || '循环提醒'; }
+        else { s.hhmm = rTime.value || '03:00'; s.message = ''; }
+        try { await invoke('sched:add', s); toast('已添加（重启应用后依然生效）', 'success'); rMsg.value = ''; loadRecurring(); }
+        catch (e) { toast(e.message, 'error'); }
+      });
+      const refreshR = () => { rTime.style.display = rType.value === 'loop' ? 'none' : ''; rEvery.style.display = rType.value === 'loop' ? '' : 'none'; };
+      rType.addEventListener('change', refreshR); refreshR();
+      page.appendChild(div('card', div('card-title', '周期任务（持久化）'),
+        div('form-row', h('span', { class: 'form-label' }, '类型'), rType,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时间'), rTime,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '间隔'), rEvery, rMsg),
+        div('form-row', rAddBtn),
+        rList,
+        div('field-hint', '周期任务由主进程调度并随配置持久化：到点弹系统通知；自动清理仅清空用户临时目录（安全范围）')));
+      loadRecurring();
     }
   });
 })();

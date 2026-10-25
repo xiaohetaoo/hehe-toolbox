@@ -204,6 +204,19 @@
     });
     on('hotkey:pressed', () => toast('全局热键已唤起', 'info', 1000));
 
+    /* 主进程事件路由：截图 OCR / 托盘直达工具 / 周期任务触发 / 区域截图结果 / 托盘错误 */
+    on('snip:ocr', (filePath) => {
+      window.__ocrPendingPath = filePath;
+      openTool('screenshot-ocr');
+    });
+    on('app:open-tool', (id) => { if (R.get(id)) openTool(id); });
+    on('sched:fire', (s) => {
+      try { new Notification('核核工具箱 · 定时任务', { body: s.message || '任务触发' }); } catch (e) {}
+      toast('⏰ ' + (s.message || '周期任务触发'), 'info', 6000);
+    });
+    on('snip:region', (rect) => { window.__recRegion = rect; });
+    on('tray:err', (msg) => toast(msg, 'warn'));
+
     /* 搜索 */
     let hlIndex = -1;
     function doSearch() {
@@ -606,6 +619,28 @@
   async function drawAboutSetting(body, token) {
     const info = await invoke('app:get-info');
     if (token !== undefined && token !== drawToken) return;
+    body.appendChild(div('set-row', div('',
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' } },
+        h('img', { src: 'assets/icon.png', style: { width: '44px', height: '44px', borderRadius: '10px' } }),
+        div('', h('div', { style: { fontWeight: 600, fontSize: '16px' } }, '核核工具箱'), h('div', { class: 'set-desc' }, 'HeHe Toolbox v' + info.appVersion)))),
+      div('set-control', btn('检查更新', 'btn-sm btn-secondary', checkUpdate))));
+    const updLine = h('div', { class: 'set-desc', style: { padding: '0 4px 8px' } }, '');
+    body.appendChild(updLine);
+    async function checkUpdate() {
+      updLine.textContent = '正在检查更新…';
+      try {
+        const r = await invoke('update:check');
+        if (!r.hasUpdate) { updLine.textContent = `✓ 已是最新版本（v${r.current}）`; return; }
+        updLine.textContent = `发现新版本 v${r.latest}（当前 v${r.current}），正在下载…`;
+        if (!r.assetUrl) { updLine.textContent = `发现新版本 v${r.latest}，请到 GitHub Releases 下载：${r.htmlUrl}`; return; }
+        const out = info.userData + '/update/' + r.assetName;
+        const unsub = on('job:stream', (d) => {
+          try { const j = JSON.parse(d.data); if (j.pct != null) updLine.textContent = `下载新版本 v${r.latest}：${(j.pct || 0).toFixed(0)}%（${(j.mb || 0).toFixed(1)}MB）`; if (j.done) { unsub(); if (j.ok) { updLine.textContent = `✓ v${r.latest} 已下载到 ${out}，打开所在目录运行即可升级`; invoke('fs:show-item', out); toast('新版本已下载', 'success'); } else updLine.textContent = '✗ 下载失败：' + (j.error || ''); } } catch (e) {}
+        });
+        const dl = await invoke('net:download', { url: r.assetUrl, out });
+        if (!dl || !dl.id) { unsub(); updLine.textContent = '✗ 下载启动失败'; }
+      } catch (e) { updLine.textContent = '✗ ' + e.message; }
+    }
     body.appendChild(div('set-row', div('',
       h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' } },
         h('img', { src: 'assets/icon.png', style: { width: '44px', height: '44px', borderRadius: '10px' } }),

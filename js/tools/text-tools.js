@@ -257,11 +257,14 @@
       let notesDir = '', curName = null;
       const sideList = div('', { style: { minWidth: '180px' } });
       const titleIn = h('input', { class: 'input input-sm', placeholder: '笔记标题…', style: { width: '100%', fontWeight: 600 } });
+      const tagsIn = h('input', { class: 'input input-sm', placeholder: '标签（逗号分隔，如：工作,灵感）', style: { width: '100%' } });
       const ta = h('textarea', { class: 'pane-ta', placeholder: '书写 Markdown…', style: { minHeight: '300px', flex: '1' } });
       const preview = div('md-view', { style: { flex: '1', minHeight: '300px', overflow: 'auto', padding: '6px 10px', background: 'var(--bg-2)', borderRadius: '8px' } });
       const searchIn = h('input', { class: 'input input-sm', placeholder: '搜索全部笔记…', style: { width: '100%' } });
-      const status = h('span', { class: 'field-hint' }, '');
+      const tagFilter = div('form-row', { style: { flexWrap: 'wrap', gap: '4px' } });
       const panes = div('', { style: { display: 'flex', gap: '10px' } });
+      let curTag = '';
+      const TAG_MARK = /^<!--hehe:tags:(.*)-->$/m;
       function renderMd() {
         if (!window.marked) return;
         preview.innerHTML = window.DOMPurify ? DOMPurify.sanitize(window.marked.parse(ta.value || '')) : window.marked.parse(ta.value || '');
@@ -273,25 +276,43 @@
         let items = [];
         try { items = await invoke('fs:list', notesDir); } catch (e) {}
         const notes = items.filter(x => !x.isDir && /\.md$/i.test(x.name));
+        const allTags = new Set();
+        const notesWithTags = [];
         for (const n of notes) {
-          if (q) {
-            try {
-              const r = await invoke('fs:read-text', n.path);
-              if (!r.content.toLowerCase().includes(q) && !n.name.toLowerCase().includes(q)) continue;
-            } catch (e) {}
-          }
-          const it = div('nav-item' + (curName === n.name ? ' active' : ''), { style: { padding: '6px 8px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px', wordBreak: 'break-all' } }, n.name.replace(/\.md$/i, ''));
+          let tags = [], content = null;
+          try { content = (await invoke('fs:read-text', n.path)).content; } catch (e) {}
+          if (content) { const m = content.match(TAG_MARK); if (m) tags = m[1].split(',').map(x => x.trim()).filter(Boolean); }
+          tags.forEach(t => allTags.add(t));
+          notesWithTags.push({ n, tags, content });
+        }
+        tagFilter.innerHTML = '';
+        const mkTag = (label, val, on) => {
+          const el = h('span', { class: 'tag ' + (on ? 'tag-blue' : 'tag-gray'), style: { cursor: 'pointer' } }, label);
+          el.addEventListener('click', () => { curTag = val; refreshList(); });
+          tagFilter.appendChild(el);
+        };
+        mkTag('全部', '', !curTag);
+        [...allTags].sort().forEach(t => mkTag(t, t, curTag === t));
+        for (const { n, tags, content } of notesWithTags) {
+          if (q && !(content && content.toLowerCase().includes(q)) && !n.name.toLowerCase().includes(q)) continue;
+          if (curTag && !tags.includes(curTag)) continue;
+          const it = div('nav-item' + (curName === n.name ? ' active' : ''), { style: { padding: '6px 8px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px', wordBreak: 'break-all' } },
+            n.name.replace(/\.md$/i, '') + (tags.length ? ' · ' + tags.map(t => '#' + t).join(' ') : ''));
           it.addEventListener('click', () => openNote(n));
           sideList.appendChild(it);
         }
-        status.textContent = notes.length + ' 篇' + (q ? '（已过滤）' : '');
+        status.textContent = notes.length + ' 篇' + (q || curTag ? '（已过滤）' : '');
       }
       async function openNote(n) {
         try {
           const r = await invoke('fs:read-text', n.path);
           curName = n.name;
           titleIn.value = n.name.replace(/\.md$/i, '');
-          ta.value = r.content;
+          let body = r.content;
+          const m = body.match(TAG_MARK);
+          tagsIn.value = m ? m[1] : '';
+          if (m) body = body.replace(TAG_MARK, '').replace(/^\r?\n/, '');
+          ta.value = body;
           renderMd();
           refreshList();
         } catch (e) { toast(e.message, 'error'); }
@@ -299,12 +320,22 @@
       async function save() {
         const name = ((titleIn.value.trim() || '未命名')).replace(/[\\/:*?"<>|]/g, '_') + '.md';
         if (curName && curName !== name) await invoke('fs:delete', notesDir + '/' + curName).catch(() => {});
-        await invoke('fs:write-text', notesDir + '/' + name, ta.value);
+        const tags = tagsIn.value.split(/[,，]/).map(x => x.trim()).filter(Boolean).join(',');
+        const body = (tags ? `<!--hehe:tags:${tags}-->\n` : '') + ta.value;
+        await invoke('fs:write-text', notesDir + '/' + name, body);
         curName = name;
         toast('已保存', 'success', 1200);
         refreshList();
       }
-      async function createNew() { curName = null; titleIn.value = ''; ta.value = ''; renderMd(); refreshList(); titleIn.focus(); }
+      async function exportPdf() {
+        if (!ta.value.trim()) return toast('当前没有笔记内容', 'warn');
+        try {
+          const html = window.DOMPurify && window.marked ? DOMPurify.sanitize(window.marked.parse(ta.value)) : '<pre>' + escapeHtml(ta.value) + '</pre>';
+          const r = await invoke('notes:pdf', { title: titleIn.value.trim() || curName || '笔记', html });
+          if (r) toast('已导出：' + r.out, 'success');
+        } catch (e) { toast(e.message, 'error'); }
+      }
+      async function createNew() { curName = null; titleIn.value = ''; tagsIn.value = ''; ta.value = ''; renderMd(); refreshList(); titleIn.focus(); }
       async function removeCur() {
         if (!curName) return;
         if (!(await window.ui.confirmBox({ title: '删除笔记', message: '删除「' + curName + '」？', danger: true, okText: '删除' }))) return;
@@ -317,11 +348,12 @@
       window.App.onCleanup(() => clearInterval(saveTimer));
       panes.appendChild(ta); panes.appendChild(preview);
       page.appendChild(div('card', div('card-title', '笔记'),
-        div('form-row', btn('＋ 新建', 'btn-sm btn-primary', createNew), btn('💾 保存', 'btn-sm btn-secondary', save), btn('删除', 'btn-sm btn-text', removeCur), status),
+        div('form-row', btn('＋ 新建', 'btn-sm btn-primary', createNew), btn('💾 保存', 'btn-sm btn-secondary', save),
+          btn('📄 导出 PDF', 'btn-sm btn-secondary', exportPdf), btn('删除', 'btn-sm btn-text', removeCur), status),
         div('', { style: { display: 'flex', gap: '10px' } },
-          div('', { style: { minWidth: '200px' } }, searchIn, sideList),
-          div('', { style: { flex: '1' } }, titleIn, panes)),
-        div('field-hint', '笔记为纯本地 .md 文件（数据目录 notes/），自动保存间隔 30 秒，可用「文件内容搜索」工具检索')));
+          div('', { style: { minWidth: '220px' } }, searchIn, tagFilter, sideList),
+          div('', { style: { flex: '1' } }, titleIn, tagsIn, panes)),
+        div('field-hint', '笔记为纯本地 .md 文件（数据目录 notes/），自动保存 30 秒；标签随笔记保存，可点击左侧标签快速过滤')));
       (async () => {
         try {
           const info = await invoke('app:get-info');

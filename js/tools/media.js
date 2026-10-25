@@ -640,6 +640,12 @@
       const prog = progressEl(); prog.hide();
       const result = h('textarea', { class: 'pane-ta', placeholder: '识别结果将显示在这里，可直接编辑…', style: { minHeight: '180px' } });
       let currentImg = null;
+      // 截图标注/托盘 OCR 直达：带图打开本工具
+      if (window.__ocrPendingPath) {
+        const p = window.__ocrPendingPath;
+        window.__ocrPendingPath = null;
+        setTimeout(() => handleFile(p).catch(() => {}), 200);
+      }
       async function recognize() {
         if (!currentImg) return toast('请先提供图片', 'warn');
         if (!window.Tesseract) return toast('OCR 引擎未加载，请重启应用', 'error');
@@ -1018,52 +1024,106 @@
     }
   });
 
+  /* ---------- 截图标注 ---------- */
+  register({
+    id: 'snip-tool', name: '截图标注', module: MOD, icon: 'crop',
+    desc: '框选区域截图，箭头/矩形/文字/马赛克标注，一键复制/保存/贴图/OCR',
+    keywords: ['截图', '标注', 'screenshot', 'snip', '截屏', '马赛克'],
+    render(page) {
+      const status = h('div', { class: 'field-hint' }, '');
+      async function start() {
+        try {
+          status.textContent = '请在屏幕上拖动框选区域…（Esc 取消）';
+          const r = await invoke('snip:start', 'annotate');
+          if (r && r.ok) status.textContent = '截图窗口已打开';
+        } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+      }
+      page.appendChild(div('card', div('card-title', '截图标注'),
+        btn('✂️ 开始截图', 'btn-primary btn-lg', start),
+        div('field-hint', '拖动框选 → 工具条标注（矩形/箭头/画笔/文字/马赛克，可撤销）→ 复制 / 保存 / 贴图 / OCR'),
+        status,
+        div('field-hint', '完整链路：截图 → 标注 → 贴图置顶（悬浮参考）→ OCR 识别文字；托盘右键也可直接截图')));
+      page.appendChild(div('card', div('card-title', '快捷贴图'),
+        div('form-row', btn('📌 贴剪贴板图片', 'btn-secondary', async () => {
+          try { await invoke('snip:pin-clipboard'); toast('已贴图', 'success'); }
+          catch (e) { toast(e.message, 'error'); }
+        }), h('span', { class: 'field-hint' }, '把剪贴板里的图片变成置顶小窗（Snipaste 式）'))));
+    }
+  });
+
   /* ---------- 屏幕录制 ---------- */
   register({
     id: 'screen-rec', name: '屏幕录制', module: MOD, icon: 'film',
-    desc: '录制全屏为 MP4（ffmpeg gdigrab），停止后自动封装可立即播放',
-    keywords: ['录制', '录屏', '屏幕', 'video', 'capture'],
+    desc: '录制全屏或框选区域为 MP4，可选麦克风、暂停恢复、直出 GIF',
+    keywords: ['录制', '录屏', '屏幕', 'video', 'capture', '区域'],
     render(page) {
-      const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空 = 桌面）', style: { flex: '1' } });
-      const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
-        if (d && d[0]) outDirIn.value = d[0];
-      });
       const fpsSel = h('select', { class: 'select input-sm' },
         h('option', { value: '15' }, '15 帧（文件小）'), h('option', { value: '30', selected: true }, '30 帧（流畅）'), h('option', { value: '60' }, '60 帧（高帧率）'));
-      const status = h('div', { class: 'field-hint' }, '点击开始后录制整个主屏幕，期间可最小化窗口');
+      const audioSel = h('select', { class: 'select input-sm', style: { maxWidth: '220px' } },
+        h('option', { value: '' }, '不录声音'));
+      const regionBtn = btn('▭ 选择区域', 'btn-sm btn-secondary', pickRegion);
+      const clearRegionBtn = btn('✕ 全屏', 'btn-sm btn-text', () => { region = null; regionLabel.textContent = '全屏'; });
+      const regionLabel = h('span', { class: 'field-hint' }, '全屏');
+      const gifChk = h('input', { type: 'checkbox', class: 'checkbox' });
+      const status = h('div', { class: 'field-hint' }, '支持区域录制、麦克风、暂停恢复；停止后自动封装');
       const startBtn = btn('⏺ 开始录制', 'btn-primary', start);
+      const pauseBtn = btn('⏸ 暂停', 'btn-secondary', () => ctl('rec:pause'));
+      const resumeBtn = btn('▶ 继续', 'btn-secondary', () => ctl('rec:resume'));
       const stopBtn = btn('⏹ 停止并保存', 'btn-danger-plain', stop);
-      stopBtn.disabled = true;
-      let recording = false;
+      pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
+      let recording = false, paused = false, region = null;
+      invoke('rec:audio-devices').then((r) => {
+        for (const d of (r.devices || [])) audioSel.appendChild(h('option', { value: d }, '🎤 ' + d));
+      }).catch(() => {});
+      async function pickRegion() {
+        try {
+          await invoke('snip:start', 'region');
+          status.textContent = '请在屏幕上框选录制区域…';
+          const rect = await new Promise((resolve) => {
+            const t = setTimeout(() => { unsub(); resolve(null); }, 120000);
+            const unsub = window.api.on('snip:region', (rr) => { clearTimeout(t); unsub(); resolve(rr); });
+          });
+          if (rect && rect.w >= 64 && rect.h >= 64) { region = rect; regionLabel.textContent = `${rect.w}×${rect.h}`; status.textContent = '已选择录制区域'; }
+          else if (rect) toast('区域太小，请重新选择', 'warn');
+          else status.textContent = '未选择区域（保持全屏）';
+        } catch (e) { toast(e.message, 'error'); }
+      }
       async function start() {
         const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
         const p = await invoke('dialog:save', { defaultPath: '录屏-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
         if (!p) return;
         try {
-          await invoke('rec:start', { outPath: p, fps: +fpsSel.value });
-          recording = true; startBtn.disabled = true; stopBtn.disabled = false;
-          status.textContent = '🔴 录制中…（输出到 ' + p + '）';
+          await invoke('rec:start', { outPath: p, fps: +fpsSel.value, rect: region, audio: audioSel.value || null });
+          recording = true; paused = false;
+          startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
+          status.textContent = '🔴 录制中…' + (region ? `（${region.w}×${region.h}）` : '（全屏）') + (audioSel.value ? ' + 🎤' : '');
+        } catch (e) { toast(e.message, 'error'); }
+      }
+      async function ctl(ch) {
+        try {
+          if (ch === 'rec:pause') { await invoke('rec:pause'); paused = true; pauseBtn.disabled = true; resumeBtn.disabled = false; status.textContent = '⏸ 已暂停（分段保存，停止时自动拼接）'; }
+          else { await invoke('rec:resume'); paused = false; pauseBtn.disabled = false; resumeBtn.disabled = true; status.textContent = '🔴 继续录制中…'; }
         } catch (e) { toast(e.message, 'error'); }
       }
       async function stop() {
         if (!recording) return;
-        stopBtn.disabled = true;
-        status.textContent = '正在封装视频…';
+        pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
+        status.textContent = '正在封装' + (gifChk.checked ? '（并生成 GIF）' : '') + '…';
         try {
-          const r = await invoke('rec:stop');
+          const r = await invoke('rec:stop', gifChk.checked);
           recording = false; startBtn.disabled = false;
-          status.textContent = `✓ 已保存：${r.outPath}（${fmtBytes(r.size || 0)}）`;
+          status.textContent = `✓ 已保存：${r.outPath}（${fmtBytes(r.size || 0)}）` + (r.gif ? ` · GIF：${r.gif}` : '');
           toast('录制完成：' + fmtBytes(r.size || 0), 'success');
         } catch (e) { recording = false; startBtn.disabled = false; status.textContent = '✗ ' + e.message; }
       }
-      window.App.onCleanup(() => { if (recording) invoke('rec:stop').catch(() => {}); });
+      window.App.onCleanup(() => { if (recording) invoke('rec:stop', false).catch(() => {}); });
       page.appendChild(div('card', div('card-title', '录制'),
         div('form-row', h('span', { class: 'form-label' }, '帧率'), fpsSel,
-          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '保存位置'), outDirIn, pickOutBtn),
-        div('form-row', startBtn, ' ', stopBtn, status),
-        div('field-hint', '录完的 MP4 可直接用「音视频格式转换」转 GIF 或用「视频压制」瘦身')));
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '区域'), regionBtn, clearRegionBtn, regionLabel),
+        div('form-row', h('span', { class: 'form-label' }, '声音'), audioSel,
+          h('label', { class: 'field-hint' }, gifChk, ' 停止时同时导出 GIF')),
+        div('form-row', startBtn, ' ', pauseBtn, resumeBtn, ' ', stopBtn, status)));
     }
   });
 

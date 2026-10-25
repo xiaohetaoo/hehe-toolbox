@@ -156,7 +156,10 @@
             const img = await invoke('clip:read-image');
             if (img && img !== lastClip) {
               lastClip = img;
-              history.unshift({ type: 'image', content: img, time: Date.now() });
+              // 图片落盘为文件，避免 dataURL 撑爆 store JSON
+              let entry = { type: 'image', content: img, time: Date.now() };
+              try { const r = await invoke('clip:save-image', img); entry = { type: 'image', file: r.path, time: Date.now() }; } catch (e) {}
+              history.unshift(entry);
               history = history.slice(0, 100);
               await invoke('store:set', 'clipHistory', history);
               render();
@@ -168,7 +171,9 @@
       function render() {
         const q = searchIn.value.trim().toLowerCase();
         list.innerHTML = '';
-        const items = history.filter(x => !q || (x.type === 'text' && x.content.toLowerCase().includes(q)));
+        const items = history
+          .filter(x => !q || (x.type === 'text' && x.content.toLowerCase().includes(q)) || (x.type === 'image' && '图片 image 截图'.includes(q)))
+          .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.time - a.time);
         if (!items.length) { list.appendChild(div('empty-tip', watching ? '暂无记录，复制点什么试试' : '开启上方开关开始记录剪贴板')); return; }
         for (const [i, item] of items.entries()) {
           const card = div('card');
@@ -176,12 +181,23 @@
           card.style.border = '1px solid var(--border-light)';
           const head = div('form-row');
           head.appendChild(h('span', { class: 'tag ' + (item.type === 'text' ? 'tag-blue' : 'tag-green') }, item.type === 'text' ? '文本' : '图片'));
+          if (item.pinned) head.appendChild(h('span', { class: 'tag tag-orange' }, '置顶'));
           head.appendChild(h('span', { class: 'field-hint' }, fmtDate(item.time)));
           const btns = h('span', { style: { marginLeft: 'auto' } });
+          btns.appendChild(btn(item.pinned ? '取消置顶' : '置顶', 'btn-sm btn-text', async () => {
+            item.pinned = !item.pinned;
+            await invoke('store:set', 'clipHistory', history);
+            render();
+          }));
+          const contentRef = item.content || null; // 图片：优先已有 dataURL，否则异步读文件
           btns.appendChild(btn(item.type === 'text' ? '复制' : '复制图片', 'btn-sm btn-text', async () => {
             try {
               if (item.type === 'text') await invoke('clip:write-text', item.content);
-              else await invoke('clip:write-image', item.content);
+              else {
+                let du = contentRef;
+                if (!du && item.file) { const r = await invoke('fs:read-file-b64', item.file); du = 'data:image/png;base64,' + r.b64; }
+                if (du) await invoke('clip:write-image', du);
+              }
               toast('已复制', 'success', 1000);
             } catch (e) { toast(e.message, 'error'); }
           }));
@@ -199,7 +215,16 @@
             pre.addEventListener('dblclick', async () => { await invoke('clip:write-text', item.content); toast('已复制', 'success', 1000); });
             card.appendChild(pre);
           } else {
-            card.appendChild(h('img', { src: item.content, style: { maxWidth: '100%', maxHeight: '160px', borderRadius: '6px', cursor: 'pointer' }, onclick: async () => { await invoke('clip:write-image', item.content); toast('已复制', 'success', 1000); } }));
+            const imgEl = h('img', { src: contentRef || '', style: { maxWidth: '100%', maxHeight: '160px', borderRadius: '6px', cursor: 'pointer' } });
+            imgEl.addEventListener('click', async () => {
+              try {
+                let du = contentRef;
+                if (!du && item.file) { const r = await invoke('fs:read-file-b64', item.file); du = 'data:image/png;base64,' + r.b64; }
+                if (du) { await invoke('clip:write-image', du); toast('已复制', 'success', 1000); }
+              } catch (e) {}
+            });
+            card.appendChild(imgEl);
+            if (!contentRef && item.file) invoke('fs:read-file-b64', item.file).then((r) => { imgEl.src = 'data:image/png;base64,' + r.b64; }).catch(() => { card.appendChild(div('field-hint', '（图片文件已清理）')); });
           }
           list.appendChild(card);
         }
