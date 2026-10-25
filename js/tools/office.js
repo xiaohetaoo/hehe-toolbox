@@ -208,6 +208,80 @@
     }
   });
 
+  /* ---------- 文档预览 ---------- */
+  register({
+    id: 'doc-preview', name: '文档预览', module: MOD, icon: 'book',
+    desc: 'PDF / TXT / Markdown 直接预览；Office 文档经 LibreOffice 转 PDF 后预览',
+    keywords: ['预览', 'preview', 'pdf', 'word', 'excel', '查看'],
+    render(page) {
+      let filePath = '';
+      const label = h('span', { class: 'field-hint' }, '未选择');
+      const dz = dropzone({ text: '拖入或选择文档（pdf / txt / md / doc(x) / xls(x) / ppt(x)）', onFiles: (p) => { filePath = p[0]; label.textContent = filePath; } });
+      const status = h('span', { class: 'field-hint' }, '');
+      const view = div('doc-preview-box', { style: { maxHeight: '70vh', overflow: 'auto', padding: '8px', background: 'var(--bg-2)', borderRadius: '8px', marginTop: '8px' } });
+      async function preview() {
+        if (!filePath) return toast('请先选择文档', 'warn');
+        view.innerHTML = '';
+        const ext = filePath.split('.').pop().toLowerCase();
+        try {
+          if (ext === 'pdf') return await renderPdf(filePath);
+          if (ext === 'txt' || ext === 'md' || ext === 'markdown') return await renderText(filePath, ext !== 'txt');
+          if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf'].includes(ext)) {
+            const st = await invoke('office:status');
+            if (!st.soffice) {
+              status.textContent = 'Office 文档预览需要 LibreOffice（PDF/TXT/MD 可直接预览）';
+              toast('未检测到 LibreOffice，无法预览 Office 文档', 'warn');
+              return;
+            }
+            status.textContent = '经 LibreOffice 转换中…（首次较慢）';
+            const tmpDir = (await invoke('app:get-info')).userData + '/preview-tmp';
+            const r = await invoke('office:convert', { files: [filePath], target: 'pdf', outDir: tmpDir });
+            const res = r.results && r.results[0];
+            if (!res || !res.ok) throw new Error('转换失败：' + ((res && res.err) || '未知'));
+            status.textContent = '转换完成，渲染中…';
+            return await renderPdf(res.out);
+          }
+          toast('不支持的格式：' + ext, 'warn');
+        } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+      }
+      async function renderPdf(p) {
+        if (!window.pdfjsLib) return toast('pdf.js 未加载', 'error');
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
+        const r = await invoke('fs:read-file-b64', p);
+        const bytes = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
+        const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+        const pages = Math.min(pdf.numPages, 20);
+        for (let i = 1; i <= pages; i++) {
+          const pg = await pdf.getPage(i);
+          const vp = pg.getViewport({ scale: 1.4 });
+          const canvas = document.createElement('canvas');
+          canvas.width = vp.width; canvas.height = vp.height;
+          canvas.style.cssText = 'display:block;margin:0 auto 10px;box-shadow:0 1px 6px rgba(0,0,0,.25);background:#fff';
+          await pg.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+          view.appendChild(canvas);
+          status.textContent = `渲染 ${i}/${pages} 页`;
+        }
+        status.textContent = `✓ 共 ${pdf.numPages} 页${pdf.numPages > pages ? `（预览前 ${pages} 页）` : ''}`;
+      }
+      async function renderText(p, isMd) {
+        const r = await invoke('fs:read-text', p);
+        if (isMd && window.marked) {
+          const box = div('md-view');
+          box.innerHTML = window.DOMPurify ? DOMPurify.sanitize(window.marked.parse(r.content)) : window.marked.parse(r.content);
+          box.style.cssText = 'max-width:800px;margin:0 auto;line-height:1.7';
+          view.appendChild(box);
+        } else {
+          const pre = h('pre', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: '12px', margin: '0' } }, r.content);
+          view.appendChild(pre);
+        }
+        status.textContent = `✓ ${(r.size / 1024).toFixed(1)} KB`;
+      }
+      page.appendChild(div('card', div('card-title', '文档'), dz, label,
+        div('form-row', btn('👁 预览', 'btn-primary', preview), status)));
+      page.appendChild(div('card', div('card-title', '预览'), view));
+    }
+  });
+
   /* ---------- 翻译工具 ---------- */
   register({
     id: 'translate', name: '翻译工具', module: MOD, icon: 'languages',

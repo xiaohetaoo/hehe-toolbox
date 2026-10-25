@@ -2,6 +2,7 @@
 (function () {
   const { register } = window.Registry;
   const { div, btn, toast, copyText, convertLayout, renderTable, fmtNum } = window.ui;
+  const { invoke } = window.api;
   const MOD = 'text';
 
   register({
@@ -244,6 +245,145 @@
         if (btns[mode === 'csv2json' ? 0 : 1]) { btns[mode === 'csv2json' ? 0 : 1].classList.remove('btn-secondary'); btns[mode === 'csv2json' ? 0 : 1].classList.add('btn-primary'); }
       }
       fire();
+    }
+  });
+
+  /* ---------- 本地笔记 ---------- */
+  register({
+    id: 'local-notes', name: '本地笔记', module: MOD, icon: 'note',
+    desc: 'Markdown 笔记本：多笔记管理、实时预览、全文搜索（数据为本地 .md 文件）',
+    keywords: ['笔记', 'note', 'markdown', 'md', '备忘'],
+    render(page) {
+      let notesDir = '', curName = null;
+      const sideList = div('', { style: { minWidth: '180px' } });
+      const titleIn = h('input', { class: 'input input-sm', placeholder: '笔记标题…', style: { width: '100%', fontWeight: 600 } });
+      const ta = h('textarea', { class: 'pane-ta', placeholder: '书写 Markdown…', style: { minHeight: '300px', flex: '1' } });
+      const preview = div('md-view', { style: { flex: '1', minHeight: '300px', overflow: 'auto', padding: '6px 10px', background: 'var(--bg-2)', borderRadius: '8px' } });
+      const searchIn = h('input', { class: 'input input-sm', placeholder: '搜索全部笔记…', style: { width: '100%' } });
+      const status = h('span', { class: 'field-hint' }, '');
+      const panes = div('', { style: { display: 'flex', gap: '10px' } });
+      function renderMd() {
+        if (!window.marked) return;
+        preview.innerHTML = window.DOMPurify ? DOMPurify.sanitize(window.marked.parse(ta.value || '')) : window.marked.parse(ta.value || '');
+      }
+      ta.addEventListener('input', renderMd);
+      async function refreshList() {
+        sideList.innerHTML = '';
+        const q = searchIn.value.trim().toLowerCase();
+        let items = [];
+        try { items = await invoke('fs:list', notesDir); } catch (e) {}
+        const notes = items.filter(x => !x.isDir && /\.md$/i.test(x.name));
+        for (const n of notes) {
+          if (q) {
+            try {
+              const r = await invoke('fs:read-text', n.path);
+              if (!r.content.toLowerCase().includes(q) && !n.name.toLowerCase().includes(q)) continue;
+            } catch (e) {}
+          }
+          const it = div('nav-item' + (curName === n.name ? ' active' : ''), { style: { padding: '6px 8px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px', wordBreak: 'break-all' } }, n.name.replace(/\.md$/i, ''));
+          it.addEventListener('click', () => openNote(n));
+          sideList.appendChild(it);
+        }
+        status.textContent = notes.length + ' 篇' + (q ? '（已过滤）' : '');
+      }
+      async function openNote(n) {
+        try {
+          const r = await invoke('fs:read-text', n.path);
+          curName = n.name;
+          titleIn.value = n.name.replace(/\.md$/i, '');
+          ta.value = r.content;
+          renderMd();
+          refreshList();
+        } catch (e) { toast(e.message, 'error'); }
+      }
+      async function save() {
+        const name = ((titleIn.value.trim() || '未命名')).replace(/[\\/:*?"<>|]/g, '_') + '.md';
+        if (curName && curName !== name) await invoke('fs:delete', notesDir + '/' + curName).catch(() => {});
+        await invoke('fs:write-text', notesDir + '/' + name, ta.value);
+        curName = name;
+        toast('已保存', 'success', 1200);
+        refreshList();
+      }
+      async function createNew() { curName = null; titleIn.value = ''; ta.value = ''; renderMd(); refreshList(); titleIn.focus(); }
+      async function removeCur() {
+        if (!curName) return;
+        if (!(await window.ui.confirmBox({ title: '删除笔记', message: '删除「' + curName + '」？', danger: true, okText: '删除' }))) return;
+        await invoke('fs:delete', notesDir + '/' + curName).catch(() => {});
+        curName = null; titleIn.value = ''; ta.value = ''; renderMd();
+        refreshList();
+      }
+      searchIn.addEventListener('input', () => refreshList());
+      const saveTimer = setInterval(() => { if (curName && ta.value) save().catch(() => {}); }, 30000);
+      window.App.onCleanup(() => clearInterval(saveTimer));
+      panes.appendChild(ta); panes.appendChild(preview);
+      page.appendChild(div('card', div('card-title', '笔记'),
+        div('form-row', btn('＋ 新建', 'btn-sm btn-primary', createNew), btn('💾 保存', 'btn-sm btn-secondary', save), btn('删除', 'btn-sm btn-text', removeCur), status),
+        div('', { style: { display: 'flex', gap: '10px' } },
+          div('', { style: { minWidth: '200px' } }, searchIn, sideList),
+          div('', { style: { flex: '1' } }, titleIn, panes)),
+        div('field-hint', '笔记为纯本地 .md 文件（数据目录 notes/），自动保存间隔 30 秒，可用「文件内容搜索」工具检索')));
+      (async () => {
+        try {
+          const info = await invoke('app:get-info');
+          notesDir = info.userData + '/notes';
+          await invoke('fs:mkdir', notesDir).catch(() => {});
+          await refreshList();
+        } catch (e) { status.textContent = '初始化失败：' + e.message; }
+      })();
+    }
+  });
+
+  /* ---------- 文本朗读 ---------- */
+  register({
+    id: 'tts', name: '文本朗读', module: MOD, icon: 'music',
+    desc: 'Windows 本地语音朗读文本，可选音色/语速/音量，可导出 WAV',
+    keywords: ['朗读', '语音', 'tts', '发声', '配音'],
+    render(page) {
+      const ta = h('textarea', { class: 'pane-ta', placeholder: '输入要朗读的文本…', style: { minHeight: '140px' } });
+      const voiceSel = h('select', { class: 'select input-sm' }, h('option', { value: '' }, '默认音色'));
+      const rateIn = h('input', { type: 'range', min: '-5', max: '5', value: '0', style: { width: '120px' }, title: '语速' });
+      const rateLabel = h('span', { class: 'field-hint' }, '0');
+      const volIn = h('input', { type: 'range', min: '0', max: '100', value: '100', style: { width: '120px' }, title: '音量' });
+      const volLabel = h('span', { class: 'field-hint' }, '100');
+      const status = h('span', { class: 'field-hint' }, '');
+      const speakBtn = btn('🔊 朗读', 'btn-primary', speak);
+      const stopBtn = btn('■ 停止', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); });
+      stopBtn.disabled = true;
+      let jobId = null, unsub = null;
+      rateIn.addEventListener('input', () => rateLabel.textContent = rateIn.value);
+      volIn.addEventListener('input', () => volLabel.textContent = volIn.value);
+      invoke('tts:voices').then((r) => {
+        for (const v of r.voices) voiceSel.appendChild(h('option', { value: v }, v));
+      }).catch(() => { status.textContent = '语音引擎检测失败'; });
+      window.App.onCleanup(() => { if (jobId) invoke('job:kill', jobId).catch(() => {}); if (unsub) try { unsub(); } catch (e) {} });
+      async function speak() {
+        const text = ta.value.trim();
+        if (!text) return toast('请输入文本', 'warn');
+        if (text.length > 5000) return toast('文本过长（>5000 字），请分段朗读', 'warn');
+        speakBtn.disabled = true; stopBtn.disabled = false;
+        status.textContent = '朗读中…';
+        unsub = window.api.on('job:stream', (d) => {
+          try { const j = JSON.parse(d.data); if (j.done) { speakBtn.disabled = false; stopBtn.disabled = true; jobId = null; status.textContent = '✓ 朗读结束'; } } catch (e) {}
+        });
+        const r = await invoke('tts:speak', { text, voice: voiceSel.value, rate: +rateIn.value, volume: +volIn.value });
+        jobId = r.id;
+      }
+      page.appendChild(div('card', div('card-title', '文本'),
+        ta,
+        div('form-row', h('span', { class: 'form-label' }, '音色'), voiceSel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '语速'), rateIn, rateLabel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '音量'), volIn, volLabel),
+        div('form-row', speakBtn, ' ', stopBtn,
+          btn('💾 导出 WAV', 'btn-sm btn-secondary', async () => {
+            const text = ta.value.trim();
+            if (!text) return toast('请输入文本', 'warn');
+            const p = await invoke('dialog:save', { defaultPath: 'speech.wav', filters: [{ name: 'WAV', extensions: ['wav'] }] });
+            if (!p) return;
+            status.textContent = '导出中…';
+            try { const r = await invoke('tts:wav', { text, out: p, voice: voiceSel.value, rate: +rateIn.value }); status.textContent = '✓ 已导出：' + p; toast('导出完成', 'success'); }
+            catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+          }), status),
+        div('field-hint', '使用 Windows 内置语音（设置 → 时间和语言 → 语音 可安装更多音色，如中文 Huihui）')));
     }
   });
 })();

@@ -1466,6 +1466,69 @@ handle('ffmpeg:press', async (e, { items, outDir, opts }) => {
   return { results, canceled: state.cancel };
 });
 
+/* 视频截帧：单帧或帧序列 */
+handle('ffmpeg:frames', async (e, { input, outDir, mode, ss, every, count, width }) => {
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  await fsp.mkdir(outDir, { recursive: true });
+  const base = path.basename(input).replace(/\.[^.]+$/, '');
+  const args = ['-hide_banner', '-y'];
+  let out;
+  if (mode === 'single') {
+    if (ss) args.push('-ss', String(ss));
+    args.push('-i', input, '-frames:v', '1', '-q:v', '2');
+    if (width) args.push('-vf', `scale=${width}:-2`);
+    out = path.join(outDir, `${base}_frame.jpg`);
+    args.push(out);
+  } else {
+    const fps = Math.max(0.05, 1 / Math.max(1, every || 1));
+    args.push('-i', input, '-vf', `fps=${fps}${width ? `,scale=${width}:-2` : ''}`, '-frames:v', String(Math.min(500, count || 20)), '-q:v', '3');
+    out = path.join(outDir, `${base}_%03d.jpg`);
+    args.push(out);
+  }
+  const r = await runCmd(ffmpeg, args, { timeout: 300000 });
+  if (r.code !== 0) throw new Error('截帧失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+  let n = 0;
+  try { n = (await fsp.readdir(outDir)).filter(f => f.startsWith(base + '_') && f.endsWith('.jpg')).length; } catch (e) {}
+  return { outDir, count: n, first: path.join(outDir, mode === 'single' ? `${base}_frame.jpg` : `${base}_001.jpg`) };
+});
+
+/* 音频剪辑：截取 + 淡入淡出 + 增益 */
+handle('ffmpeg:audio-cut', async (e, { input, out, ss, dur, fadeIn, fadeOut, gain, format }) => {
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  const ac = format === 'mp3' ? 'libmp3lame' : format === 'wav' ? 'pcm_s16le' : format === 'flac' ? 'flac' : 'aac';
+  const args = ['-hide_banner', '-y'];
+  if (ss) args.push('-ss', String(ss));
+  args.push('-i', input);
+  if (dur > 0) args.push('-t', String(dur));
+  const filters = [];
+  if (fadeIn > 0) filters.push(`afade=t=in:st=0:d=${fadeIn}`);
+  if (fadeOut > 0) {
+    // 淡出起点取「截取时长」或源时长减淡出长度
+    let total = dur > 0 ? dur : 0;
+    if (total <= 0) {
+      try {
+        const ffprobe = findFfprobe();
+        if (ffprobe) {
+          const rp = await runCmd(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', input], { timeout: 15000 });
+          total = parseFloat((JSON.parse(rp.stdout).format || {}).duration) || 0;
+        }
+      } catch (err) {}
+    }
+    const st = Math.max(0, total - fadeOut);
+    filters.push(`afade=t=out:st=${st.toFixed(2)}:d=${fadeOut}`);
+  }
+  if (gain) filters.push(`volume=${gain}dB`);
+  args.push('-vn', '-c:a', ac);
+  if (ac === 'aac') args.push('-b:a', '192k');
+  if (filters.length) args.push('-af', filters.join(','));
+  args.push(out);
+  const r = await runCmd(ffmpeg, args, { timeout: 300000 });
+  if (r.code !== 0 || !fs.existsSync(out)) throw new Error('剪辑失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+  return { out, size: fs.statSync(out).size };
+});
+
 /* ================= IPC: Office 文档转换（LibreOffice / Office COM 双引擎） ================= */
 function findSoffice() {
   const candidates = [
@@ -1848,6 +1911,288 @@ handle('search:quick', (e, { root, q, limit }) => {
     jobs.delete(id);
   })();
   return { id };
+});
+
+/* ================= IPC: 屏幕录制（ffmpeg gdigrab） ================= */
+let recProc = null, recOut = null;
+handle('rec:start', async (e, { outPath, fps }) => {
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  if (recProc && recProc.exitCode === null) throw new Error('已有录制进行中');
+  recOut = outPath;
+  const proc = spawn(ffmpeg, ['-y', '-hide_banner', '-f', 'gdigrab', '-framerate', String(fps || 30), '-i', 'desktop',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { windowsHide: true });
+  recProc = proc;
+  let errOut = '';
+  proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 12000) errOut = errOut.slice(-6000); });
+  await new Promise(r => setTimeout(r, 1200)); // 确认进程没有立即退出（参数/权限错误）
+  if (recProc !== proc) return { ok: false };
+  if (proc.exitCode !== null) {
+    recProc = null;
+    throw new Error('录制启动失败：' + errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+  }
+  return { ok: true };
+});
+handle('rec:stop', async () => {
+  const proc = recProc;
+  if (!proc || proc.exitCode !== null) { recProc = null; return { ok: true, size: 0 }; }
+  await new Promise((resolve) => {
+    proc.once('exit', resolve);
+    try { proc.stdin.write('q'); } catch (e) {} // 优雅停止，写完 MP4 索引
+    setTimeout(() => { try { spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true }); } catch (err) {} }, 5000);
+  });
+  recProc = null;
+  await new Promise(r => setTimeout(r, 400));
+  let size = 0; try { size = fs.statSync(recOut).size; } catch (e) {}
+  return { ok: true, size, outPath: recOut };
+});
+
+/* ================= IPC: 文件内容搜索（流式） ================= */
+handle('content:search', (e, { root, q, useRegex, ci, exts, limit }) => {
+  const id = 'cs' + (++jobSeq);
+  const cancelRef = { canceled: false };
+  const kill = () => { cancelRef.canceled = true; };
+  jobs.set(id, { cancel: kill });
+  latestCancelable = kill;
+  (async () => {
+    const t0 = Date.now();
+    let re;
+    try { re = useRegex ? new RegExp(q, ci ? 'i' : '') : new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), ci ? 'i' : ''); }
+    catch (err) { send('job:stream', { id, data: JSON.stringify({ done: true, error: '正则无效：' + err.message }) }); jobs.delete(id); return; }
+    const extSet = new Set(String(exts || '').split(/[,\s]+/).map(x => x.toLowerCase().replace(/^\./, '')).filter(Boolean));
+    const cap = Math.min(3000, limit || 500);
+    let matched = 0, scanned = 0, lastSend = 0, batch = [];
+    const sendBatch = () => { if (batch.length) { send('job:stream', { id, data: JSON.stringify({ rows: batch }) }); batch = []; } };
+    await walkDir(root, { _cancelRef: cancelRef }, async (item) => {
+      if (cancelRef.canceled || item.type !== 'file') return;
+      scanned++;
+      if (extSet.size && !extSet.has(path.extname(item.path).slice(1).toLowerCase())) return;
+      try {
+        const st = await fsp.stat(item.path);
+        if (st.size > 20 * 1024 * 1024) return;
+        const buf = await fsp.readFile(item.path);
+        if (buf.includes(0)) return; // 跳过二进制
+        let text = buf.toString('utf8');
+        if (text.includes('\uFFFD')) { try { text = new TextDecoder('gbk').decode(buf); } catch (err) {} }
+        const lines = text.split(/\r?\n/);
+        for (let ln = 0; ln < lines.length; ln++) {
+          if (re.test(lines[ln])) {
+            matched++;
+            batch.push({ path: item.path, line: ln + 1, text: lines[ln].length > 300 ? lines[ln].slice(0, 300) + '…' : lines[ln] });
+            if (batch.length >= 30) sendBatch();
+            if (matched >= cap) break;
+          }
+        }
+        const now = Date.now();
+        if (now - lastSend > 400) { lastSend = now; sendBatch(); send('job:stream', { id, data: JSON.stringify({ scanned, matched }) }); }
+      } catch (err) {}
+      if (matched >= cap) cancelRef.canceled = true;
+    });
+    sendBatch();
+    send('job:stream', { id, data: JSON.stringify({ done: true, matched, scanned, ms: Date.now() - t0 }) });
+    jobs.delete(id);
+  })();
+  return { id };
+});
+
+/* ================= IPC: 贴图置顶窗口 ================= */
+const pinWins = new Map();
+handle('win:pin-image', (e, srcPath) => {
+  const img = nativeImage.createFromPath(srcPath);
+  const size = img.getSize();
+  if (!size.width) throw new Error('无法读取图片');
+  const wa = screen.getPrimaryDisplay().workAreaSize;
+  const scale = Math.min(1, (wa.width * 0.5) / size.width, (wa.height * 0.7) / size.height);
+  const bw = new BrowserWindow({
+    width: Math.max(80, Math.round(size.width * scale)), height: Math.max(60, Math.round(size.height * scale)),
+    frame: false, transparent: true, alwaysOnTop: true, resizable: false, skipTaskbar: true, hasShadow: true,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false }
+  });
+  bw.setAlwaysOnTop(true, 'screen-saver');
+  pinWins.set(bw.id, bw);
+  bw.on('closed', () => pinWins.delete(bw.id));
+  bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath } });
+  return { id: bw.id, w: size.width, h: size.height };
+});
+handle('win:pin-move', (e, id, x, y) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.setPosition(Math.round(x), Math.round(y)); return true; });
+handle('win:pin-resize', (e, id, w, h) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.setSize(Math.max(80, Math.round(w)), Math.max(60, Math.round(h))); return true; });
+handle('win:pin-close', (e, id) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.close(); return true; });
+
+/* ================= IPC: 窗口管理（置顶/透明度/置底） ================= */
+const WINMGR_CS = `
+using System;using System.Text;using System.Runtime.InteropServices;using System.Diagnostics;
+namespace HeheWin{public class Util{
+[DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);
+delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
+[DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+[DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+[DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+[DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x,int y,int cx,int cy,uint flags);
+[DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h,int i,int v);
+[DllImport("user32.dll")] static extern bool SetLayeredWindowAttributes(IntPtr h, uint cr, byte alpha, uint flags);
+public static void List(){ EnumWindows(delegate(IntPtr h, IntPtr l){ if(!IsWindowVisible(h)) return true; var sb=new StringBuilder(512); if(GetWindowText(h,sb,512)==0) return true; uint pid; GetWindowThreadProcessId(h,out pid); string pn=""; try{pn=Process.GetProcessById((int)pid).ProcessName;}catch{} int ex=GetWindowLong(h,-20); Console.WriteLine(h.ToInt64()+"\\t"+pid+"\\t"+(((ex&0x8)!=0)?1:0)+"\\t"+pn+"\\t"+sb.ToString().Replace("\\t"," ")); return true;}, IntPtr.Zero); }
+public static string Topmost(long h, bool on){ SetWindowPos((IntPtr)h, on?new IntPtr(-1):new IntPtr(-2),0,0,0,0,0x3); return "OK"; }
+public static string Bottom(long h){ SetWindowPos((IntPtr)h, new IntPtr(1),0,0,0,0,0x3); return "OK"; }
+public static string Opacity(long h, int alpha){ var p=(IntPtr)h; int ex=GetWindowLong(p,-20); if(alpha>=255){ SetWindowLong(p,-20,ex & ~0x80000); } else { if((ex&0x80000)==0) SetWindowLong(p,-20,ex|0x80000); SetLayeredWindowAttributes(p,0,(byte)alpha,2);} return "OK"; }
+}}
+`;
+async function winmgrRun(method) {
+  const r = await ps('Add-Type -TypeDefinition @\'\n' + WINMGR_CS + '\n\'@\n' + method, 25000);
+  return r.stdout;
+}
+handle('winmgr:list', async () => {
+  const out = await winmgrRun('[HeheWin.Util]::List()');
+  const rows = [];
+  for (const line of out.split(/\r?\n/)) {
+    const p = line.split('\t');
+    if (p.length >= 5 && /^\d+$/.test(p[0])) rows.push({ hwnd: p[0], pid: +p[1], topmost: p[2] === '1', proc: p[3], title: p.slice(4).join('\t') });
+  }
+  return rows;
+});
+handle('winmgr:topmost', (e, hwnd, on) => winmgrRun(`[HeheWin.Util]::Topmost(${+hwnd}, ${on ? '$true' : '$false'})`));
+handle('winmgr:bottom', (e, hwnd) => winmgrRun(`[HeheWin.Util]::Bottom(${+hwnd})`));
+handle('winmgr:opacity', (e, hwnd, alpha) => winmgrRun(`[HeheWin.Util]::Opacity(${+hwnd}, ${Math.max(20, Math.min(255, alpha | 0))})`));
+
+/* ================= IPC: 7z 压缩包（7za / 系统 7-Zip） ================= */
+const sevenZa = (() => { try { return require('7zip-bin').path7za; } catch (e) { return null; } })();
+function findSevenFull() {
+  for (const c of ['C:\\Program Files\\7-Zip\\7z.exe', 'C:\\Program Files (x86)\\7-Zip\\7z.exe']) {
+    try { if (fs.existsSync(c)) return c; } catch (e) {}
+  }
+  return null;
+}
+handle('seven:status', () => ({ za: sevenZa, full: findSevenFull() }));
+handle('seven:compress', async (e, { files, out, password, volumeMB }) => {
+  const bin = findSevenFull() || sevenZa;
+  if (!bin) throw new Error('未找到 7z 引擎');
+  if (!/\.7z$/i.test(out)) out += '.7z';
+  const args = ['a', '-y', '-bd'];
+  if (password) args.push('-p' + password, '-mhe=on');
+  if (volumeMB) args.push('-v' + Math.max(1, volumeMB) + 'm');
+  args.push(out, ...files);
+  const r = await runCmd(bin, args, { timeout: 600000 });
+  if (r.code !== 0) throw new Error('压缩失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+  const first = volumeMB ? out + '.001' : out;
+  return { out: first, size: fs.existsSync(first) ? fs.statSync(first).size : 0 };
+});
+handle('seven:extract', async (e, { archive, outDir, password }) => {
+  const bin = findSevenFull() || sevenZa;
+  if (!bin) throw new Error('未找到 7z 引擎');
+  await fsp.mkdir(outDir, { recursive: true });
+  const args = ['x', '-y', '-bd', '-o' + outDir];
+  args.push(password ? '-p' + password : '-p'); // 无密码时 -p 阻止交互挂起
+  args.push(archive);
+  const r = await runCmd(bin, args, { timeout: 600000 });
+  if (r.code !== 0) throw new Error('解压失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+  return { outDir };
+});
+
+/* ================= IPC: WiFi 密码查看 ================= */
+handle('wifi:profiles', async () => {
+  const r = await runCmd('netsh', ['wlan', 'show', 'profiles'], { timeout: 15000, encoding: 'gbk' });
+  const names = [];
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const m = line.match(/(?:所有用户配置文件|All User Profile)\s*:\s*(.+)$/);
+    if (m) names.push(m[1].trim());
+  }
+  if (!names.length) throw new Error('未找到已保存的 WiFi 配置文件（可能没有无线网卡或未连接过 WiFi）');
+  return { names };
+});
+handle('wifi:key', async (e, name) => {
+  const r = await runCmd('netsh', ['wlan', 'show', 'profile', 'name=' + name, 'key=clear'], { timeout: 15000, encoding: 'gbk' });
+  const out = r.stdout;
+  const key = (out.match(/(?:关键内容|Key Content)\s*:\s*(.*)$/) || [])[1];
+  const auth = (out.match(/(?:身份验证|Authentication)\s*:\s*(.*)$/) || [])[1];
+  return { key: key ? key.trim() : '', auth: auth ? auth.trim() : '', raw: out };
+});
+
+/* ================= IPC: 文本朗读（System.Speech 本地 TTS） ================= */
+handle('tts:voices', async () => {
+  const r = await ps(`Add-Type -AssemblyName System.Speech; $p=New-Object System.Speech.Synthesis.SpeechSynthesizer; @($p.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }) | ConvertTo-Json -Compress`, 25000);
+  let arr; try { arr = JSON.parse(r.stdout || '[]'); } catch (e) { arr = []; }
+  if (!Array.isArray(arr)) arr = [arr];
+  return { voices: arr.filter(Boolean) };
+});
+function ttsEsc(s) { return String(s).replace(/'/g, "''"); }
+handle('tts:speak', (e, { text, voice, rate, volume }) => {
+  const id = 'tts' + (++jobSeq);
+  const script = `Add-Type -AssemblyName System.Speech; $p=New-Object System.Speech.Synthesis.SpeechSynthesizer;` +
+    (voice ? `try{$p.SelectVoice('${ttsEsc(voice)}')}catch{};` : '') +
+    `$p.Rate=[int]${Math.max(-10, Math.min(10, rate || 0))};$p.Volume=[int]${Math.max(0, Math.min(100, volume == null ? 100 : volume))};$p.Speak('${ttsEsc(text)}')|Out-Null`;
+  const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true });
+  const kill = () => { try { spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true }); } catch (e) {} };
+  jobs.set(id, { cancel: kill });
+  proc.on('exit', () => { jobs.delete(id); send('job:stream', { id, data: JSON.stringify({ done: true }) }); });
+  return { id };
+});
+handle('tts:wav', async (e, { text, out, voice, rate }) => {
+  const script = `Add-Type -AssemblyName System.Speech; $p=New-Object System.Speech.Synthesis.SpeechSynthesizer;` +
+    (voice ? `try{$p.SelectVoice('${ttsEsc(voice)}')}catch{};` : '') +
+    `$p.Rate=[int]${Math.max(-10, Math.min(10, rate || 0))};$p.SetOutputToWaveFile('${ttsEsc(out)}');$p.Speak('${ttsEsc(text)}');$p.Dispose();Write-Output OK`;
+  const r = await ps(script, 300000);
+  if (!fs.existsSync(out)) throw new Error('导出失败' + (r.stderr ? '：' + r.stderr.slice(0, 200) : ''));
+  return { out, size: fs.statSync(out).size };
+});
+
+/* ================= IPC: 服务与电源计划 ================= */
+handle('svc:list', async () => {
+  const r = await ps(`@(Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -Compress)`, 30000);
+  let arr; try { arr = JSON.parse(r.stdout || '[]'); } catch (e) { arr = []; }
+  if (!Array.isArray(arr)) arr = [arr];
+  return arr;
+});
+handle('svc:action', async (e, name, action) => {
+  if (!['start', 'stop'].includes(action)) throw new Error('不支持的操作');
+  const r = await runCmd('sc.exe', [action, name], { timeout: 30000, encoding: 'gbk' });
+  if (r.code !== 0) throw new Error((r.stderr || r.stdout || '').split(/\r?\n/).filter(l => l.trim()).slice(-1).join(' ') || '操作失败（启动/停止服务通常需要管理员权限）');
+  return true;
+});
+handle('power:list', async () => {
+  const r = await runCmd('powercfg', ['/list'], { timeout: 15000, encoding: 'gbk' });
+  const plans = [];
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const m = line.match(/([0-9a-fA-F-]{36})\s+(.+?)\s*(\*)?\s*$/);
+    if (m) plans.push({ guid: m[1], name: m[2].trim(), active: !!m[3] });
+  }
+  return plans;
+});
+handle('power:set', async (e, guid) => {
+  await runCmd('powercfg', ['/setactive', guid], { timeout: 15000, encoding: 'gbk' });
+  return true;
+});
+
+/* ================= IPC: 通用文件下载（断点续传） ================= */
+handle('net:download', (e, { url, out }) => {
+  const id = 'dl2' + (++jobSeq);
+  const ctrl = new AbortController();
+  jobs.set(id, { cancel: () => ctrl.abort() });
+  latestCancelable = () => ctrl.abort();
+  (async () => {
+    try {
+      await downloadToFile(url, out, id, ctrl, path.basename(out));
+      send('job:stream', { id, data: JSON.stringify({ done: true, ok: true, out }) });
+    } catch (err) {
+      send('job:stream', { id, data: JSON.stringify({ done: true, ok: false, error: err.name === 'AbortError' ? '已取消' : err.message }) });
+    } finally { jobs.delete(id); }
+  })();
+  return { id };
+});
+
+/* ================= IPC: Win11 经典右键菜单切换 ================= */
+const WIN11_CTX_KEY = 'HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}';
+handle('ctxmenu:classic', async (e, on, restart) => {
+  if (on) await runCmd('reg', ['add', WIN11_CTX_KEY + '\\InnoServerSetup', '/f'], { timeout: 10000 });
+  else await runCmd('reg', ['delete', WIN11_CTX_KEY, '/f'], { timeout: 10000 }).catch(() => {});
+  if (restart) {
+    spawn('taskkill', ['/f', '/im', 'explorer.exe'], { windowsHide: true });
+    setTimeout(() => { try { spawn('explorer.exe', [], { windowsHide: true, detached: true }); } catch (e) {} }, 800);
+  }
+  return true;
+});
+handle('ctxmenu:classic-status', async () => {
+  try { const r = await runCmd('reg', ['query', WIN11_CTX_KEY], { timeout: 8000 }); return { on: r.code === 0 }; }
+  catch (e) { return { on: false }; }
 });
 
 /* ================= lifecycle ================= */

@@ -394,4 +394,106 @@
         div('field-hint', '默认使用 Cloudflare 测速节点，仅在你点击按钮时联网')));
     }
   });
+
+  /* ---------- WiFi 密码查看 ---------- */
+  register({
+    id: 'wifi-password', name: 'WiFi 密码查看', module: MOD, icon: 'wifi',
+    desc: '列出本机已保存的 WiFi 并查看其连接密码',
+    keywords: ['wifi', '密码', '无线', 'wlan'],
+    render(page) {
+      const listBox = div('');
+      const status = h('span', { class: 'field-hint' }, '');
+      const refreshBtn = btn('🔄 重新加载', 'btn-sm btn-secondary', load);
+      async function load() {
+        listBox.innerHTML = '';
+        listBox.appendChild(window.ui.loadingBlock('读取已保存的 WiFi…'));
+        try {
+          const r = await invoke('wifi:profiles');
+          listBox.innerHTML = '';
+          status.textContent = `${r.names.length} 个配置文件`;
+          for (const name of r.names) {
+            const row = div('form-row',
+              h('span', { class: 'mono', style: { flex: '1' } }, name),
+              h('span', { class: 'field-hint wifi-key' }, '—'));
+            row.appendChild(btn('查看密码', 'btn-sm btn-text', async () => {
+              const keyEl = row.querySelector('.wifi-key');
+              keyEl.textContent = '查询中…';
+              try {
+                const k = await invoke('wifi:key', name);
+                keyEl.textContent = k.key ? k.key : '（开放网络无密码）';
+                if (k.key) row.appendChild(btn('复制', 'btn-sm btn-text', () => copyText(k.key)));
+              } catch (e) { keyEl.textContent = '✗ ' + (e && e.message ? e.message : e); }
+            }));
+            listBox.appendChild(row);
+          }
+        } catch (e) {
+          listBox.innerHTML = '';
+          listBox.appendChild(div('field-err', '✗ ' + (e && e.message ? e.message : e)));
+        }
+      }
+      page.appendChild(div('card', div('card-title', '已保存的 WiFi'),
+        div('form-row', refreshBtn, status), listBox,
+        div('field-hint', '密码以明文保存在 Windows 无线配置中，本工具仅本机读取显示')));
+      load();
+    }
+  });
+
+  /* ---------- 文件下载器 ---------- */
+  register({
+    id: 'downloader', name: '文件下载', module: MOD, icon: 'download',
+    desc: '下载直链文件：断点续传、自动重试、实时进度',
+    keywords: ['下载', 'download', '直链', 'url'],
+    render(page) {
+      const urlIn = h('input', { class: 'input mono', placeholder: 'https://… 直链地址', style: { flex: '1' } });
+      const fileIn = h('input', { class: 'input input-sm', placeholder: '保存路径（留空 = 数据目录/文件名）', style: { flex: '1' } });
+      const pickBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
+        const p = await invoke('dialog:save', {});
+        if (p) fileIn.value = p;
+      });
+      const prog = progressEl(); prog.hide();
+      const status = h('span', { class: 'field-hint' }, '');
+      const startBtn = btn('⬇ 开始下载', 'btn-primary', start);
+      const stopBtn = btn('■ 取消', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); });
+      stopBtn.disabled = true;
+      let jobId = null, unsub = null, pageDead = false;
+      window.App.onCleanup(() => {
+        pageDead = true;
+        if (unsub) try { unsub(); } catch (e) {}
+        if (jobId) invoke('job:kill', jobId).catch(() => {});
+      });
+      async function start() {
+        const url = urlIn.value.trim();
+        if (!/^https?:\/\//.test(url)) return toast('请输入 http(s) 直链', 'warn');
+        let out = fileIn.value.trim();
+        if (!out) {
+          const name = decodeURIComponent(url.split('?')[0].split('/').pop() || 'download.bin');
+          const info = await invoke('app:get-info').catch(() => null);
+          out = (info && info.userData ? info.userData : 'C:/Users/Public/Downloads') + '/' + name;
+        }
+        prog.show(); status.textContent = '连接中…';
+        startBtn.disabled = true; stopBtn.disabled = false;
+        unsub = window.api.on('job:stream', (d) => {
+          try {
+            const j = JSON.parse(d.data);
+            if (j.pct != null) { prog.set(j.pct); status.textContent = `${(j.mb || 0).toFixed(1)} / ${(j.totalMB || 0).toFixed(1)} MB（${(j.pct || 0).toFixed(0)}%）`; }
+            if (j.label && j.pct == null) status.textContent = j.label;
+            if (j.done) {
+              startBtn.disabled = false; stopBtn.disabled = true; jobId = null;
+              prog.hide();
+              status.textContent = j.ok ? `✓ 已保存：${j.out}` : '✗ ' + (j.error || '失败');
+              if (j.ok) toast('下载完成：' + j.out, 'success');
+            }
+          } catch (e) {}
+        });
+        const r = await invoke('net:download', { url, out });
+        jobId = r.id;
+        if (pageDead && jobId) invoke('job:kill', jobId).catch(() => {});
+      }
+      page.appendChild(div('card', div('card-title', '下载'),
+        div('form-row', urlIn),
+        div('form-row', fileIn, pickBtn),
+        div('form-row', startBtn, ' ', stopBtn, prog.el, status),
+        div('field-hint', '支持断点续传与失败自动重试（6 次）')));
+    }
+  });
 })();

@@ -1017,4 +1017,304 @@
       };
     }
   });
+
+  /* ---------- 屏幕录制 ---------- */
+  register({
+    id: 'screen-rec', name: '屏幕录制', module: MOD, icon: 'film',
+    desc: '录制全屏为 MP4（ffmpeg gdigrab），停止后自动封装可立即播放',
+    keywords: ['录制', '录屏', '屏幕', 'video', 'capture'],
+    render(page) {
+      const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空 = 桌面）', style: { flex: '1' } });
+      const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
+        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        if (d && d[0]) outDirIn.value = d[0];
+      });
+      const fpsSel = h('select', { class: 'select input-sm' },
+        h('option', { value: '15' }, '15 帧（文件小）'), h('option', { value: '30', selected: true }, '30 帧（流畅）'), h('option', { value: '60' }, '60 帧（高帧率）'));
+      const status = h('div', { class: 'field-hint' }, '点击开始后录制整个主屏幕，期间可最小化窗口');
+      const startBtn = btn('⏺ 开始录制', 'btn-primary', start);
+      const stopBtn = btn('⏹ 停止并保存', 'btn-danger-plain', stop);
+      stopBtn.disabled = true;
+      let recording = false;
+      async function start() {
+        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        if (!st.ffmpeg) { toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
+        const p = await invoke('dialog:save', { defaultPath: '录屏-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
+        if (!p) return;
+        try {
+          await invoke('rec:start', { outPath: p, fps: +fpsSel.value });
+          recording = true; startBtn.disabled = true; stopBtn.disabled = false;
+          status.textContent = '🔴 录制中…（输出到 ' + p + '）';
+        } catch (e) { toast(e.message, 'error'); }
+      }
+      async function stop() {
+        if (!recording) return;
+        stopBtn.disabled = true;
+        status.textContent = '正在封装视频…';
+        try {
+          const r = await invoke('rec:stop');
+          recording = false; startBtn.disabled = false;
+          status.textContent = `✓ 已保存：${r.outPath}（${fmtBytes(r.size || 0)}）`;
+          toast('录制完成：' + fmtBytes(r.size || 0), 'success');
+        } catch (e) { recording = false; startBtn.disabled = false; status.textContent = '✗ ' + e.message; }
+      }
+      window.App.onCleanup(() => { if (recording) invoke('rec:stop').catch(() => {}); });
+      page.appendChild(div('card', div('card-title', '录制'),
+        div('form-row', h('span', { class: 'form-label' }, '帧率'), fpsSel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '保存位置'), outDirIn, pickOutBtn),
+        div('form-row', startBtn, ' ', stopBtn, status),
+        div('field-hint', '录完的 MP4 可直接用「音视频格式转换」转 GIF 或用「视频压制」瘦身')));
+    }
+  });
+
+  /* ---------- 视频截帧 ---------- */
+  register({
+    id: 'video-frames', name: '视频截帧', module: MOD, icon: 'crop',
+    desc: '从视频抽取单帧图片，或按间隔批量导出帧序列（ffmpeg）',
+    keywords: ['截帧', '视频', '帧', '截图', 'frames'],
+    render(page) {
+      const files = [];
+      const dz = dropzone({ text: '拖入或选择视频文件', onFiles: (p) => { files.length = 0; files.push(...p); label.textContent = files[0]; } });
+      const label = div('field-hint', '未选择');
+      const modeSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'single' }, '抽单帧（指定时间点）'),
+        h('option', { value: 'seq' }, '按间隔批量导出帧序列'));
+      const timeIn = h('input', { class: 'input input-sm mono', placeholder: '00:01:30', style: { width: '90px' }, title: '时:分:秒 或 秒数' });
+      const everyIn = h('input', { type: 'number', class: 'input input-sm', value: '1', min: '1', style: { width: '64px' }, title: '每 N 秒导出一帧' });
+      const countIn = h('input', { type: 'number', class: 'input input-sm', value: '20', min: '1', max: '500', style: { width: '64px' }, title: '最多导出帧数' });
+      const wIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '原尺寸', style: { width: '80px' }, title: '限制宽度（px）' });
+      const outLabel = h('div', { class: 'field-hint' }, '');
+      const goBtn = btn('🚀 开始截帧', 'btn-primary', run);
+      const refresh = () => { timeIn.disabled = modeSel.value !== 'single'; everyIn.disabled = countIn.disabled = modeSel.value !== 'seq'; };
+      modeSel.addEventListener('change', refresh); refresh();
+      async function run() {
+        if (!files.length) return toast('请先选择视频', 'warn');
+        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        if (!st.ffmpeg) { toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
+        const src = files[0];
+        const base = src.split(/[\\/]/).pop().replace(/\.\w+$/, '');
+        const outDir = src.replace(/[\\/][^\\/]+$/, '') + '/hehe-frames';
+        try { await invoke('fs:mkdir', outDir); } catch (e) {}
+        const r = await invoke('dialog:open', { properties: ['openDirectory'] }).catch(() => null);
+        const finalDir = (r && r[0]) ? r[0] : outDir;
+        goBtn.disabled = true; outLabel.textContent = '处理中…';
+        try {
+          const r = await invoke('ffmpeg:frames', {
+            input: src, outDir: finalDir, mode: modeSel.value,
+            ss: timeIn.value.trim(), every: Math.max(1, +everyIn.value || 1),
+            count: Math.min(500, +countIn.value || 20), width: wIn.value || null
+          });
+          outLabel.textContent = modeSel.value === 'single'
+            ? `✓ 已导出：${r.first}`
+            : `✓ 帧序列 ${r.count} 张已导出到 ${r.outDir}`;
+          toast('截帧完成', 'success');
+        } catch (e) { outLabel.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+        finally { goBtn.disabled = false; }
+      }
+      page.appendChild(div('card', div('card-title', '视频'), dz, label));
+      page.appendChild(div('card', div('card-title', '参数'),
+        div('form-row', h('span', { class: 'form-label' }, '模式'), modeSel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时间点'), timeIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '间隔(秒)'), everyIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '最多'), countIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '宽度'), wIn),
+        div('form-row', goBtn, outLabel)));
+    }
+  });
+
+  /* ---------- 批量图片 OCR ---------- */
+  register({
+    id: 'batch-ocr', name: '批量图片 OCR', module: MOD, icon: 'eye',
+    desc: '整个文件夹的图片逐张识别文字，汇总导出为文本（本地引擎）',
+    keywords: ['批量', 'ocr', '识别', '文件夹'],
+    render(page) {
+      let dir = '';
+      const langSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'chi_sim+eng' }, '中文+英文'), h('option', { value: 'chi_sim' }, '仅中文'), h('option', { value: 'eng' }, '仅英文'));
+      const dirLabel = h('span', { class: 'field-hint' }, '未选择');
+      const pickBtn = btn('选择文件夹…', 'btn-secondary', async () => {
+        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        if (d && d[0]) { dir = d[0]; dirLabel.textContent = dir; }
+      });
+      const prog = progressEl(); prog.hide();
+      const status = h('span', { class: 'field-hint' }, '');
+      const out = h('textarea', { class: 'pane-ta', placeholder: '识别结果（文件名 + 内容）…', style: { minHeight: '220px' } });
+      const saveBtn = btn('导出 TXT', 'btn-sm btn-secondary', async () => {
+        if (!out.value) return toast('暂无结果', 'warn');
+        const p = await invoke('dialog:save', { defaultPath: 'ocr-result.txt' });
+        if (!p) return;
+        await invoke('fs:write-text', p, out.value);
+        toast('已导出：' + p, 'success');
+      });
+      let running = false;
+      async function run() {
+        if (!dir) return toast('请先选择文件夹', 'warn');
+        if (!window.Tesseract) return toast('OCR 引擎未加载，请重启应用', 'error');
+        if (running) return;
+        running = true; prog.show(); out.value = '';
+        try {
+          const items = await invoke('fs:list', dir);
+          const imgs = items.filter(x => /\.(png|jpe?g|bmp|webp)$/i.test(x.name || x));
+          if (!imgs.length) { toast('该文件夹没有图片', 'warn'); return; }
+          let done = 0;
+          for (const it of imgs) {
+            const name = it.name || it;
+            const p = (dir.replace(/[\\/]+$/, '')) + '/' + name;
+            status.textContent = `识别中 ${done + 1}/${imgs.length}：` + name;
+            try {
+              const r = await invoke('fs:read-file-b64', p);
+              const res = await window.Tesseract.recognize('data:image;base64,' + r.b64, langSel.value, {
+                workerPath: 'node_modules/tesseract.js/dist/worker.min.js', corePath: 'node_modules/tesseract.js-core'
+              });
+              out.value += `===== ${name} =====\n${(res.data.text || '').trim()}\n\n`;
+            } catch (e) { out.value += `===== ${name} =====\n（识别失败：${e.message}）\n\n`; }
+            done++; prog.set(done / imgs.length * 100);
+          }
+          status.textContent = `完成：${imgs.length} 张`;
+          toast('批量识别完成', 'success');
+        } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+        finally { running = false; prog.hide(); }
+      }
+      page.appendChild(div('card', div('card-title', '图片文件夹'), div('form-row', pickBtn, dirLabel, langSel)));
+      page.appendChild(div('card', div('card-title', '识别'),
+        div('form-row', btn('🔍 开始批量识别', 'btn-primary', run), prog.el, status),
+        out, div('form-row', saveBtn)));
+    }
+  });
+
+  /* ---------- 音频剪辑 ---------- */
+  register({
+    id: 'audio-cut', name: '音频剪辑', module: MOD, icon: 'scissors',
+    desc: '截取音频片段、淡入淡出、音量增益（ffmpeg）',
+    keywords: ['音频', '剪辑', '截取', '淡入', '淡出', '音量'],
+    render(page) {
+      const files = [];
+      const dz = dropzone({ text: '拖入或选择音频文件（mp3/m4a/wav/flac）', onFiles: (p) => { files.length = 0; files.push(...p); label.textContent = files[0]; } });
+      const label = div('field-hint', '未选择');
+      const ssIn = h('input', { class: 'input input-sm mono', placeholder: '00:00', style: { width: '70px' } });
+      const toIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '秒数', style: { width: '70px' }, title: '从起点开始截取的时长' });
+      const fadeInIn = h('input', { type: 'number', class: 'input input-sm', value: '0', min: '0', max: '30', style: { width: '56px' }, title: '淡入秒数（0=关闭）' });
+      const fadeOutIn = h('input', { type: 'number', class: 'input input-sm', value: '0', min: '0', max: '30', style: { width: '56px' }, title: '淡出秒数（0=关闭）' });
+      const gainIn = h('input', { type: 'number', class: 'input input-sm', value: '0', step: '0.5', style: { width: '60px' }, title: '音量增益（dB，0=不变，负值降低）' });
+      const fmtSel = h('select', { class: 'select input-sm' }, h('option', { value: 'keep' }, '保持原格式'), h('option', { value: 'mp3' }, 'MP3'), h('option', { value: 'm4a' }, 'M4A'), h('option', { value: 'wav' }, 'WAV'));
+      const status = h('div', { class: 'field-hint' }, '');
+      const goBtn = btn('✂️ 开始剪辑', 'btn-primary', run);
+      async function run() {
+        if (!files.length) return toast('请先选择音频', 'warn');
+        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        if (!st.ffmpeg) { toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
+        const src = files[0];
+        const dur = Math.max(0, +toIn.value || 0);
+        const fi = Math.max(0, +fadeInIn.value || 0), fo = Math.max(0, +fadeOutIn.value || 0), gain = +gainIn.value || 0;
+        let fmt = fmtSel.value;
+        if (fmt === 'keep') { const e = src.split('.').pop().toLowerCase(); fmt = ['mp3', 'm4a', 'wav', 'flac'].includes(e) ? e : 'mp3'; }
+        const out = src.replace(/\.\w+$/, '_cut.' + fmt);
+        goBtn.disabled = true; status.textContent = '处理中…';
+        try {
+          const r = await invoke('ffmpeg:audio-cut', {
+            input: src, out, ss: ssIn.value.trim(), dur, fadeIn: fi, fadeOut: fo, gain, format: fmt
+          });
+          status.textContent = `✓ 已输出：${out}（${fmtBytes(r.size)}）`;
+          toast('剪辑完成', 'success');
+        } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+        finally { goBtn.disabled = false; }
+      }
+      page.appendChild(div('card', div('card-title', '音频'), dz, label));
+      page.appendChild(div('card', div('card-title', '剪辑参数'),
+        div('form-row', h('span', { class: 'form-label' }, '起点'), ssIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时长(秒)'), toIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '淡入'), fadeInIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '淡出'), fadeOutIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '增益dB'), gainIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '格式'), fmtSel),
+        div('form-row', goBtn, status)));
+    }
+  });
+
+  /* ---------- 相似图片查找 ---------- */
+  register({
+    id: 'img-dedup', name: '相似图片查找', module: MOD, icon: 'image',
+    desc: '感知哈希（dHash）找出内容相近的图片：改过尺寸/压缩过的也能找出',
+    keywords: ['相似', '图片', '重复', '去重', 'dhash'],
+    render(page) {
+      let dir = '';
+      const dirLabel = h('span', { class: 'field-hint' }, '未选择');
+      const pickBtn = btn('选择文件夹…', 'btn-secondary', async () => {
+        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        if (d && d[0]) { dir = d[0]; dirLabel.textContent = dir; }
+      });
+      const threshIn = h('input', { type: 'number', class: 'input input-sm', value: '6', min: '0', max: '20', style: { width: '60px' }, title: '汉明距离阈值，越小越严格' });
+      const prog = progressEl(); prog.hide();
+      const status = h('span', { class: 'field-hint' }, '');
+      const listBox = div('');
+      async function run() {
+        if (!dir) return toast('请先选择文件夹', 'warn');
+        prog.show(); listBox.innerHTML = ''; status.textContent = '读取图片…';
+        try {
+          const items = await invoke('fs:list', dir);
+          const imgs = items.map(x => x.name || x).filter(n => /\.(png|jpe?g|bmp|webp)$/i.test(n));
+          if (imgs.length < 2) { toast('图片不足 2 张', 'warn'); return; }
+          const hashes = [];
+          for (let i = 0; i < imgs.length; i++) {
+            prog.set(i / imgs.length * 100);
+            const p = dir.replace(/[\\/]+$/, '') + '/' + imgs[i];
+            try {
+              const img = await loadImg(p);
+              // dHash：9x8 灰度，水平相邻比较 → 64 bit
+              const c = document.createElement('canvas');
+              c.width = 9; c.height = 8;
+              const ctx = c.getContext('2d');
+              ctx.drawImage(img, 0, 0, 9, 8);
+              const d = ctx.getImageData(0, 0, 9, 8).data;
+              let bits = '';
+              for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+                const a = d[(y * 9 + x) * 4], b = d[(y * 9 + x + 1) * 4];
+                bits += a > b ? '1' : '0';
+              }
+              hashes.push({ path: p, name: imgs[i], bits });
+            } catch (e) { /* 跳过损坏图片 */ }
+          }
+          status.textContent = '比对中…';
+          const thresh = Math.max(0, Math.min(20, +threshIn.value || 6));
+          const groups = [];
+          const used = new Array(hashes.length).fill(false);
+          for (let i = 0; i < hashes.length; i++) {
+            if (used[i]) continue;
+            const grp = [hashes[i]];
+            for (let j = i + 1; j < hashes.length; j++) {
+              if (used[j]) continue;
+              let dist = 0;
+              for (let k = 0; k < 64; k++) if (hashes[i].bits[k] !== hashes[j].bits[k]) dist++;
+              if (dist <= thresh) { grp.push(hashes[j]); used[j] = true; }
+            }
+            if (grp.length > 1) groups.push(grp);
+            used[i] = true;
+          }
+          prog.hide();
+          if (!groups.length) { status.textContent = `未发现相似图片（${hashes.length} 张，阈值 ${thresh}）`; return; }
+          status.textContent = `发现 ${groups.length} 组相似（共 ${hashes.length} 张参与）`;
+          groups.forEach((g, gi) => {
+            const card = div('card');
+            card.appendChild(div('card-title', `第 ${gi + 1} 组 · ${g.length} 张`));
+            const grid = div('tool-grid');
+            for (const it of g) {
+              const cell = div('tc-item', { style: { cursor: 'pointer' } });
+              cell.appendChild(div('tc-name', { style: { fontSize: '11px', wordBreak: 'break-all' } }, it.name));
+              cell.addEventListener('click', () => invoke('fs:show-item', it.path));
+              grid.appendChild(cell);
+            }
+            card.appendChild(grid);
+            listBox.appendChild(card);
+          });
+          toast(`发现 ${groups.length} 组相似图片`, 'success');
+        } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); prog.hide(); }
+        finally { prog.hide(); }
+      }
+      page.appendChild(div('card', div('card-title', '图片文件夹'),
+        div('form-row', pickBtn, dirLabel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '相似阈值'), threshIn,
+          btn('🔍 查找相似', 'btn-primary', run), prog.el, status)));
+      page.appendChild(listBox);
+    }
+  });
 })();

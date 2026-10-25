@@ -502,4 +502,229 @@
       load();
     }
   });
+
+  /* ---------- Win11 经典右键菜单 ---------- */
+  register({
+    id: 'win-classic-menu', name: '经典右键菜单', module: MOD, icon: 'list',
+    desc: '一键切换 Win11 右键菜单为 Win10 经典样式（可随时还原）',
+    keywords: ['右键', '菜单', '经典', 'win11', 'contextmenu'],
+    render(page) {
+      const statusLine = h('div', { class: 'field-hint' }, '检测当前状态…');
+      async function refresh() {
+        try { const s = await invoke('ctxmenu:classic-status'); statusLine.textContent = s.on ? '当前：经典菜单（Win10 样式）' : '当前：Win11 新版菜单'; }
+        catch (e) { statusLine.textContent = '状态检测失败'; }
+      }
+      const apply = (on) => invoke('ctxmenu:classic', on, false).then(() => { toast(on ? '已切换为经典菜单' : '已恢复 Win11 菜单', 'success'); refresh(); }).catch((e) => toast(e.message, 'error'));
+      page.appendChild(div('card', div('card-title', '右键菜单样式'), statusLine,
+        div('form-row',
+          btn('切换为经典菜单', 'btn-primary', async () => {
+            if (!(await confirmBox({ title: '切换经典菜单', message: '将注册表写入经典菜单开关，需要重启资源管理器后生效。立即重启资源管理器吗？（不重启也可稍后手动注销/重启系统）', okText: '切换并立即生效' })))
+              return apply(true);
+            await invoke('ctxmenu:classic', true, true).catch((e) => toast(e.message, 'error'));
+            toast('已切换并重启资源管理器', 'success'); refresh();
+          }),
+          btn('恢复 Win11 菜单', 'btn-secondary', async () => {
+            await apply(false);
+            toast('如未立即生效，请重启资源管理器或注销重登', 'info');
+          })),
+        div('field-hint', '原理：注册表 HKCU 下 CLSID {86ca1aa0-…} 键的创建/删除，仅影响当前用户，完全可逆。')));
+      refresh();
+    }
+  });
+
+  /* ---------- 窗口管理 ---------- */
+  register({
+    id: 'window-manager', name: '窗口管理', module: MOD, icon: 'grid',
+    desc: '列出当前所有窗口：置顶/取消置顶、调节透明度、置底',
+    keywords: ['窗口', '置顶', '透明', '管理', 'topmost'],
+    render(page) {
+      const listBox = div('');
+      const status = h('span', { class: 'field-hint' }, '');
+      const refreshBtn = btn('🔄 刷新', 'btn-sm btn-secondary', load);
+      async function load() {
+        listBox.innerHTML = '';
+        listBox.appendChild(window.ui.loadingBlock('枚举窗口…'));
+        try {
+          const rows = await invoke('winmgr:list');
+          listBox.innerHTML = '';
+          status.textContent = `${rows.length} 个窗口`;
+          for (const w of rows) {
+            const row = div('form-row',
+              h('span', { class: 'tag ' + (w.topmost ? 'tag-orange' : 'tag-gray'), style: { width: '52px', justifyContent: 'center' } }, w.topmost ? '置顶' : '普通'),
+              h('span', { class: 'mono', style: { width: '110px', fontSize: '11px' } }, w.proc),
+              h('span', { style: { flex: '1', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: w.title }, w.title));
+            row.appendChild(btn(w.topmost ? '取消置顶' : '置顶', 'btn-sm btn-text', async () => {
+              try { await invoke('winmgr:topmost', w.hwnd, !w.topmost); toast('已' + (w.topmost ? '取消置顶' : '置顶'), 'success'); load(); }
+              catch (e) { toast(e.message, 'error'); }
+            }));
+            const opSel = h('select', { class: 'select', style: { width: '76px', fontSize: '12px' } },
+              h('option', { value: '' }, '透明'),
+              h('option', { value: '255' }, '100%'), h('option', { value: '200' }, '80%'),
+              h('option', { value: '150' }, '60%'), h('option', { value: '100' }, '40%'));
+            opSel.addEventListener('change', async () => {
+              if (!opSel.value) return;
+              try { await invoke('winmgr:opacity', w.hwnd, +opSel.value); toast('透明度已调整', 'success', 1000); }
+              catch (e) { toast(e.message, 'error'); }
+            });
+            row.appendChild(opSel);
+            row.appendChild(btn('置底', 'btn-sm btn-text', async () => {
+              try { await invoke('winmgr:bottom', w.hwnd); toast('已置底', 'success', 1000); }
+              catch (e) { toast(e.message, 'error'); }
+            }));
+            listBox.appendChild(row);
+          }
+        } catch (e) {
+          listBox.innerHTML = '';
+          listBox.appendChild(div('field-err', '✗ ' + (e && e.message ? e.message : e)));
+        }
+      }
+      page.appendChild(div('card', div('card-title', '当前窗口'),
+        div('form-row', refreshBtn, status), listBox,
+        div('field-hint', '透明度只对支持的窗口生效（部分自绘/UWP 窗口不响应）；恢复 100% 即移除透明效果')));
+      load();
+    }
+  });
+
+  /* ---------- 服务与电源计划 ---------- */
+  register({
+    id: 'services-power', name: '服务与电源', module: MOD, icon: 'server',
+    desc: '查看/启停 Windows 服务（需管理员）与切换电源计划',
+    keywords: ['服务', 'service', '电源', '计划', 'powercfg'],
+    render(page) {
+      const svcBox = div('');
+      const svcFilter = h('input', { class: 'input input-sm', placeholder: '按名称过滤服务…', style: { width: '200px' } });
+      const svcStatus = h('span', { class: 'field-hint' }, '');
+      let allSvc = [];
+      async function loadSvc() {
+        svcBox.innerHTML = '';
+        svcBox.appendChild(window.ui.loadingBlock('读取服务列表…'));
+        try {
+          allSvc = await invoke('svc:list');
+          svcStatus.textContent = `${allSvc.length} 个服务`;
+          renderSvc();
+        } catch (e) { svcBox.innerHTML = ''; svcBox.appendChild(div('field-err', '✗ ' + e.message)); }
+      }
+      function renderSvc() {
+        const q = svcFilter.value.trim().toLowerCase();
+        const list = q ? allSvc.filter(s => (s.Name + s.DisplayName).toLowerCase().includes(q)) : allSvc.slice(0, 100);
+        svcBox.innerHTML = '';
+        svcBox.appendChild(h('div', { class: 'field-hint', style: { marginBottom: '6px' } }, q ? `匹配 ${list.length} 个` : `显示前 100 个（共 ${allSvc.length}，输入过滤）`));
+        for (const s of list) {
+          const running = s.Status === 'Running';
+          const row = div('form-row',
+            h('span', { class: 'tag ' + (running ? 'tag-green' : 'tag-gray'), style: { width: '60px', justifyContent: 'center' } }, running ? '运行' : '停止'),
+            h('span', { style: { flex: '1', fontSize: '12px' } }, s.DisplayName || s.Name),
+            h('span', { class: 'field-hint mono', style: { fontSize: '11px' } }, s.Name));
+          if (running) row.appendChild(btn('停止', 'btn-sm btn-danger-plain', () => act(s, 'stop')));
+          else row.appendChild(btn('启动', 'btn-sm btn-text', () => act(s, 'start')));
+          svcBox.appendChild(row);
+        }
+      }
+      async function act(s, action) {
+        try { await invoke('svc:action', s.Name, action); toast(`已${action === 'start' ? '启动' : '停止'}：${s.DisplayName || s.Name}`, 'success'); loadSvc(); }
+        catch (e) { toast(e.message.includes('1060') || e.message.includes('访问') || /5$|拒绝/.test(e.message) ? '需要管理员权限：请以管理员身份运行核核工具箱' : e.message, 'error'); }
+      }
+      svcFilter.addEventListener('input', renderSvc);
+      const powerBox = div('');
+      async function loadPower() {
+        powerBox.innerHTML = '';
+        powerBox.appendChild(window.ui.loadingBlock('读取电源计划…'));
+        try {
+          const plans = await invoke('power:list');
+          powerBox.innerHTML = '';
+          for (const p of plans) {
+            const row = div('form-row',
+              h('span', { class: 'tag ' + (p.active ? 'tag-green' : 'tag-gray'), style: { width: '60px', justifyContent: 'center' } }, p.active ? '使用中' : '可用'),
+              h('span', { style: { flex: '1' } }, p.name));
+            if (!p.active) row.appendChild(btn('切换', 'btn-sm btn-text', async () => {
+              try { await invoke('power:set', p.guid); toast('已切换：' + p.name, 'success'); loadPower(); }
+              catch (e) { toast(e.message, 'error'); }
+            }));
+            powerBox.appendChild(row);
+          }
+        } catch (e) { powerBox.innerHTML = ''; powerBox.appendChild(div('field-err', '✗ ' + e.message)); }
+      }
+      page.appendChild(div('card', div('card-title', 'Windows 服务'),
+        div('form-row', btn('🔄 刷新', 'btn-sm btn-secondary', loadSvc), svcFilter, svcStatus),
+        div('field-hint', '启动/停止服务需要管理员权限运行'), svcBox));
+      page.appendChild(div('card', div('card-title', '电源计划'), powerBox));
+      loadSvc(); loadPower();
+    }
+  });
+
+  /* ---------- 定时任务 ---------- */
+  register({
+    id: 'scheduler', name: '定时任务', module: MOD, icon: 'timer',
+    desc: '定时关机/重启/睡眠/锁屏/提醒，倒计时精确到秒，可取消',
+    keywords: ['定时', '关机', '重启', '睡眠', '锁屏', '提醒', '倒计时'],
+    render(page) {
+      const modeSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'shutdown' }, '关机'), h('option', { value: 'restart' }, '重启'),
+        h('option', { value: 'sleep' }, '睡眠'), h('option', { value: 'lock' }, '锁屏'),
+        h('option', { value: 'remind' }, '提醒我'));
+      const minIn = h('input', { type: 'number', class: 'input input-sm', value: '30', min: '1', style: { width: '80px' } });
+      const msgIn = h('input', { class: 'input input-sm', placeholder: '提醒内容（提醒模式）', style: { flex: '1' } });
+      const countdown = h('span', { class: 'tag tag-blue' }, '未设置');
+      const status = h('span', { class: 'field-hint' }, '');
+      let timer = null, targetTs = 0, mode = '';
+      window.App.onCleanup(() => { if (timer) clearInterval(timer); });
+      function fmtLeft(ms) {
+        const s = Math.max(0, Math.ceil(ms / 1000));
+        return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+      }
+      function arm(label, secs, fire) {
+        if (timer) clearInterval(timer);
+        targetTs = Date.now() + secs * 1000;
+        mode = label;
+        countdown.textContent = `${label} ${fmtLeft(secs * 1000)}`;
+        countdown.className = 'tag tag-orange';
+        timer = setInterval(() => {
+          const left = targetTs - Date.now();
+          if (left <= 0) {
+            clearInterval(timer); timer = null;
+            countdown.textContent = '已触发'; countdown.className = 'tag tag-green';
+            fire();
+          } else countdown.textContent = `${label} ${fmtLeft(left)}`;
+        }, 500);
+      }
+      async function apply() {
+        const mins = Math.max(1, +minIn.value || 1);
+        const m = modeSel.value;
+        if (m === 'remind') {
+          if (!msgIn.value.trim()) return toast('请输入提醒内容', 'warn');
+          arm('提醒', mins * 60, () => {
+            try { new Notification('核核工具箱 · 定时提醒', { body: msgIn.value }); } catch (e) {}
+            toast('⏰ ' + msgIn.value, 'info', 5000);
+          });
+          status.textContent = `将在 ${mins} 分钟后提醒`;
+          return;
+        }
+        const confirmMsg = { shutdown: '关机', restart: '重启', sleep: '睡眠', lock: '锁屏' }[m];
+        if (m === 'shutdown' || m === 'restart') {
+          if (!(await confirmBox({ title: '定时' + confirmMsg, message: `${mins} 分钟后执行「${confirmMsg}」，确定？（期间可在此取消）`, okText: '确定' }))) return;
+          try { await invoke('exec:run', { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd' }); } catch (e) { return toast(e.message, 'error'); }
+          arm(confirmMsg, mins * 60, () => {});
+          status.textContent = `系统将在 ${mins} 分钟后${confirmMsg}（shutdown 计划，可点击取消）`;
+        } else {
+          if (!(await confirmBox({ title: '定时' + confirmMsg, message: `${mins} 分钟后执行「${confirmMsg}」？`, okText: '确定' }))) return;
+          arm(confirmMsg, mins * 60, async () => {
+            const cmd = m === 'sleep' ? 'rundll32.exe powrprof.dll,SetSuspendState 0,1,0' : 'rundll32.exe user32.dll,LockWorkStation';
+            invoke('exec:run', { cmd, shellType: 'cmd' }).catch(() => {});
+          });
+          status.textContent = `将在 ${mins} 分钟后${confirmMsg}`;
+        }
+      }
+      async function cancel() {
+        if (timer) { clearInterval(timer); timer = null; }
+        try { await invoke('exec:run', { cmd: 'shutdown /a', shellType: 'cmd' }); } catch (e) {} // 取消系统的关机计划（如有）
+        countdown.textContent = '已取消'; countdown.className = 'tag tag-gray';
+        status.textContent = '已取消定时任务（含系统关机计划）';
+      }
+      page.appendChild(div('card', div('card-title', '定时任务'),
+        div('form-row', h('span', { class: 'form-label' }, '动作'), modeSel,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '分钟'), minIn, msgIn),
+        div('form-row', btn('⏲ 设置', 'btn-primary', apply), ' ', btn('取消', 'btn-danger-plain', cancel), countdown, status),
+        div('field-hint', '关机/重启走系统 shutdown 计划（关机前弹窗可跳过）；睡眠/锁屏/提醒在应用内计时（关闭工具箱页面不影响运行，但退出应用会终止提醒类任务）')));
+    }
+  });
 })();

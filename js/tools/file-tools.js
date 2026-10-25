@@ -568,4 +568,148 @@
       setTimeout(() => { try { inBox.focus(); } catch (e) {} }, 100);
     }
   });
+
+  /* ---------- 文件内容搜索 ---------- */
+  register({
+    id: 'content-search', name: '文件内容搜索', module: MOD, icon: 'search',
+    desc: '在目录里按文本/正则搜文件内容，逐行匹配实时流出（自动跳过二进制）',
+    keywords: ['内容', '搜索', 'grep', '正则', '文本'],
+    render(page) {
+      let root = '';
+      const rootLabel = h('span', { class: 'field-hint' }, '未选择');
+      const pickBtn = btn('选择目录…', 'btn-secondary', async () => {
+        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        if (d && d[0]) { root = d[0]; rootLabel.textContent = root; }
+      });
+      const inBox = h('input', { class: 'input', placeholder: '要搜索的内容…', style: { flex: '1' } });
+      const regexChk = h('input', { type: 'checkbox', class: 'checkbox' });
+      const ciChk = h('input', { type: 'checkbox', class: 'checkbox' }); ciChk.checked = true;
+      const extIn = h('input', { class: 'input input-sm', placeholder: '扩展名过滤，如 js,txt,md（留空全部）', style: { width: '230px' } });
+      const status = h('span', { class: 'field-hint' }, '');
+      const startBtn = btn('🔍 搜索', 'btn-primary', start);
+      const stopBtn = btn('■ 停止', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); });
+      stopBtn.disabled = true;
+      const listBox = div('');
+      let jobId = null, unsub = null, pageDead = false;
+      window.App.onCleanup(() => {
+        pageDead = true;
+        if (unsub) try { unsub(); } catch (e) {}
+        if (jobId) invoke('job:kill', jobId).catch(() => {});
+      });
+      // 持久单表流式追加
+      let resTbody = null;
+      const COLS = [
+        { title: '文件', render: (td, r) => td.appendChild(h('span', { class: 'mono', style: { wordBreak: 'break-all', fontSize: '11px' } }, r.path)) },
+        { title: '行', w: '56px', render: (td, r) => td.append(String(r.line)) },
+        { title: '内容', render: (td, r) => td.appendChild(h('span', { class: 'field-hint', style: { wordBreak: 'break-all', fontSize: '11px' } }, r.text)) }
+      ];
+      function appendRows(rows) {
+        if (!resTbody) {
+          const table = h('table', { class: 'table' });
+          const thead = h('thead');
+          const trh = h('tr');
+          for (const c of COLS) trh.appendChild(h('th', { style: c.w ? { width: c.w } : null }, c.title));
+          thead.appendChild(trh);
+          table.appendChild(thead);
+          resTbody = h('tbody');
+          table.appendChild(resTbody);
+          const wrap = div('table-scroll'); wrap.appendChild(table);
+          listBox.appendChild(wrap);
+        }
+        for (const r of rows) {
+          const tr = h('tr');
+          for (const c of COLS) { const td = h('td'); c.render(td, r); tr.appendChild(td); }
+          resTbody.appendChild(tr);
+        }
+      }
+      async function start() {
+        if (!root) return toast('请先选择目录', 'warn');
+        const q = inBox.value.trim();
+        if (!q) return toast('请输入搜索内容', 'warn');
+        if (regexChk.checked) { try { new RegExp(q); } catch (e) { return toast('正则无效：' + e.message, 'error'); } }
+        resTbody = null; listBox.innerHTML = ''; status.textContent = '搜索中…';
+        startBtn.disabled = true; stopBtn.disabled = false;
+        let n = 0;
+        unsub = window.api.on('job:stream', (d) => {
+          try {
+            const j = JSON.parse(d.data);
+            if (j.rows) { n += j.rows.length; appendRows(j.rows); }
+            if (j.scanned != null && !j.done) status.textContent = `已扫描 ${j.scanned.toLocaleString()} 个文件 · 命中 ${n} 行…`;
+            if (j.done) {
+              startBtn.disabled = false; stopBtn.disabled = true; jobId = null;
+              status.textContent = j.error ? ('✗ ' + j.error) : `完成：命中 ${j.matched} 行 · 扫描 ${j.scanned.toLocaleString()} 文件 · ${j.ms}ms`;
+            }
+          } catch (e) {}
+        });
+        const r = await invoke('content:search', { root, q, useRegex: regexChk.checked, ci: ciChk.checked, exts: extIn.value.trim(), limit: 1000 });
+        jobId = r.id;
+        if (pageDead && jobId) invoke('job:kill', jobId).catch(() => {});
+      }
+      inBox.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
+      page.appendChild(div('card', div('card-title', '搜索范围'),
+        div('form-row', pickBtn, rootLabel),
+        div('form-row', inBox,
+          h('label', { class: 'field-hint' }, regexChk, ' 正则'),
+          h('label', { class: 'field-hint' }, ciChk, ' 忽略大小写'), startBtn, ' ', stopBtn),
+        div('form-row', extIn, status)));
+      page.appendChild(listBox);
+    }
+  });
+
+  /* ---------- 7z 压缩包 ---------- */
+  register({
+    id: 'archive-7z', name: '7z 压缩包', module: MOD, icon: 'box',
+    desc: '7z 格式压缩/解压，支持密码加密、分卷；检测到系统 7-Zip 时支持更多格式',
+    keywords: ['7z', '压缩', '解压', '密码', '分卷', 'rar'],
+    render(page) {
+      const engineLine = div('field-hint', '检测引擎…');
+      let engines = null;
+      invoke('seven:status').then((s) => {
+        engines = s;
+        engineLine.innerHTML = '';
+        engineLine.appendChild(h('span', { class: 'tag ' + (s.za ? 'tag-green' : 'tag-red') }, s.za ? '内置 7za ✓（7z/zip）' : '内置 7za 缺失'));
+        engineLine.appendChild(h('span', { class: 'tag ' + (s.full ? 'tag-green' : 'tag-gray') }, s.full ? '系统 7-Zip ✓（含 rar 等全格式）' : '系统 7-Zip 未检测（装后可解 rar）'));
+      }).catch(() => { engineLine.textContent = '引擎检测失败'; });
+      /* 压缩 */
+      const cPaths = [];
+      const dz1 = dropzone({ text: '拖入或选择要压缩的文件/文件夹（可多选）', onFiles: (p) => { cPaths.push(...p); cLabel.textContent = `已选 ${cPaths.length} 项`; } });
+      const cLabel = div('field-hint', '未选择');
+      const zipName = h('input', { class: 'input input-sm', placeholder: '输出 .7z 路径（留空自动命名）', style: { flex: '1' } });
+      const pwdIn = h('input', { class: 'input input-sm', placeholder: '密码（留空不加密）', style: { width: '140px' } });
+      const volIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '分卷MB', style: { width: '90px' }, title: '分卷大小（MB，留空不分卷）' });
+      const cBtn = btn('📦 压缩', 'btn-primary', async () => {
+        if (!cPaths.length) return toast('请选择文件', 'warn');
+        try {
+          let out = zipName.value.trim();
+          if (!out) {
+            const first = cPaths[0];
+            const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/')) : first.slice(0, first.lastIndexOf('\\'));
+            out = await invoke('fs:unique-path', dir + '/archive.7z');
+          } else out = await invoke('fs:unique-path', out.endsWith('.7z') ? out : out + '.7z');
+          const r = await invoke('seven:compress', { files: [...cPaths], out, password: pwdIn.value || '', volumeMB: volIn.value ? +volIn.value : 0 });
+          toast('压缩完成：' + fmtBytes(r.size), 'success');
+        } catch (e) { toast(e.message, 'error'); }
+      });
+      /* 解压 */
+      const exPath = { p: null };
+      const dz2 = dropzone({ text: '拖入或选择压缩包（.7z / .zip）', onFiles: (p) => { exPath.p = p[0]; exLabel.textContent = p[0]; } });
+      const exLabel = div('field-hint', '未选择');
+      const exPwd = h('input', { class: 'input input-sm', placeholder: '密码（如有）', style: { width: '140px' } });
+      const exBtn = btn('📂 解压', 'btn-primary', async () => {
+        if (!exPath.p) return toast('请选择压缩包', 'warn');
+        try {
+          const outDir = exPath.p.replace(/\.\w+$/, '') + '_extracted';
+          const r = await invoke('seven:extract', { archive: exPath.p, outDir, password: exPwd.value || '' });
+          toast('已解压到：' + r.outDir, 'success');
+        } catch (e) { toast(e.message, 'error'); }
+      });
+      page.appendChild(div('card', div('card-title', '引擎'), engineLine,
+        div('field-hint', '内置 7za 支持 7z/zip/tar/gz 等并支持密码与分卷；RAR 等更多格式需系统安装 7-Zip 完整版。')));
+      page.appendChild(div('card', div('card-title', '压缩为 7z'), dz1, cLabel,
+        div('form-row', zipName),
+        div('form-row', pwdIn, h('span', { class: 'field-hint' }, ' '), volIn, cBtn)));
+      page.appendChild(div('card', div('card-title', '解压'), dz2, exLabel,
+        div('form-row', exPwd, exBtn, h('span', { class: 'field-hint' }, '解压到压缩包旁的同名目录'))));
+    }
+  });
 })();

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
+    #wrap { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; cursor: move; }
+    img { max-width: 100%; max-height: 100%; border-radius: 4px; box-shadow: 0 2px 14px rgba(0,0,0,0.45); }
+    #hint { position: fixed; left: 6px; top: 4px; background: rgba(22,93,255,0.85); color: #fff; font: 11px sans-serif;
+      padding: 2px 8px; border-radius: 10px; opacity: 0; transition: opacity .25s; pointer-events: none; }
+    #wrap:hover ~ #hint, #hint.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="wrap"><img id="pic"></div>
+  <div id="hint">拖动移动 · 滚轮缩放 · 双击 / Esc 关闭</div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const winId = params.get('id');
+    const src = params.get('src');
+    const img = document.getElementById('pic');
+    const hint = document.getElementById('hint');
+    img.src = 'file:///' + encodeURI(src.replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
+    let scale = 1;
+    img.onload = () => { hint.classList.add('show'); setTimeout(() => hint.classList.remove('show'), 2600); };
+
+    // 手动拖动（与标尺一致：app-region 会吞事件，改走 IPC）
+    let dragging = false, grabDX = 0, grabDY = 0, pending = null, raf = 0;
+    function push() {
+      if (raf || !pending || !window.hehe) return;
+      raf = requestAnimationFrame(() => { raf = 0; if (pending && window.hehe) hehe.invoke('win:pin-move', winId, pending[0], pending[1]).catch(() => {}); });
+    }
+    window.addEventListener('mousedown', (e) => { dragging = true; grabDX = e.screenX - window.screenX; grabDY = e.screenY - window.screenY; });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      pending = [e.screenX - grabDX, e.screenY - grabDY];
+      push();
+    });
+    window.addEventListener('mouseup', () => { dragging = false; pending = null; });
+    document.addEventListener('mouseout', (e) => { if (!e.relatedTarget) { dragging = false; pending = null; } });
+    window.addEventListener('blur', () => { dragging = false; pending = null; });
+
+    // 滚轮缩放：改窗口尺寸，图片自适应
+    window.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const w = Math.max(80, Math.round(window.innerWidth * dir));
+      const h = Math.max(60, Math.round(window.innerHeight * dir));
+      if (window.hehe) hehe.invoke('win:pin-resize', winId, w, h).catch(() => {});
+    }, { passive: false });
+
+    function closePin() { try { if (window.hehe) hehe.invoke('win:pin-close', winId).catch(() => {}); } catch (e) {} try { window.close(); } catch (e) {} }
+    window.addEventListener('dblclick', closePin);
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePin(); });
+  </script>
+</body>
+</html>
