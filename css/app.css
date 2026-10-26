@@ -8,6 +8,9 @@
   --success: #00B42A;
   --warning: #FF7D00;
   --danger: #F53F3F;
+  --danger-light: #FFECE8;
+  --danger-hover: rgba(245, 63, 63, 0.06);
+  --danger-line: rgba(245, 63, 63, 0.45);
   --info: #86909C;
   --page-bg: #F2F3F5;
   --card-bg: #FFFFFF;
@@ -48,6 +51,9 @@ html[data-theme='dark'] {
   --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.6);
   --table-head: rgba(64, 128, 255, 0.14);
   --input-bg: #333336;
+  --danger-light: rgba(245, 63, 63, 0.16);
+  --danger-hover: rgba(245, 63, 63, 0.10);
+  --danger-line: rgba(245, 63, 63, 0.45);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -216,6 +222,24 @@ body {
 .tool-card .tc-star { position: absolute; right: 10px; top: 10px; color: var(--text-3); opacity: 0; transition: opacity 0.15s; }
 .tool-card:hover .tc-star { opacity: 1; }
 .tool-card .tc-star.on { opacity: 1; color: var(--warning); fill: var(--warning); }
+
+/* ---- 高危工具卡片：红色区分 ----
+   涉及删文件 / 杀进程 / 改系统的高危工具用红色描边与红色图标，
+   与普通蓝色卡片一眼可分。closed 表示该工具依赖的高危能力尚未开启。 */
+.tool-card.danger { border-color: var(--danger); }
+.tool-card.danger .tc-icon { background: var(--danger-light); color: var(--danger); }
+.tool-card.danger:hover { border-color: var(--danger); background: var(--danger-hover); }
+.tool-card.danger.closed { border-color: var(--danger-line); border-style: dashed; }
+.tool-card.danger.closed .tc-icon { background: var(--danger-light); color: var(--danger); opacity: 0.75; }
+.tool-card.danger.closed .tc-name { color: var(--text-2); }
+.tool-card .tc-danger-tag {
+  display: inline-flex; align-items: center; gap: 3px; margin-top: 6px;
+  font-size: 11px; font-weight: 500; color: var(--danger);
+  background: var(--danger-light); border-radius: 4px; padding: 1px 6px;
+}
+.tool-card.danger.closed .tc-danger-tag { background: transparent; border: 1px solid var(--danger-line); color: var(--text-3); }
+.tool-card .tc-lock { position: absolute; right: 10px; top: 10px; color: var(--danger); opacity: 0.85; }
+.tool-card.danger.closed .tc-lock { color: var(--text-3); opacity: 0.8; }
 
 /* 首页 */
 .home-hero { text-align: left; margin-bottom: 18px; }
@@ -423,6 +447,26 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .set-label { font-size: 14px; color: var(--text-1); }
 .set-desc { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .set-control { margin-left: auto; }
+
+/* 高危功能分区（设置页） */
+.danger-banner {
+  background: var(--danger-light); border: 1px solid var(--danger-line);
+  border-radius: 8px; padding: 14px 16px; margin-bottom: 6px;
+}
+.danger-banner-title { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600; color: var(--danger); margin-bottom: 6px; }
+.danger-banner-title .icon { color: var(--danger); }
+.danger-banner-text { font-size: 12.5px; color: var(--text-2); line-height: 1.65; }
+.danger-row .set-label { color: var(--text-1); }
+.danger-row .set-label::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--danger); margin-right: 7px; vertical-align: 1px;
+}
+
+/* 高危工具未启用时的占位卡 */
+.danger-locked { border: 1px dashed var(--danger-line); }
+.danger-locked-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--danger); margin-bottom: 10px; }
+.danger-locked-title .icon { color: var(--danger); }
+.danger-locked-text { font-size: 13px; color: var(--text-2); line-height: 1.7; margin-bottom: 16px; }
 
 /* 主题选择卡片（Win11 风格） */
 .theme-cards { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0 4px; }

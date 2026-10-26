@@ -61,6 +61,13 @@ function storeSet(key, val) {
 function send(ev, data) { if (win && !win.isDestroyed()) win.webContents.send(ev, data); }
 function fmtErr(e) { return (e && e.message) || String(e); }
 const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
+  // 高危能力门禁：未在设置里开启的能力，其 IPC 一律拒绝。
+  // 放在统一包装里而不是逐个 handler 里，避免以后新增 handler 时忘了加。
+  // sys:power / svc:action 由各自 handler 按 action 精细判定（锁屏、启动服务无害）。
+  const cap = CAP_GATED_CHANNELS[ch];
+  if (cap && !dangerousEnabled(cap)) {
+    return { ok: false, error: dangerousDenied(cap) };
+  }
   try { return { ok: true, data: await fn(e, ...args) }; }
   catch (err) { return { ok: false, error: fmtErr(err) }; }
 });
@@ -99,6 +106,88 @@ const OWN_TEMP_PATTERNS = [
   /^hehe-rollback-.*\.log$/i     // 回滚脚本日志
 ];
 function isOwnTempName(name) { return OWN_TEMP_PATTERNS.some(re => re.test(name)); }
+
+/* ---------------- 高危功能开关 ----------------
+   高危 = 可能造成数据丢失或系统级不可逆影响（删文件、清空回收站、杀进程、
+   改 hosts、重启系统…）。这类能力默认关闭，必须先在「设置 → 高危功能」里
+   显式开启才能使用。
+   门禁放在主进程而不是渲染层：渲染层的 if 只是界面约束，任何一次误改或
+   绕过都可能让删文件的 IPC 直接生效。主进程这里是最后一道闸。 */
+const DANGEROUS_CAPS = {
+  'file-delete': { name: '删除文件', desc: '删除重复文件、空目录、笔记、剪贴板图片等（不进回收站）' },
+  'junk-clean': { name: '垃圾清理', desc: '清理系统临时文件、浏览器缓存、缩略图缓存' },
+  'recycle-empty': { name: '清空回收站', desc: '永久清空系统回收站，不可恢复' },
+  'process-kill': { name: '结束进程', desc: '强制结束任意进程，未保存数据会丢失' },
+  'service-stop': { name: '停止系统服务', desc: '停止正在运行的 Windows 服务，依赖它的程序可能异常退出' },
+  'system-power': { name: '关机 / 重启 / 休眠', desc: '执行关机、重启、休眠等系统电源操作（锁屏与睡眠不受限制）' },
+  'hosts-edit': { name: '编辑 Hosts', desc: '写入系统 hosts 文件并刷新 DNS，影响全机解析' },
+  'registry-edit': { name: '注册表与右键菜单', desc: '删除开机自启项、切换 Win11 经典右键菜单' }
+};
+const DANGEROUS_CAP_IDS = Object.keys(DANGEROUS_CAPS);
+// 默认全部关闭；用户在设置里开启的存到 settings.dangerousCaps（数组）
+function dangerousEnabled(cap) {
+  const list = storeGet('settings.dangerousCaps', []);
+  return Array.isArray(list) && list.indexOf(cap) !== -1;
+}
+// 需要高危权限的 IPC 通道 → 所属能力
+const CAP_GATED_CHANNELS = {
+  'fs:delete': 'file-delete',
+  'fs:delete-empty': 'file-delete',
+  'clip:remove-images': 'file-delete',
+  'clip:gc-images': 'file-delete',
+  'fs:clean-junk': 'junk-clean',
+  'sys:recycle-empty': 'recycle-empty',
+  'proc:kill': 'process-kill',
+  'svc:action': 'service-stop',
+  'hosts:write': 'hosts-edit',
+  'hosts:restore': 'hosts-edit',
+  'autostart:delete': 'registry-edit',
+  'autostart:enable': 'registry-edit',
+  'ctxmenu:classic': 'registry-edit'
+};
+// sys:power 通道里既有危险动作（关机/重启/休眠）也有无害动作（锁屏/睡眠），
+// 睡眠只是把内存转成待机状态、不会丢数据，所以不纳入高危门禁。
+const DANGEROUS_POWER_ACTIONS = ['hibernate', 'restart', 'shutdown'];
+function dangerousDenied(cap) {
+  return `「${DANGEROUS_CAPS[cap].name}」属于高危功能，已默认关闭。请到「设置 → 高危功能」中开启后再使用。`;
+}
+handle('dangerous:list', () => ({
+  caps: DANGEROUS_CAP_IDS.map(id => ({
+    id, name: DANGEROUS_CAPS[id].name, desc: DANGEROUS_CAPS[id].desc, enabled: dangerousEnabled(id)
+  })),
+  enabled: DANGEROUS_CAP_IDS.filter(dangerousEnabled)
+}));
+handle('dangerous:set', (e, cap, on) => {
+  if (!DANGEROUS_CAP_IDS.includes(cap)) throw new Error('未知的高危功能项');
+  const list = new Set(Array.isArray(storeGet('settings.dangerousCaps', [])) ? storeGet('settings.dangerousCaps', []) : []);
+  if (on) list.add(cap); else list.delete(cap);
+  storeSet('settings.dangerousCaps', [...list]);
+  return { id: cap, enabled: on };
+});
+// 工具 id → 涉及的高危能力。渲染层据此把工具卡片标红。
+// 显式列出而不是从通道名反推：通道前缀（fs:、sys:…）跟工具 id 对不上，
+// 反推会把「文件处理」整个模块都标红，失去区分意义。
+const TOOL_DANGEROUS_CAPS = {
+  'junk-clean': ['junk-clean'],
+  'empty-dir-clean': ['file-delete'],
+  'dedupe': ['file-delete'],
+  'local-notes': ['file-delete'],
+  'clipboard-history': ['file-delete'],
+  'process-manager': ['process-kill'],
+  'port-occupy': ['process-kill'],
+  'services-power': ['service-stop'],
+  'quick-ops': ['system-power', 'recycle-empty'],
+  'hosts-edit': ['hosts-edit'],
+  'autostart': ['registry-edit'],
+  'win-classic-menu': ['registry-edit']
+};
+handle('dangerous:tool-caps', () => {
+  const out = {};
+  for (const [tool, caps] of Object.entries(TOOL_DANGEROUS_CAPS)) {
+    out[tool] = { caps, enabled: caps.some(c => dangerousEnabled(c)) };
+  }
+  return out;
+});
 
 /* ---------------- window ---------------- */
 // 系统主题变化时广播到渲染端（跟随系统模式下同步深浅色）
@@ -1045,6 +1134,11 @@ $tmp = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperat
   return info;
 });
 handle('sys:power', async (e, action) => {
+  // 关机/重启/休眠会造成数据丢失或系统状态中断，必须先在高危功能里开启；
+  // 锁屏、睡眠只是待机，不丢数据，不纳入门禁。
+  if (DANGEROUS_POWER_ACTIONS.includes(action) && !dangerousEnabled('system-power')) {
+    throw new Error(dangerousDenied('system-power'));
+  }
   switch (action) {
     case 'lock': await runCmd('rundll32.exe', ['user32.dll,LockWorkStation'], { timeout: 5000 }); return true;
     case 'sleep': await runCmd('rundll32.exe', ['powrprof.dll,SetSuspendState', '0,1,0'], { timeout: 5000 }); return true;
@@ -2385,6 +2479,8 @@ handle('svc:list', async () => {
 });
 handle('svc:action', async (e, name, action) => {
   if (!['start', 'stop'].includes(action)) throw new Error('不支持的操作');
+  // 启动服务是无害的恢复操作；停止服务会让依赖它的程序异常退出，才需要高危授权
+  if (action === 'stop' && !dangerousEnabled('service-stop')) throw new Error(dangerousDenied('service-stop'));
   const r = await runCmd('sc.exe', [action, name], { timeout: 30000, encoding: 'gbk' });
   if (r.code !== 0) throw new Error((r.stderr || r.stdout || '').split(/\r?\n/).filter(l => l.trim()).slice(-1).join(' ') || '操作失败（启动/停止服务通常需要管理员权限）');
   return true;

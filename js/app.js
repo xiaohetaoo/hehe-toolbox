@@ -11,6 +11,25 @@
     collapsed: false
   };
 
+  /* ============ 高危功能 ============
+     dangerousCaps: 已开启的高危能力 id 列表（来自主进程）
+     toolDanger:    工具 id → { caps, enabled }，用于把高危工具卡片标红 */
+  let dangerousCaps = [];
+  let toolDanger = {};
+  async function loadDangerousState() {
+    if (!isDesktop) return;
+    try {
+      const r = await invoke('dangerous:list');
+      dangerousCaps = r.enabled || [];
+      toolDanger = await invoke('dangerous:tool-caps');
+    } catch (e) { dangerousCaps = []; toolDanger = {}; }
+  }
+  function isDangerTool(toolId) { return !!toolDanger[toolId]; }
+  function isDangerEnabled(toolId) {
+    const d = toolDanger[toolId];
+    return !!(d && d.enabled);
+  }
+
   /* ============ 主题 ============ */
   let themeListeners = [];
   function applyTheme() {
@@ -281,6 +300,11 @@
   function render() {
     renderNav(); renderBreadcrumb(); renderTabs(); renderContent();
   }
+  // 刷新：先同步高危能力状态，再重绘，保证卡片红/灰与实际开关一致
+  async function refresh() {
+    await loadDangerousState();
+    render();
+  }
   function renderNav() {
     const items = sidebarEl.querySelectorAll('.nav-item');
     items.forEach(el => el.classList.remove('active'));
@@ -368,13 +392,22 @@
 
   /* ============ 首页 ============ */
   function toolCard(t, { showStar = true } = {}) {
-    const card = div('tool-card');
+    const danger = isDangerTool(t.id);
+    const dangerOn = isDangerEnabled(t.id);
+    const card = div('tool-card' + (danger ? ' danger' : '') + (danger && !dangerOn ? ' closed' : ''));
     card.appendChild(div('tc-icon', iconLg(t.icon)));
     const info = div('');
     info.appendChild(div('tc-name', t.name));
     info.appendChild(div('tc-desc', t.desc || ''));
+    // 高危标记：已开启显示「高危」，未开启显示「未启用」并加锁，提示需去设置里开启
+    if (danger) {
+      info.appendChild(div('tc-danger-tag', dangerOn ? '⚠ 高危' : '🔒 未启用'));
+    }
     card.appendChild(info);
-    if (showStar) {
+    if (danger && !dangerOn) {
+      const lock = div('tc-lock', icon('lock'));
+      card.appendChild(lock);
+    } else if (showStar) {
       const on = state.favorites.includes(t.id);
       const star = div('tc-star' + (on ? ' on' : ''), icon('star'));
       star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(t.id); });
@@ -465,12 +498,28 @@
     const starBtn = btn(starred ? '已收藏' : '收藏', 'btn-secondary btn-sm th-star', () => toggleFavorite(toolId), 'star');
     head.appendChild(starBtn);
     page.appendChild(head);
+    // 高危工具未启用时不渲染功能本体，只给一张说明卡 + 去设置的入口。
+    // （主进程还有一道 IPC 门禁，这里是界面层的提示，两层都要有）
+    if (isDangerTool(toolId) && !isDangerEnabled(toolId)) {
+      page.appendChild(dangerLockedCard(toolId, t.name));
+      return;
+    }
     try {
       t.render(page, { App: window.App, ui: window.ui, api: window.api });
     } catch (e) {
       console.error('工具渲染失败', toolId, e);
       page.appendChild(window.ui.placeholder('alert', '工具加载失败', e.message));
     }
+  }
+  // 高危工具未启用时的占位卡
+  function dangerLockedCard(toolId, toolName) {
+    const card = div('card danger-locked');
+    card.appendChild(div('danger-locked-title', icon('lock'), '该工具属于高危功能，默认未启用'));
+    card.appendChild(div('danger-locked-text',
+      '「' + toolName + '」涉及的破坏性操作可能造成数据丢失或系统状态中断，因此默认关闭。' +
+      '请在「设置 → 高危功能」中按需开启，开启后本工具才会可用。'));
+    card.appendChild(div('form-row', btn('前往设置 → 高危功能', 'btn-danger', () => showView({ type: 'settings' }))));
+    return card;
   }
 
   /* ============ 设置 ============ */
@@ -483,6 +532,7 @@
     const sections = [
       { id: 'general', name: '通用', icon: 'settings' },
       { id: 'appearance', name: '外观', icon: 'sun' },
+      { id: 'danger', name: '高危功能', icon: 'alert' },
       { id: 'data', name: '数据与隐私', icon: 'shield' }
     ];
     let current = 'general';
@@ -492,6 +542,7 @@
       nav.querySelectorAll('.settings-nav-item').forEach(el => el.classList.toggle('active', el.dataset.sid === current));
       if (current === 'general') drawGeneral(body, token);
       else if (current === 'appearance') drawAppearance(body, token);
+      else if (current === 'danger') drawDanger(body, token);
       else drawData(body, token);
     }
     for (const s of sections) {
@@ -588,6 +639,53 @@
     row.appendChild(grid);
     // 侧边栏收起已由侧栏底部按钮提供，此处不再重复放开关
   }
+  /* 高危功能：默认全部关闭，逐项开启。开启任一项都会二次确认。 */
+  async function drawDanger(body, token) {
+    const banner = div('danger-banner');
+    banner.appendChild(div('danger-banner-title', icon('alert'), '高危功能默认关闭'));
+    banner.appendChild(div('danger-banner-text',
+      '下列功能可能造成数据丢失或系统状态中断，默认不可用。开启后，界面上对应的工具会显示为红色卡片。' +
+      '每项单独开启，随时可以关回去。'));
+    body.appendChild(banner);
+
+    let info;
+    try { info = await invoke('dangerous:list'); }
+    catch (e) {
+      body.appendChild(div('field-err', '✗ 无法读取高危功能配置：' + e.message));
+      return;
+    }
+    if (token !== undefined && token !== drawToken) return;
+
+    for (const c of info.caps) {
+      const row = div('set-row danger-row');
+      const left = div('');
+      left.appendChild(div('set-label', c.name));
+      left.appendChild(div('set-desc', c.desc));
+      row.appendChild(left);
+      const sw = switchEl(c.enabled, async (v) => {
+        // 开启高危能力必须二次确认，且要复述具体是哪个能力
+        if (v) {
+          const ok = await confirmBox({
+            title: '开启高危功能',
+            message: `确定开启「${c.name}」？\n\n${c.desc}\n\n开启后该能力会立即可用，相关工具卡片会变成红色。`,
+            danger: true, okText: '确认开启'
+          });
+          if (!ok) { sw.set(false); return; }
+        }
+        try {
+          await invoke('dangerous:set', c.id, v);
+          await refresh(); // 重新读取高危状态并重绘，工具卡片的红/灰随之更新
+          toast(v ? `已开启「${c.name}」` : `已关闭「${c.name}」`, v ? 'warn' : 'success');
+        } catch (e) { sw.set(!v); toast(e.message, 'error'); }
+      });
+      row.appendChild(div('set-control', sw));
+      body.appendChild(row);
+    }
+
+    const tip = div('field-hint', { style: { marginTop: '14px' } },
+      '提示：关闭某项能力后，相关工具会重新变为不可用，但已经产生的数据不会自动恢复。');
+    body.appendChild(tip);
+  }
   async function drawData(body, token) {
     let userData = '(浏览器演示模式)';
     if (isDesktop) { try { userData = (await invoke('app:get-info')).userData; } catch (e) {} }
@@ -683,11 +781,12 @@
   function setStatus(text) { statusText.textContent = text; }
 
   /* ============ 启动 ============ */
-  window.App = { openTool, showView, toggleFavorite, setStatus, state, refresh: render, onCleanup };
+  window.App = { openTool, showView, toggleFavorite, setStatus, state, refresh, onCleanup };
   document.addEventListener('DOMContentLoaded', async () => {
     buildShell();
     applyTheme();
     await loadUserData();
+    await loadDangerousState();
     render();
   });
 })();
