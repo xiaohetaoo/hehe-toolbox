@@ -99,7 +99,8 @@
       const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: () => { done = true; md.close(); resolve(false); } }, cancelText);
       const md = modal({
         title, onClose: () => { if (!done) resolve(false); },
-        body: (b) => { b.appendChild(h('div', { style: { userSelect: 'text' } }, message)); },
+        // pre-wrap：message 里的 \n 要能真正换行，否则多行提示会被压成一长段
+        body: (b) => { b.appendChild(h('div', { style: { userSelect: 'text', whiteSpace: 'pre-wrap' } }, message)); },
         foot: [cancelBtn, okBtn]
       });
     });

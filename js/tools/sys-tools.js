@@ -221,6 +221,13 @@
               { key: 'cmd', title: '命令', render: r => div('mono', { style: { fontSize: '11.5px' } }, r.cmd) },
               { key: 'act', title: '操作', width: '220px', render: (r, td) => {
                   td.appendChild(btn('禁用', 'btn-sm btn-text', async () => {
+                    // 禁用 = 把注册表项移到本应用的备份区（可恢复），但仍是写注册表，
+                    // 列表项多时容易点错，所以也确认一次，并说明如何恢复。
+                    if (!(await confirmBox({
+                      title: '禁用开机自启',
+                      message: `禁用「${r.name}」的开机自启？\n\n该自启项会被移到本应用的备份区，之后可在下方「已禁用」列表里恢复启用。`,
+                      okText: '禁用'
+                    }))) return;
                     try { await invoke('autostart:delete', r, false); toast('已禁用（可恢复）', 'success'); load(); }
                     catch (e) { toast(e.message, 'error'); }
                   }));
@@ -621,6 +628,16 @@
         }
       }
       async function act(s, action) {
+        // 停止服务属于破坏性操作：可能让依赖它的程序异常退出、数据写入中断。
+        // 服务列表动辄几百条，容易点错行，所以停止前必须确认。
+        if (action === 'stop') {
+          const label = s.DisplayName || s.Name;
+          if (!(await confirmBox({
+            title: '停止 Windows 服务',
+            message: `确定停止服务「${label}」（${s.Name}）？\n\n停止后，依赖该服务的程序可能异常退出或中断数据写入。`,
+            danger: true, okText: '停止服务'
+          }))) return;
+        }
         try { await invoke('svc:action', s.Name, action); toast(`已${action === 'start' ? '启动' : '停止'}：${s.DisplayName || s.Name}`, 'success'); loadSvc(); }
         catch (e) { toast(e.message.includes('1060') || e.message.includes('访问') || /5$|拒绝/.test(e.message) ? '需要管理员权限：请以管理员身份运行核核工具箱' : e.message, 'error'); }
       }
@@ -637,6 +654,13 @@
               h('span', { class: 'tag ' + (p.active ? 'tag-green' : 'tag-gray'), style: { width: '60px', justifyContent: 'center' } }, p.active ? '使用中' : '可用'),
               h('span', { style: { flex: '1' } }, p.name));
             if (!p.active) row.appendChild(btn('切换', 'btn-sm btn-text', async () => {
+              // 切电源计划会立刻改变系统功耗策略（如「节能」会让编译/渲染明显变慢），
+              // 属于不易察觉但影响实际工作的改动，切换前确认一次。
+              if (!(await confirmBox({
+                title: '切换电源计划',
+                message: `确定切换到「${p.name}」？\n\n切换会立即改变系统功耗策略，正在进行的编译、渲染等任务可能明显变慢。`,
+                okText: '切换'
+              }))) return;
               try { await invoke('power:set', p.guid); toast('已切换：' + p.name, 'success'); loadPower(); }
               catch (e) { toast(e.message, 'error'); }
             }));

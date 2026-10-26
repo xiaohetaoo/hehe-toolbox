@@ -2368,11 +2368,20 @@ handle('tts:wav', async (e, { text, out, voice, rate }) => {
 });
 
 /* ================= IPC: 服务与电源计划 ================= */
+// ServiceControllerStatus 枚举：1=Stopped 2=StartPending 3=StopPending 4=Running 5=ContinuePending 6=PausePending 7=Paused
+// ConvertTo-Json 会把枚举序列化成数字，直接传给渲染端会与字符串 'Running' 比对不上，
+// 导致所有服务都显示成「已停止」、「停止」按钮永远不出现。这里统一转成字符串。
+const SVC_STATUS = { 1: 'Stopped', 2: 'StartPending', 3: 'StopPending', 4: 'Running', 5: 'ContinuePending', 6: 'PausePending', 7: 'Paused' };
 handle('svc:list', async () => {
   const r = await ps(`@(Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -Compress)`, 30000);
   let arr; try { arr = JSON.parse(r.stdout || '[]'); } catch (e) { arr = []; }
   if (!Array.isArray(arr)) arr = [arr];
-  return arr;
+  return arr.map(s => ({
+    Name: s.Name,
+    DisplayName: s.DisplayName || s.Name,
+    Status: typeof s.Status === 'number' ? (SVC_STATUS[s.Status] || String(s.Status)) : String(s.Status || ''),
+    StartType: s.StartType
+  }));
 });
 handle('svc:action', async (e, name, action) => {
   if (!['start', 'stop'].includes(action)) throw new Error('不支持的操作');
