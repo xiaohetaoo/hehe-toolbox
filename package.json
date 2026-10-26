@@ -46,7 +46,9 @@
       "css/**/*",
       "js/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/pdfjs-dist/legacy/**",
+      "!node_modules/pdfjs-dist/types/**"
     ],
     "win": {
       "icon": "assets/icon.ico",

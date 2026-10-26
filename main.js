@@ -189,6 +189,8 @@ function sampleCpu() {
   return 0;
 }
 setInterval(() => {
+  // 窗口不可见（最小化到托盘/隐藏）时不必推送状态，避免无谓唤醒渲染进程
+  if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return;
   const cpu = sampleCpu();
   lastCpuSample = { idle: os.cpus().reduce((s, c) => s + c.times.idle, 0), total: os.cpus().reduce((s, c) => s + c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq, 0) };
   const totalMem = os.totalmem(), freeMem = os.freemem();

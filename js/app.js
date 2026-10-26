@@ -348,12 +348,21 @@
     contentEl.scrollTop = 0;
     const page = div('page');
     const v = state.view;
-    if (v.type === 'home') renderHome(page);
-    else if (v.type === 'fav') renderFavPage(page);
-    else if (v.type === 'module') renderModulePage(page, v.moduleId);
-    else if (v.type === 'tool') renderToolPage(page, v.toolId);
-    else if (v.type === 'settings') renderSettings(page);
-    else if (v.type === 'about') renderAbout(page);
+    try {
+      if (v.type === 'home') renderHome(page);
+      else if (v.type === 'fav') renderFavPage(page);
+      else if (v.type === 'module') renderModulePage(page, v.moduleId);
+      else if (v.type === 'tool') renderToolPage(page, v.toolId);
+      else if (v.type === 'settings') renderSettings(page);
+      else if (v.type === 'about') renderAbout(page);
+    } catch (e) {
+      // 兜底：任一页面渲染异常都不能让内容区白屏，至少给出可读错误和返回入口
+      console.error('页面渲染失败', v, e);
+      page.innerHTML = '';
+      page.appendChild(div('tool-header', div('th-icon', iconLg('alert')), div('', h('h2', null, '页面加载失败'), h('div', { class: 'th-desc' }, String(e && e.message || e)))));
+      const back = btn('返回首页', 'btn-secondary', () => showView({ type: 'home' }));
+      page.appendChild(div('card', div('', back)));
+    }
     contentEl.appendChild(page);
   }
 

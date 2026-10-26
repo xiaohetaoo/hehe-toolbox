@@ -5,5 +5,10 @@ shot-*.png
 *.log
 diag-*
 _seg*
+# asar extract-file 会把文件解到当前目录，防止误提交
+/app.js
+/main.js
+/preload.js
+*.asar
 .DS_Store
 Thumbs.db

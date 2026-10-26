@@ -624,7 +624,7 @@
         try { await invoke('svc:action', s.Name, action); toast(`已${action === 'start' ? '启动' : '停止'}：${s.DisplayName || s.Name}`, 'success'); loadSvc(); }
         catch (e) { toast(e.message.includes('1060') || e.message.includes('访问') || /5$|拒绝/.test(e.message) ? '需要管理员权限：请以管理员身份运行核核工具箱' : e.message, 'error'); }
       }
-      svcFilter.addEventListener('input', renderSvc);
+      svcFilter.addEventListener('input', window.ui.debounce(renderSvc, 150));
       const powerBox = div('');
       async function loadPower() {
         powerBox.innerHTML = '';
