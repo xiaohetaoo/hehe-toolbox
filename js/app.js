@@ -619,23 +619,33 @@
   async function drawAboutSetting(body, token) {
     const info = await invoke('app:get-info');
     if (token !== undefined && token !== drawToken) return;
-    body.appendChild(div('set-row', div('',
-      h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' } },
-        h('img', { src: 'assets/icon.png', style: { width: '44px', height: '44px', borderRadius: '10px' } }),
-        div('', h('div', { style: { fontWeight: 600, fontSize: '16px' } }, '核核工具箱'), h('div', { class: 'set-desc' }, 'HeHe Toolbox v' + info.appVersion)))),
-      div('set-control', btn('检查更新', 'btn-sm btn-secondary', checkUpdate))));
     const updLine = h('div', { class: 'set-desc', style: { padding: '0 4px 8px' } }, '');
-    body.appendChild(updLine);
+    const updActions = h('div', { style: { padding: '0 4px 10px', display: 'flex', gap: '8px', flexWrap: 'wrap' } });
     async function checkUpdate() {
       updLine.textContent = '正在检查更新…';
+      updActions.innerHTML = '';
       try {
-        const r = await invoke('update:check');
+        const r = await invoke('update:check', { force: true });
         if (!r.hasUpdate) { updLine.textContent = `✓ 已是最新版本（v${r.current}）`; return; }
         updLine.textContent = `发现新版本 v${r.latest}（当前 v${r.current}），正在下载…`;
         if (!r.assetUrl) { updLine.textContent = `发现新版本 v${r.latest}，请到 GitHub Releases 下载：${r.htmlUrl}`; return; }
         const out = info.userData + '/update/' + r.assetName;
         const unsub = on('job:stream', (d) => {
-          try { const j = JSON.parse(d.data); if (j.pct != null) updLine.textContent = `下载新版本 v${r.latest}：${(j.pct || 0).toFixed(0)}%（${(j.mb || 0).toFixed(1)}MB）`; if (j.done) { unsub(); if (j.ok) { updLine.textContent = `✓ v${r.latest} 已下载到 ${out}，打开所在目录运行即可升级`; invoke('fs:show-item', out); toast('新版本已下载', 'success'); } else updLine.textContent = '✗ 下载失败：' + (j.error || ''); } } catch (e) {}
+          try {
+            const j = JSON.parse(d.data);
+            if (j.pct != null) updLine.textContent = `下载新版本 v${r.latest}：${(j.pct || 0).toFixed(0)}%（${(j.mb || 0).toFixed(1)}MB）`;
+            if (!j.done) return;
+            unsub();
+            if (!j.ok) { updLine.textContent = '✗ 下载失败：' + (j.error || ''); return; }
+            updLine.textContent = `✓ v${r.latest} 已下载完成：${out}`;
+            toast('新版本已下载', 'success');
+            updActions.appendChild(btn('🚀 重启并替换', 'btn-sm btn-primary', async () => {
+              if (!(await confirmBox({ title: '重启并替换', message: `将退出当前版本，用 v${r.latest} 覆盖程序文件并自动重启。\n\n配置文件与数据不受影响。`, okText: '重启并替换' }))) return;
+              try { await invoke('update:apply', { newExe: out }); updLine.textContent = '正在退出并替换，稍候会自动重启…'; }
+              catch (e) { updLine.textContent = '✗ 替换失败：' + e.message; }
+            }));
+            updActions.appendChild(btn('打开所在目录', 'btn-sm btn-secondary', () => invoke('fs:show-item', out).catch(() => {})));
+          } catch (e) {}
         });
         const dl = await invoke('net:download', { url: r.assetUrl, out });
         if (!dl || !dl.id) { unsub(); updLine.textContent = '✗ 下载启动失败'; }
@@ -647,7 +657,10 @@
         div('', h('div', { style: { fontWeight: 600, fontSize: '16px' } }, '核核工具箱'), h('div', { class: 'set-desc' }, 'HeHe Toolbox v' + info.appVersion))),
       div('set-desc', `Electron ${info.electron} · Chromium ${info.chrome} · Node ${info.node}`),
       div('set-desc', '本地优先 · 插件化 · 无广告 · 不收集隐私'),
-      div('set-desc', '设计规范：商务科技蓝 #165DFF 主题'))));
+      div('set-desc', '设计规范：商务科技蓝 #165DFF 主题')),
+      div('set-control', btn('检查更新', 'btn-sm btn-secondary', checkUpdate))));
+    body.appendChild(updLine);
+    body.appendChild(updActions);
   }
 
   /* ============ 关于页 ============ */

@@ -1054,26 +1054,39 @@
   /* ---------- 屏幕录制 ---------- */
   register({
     id: 'screen-rec', name: '屏幕录制', module: MOD, icon: 'film',
-    desc: '录制全屏或框选区域为 MP4，可选麦克风、暂停恢复、直出 GIF',
-    keywords: ['录制', '录屏', '屏幕', 'video', 'capture', '区域'],
+    desc: '录制全屏或框选区域为 MP4，可选麦克风与摄像头画中画、暂停恢复、直出 GIF',
+    keywords: ['录制', '录屏', '屏幕', 'video', 'capture', '区域', '摄像头', '画中画', 'camera', 'webcam'],
     render(page) {
       const fpsSel = h('select', { class: 'select input-sm' },
         h('option', { value: '15' }, '15 帧（文件小）'), h('option', { value: '30', selected: true }, '30 帧（流畅）'), h('option', { value: '60' }, '60 帧（高帧率）'));
       const audioSel = h('select', { class: 'select input-sm', style: { maxWidth: '220px' } },
         h('option', { value: '' }, '不录声音'));
+      const camSel = h('select', { class: 'select input-sm', style: { maxWidth: '220px' } },
+        h('option', { value: '' }, '不录摄像头'));
+      const camPosSel = h('select', { class: 'select input-sm' },
+        h('option', { value: 'rb', selected: true }, '右下角'), h('option', { value: 'lb' }, '左下角'),
+        h('option', { value: 'rt' }, '右上角'), h('option', { value: 'lt' }, '左上角'));
+      camPosSel.disabled = true;
+      const camSizeSel = h('select', { class: 'select input-sm' },
+        h('option', { value: '0.15' }, '小（15%）'), h('option', { value: '0.25', selected: true }, '中（25%）'), h('option', { value: '0.35' }, '大（35%）'));
+      camSizeSel.disabled = true;
       const regionBtn = btn('▭ 选择区域', 'btn-sm btn-secondary', pickRegion);
       const clearRegionBtn = btn('✕ 全屏', 'btn-sm btn-text', () => { region = null; regionLabel.textContent = '全屏'; });
       const regionLabel = h('span', { class: 'field-hint' }, '全屏');
       const gifChk = h('input', { type: 'checkbox', class: 'checkbox' });
-      const status = h('div', { class: 'field-hint' }, '支持区域录制、麦克风、暂停恢复；停止后自动封装');
+      const status = h('div', { class: 'field-hint' }, '支持区域录制、麦克风、摄像头画中画、暂停恢复；停止后自动封装');
       const startBtn = btn('⏺ 开始录制', 'btn-primary', start);
       const pauseBtn = btn('⏸ 暂停', 'btn-secondary', () => ctl('rec:pause'));
       const resumeBtn = btn('▶ 继续', 'btn-secondary', () => ctl('rec:resume'));
       const stopBtn = btn('⏹ 停止并保存', 'btn-danger-plain', stop);
       pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
       let recording = false, paused = false, region = null;
+      const camOn = () => { const on = !!camSel.value; camPosSel.disabled = !on; camSizeSel.disabled = !on; };
+      camSel.addEventListener('change', camOn);
       invoke('rec:audio-devices').then((r) => {
         for (const d of (r.devices || [])) audioSel.appendChild(h('option', { value: d }, '🎤 ' + d));
+        // 兼容旧返回：新版本才有 video 字段
+        for (const d of (r.video || [])) camSel.appendChild(h('option', { value: d }, '📷 ' + d));
       }).catch(() => {});
       async function pickRegion() {
         try {
@@ -1094,10 +1107,11 @@
         const p = await invoke('dialog:save', { defaultPath: '录屏-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
         if (!p) return;
         try {
-          await invoke('rec:start', { outPath: p, fps: +fpsSel.value, rect: region, audio: audioSel.value || null });
+          await invoke('rec:start', { outPath: p, fps: +fpsSel.value, rect: region, audio: audioSel.value || null,
+            camera: camSel.value || null, camPos: camPosSel.value, camScale: +camSizeSel.value });
           recording = true; paused = false;
           startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
-          status.textContent = '🔴 录制中…' + (region ? `（${region.w}×${region.h}）` : '（全屏）') + (audioSel.value ? ' + 🎤' : '');
+          status.textContent = '🔴 录制中…' + (region ? `（${region.w}×${region.h}）` : '（全屏）') + (audioSel.value ? ' + 🎤' : '') + (camSel.value ? ' + 📷 画中画' : '');
         } catch (e) { toast(e.message, 'error'); }
       }
       async function ctl(ch) {
@@ -1123,6 +1137,8 @@
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '区域'), regionBtn, clearRegionBtn, regionLabel),
         div('form-row', h('span', { class: 'form-label' }, '声音'), audioSel,
           h('label', { class: 'field-hint' }, gifChk, ' 停止时同时导出 GIF')),
+        div('form-row', h('span', { class: 'form-label' }, '摄像头'), camSel, camPosSel, camSizeSel,
+          h('span', { class: 'field-hint' }, '画面叠加在录屏角落；无需摄像头选「不录摄像头」')),
         div('form-row', startBtn, ' ', pauseBtn, resumeBtn, ' ', stopBtn, status)));
     }
   });

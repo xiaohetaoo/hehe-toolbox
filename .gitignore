@@ -1,5 +1,7 @@
 node_modules/
 dist/
+dist-build/
+shot-*.png
 *.log
 diag-*
 _seg*

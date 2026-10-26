@@ -1927,9 +1927,24 @@ handle('search:quick', (e, { root, q, limit }) => {
 
 /* ================= IPC: 屏幕录制（ffmpeg gdigrab，区域/声音/暂停分段/GIF） ================= */
 let recProc = null, recOut = null, recSegs = [], recSegDir = null, recOpts = null;
-handle('rec:audio-devices', async () => {
+// 解析 ffmpeg -list_devices 输出。兼容三种格式：
+//   4.x : "名称" (audio)  /  [dshow] "名称" (audio) 后的旧式行 "名称" [Audio]
+//   6.x+: 不再输出 "DirectShow audio devices" 小节标题，逐行 "名称" (video)/(audio)
+function parseDshowDevices(text) {
+  const audio = [], video = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const m = line.match(/"([^"]+)"\s*(?:\[(Audio|Video)\]|\((audio|video)\))\s*$/i);
+    if (!m) continue;
+    const name = m[1];
+    const kind = (m[2] || m[3]).toLowerCase();
+    if (kind === 'audio') { if (!audio.includes(name)) audio.push(name); }
+    else if (!video.includes(name)) video.push(name);
+  }
+  return { audio, video };
+}
+async function listDshowDevices() {
   const ffmpeg = findFfmpeg();
-  if (!ffmpeg) return { devices: [] };
+  if (!ffmpeg) return { audio: [], video: [] };
   const r = await new Promise((resolve) => {
     let out = '';
     const p = spawn(ffmpeg, ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], { windowsHide: true });
@@ -1937,26 +1952,53 @@ handle('rec:audio-devices', async () => {
     p.on('exit', () => resolve(out));
     p.on('error', () => resolve(''));
   });
-  const devices = [];
-  const audioSection = r.split('DirectShow audio devices')[1];
-  if (audioSection) {
-    for (const m of audioSection.matchAll(/"([^"]+)"\s*\[Audio\]/g)) devices.push(m[1]);
-  }
-  return { devices };
+  return parseDshowDevices(r);
+}
+handle('rec:audio-devices', async () => {
+  const d = await listDshowDevices();
+  return { devices: d.audio, audio: d.audio, video: d.video };
 });
+handle('rec:video-devices', async () => {
+  const d = await listDshowDevices();
+  return { devices: d.video };
+});
+// 画中画位置 → overlay 表达式（摄像头尺寸自适应，边距 16px）
+function pipPosition(pos) {
+  const pad = 16;
+  switch (pos) {
+    case 'lt': return '16:16';
+    case 'rt': return `W-w-${pad}:16`;
+    case 'lb': return `16:H-h-${pad}`;
+    default: return `W-w-${pad}:H-h-${pad}`; // rb 默认
+  }
+}
 function recSpawnSeg(segPath) {
   const ffmpeg = findFfmpeg();
   const o = recOpts;
   const args = ['-y', '-hide_banner', '-f', 'gdigrab', '-framerate', String(o.fps || 30)];
   if (o.rect) args.push('-offset_x', String(o.rect.x), '-offset_y', String(o.rect.y), '-video_size', `${o.rect.w}x${o.rect.h}`);
   args.push('-i', 'desktop');
-  if (o.audio) args.push('-f', 'dshow', '-i', `audio=${o.audio}`);
+  // 输入序号：0=桌面，1=摄像头（可选），其后为音频
+  let nextIdx = 1;
+  let camIdx = -1;
+  if (o.camera) { args.push('-f', 'dshow', '-rtbufsize', '64M', '-i', `video=${o.camera}`); camIdx = nextIdx++; }
+  if (o.audio) args.push('-f', 'dshow', '-rtbufsize', '64M', '-i', `audio=${o.audio}`);
+  const fps = o.fps || 30;
+  if (camIdx >= 0) {
+    // 摄像头缩放到画面宽度的 25%（且为偶数），叠加到指定角落
+    const scale = Math.min(Math.max(o.camScale || 0.25, 0.1), 0.5);
+    const pos = pipPosition(o.camPos || 'rb');
+    args.push('-filter_complex',
+      `[${camIdx}:v]fps=${fps}[camf];[camf][0:v]scale2ref=w=trunc(main_w*${scale}/2)*2:h=-2[cams][basem];[basem][cams]overlay=${pos}:format=auto[vout]`,
+      '-map', '[vout]');
+    if (o.audio) args.push('-map', `${camIdx + 1}:a`);
+  }
   args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
   if (o.audio) args.push('-c:a', 'aac', '-b:a', '128k');
   args.push('-movflags', '+faststart', segPath);
-  return spawn(ffmpeg, args, { windowsHide: true });
+  return { proc: spawn(ffmpeg, args, { windowsHide: true }), args };
 }
-handle('rec:start', async (e, { outPath, fps, rect, audio }) => {
+handle('rec:start', async (e, { outPath, fps, rect, audio, camera, camPos, camScale }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   if (recProc && recProc.exitCode === null) throw new Error('已有录制进行中');
@@ -1966,7 +2008,7 @@ handle('rec:start', async (e, { outPath, fps, rect, audio }) => {
     rect = { x: Math.max(0, Math.round(rect.x)) & ~1, y: Math.max(0, Math.round(rect.y)) & ~1,
       w: Math.max(64, Math.round(rect.w)) & ~1, h: Math.max(64, Math.round(rect.h)) & ~1 };
   } else rect = null;
-  recOpts = { fps: fps || 30, rect, audio: audio || null };
+  recOpts = { fps: fps || 30, rect, audio: audio || null, camera: camera || null, camPos: camPos || 'rb', camScale: camScale || 0.25 };
   recSegs = [];
   recSegDir = path.join(app.getPath('temp'), 'hehe-rec-' + Date.now());
   await fsp.mkdir(recSegDir, { recursive: true });
@@ -1974,7 +2016,7 @@ handle('rec:start', async (e, { outPath, fps, rect, audio }) => {
 });
 async function recStartSeg() {
   const seg = path.join(recSegDir, `seg-${recSegs.length + 1}.mp4`);
-  const proc = recSpawnSeg(seg);
+  const { proc } = recSpawnSeg(seg);
   recProc = proc;
   let errOut = '';
   proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 12000) errOut = errOut.slice(-6000); });
@@ -2353,8 +2395,19 @@ async function pinClipboardImage() {
 handle('snip:pin-clipboard', () => pinClipboardImage());
 
 /* ================= IPC: 检查更新（GitHub Releases；NSIS 安装版走 electron-updater） ================= */
-handle('update:check', async () => {
+// ETag 条件请求 + 本地缓存：命中缓存/304 时不消耗匿名限流配额（60 次/时/IP）
+const UPDATE_TTL = 6 * 3600 * 1000; // 缓存有效期 6 小时
+const UPDATE_API = 'https://api.github.com/repos/xiaohetaoo/hehe-toolbox/releases/latest';
+function updateCacheGet() {
+  const c = storeGet('updateCache', null);
+  return c && typeof c === 'object' ? c : null;
+}
+function updateCacheSet(patch) {
+  storeSet('updateCache', Object.assign({}, updateCacheGet() || {}, patch));
+}
+handle('update:check', async (e, opts = {}) => {
   const current = app.getVersion();
+  const force = !!(opts && opts.force);
   // 安装版：electron-updater（可用则直接通知升级）
   try {
     if (process.env.HEHE_PORTABLE !== '1' && app.isPackaged && fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml'))) {
@@ -2365,20 +2418,84 @@ handle('update:check', async () => {
       }
     }
   } catch (e) { /* 回退 GitHub API */ }
-  // 便携版/兜底：查最新 Release
+  // 缓存未过期且非强制刷新：直接返回，完全不发请求
+  const cached = updateCacheGet();
+  if (cached && cached.payload && !force && Date.now() - (cached.checkedAt || 0) < UPDATE_TTL) {
+    return Object.assign({}, cached.payload, { cached: true, cacheAge: Math.round((Date.now() - cached.checkedAt) / 60000) });
+  }
+  // 便携版/兜底：查最新 Release（带 If-None-Match，304 时复用缓存）
   try {
-    const r = await fetch('https://api.github.com/repos/xiaohetaoo/hehe-toolbox/releases/latest', { headers: { 'User-Agent': 'hehe-update', Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
+    const headers = { 'User-Agent': 'hehe-update', Accept: 'application/vnd.github+json' };
+    if (cached && cached.etag) headers['If-None-Match'] = cached.etag;
+    const r = await fetch(UPDATE_API, { headers, signal: AbortSignal.timeout(15000) });
+    if (r.status === 304 && cached && cached.payload) {
+      updateCacheSet({ checkedAt: Date.now() });
+      return Object.assign({}, cached.payload, { cached: true, notModified: true, cacheAge: 0 });
+    }
     if (!r.ok) throw new Error('GitHub API HTTP ' + r.status);
     const j = await r.json();
     const latest = (j.tag_name || '').replace(/^v/, '');
     const asset = (j.assets || []).find(a => /^hehe-toolbox-Portable-.*\.exe$/.test(a.name));
-    return {
+    const payload = {
       current, latest, hasUpdate: cmpVer(latest, current) > 0, engine: 'github',
       notes: (j.body || '').slice(0, 4000), assetUrl: asset ? asset.browser_download_url : null, assetName: asset ? asset.name : null, htmlUrl: j.html_url || ''
     };
+    updateCacheSet({ etag: r.headers.get('etag') || null, checkedAt: Date.now(), payload });
+    return payload;
   } catch (err) {
+    // 网络失败但手上有旧缓存：降级返回缓存并标注 stale，至少还能看到已知最新版
+    if (cached && cached.payload) {
+      throw new Error('检查更新失败（网络）：' + err.message + '（已使用 ' + Math.round((Date.now() - (cached.checkedAt || 0)) / 3600000) + ' 小时前的缓存，当前已知最新 v' + cached.payload.latest + '）');
+    }
     throw new Error('检查更新失败（网络）：' + err.message);
   }
+});
+// 便携版引导替换：下载好的新版 exe 覆盖当前 exe，随后自动重启
+// 便携版无静默自升级能力（electron-builder portable 每次启动都解压到临时目录），
+// 只能在进程退出后用外部脚本完成替换，因此走 PowerShell 脚本 + app.exit()。
+function psSingleQuote(s) { return "'" + String(s).replace(/'/g, "''") + "'"; }
+handle('update:apply', async (e, opts = {}) => {
+  const newExe = opts && opts.newExe;
+  if (!newExe || !fs.existsSync(newExe)) throw new Error('新版文件不存在，请先完成下载');
+  // 便携版启动时 electron-builder 注入 PORTABLE_EXECUTABLE_FILE 指向原始 exe
+  const target = process.env.PORTABLE_EXECUTABLE_FILE || (opts && opts.target) || app.getPath('exe');
+  if (!/\.exe$/i.test(target)) throw new Error('目标不是可执行文件，无法自动替换：' + target);
+  if (path.resolve(target).toLowerCase() === path.resolve(newExe).toLowerCase()) throw new Error('新旧文件相同，无需替换');
+  const scriptDir = path.join(app.getPath('userData'), 'update');
+  await fsp.mkdir(scriptDir, { recursive: true });
+  const script = path.join(scriptDir, 'apply-update.ps1');
+  const myPid = process.pid;
+  // 注意：$PID 是 PowerShell 自动变量（只读），这里必须换个名字
+  const ps = [
+    '$ErrorActionPreference = "Stop"',
+    '$targetPid = ' + myPid,
+    '$newExe = ' + psSingleQuote(newExe),
+    '$target = ' + psSingleQuote(target),
+    '$log = Join-Path $env:TEMP ("hehe-update-" + [DateTime]::Now.ToString("yyyyMMdd-HHmmss") + ".log")',
+    'try {',
+    '  $deadline = [DateTime]::Now.AddSeconds(90)',
+    '  while ((Get-Process -Id $targetPid -ErrorAction SilentlyContinue) -and ([DateTime]::Now -lt $deadline)) { Start-Sleep -Milliseconds 300 }',
+    '  Start-Sleep -Milliseconds 600',
+    '  Copy-Item -LiteralPath $newExe -Destination $target -Force',
+    '  Add-Content -LiteralPath $log -Value ("replaced: " + $target)',
+    '} catch {',
+    '  Add-Content -LiteralPath $log -Value ("failed: " + $_.Exception.Message)',
+    '  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue',
+    '  exit 1',
+    '}',
+    // 启动失败不应算作替换失败：文件已就位，用户手动双击即可
+    'try { Start-Process -FilePath $target } catch { Add-Content -LiteralPath $log -Value ("launch-failed: " + $_.Exception.Message) }',
+    'Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue'
+  ].join('\r\n');
+  await fsp.writeFile(script, ps, 'utf8');
+  const spawnArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script];
+  if (opts && opts.dryRun) {
+    return { ok: true, dryRun: true, script, target, newExe, args: spawnArgs };
+  }
+  spawn('powershell.exe', spawnArgs, { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
+  // 给脚本 ~1 秒启动时间后退出，脚本会等待本进程消失再替换
+  setTimeout(() => { try { isQuitting = true; app.exit(0); } catch (err) { app.quit(); } }, 1000);
+  return { ok: true, target, newExe, script };
 });
 function cmpVer(a, b) {
   const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
@@ -2533,12 +2650,21 @@ if (!gotLock) { app.quit(); } else {
     applyHotkey(storeGet('settings.hotkey', 'Alt+Shift+H'));
     armAllSchedules(); // 周期任务（每日提醒/循环提醒/自动清理）
 if (process.env.HEHE_SHOT) {
+      // 截图输出目录：开发态写到项目根，打包后 asar 内部不可写，改写到 userData
+      const shotDir = (() => {
+        try {
+          if (!app.isPackaged) return __dirname;
+          const d = path.join(app.getPath('userData'), 'shots');
+          fs.mkdirSync(d, { recursive: true });
+          return d;
+        } catch (e) { return app.getPath('temp'); }
+      })();
       setTimeout(async () => {
         try {
           if (win && !win.isDestroyed()) {
             const img = await win.webContents.capturePage();
-            fs.writeFileSync(path.join(__dirname, 'diag-shot.png'), img.toPNG());
-            console.log('[shot] saved');
+            fs.writeFileSync(path.join(shotDir, 'diag-shot.png'), img.toPNG());
+            console.log('[shot] saved', path.join(shotDir, 'diag-shot.png'));
           }
         } catch (e) { console.error('[shot] failed:', e.message); }
       }, 8000);
@@ -2552,13 +2678,24 @@ if (process.env.HEHE_SHOT) {
             if (id === 'theme-toggle') {
               const support = await win.webContents.executeJavaScript(`(() => { document.querySelectorAll('.tb-btn')[0].click(); return typeof document.startViewTransition; })()`);
               console.log('[shot] theme-toggle clicked, startViewTransition:', support);
+            } else if (id.startsWith('view:')) {
+              // 视图页不是注册工具，用 showView 打开（如 view:settings / view:about / view:home / view:fav）
+              // view:settings/about 支持二级子页：view:settings:about
+              const parts = id.slice(5).split(':');
+              const base = parts[0], sub = parts[1] || null;
+              await win.webContents.executeJavaScript(
+                `(async () => { window.App.showView({ type: ${JSON.stringify(base)} }); ` +
+                (sub ? `await new Promise(r => setTimeout(r, 300)); const it = document.querySelector('.settings-nav-item[data-sid="${sub}"]'); if (it) { it.click(); await new Promise(r => setTimeout(r, 300)); } ` : '') +
+                `return 'ok'; })()`, true);
             } else {
               await win.webContents.executeJavaScript(`window.App.openTool('${id}'); 'ok'`);
             }
             await new Promise(r => setTimeout(r, 2500));
             const img = await win.webContents.capturePage();
-            fs.writeFileSync(path.join(__dirname, `shot-${i}-${id}.png`), img.toPNG());
-            console.log('[shot]', id, 'saved');
+            // Windows 文件名不允许 : \ / * ? " < > |，view:settings 会变成 NTFS 备用数据流，必须净化
+            const safe = String(id).replace(/[^a-zA-Z0-9._-]/g, '-');
+            fs.writeFileSync(path.join(shotDir, `shot-${i}-${safe}.png`), img.toPNG());
+            console.log('[shot]', id, 'saved', path.join(shotDir, `shot-${i}-${safe}.png`));
           } catch (e) { console.error('[shot]', id, 'failed:', e.message); }
           i++;
           setTimeout(step, 400);
