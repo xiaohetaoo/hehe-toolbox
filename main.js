@@ -87,6 +87,19 @@ async function pathExists(p) {
   try { await fsp.access(p); return true; } catch (e) { return false; }
 }
 
+/* 本应用在系统临时目录里创建的临时产物（统一 hehe- 前缀）。
+   自动清理只允许碰这些文件，绝不能整目录清空——%TEMP% 是全机器共享的，
+   里面还有别的程序正在使用的文件，整目录删除会导致它们崩溃或丢数据。 */
+const OWN_TEMP_PATTERNS = [
+  /^hehe-snip-\d+\.png$/i,       // 区域截图临时图
+  /^hehe-rec-\d+$/i,             // 录制分段目录
+  /^hehe-ffmpeg-.*\.zip$/i,      // FFmpeg 下载包
+  /^hehe-ffmpeg-win.*\.gz$/i,    // FFmpeg 压缩包
+  /^hehe-update-.*\.log$/i,      // 升级脚本日志
+  /^hehe-rollback-.*\.log$/i     // 回滚脚本日志
+];
+function isOwnTempName(name) { return OWN_TEMP_PATTERNS.some(re => re.test(name)); }
+
 /* ---------------- window ---------------- */
 // 系统主题变化时广播到渲染端（跟随系统模式下同步深浅色）
 nativeTheme.on('updated', () => {
@@ -280,7 +293,16 @@ handle('fs:rename', async (e, from, to) => { await fsp.rename(from, to); return 
 handle('fs:delete', async (e, p, recursive) => { await fsp.rm(p, { recursive: !!recursive, force: true }); return true; });
 handle('fs:open-path', async (e, p) => { const err = await shell.openPath(p); if (err) throw new Error(err); return true; });
 handle('fs:show-item', (e, p) => { shell.showItemInFolder(p); return true; });
-handle('shell:open-url', (e, url) => { shell.openExternal(url); return true; });
+// 只允许 http/https：shell.openExternal 会把任意协议交给系统处理，
+// file:// 能直接打开本地文件，smb:// / ms-msdt: 等还能被系统协议处理器放大成提权或 RCE 链。
+handle('shell:open-url', async (e, url) => {
+  const s = String(url || '').trim();
+  let u;
+  try { u = new URL(s); } catch (err) { throw new Error('网址格式不正确'); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('只允许打开 http/https 网址');
+  await shell.openExternal(u.toString());
+  return true;
+});
 handle('fs:unique-path', async (e, p) => {
   if (!fs.existsSync(p)) return p;
   const dir = path.dirname(p), ext = path.extname(p), base = path.basename(p, ext);
@@ -349,7 +371,7 @@ handle('fs:scan-tree', async (e, root, opts = {}) => {
     function onProgressTick(item) { return item.type === 'file'; }
     function emitProgress() {
       const now = Date.now();
-      if (now - lastEmit > 250) { lastEmit = now; send('job:progress', { id, files, size: totalSize }); }
+      if (now - lastEmit > 250) { lastEmit = now; send('job:progress', { id, kind: 'scan', files, size: totalSize }); }
     }
   } finally { jobs.delete(id); }
   topFiles.sort((a, b) => b.size - a.size);
@@ -473,13 +495,23 @@ handle('fs:hash-file', async (e, p, algo = 'sha256') => {
     const hash = crypto.createHash(algo);
     const st = fs.statSync(p); let done = 0; let last = 0;
     const rs = fs.createReadStream(p, { highWaterMark: 1 << 20 });
-    rs.on('data', (chunk) => { hash.update(chunk); done += chunk.length; if (Date.now() - last > 200) { last = Date.now(); send('job:progress', { id: p, done, total: st.size }); } });
+    rs.on('data', (chunk) => { hash.update(chunk); done += chunk.length; if (Date.now() - last > 200) { last = Date.now(); send('job:progress', { id: p, kind: 'hash', done, total: st.size }); } });
     rs.on('end', () => resolve({ hex: hash.digest('hex'), size: st.size, algo }));
     rs.on('error', reject);
   });
 });
 handle('fs:hash-text', (e, text, algo = 'sha256') => {
+  if (!HASH_ALGOS.includes(algo)) throw new Error('不支持的算法');
   return { hex: crypto.createHash(algo).update(text, 'utf8').digest('hex') };
+});
+// 一次算多个算法：文本页每次输入都要出 3 个摘要，逐个 invoke 会有 3 次 IPC 往返
+handle('fs:hash-text-multi', (e, text, algos = ['md5', 'sha1', 'sha256']) => {
+  const out = {};
+  for (const algo of algos) {
+    if (!HASH_ALGOS.includes(algo)) continue;
+    out[algo] = crypto.createHash(algo).update(String(text ?? ''), 'utf8').digest('hex');
+  }
+  return out;
 });
 
 const ENC_MAGIC = Buffer.from('HEHEENC1');
@@ -517,7 +549,7 @@ async function cryptStream(p, outPath, password, decrypt) {
   if (header) ws.write(header);
   let done = 0;
   const total = Math.max(1, st.size - srcStart);
-  rs.on('data', (chunk) => { done += chunk.length; send('job:progress', { id: p, done, total }); });
+  rs.on('data', (chunk) => { done += chunk.length; send('job:progress', { id: p, kind: 'crypt', done, total }); });
   try {
     await new Promise((resolve, reject) => {
       require('stream').pipeline(rs, cipher, ws, (err) => (err ? reject(err) : resolve()));
@@ -565,7 +597,7 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
           ws.once('drain', () => { if (pausedFor === ws) { pausedFor = null; rs.resume(); } });
         }
       }
-      done += chunk.length; send('job:progress', { id: p, done, total: st.size });
+      done += chunk.length; send('job:progress', { id: p, kind: 'split', done, total: st.size });
     });
     rs.on('end', () => { ws.end(); ws.on('finish', resolve); });
     rs.on('error', reject);
@@ -602,7 +634,7 @@ handle('fs:merge-parts', async (e, pickedPath, outPath) => {
       if (i > man.parts) { ws.end(); ws.on('finish', resolve); return; }
       const part = path.join(dir, `${man.name}.part${String(i).padStart(String(man.parts).length, '0')}`);
       const rs = fs.createReadStream(part);
-      rs.on('data', (c) => { done += c.length; send('job:progress', { id: finalOut, done, total: man.size }); });
+      rs.on('data', (c) => { done += c.length; send('job:progress', { id: finalOut, kind: 'merge', done, total: man.size }); });
       rs.on('end', () => { i++; next(); });
       rs.on('error', reject);
       rs.pipe(ws, { end: false });
@@ -625,7 +657,7 @@ handle('fs:dedupe', async (e, root, opts = {}) => {
       if (item.type !== 'file') return;
       scanned++;
       const now = Date.now();
-      if (now - lastEmit > 300) { lastEmit = now; send('job:progress', { id, files: scanned }); }
+      if (now - lastEmit > 300) { lastEmit = now; send('job:progress', { id, kind: 'dedupe', files: scanned }); }
       let key;
       if (mode === 'name') key = path.basename(item.path).toLowerCase();
       else if (mode === 'size') key = 's' + item.size;
@@ -868,7 +900,7 @@ handle('net:scan', async (e, host, ports, opts = {}) => {
         try { s.connect(port, host); } catch (err) { fin(); }
       });
       done++;
-      if (done % 100 === 0) send('job:progress', { id, done, total: ports.length, open: open.length });
+      if (done % 100 === 0) send('job:progress', { id, kind: 'ports', done, total: ports.length, open: open.length });
     }
   }
   try {
@@ -1452,7 +1484,7 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
       send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok }) });
     }
   } finally { jobs.delete(id); }
-  return { results, canceled: state.cancel };
+  return { id, results, canceled: state.cancel };
 });
 
 /* 视频压制：重编码瘦身（预设/CRF/编码速度/分辨率/音频码率/去元数据） */
@@ -1524,7 +1556,7 @@ handle('ffmpeg:press', async (e, { items, outDir, opts }) => {
       send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok }) });
     }
   } finally { jobs.delete(id); }
-  return { results, canceled: state.cancel };
+  return { id, results, canceled: state.cancel };
 });
 
 /* 视频截帧：单帧或帧序列 */
@@ -2641,16 +2673,26 @@ function schedFire(s) {
     if (s.type === 'clean') {
       (async () => {
         try {
-          const targets = [os.tmpdir()];
-          let bytes = 0;
-          for (const t of targets) { try { bytes += (await dirSizeFast(t)).size; } catch (e) {} }
-          for (const t of targets) {
+          const tmp = app.getPath('temp');
+          let removed = 0, bytes = 0;
+          const entries = await fsp.readdir(tmp).catch(() => []);
+          for (const n of entries) {
+            if (!isOwnTempName(n)) continue; // 只清本应用自己的产物
+            const full = path.join(tmp, n);
             try {
-              const entries = await fsp.readdir(t).catch(() => []);
-              for (const n of entries) await fsp.rm(path.join(t, n), { recursive: true, force: true });
+              const st = await fsp.stat(full);
+              if (st.isDirectory()) {
+                const r = await dirSizeFast(full);
+                await fsp.rm(full, { recursive: true, force: true });
+                bytes += r.size;
+              } else {
+                await fsp.unlink(full);
+                bytes += st.size;
+              }
+              removed++;
             } catch (e) {}
           }
-          send('sched:fire', { id: s.id, type: s.type, message: `自动清理完成，释放 ${Math.round(bytes / 1048576)} MB（临时目录）` });
+          send('sched:fire', { id: s.id, type: s.type, message: `自动清理完成，释放 ${Math.round(bytes / 1048576)} MB（${removed} 个本应用临时文件）` });
         } catch (err) { send('sched:fire', { id: s.id, type: s.type, message: '自动清理失败：' + err.message }); }
       })();
     } else {
@@ -2802,32 +2844,23 @@ handle('ctxmenu:classic-status', async () => {
 /* ================= 启动清扫（临时文件 / 孤儿录制目录 / 孤儿剪贴板图片） ================= */
 // 截图临时 PNG 与录制分段是「写一次就丢」的产物；崩溃或强杀会留下残骸。
 // 只在启动时清一次，且按 mtime 保留最近的，避免误删正在进行的会话。
+// 只处理本应用自己的临时产物（hehe- 前缀白名单），绝不整目录清空。
 async function sweepTempFiles(maxAgeMs = 24 * 3600 * 1000) {
   const tmp = app.getPath('temp');
   const now = Date.now();
   let removed = 0;
-  // 1) 截图临时 PNG：hehe-snip-*.png
-  try {
-    for (const n of await fsp.readdir(tmp)) {
-      if (!/^hehe-snip-\d+\.png$/i.test(n)) continue;
-      const full = path.join(tmp, n);
-      try {
-        const st = await fsp.stat(full);
-        if (now - st.mtimeMs > maxAgeMs) { await fsp.unlink(full); removed++; }
-      } catch (e) {}
-    }
-  } catch (e) {}
-  // 2) 录制分段目录：hehe-rec-* （正常流程 rec:stop 会自删，残留即孤儿）
-  try {
-    for (const n of await fsp.readdir(tmp)) {
-      if (!/^hehe-rec-\d+$/i.test(n)) continue;
-      const full = path.join(tmp, n);
-      try {
-        const st = await fsp.stat(full);
-        if (now - st.mtimeMs > maxAgeMs) { await fsp.rm(full, { recursive: true, force: true }); removed++; }
-      } catch (e) {}
-    }
-  } catch (e) {}
+  const entries = await fsp.readdir(tmp).catch(() => []);
+  for (const n of entries) {
+    if (!isOwnTempName(n)) continue;
+    const full = path.join(tmp, n);
+    try {
+      const st = await fsp.stat(full);
+      if (now - st.mtimeMs <= maxAgeMs) continue; // 最近的保留
+      if (st.isDirectory()) await fsp.rm(full, { recursive: true, force: true });
+      else await fsp.unlink(full);
+      removed++;
+    } catch (e) {}
+  }
   return removed;
 }
 async function sweepClipImages() {

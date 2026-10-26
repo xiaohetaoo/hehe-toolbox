@@ -273,7 +273,7 @@
         const dir = dirIn.value.trim();
         if (!dir) return toast('请选择目录', 'warn');
         result.innerHTML = ''; prog.show(); scanBtn.disabled = true;
-        const unsub = on('job:progress', (d) => { status.textContent = `已扫描 ${fmtNum(d.files)} 个文件，${fmtBytes(d.size)}`; });
+        const unsub = on('job:progress', (d) => { if (d.kind === 'scan') status.textContent = `已扫描 ${fmtNum(d.files)} 个文件，${fmtBytes(d.size)}`; });
         try {
           const r = await invoke('fs:scan-tree', dir, {});
           status.textContent = `完成：${fmtNum(r.files)} 个文件 / ${fmtNum(r.dirCount)} 个文件夹 / 总计 ${fmtBytes(r.totalSize)}`;
@@ -730,7 +730,7 @@
       const rType = h('select', { class: 'select input-sm' },
         h('option', { value: 'daily' }, '每天定时提醒'),
         h('option', { value: 'loop' }, '循环提醒（每 N 分钟）'),
-        h('option', { value: 'clean' }, '每天自动清理临时文件'));
+        h('option', { value: 'clean' }, '每天自动清理本应用临时文件'));
       const rTime = h('input', { type: 'time', class: 'input input-sm', value: '09:00', style: { width: '100px' } });
       const rEvery = h('input', { type: 'number', class: 'input input-sm', value: '60', min: '1', style: { width: '70px' } });
       const rMsg = h('input', { class: 'input input-sm', placeholder: '提醒时显示的文字（选择「提醒」时必填）', style: { flex: '1' } });
@@ -742,7 +742,7 @@
         for (const s of list) {
           const desc = s.type === 'daily' ? `每天 ${s.hhmm} 提醒：${s.message}`
             : s.type === 'loop' ? `每 ${s.everyMin} 分钟提醒：${s.message || '（循环提醒）'}`
-            : `每天 ${s.hhmm} 自动清理临时文件`;
+            : `每天 ${s.hhmm} 自动清理本应用临时文件`;
           rList.appendChild(div('form-row',
             h('span', { class: 'tag ' + (s.type === 'clean' ? 'tag-green' : 'tag-blue'), style: { width: '48px', justifyContent: 'center' } }, s.type === 'clean' ? '清理' : '提醒'),
             h('span', { style: { flex: '1', fontSize: '12px' } }, desc),
@@ -766,7 +766,7 @@
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '间隔'), rEvery, rMsg),
         div('form-row', rAddBtn),
         rList,
-        div('field-hint', '周期任务由主进程调度并随配置持久化：到点弹系统通知；自动清理仅清空用户临时目录（安全范围）')));
+        div('field-hint', '周期任务由主进程调度并随配置持久化：到点弹系统通知；自动清理只删除本应用自己的临时文件（截图、录制分段、FFmpeg 下载包），不会动系统临时目录里的其他文件')));
       loadRecurring();
     }
   });

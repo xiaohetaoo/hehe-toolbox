@@ -43,7 +43,7 @@
         row.appendChild(progress);
         resultTable.prepend(row);
         const unsub = on('job:progress', (d) => {
-          if (d.id === p) progress.firstChild.style.width = (d.done / d.total * 100) + '%';
+          if (d.kind === 'hash' && d.id === p) progress.firstChild.style.width = (d.done / d.total * 100) + '%';
         });
         const algos = ['md5', 'sha1', 'sha256', 'sha512'];
         for (const algo of algos) {
@@ -66,13 +66,16 @@
       async function hashText() {
         textOut.innerHTML = '';
         if (!ta.value) return;
+        // 一次 IPC 拿回多个算法，避免 3 次往返
+        let res;
+        try { res = await window.api.invoke('fs:hash-text-multi', ta.value, ['md5', 'sha1', 'sha256']); }
+        catch (e) { return; } // browser mode
         for (const algo of ['md5', 'sha1', 'sha256']) {
-          try {
-            const r = await window.api.invoke('fs:hash-text', ta.value, algo);
-            textOut.appendChild(div('form-row', h('span', { class: 'form-label', style: { minWidth: '70px', textTransform: 'uppercase' } }, algo),
-              h('span', { class: 'mono', style: { flex: '1', userSelect: 'text', wordBreak: 'break-all', fontSize: '12px' } }, r.hex),
-              btn('复制', 'btn-sm btn-text', () => copyText(r.hex))));
-          } catch (e) { /* browser mode */ }
+          const hex = res && res[algo];
+          if (!hex) continue;
+          textOut.appendChild(div('form-row', h('span', { class: 'form-label', style: { minWidth: '70px', textTransform: 'uppercase' } }, algo),
+            h('span', { class: 'mono', style: { flex: '1', userSelect: 'text', wordBreak: 'break-all', fontSize: '12px' } }, hex),
+            btn('复制', 'btn-sm btn-text', () => copyText(hex))));
         }
       }
       const textCard = div('card', div('card-title', '文本校验'), ta, textOut);

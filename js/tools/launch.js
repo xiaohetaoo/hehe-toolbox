@@ -29,7 +29,11 @@
           ops.appendChild(btn('删除', 'btn-sm btn-text', async () => {
             if (!(await confirmBox({ title: '删除快捷项', message: `删除「${it.name}」？` }))) return;
             const cur = await invoke('store:get', 'quicklaunch', []);
-            const idx = cur.findIndex(x => x.id === it.id);
+            // 旧数据没有 id 字段，只能按 name+target+type 定位；
+            // 直接 findIndex(x => x.id === it.id) 会在 undefined === undefined 时命中第一条，导致删错项。
+            const idx = cur.findIndex(x => it.id
+              ? x.id === it.id
+              : (x.name === it.name && x.target === it.target && x.type === it.type));
             if (idx < 0) { load(); return; } // 索引可能因并发删除过期，避免误删
             cur.splice(idx, 1);
             await invoke('store:set', 'quicklaunch', cur);
@@ -66,6 +70,9 @@
         let target = '';
         if (type === 'url') {
           target = await promptBox({ title: '添加网址', label: '网址：', placeholder: 'https://' });
+          target = String(target || '').trim();
+          // 提前校验协议，避免存进去之后点击「打开」才报错
+          if (target && !/^https?:\/\//i.test(target)) { toast('网址需以 http:// 或 https:// 开头', 'error'); return; }
         } else {
           const p = await invoke('dialog:open', { properties: type === 'dir' ? ['openDirectory'] : ['openFile'] });
           target = p && p[0];
@@ -74,7 +81,7 @@
         const name = await promptBox({ title: '命名', label: '显示名称：', value: String(target).split(/[\\/]/).pop().replace(/\.\w+$/, '') || '快捷项' });
         if (!name) return;
         const items = await invoke('store:get', 'quicklaunch', []);
-        items.push({ name, target, type });
+        items.push({ id: 'ql' + Date.now(), name, target, type });
         await invoke('store:set', 'quicklaunch', items);
         toast('已添加', 'success');
         load();
@@ -113,6 +120,8 @@
                 td.appendChild(btn('删除', 'btn-sm btn-text', async () => {
                   const items = await invoke('store:get', 'commands', []);
                   const idx = items.findIndex(x => x.id === r.id);
+                  // findIndex 未命中时返回 -1，splice(-1,1) 会误删最后一条，必须先挡住
+                  if (idx < 0) { load(); return; }
                   items.splice(idx, 1);
                   await invoke('store:set', 'commands', items);
                   load();

@@ -198,7 +198,7 @@
         const out = await invoke('dialog:save', { defaultPath: outDefault });
         if (!out) return;
         prog.show();
-        const unsub = window.api.on('job:progress', (d) => { if (d.id === filePath) prog.set(d.done / d.total * 100); });
+        const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'crypt' && d.id === filePath) prog.set(d.done / d.total * 100); });
         try {
           const fn = mode === 'encrypt' ? 'fs:encrypt-file' : 'fs:decrypt-file';
           const r = await invoke(fn, filePath, out, pwdIn.value);
@@ -255,7 +255,7 @@
             if (!spFile) return toast('请选择文件', 'warn');
             const outDir = spFile + '.parts';
             spProg.show(); spStatus.textContent = '';
-            const unsub = window.api.on('job:progress', (d) => { if (d.id === spFile) spProg.set(d.done / d.total * 100); });
+            const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'split' && d.id === spFile) spProg.set(d.done / d.total * 100); });
             try {
               const r = await invoke('fs:split-file', spFile, parseInt(sizeIn.value) || 10, outDir);
               spStatus.innerHTML = `<span class="status-ok">✓ 分割完成</span>：${r.parts} 个分片，输出目录 ${escapeHtml(r.outDir)}`;
@@ -276,7 +276,8 @@
         div('form-row', btn('开始合并', 'btn-primary', async () => {
           if (!mgFile) return toast('请选择分片', 'warn');
           mgProg.show(); mgStatus.textContent = '';
-          const unsub = window.api.on('job:progress', (d) => mgProg.set(d.total ? d.done / d.total * 100 : 0));
+          // 只认「合并」自己的进度事件：hash/split/加密共用 job:progress，不过滤会被别的任务串扰
+          const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'merge') mgProg.set(d.total ? d.done / d.total * 100 : 0); });
           try {
             const r = await invoke('fs:merge-parts', mgFile);
             mgStatus.innerHTML = `<span class="status-ok">✓ 合并完成</span>：${escapeHtml(r.outPath)}（${fmtBytes(r.size)}，${r.parts} 片）`;
@@ -311,7 +312,7 @@
         const dir = dirInput.value.trim();
         if (!dir) return toast('请选择目录', 'warn');
         resultBox.innerHTML = ''; status.textContent = '扫描中…';
-        const unsub = window.api.on('job:progress', (d) => { status.textContent = `扫描中… 已检查 ${d.files || 0} 个文件`; });
+        const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'dedupe') status.textContent = `扫描中… 已检查 ${d.files || 0} 个文件`; });
         try {
           const r = await invoke('fs:dedupe', dir, { mode: modeSel.value });
           groups = r.groups;

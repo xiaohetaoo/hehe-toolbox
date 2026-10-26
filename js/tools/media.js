@@ -539,8 +539,9 @@
       const listBox = div('');
       const status = h('div', { class: 'field-hint' }, '');
       let running = false;
+      let runJobId = null; // 本页任务的 job id：按 id 精确取消，避免 cancel-latest 取消到别的任务
       const startBtn = btn('🚀 开始转换', 'btn-primary', run);
-      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => invoke('job:cancel-latest').catch(() => {}));
+      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); });
       cancelBtn.disabled = true;
       function refreshList() {
         listBox.innerHTML = '';
@@ -570,8 +571,11 @@
         }
         running = true; startBtn.disabled = true; cancelBtn.disabled = false;
         status.textContent = '';
+        runJobId = null;
         const outDir = outDirIn.value.trim() || files[0].replace(/[\\/][^\\/]*$/, '');
+        // job id 从流事件里取：invoke 要等全部转码结束才返回，那时已经来不及取消了
         const unsub = on('job:stream', (d) => {
+          if (!runJobId && d.id) runJobId = d.id;
           try {
             const j = JSON.parse(d.data);
             const row = listBox.querySelector(`[data-i="${j.i}"]`);
@@ -908,8 +912,9 @@
       const listBox = div('');
       const status = h('span', { class: 'field-hint' }, '');
       let running = false;
+      let runJobId = null; // 本页任务的 job id：按 id 精确取消，避免 cancel-latest 取消到别的任务
       const startBtn = btn('🚀 开始压制', 'btn-primary', run);
-      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => invoke('job:cancel-latest').catch(() => {}));
+      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); });
       cancelBtn.disabled = true;
       function applyPreset() {
         const v = presetSel.value;
@@ -947,8 +952,11 @@
         }
         running = true; startBtn.disabled = true; cancelBtn.disabled = false;
         status.textContent = '';
+        runJobId = null;
         const outDir = outDirIn.value.trim() || (files[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-pressed');
+        // job id 从流事件里取：invoke 要等全部压制结束才返回，那时已经来不及取消了
         const unsub = on('job:stream', (d) => {
+          if (!runJobId && d.id) runJobId = d.id;
           try {
             const j = JSON.parse(d.data);
             const row = listBox.querySelector(`[data-i="${j.i}"]`);
