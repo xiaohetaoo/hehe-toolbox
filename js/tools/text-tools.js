@@ -258,7 +258,7 @@
       const sideList = div('', { style: { minWidth: '180px' } });
       const titleIn = h('input', { class: 'input input-sm', placeholder: '笔记标题…', style: { width: '100%', fontWeight: 600 } });
       const tagsIn = h('input', { class: 'input input-sm', placeholder: '标签（逗号分隔，如：工作,灵感）', style: { width: '100%' } });
-      const ta = h('textarea', { class: 'pane-ta', placeholder: '书写 Markdown…', style: { minHeight: '300px', flex: '1' } });
+      const ta = h('textarea', { class: 'pane-ta', placeholder: '在这里书写笔记，右侧实时预览…', style: { minHeight: '300px', flex: '1' } });
       const preview = div('md-view', { style: { flex: '1', minHeight: '300px', overflow: 'auto', padding: '6px 10px', background: 'var(--bg-2)', borderRadius: '8px' } });
       const searchIn = h('input', { class: 'input input-sm', placeholder: '搜索全部笔记…', style: { width: '100%' } });
       const tagFilter = div('form-row', { style: { flexWrap: 'wrap', gap: '4px' } });

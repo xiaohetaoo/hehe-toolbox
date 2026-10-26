@@ -527,7 +527,7 @@
             await apply(false);
             toast('如未立即生效，请重启资源管理器或注销重登', 'info');
           })),
-        div('field-hint', '原理：注册表 HKCU 下 CLSID {86ca1aa0-…} 键的创建/删除，仅影响当前用户，完全可逆。')));
+        div('field-hint', '只修改当前用户的注册表项，不删除任何内容，可随时切回 Win11 样式。')));
       refresh();
     }
   });
@@ -580,7 +580,7 @@
       }
       page.appendChild(div('card', div('card-title', '当前窗口'),
         div('form-row', refreshBtn, status), listBox,
-        div('field-hint', '透明度只对支持的窗口生效（部分自绘/UWP 窗口不响应）；恢复 100% 即移除透明效果')));
+        div('field-hint', '部分窗口（自绘界面、UWP 应用）不接受透明度调整；调回 100% 即可取消透明')));
       load();
     }
   });
@@ -588,7 +588,7 @@
   /* ---------- 服务与电源计划 ---------- */
   register({
     id: 'services-power', name: '服务与电源', module: MOD, icon: 'server',
-    desc: '查看/启停 Windows 服务（需管理员）与切换电源计划',
+    desc: '查看并启停 Windows 服务（启停需管理员权限），切换电源计划',
     keywords: ['服务', 'service', '电源', '计划', 'powercfg'],
     render(page) {
       const svcBox = div('');
@@ -663,7 +663,7 @@
         h('option', { value: 'sleep' }, '睡眠'), h('option', { value: 'lock' }, '锁屏'),
         h('option', { value: 'remind' }, '提醒我'));
       const minIn = h('input', { type: 'number', class: 'input input-sm', value: '30', min: '1', style: { width: '80px' } });
-      const msgIn = h('input', { class: 'input input-sm', placeholder: '提醒内容（提醒模式）', style: { flex: '1' } });
+      const msgIn = h('input', { class: 'input input-sm', placeholder: '提醒时显示的文字，如「该喝水了」', style: { flex: '1' } });
       const countdown = h('span', { class: 'tag tag-blue' }, '未设置');
       const status = h('span', { class: 'field-hint' }, '');
       let timer = null, targetTs = 0, mode = '';
@@ -733,7 +733,7 @@
         h('option', { value: 'clean' }, '每天自动清理临时文件'));
       const rTime = h('input', { type: 'time', class: 'input input-sm', value: '09:00', style: { width: '100px' } });
       const rEvery = h('input', { type: 'number', class: 'input input-sm', value: '60', min: '1', style: { width: '70px' } });
-      const rMsg = h('input', { class: 'input input-sm', placeholder: '提醒内容（提醒类必填）', style: { flex: '1' } });
+      const rMsg = h('input', { class: 'input input-sm', placeholder: '提醒时显示的文字（选择「提醒」时必填）', style: { flex: '1' } });
       const rList = div('');
       async function loadRecurring() {
         const list = await invoke('sched:list').catch(() => []);

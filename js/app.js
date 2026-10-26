@@ -376,8 +376,8 @@
   }
   function renderHome(page) {
     const hero = div('home-hero');
-    hero.appendChild(h('h1', null, '你好，欢迎来到核核工具箱 👋'));
-    hero.appendChild(h('p', null, '本地优先 · 即开即用 · 无广告 · 不上传隐私 —— 效率工具，一个就够'));
+    hero.appendChild(h('h1', null, '核核工具箱'));
+    hero.appendChild(h('p', null, '92 个工具，本地运行，不联网也能用'));
     const hs = div('home-search');
     const inp = h('input', { placeholder: '搜索全部工具，回车直达…' });
     const heroIcon = icon('search', 'icon');
@@ -397,24 +397,20 @@
     hero.appendChild(hs);
     page.appendChild(hero);
 
-    const favs = state.favorites.map(id => R.get(id)).filter(Boolean);
-    const sec1 = div('card');
-    sec1.appendChild(div('card-title', icon('star'), '我的收藏'));
-    if (favs.length) sec1.appendChild(div('tool-grid cols-4', ...favs.map(t => toolCard(t))));
-    else sec1.appendChild(div('empty-tip', '还没有收藏，打开任意工具点击 ★ 即可收藏'));
-    page.appendChild(sec1);
-
+    // 最近使用：仅在有记录时显示（新用户不必看一张空卡片占位）
     const recents = state.recents.map(id => R.get(id)).filter(Boolean);
-    const sec2 = div('card');
-    sec2.appendChild(div('card-title', icon('clock'), '最近使用'));
-    if (recents.length) sec2.appendChild(div('recent-row', ...recents.map(t => {
-      const chip = div('recent-chip', icon(t.icon), h('span', null, t.name));
-      chip.addEventListener('click', () => openTool(t.id));
-      return chip;
-    })));
-    else sec2.appendChild(div('empty-tip', '暂无使用记录'));
-    page.appendChild(sec2);
+    if (recents.length) {
+      const sec2 = div('card');
+      sec2.appendChild(div('card-title', icon('clock'), '最近使用'));
+      sec2.appendChild(div('recent-row', ...recents.map(t => {
+        const chip = div('recent-chip', icon(t.icon), h('span', null, t.name));
+        chip.addEventListener('click', () => openTool(t.id));
+        return chip;
+      })));
+      page.appendChild(sec2);
+    }
 
+    // 分类卡片只留名称与数量；模块说明在进入该模块后由页头呈现，不在此重复
     const sec3 = div('card');
     sec3.appendChild(div('card-title', icon('grid'), '全部分类'));
     sec3.appendChild(div('tool-grid cols-4', ...R.MODULES.map(m => {
@@ -423,7 +419,7 @@
       card.appendChild(div('tc-icon', iconLg(m.icon)));
       const info = div('');
       info.appendChild(div('tc-name', m.name));
-      info.appendChild(div('tc-desc', `${m.desc}（${count} 个工具）`));
+      info.appendChild(div('tc-desc', `${count} 个工具`));
       card.appendChild(info);
       card.addEventListener('click', () => showView({ type: 'module', moduleId: m.id }));
       return card;
@@ -469,7 +465,7 @@
   }
 
   /* ============ 设置 ============ */
-  let drawToken = 0; // 模块级：drawBody 与闭包外的 drawGeneral/drawData/drawAboutSetting 共享
+  let drawToken = 0; // 模块级：drawBody 与闭包外的 drawGeneral/drawAppearance/drawData 共享
   function renderSettings(page) {
     page.appendChild(div('tool-header', div('th-icon', iconLg('settings')), div('', h('h2', null, '设置'), h('div', { class: 'th-desc' }, '个性化你的核核工具箱'))));
     const wrap = div('settings-wrap');
@@ -478,8 +474,7 @@
     const sections = [
       { id: 'general', name: '通用', icon: 'settings' },
       { id: 'appearance', name: '外观', icon: 'sun' },
-      { id: 'data', name: '数据与隐私', icon: 'shield' },
-      { id: 'about', name: '关于', icon: 'info' }
+      { id: 'data', name: '数据与隐私', icon: 'shield' }
     ];
     let current = 'general';
     function drawBody() {
@@ -488,8 +483,7 @@
       nav.querySelectorAll('.settings-nav-item').forEach(el => el.classList.toggle('active', el.dataset.sid === current));
       if (current === 'general') drawGeneral(body, token);
       else if (current === 'appearance') drawAppearance(body, token);
-      else if (current === 'data') drawData(body, token);
-      else drawAboutSetting(body, token);
+      else drawData(body, token);
     }
     for (const s of sections) {
       const item = div('settings-nav-item', icon(s.icon), ' ' + s.name);
@@ -583,20 +577,7 @@
     // 主题卡片放在标题下方独立区域
     row.style.display = 'block';
     row.appendChild(grid);
-
-    const row2 = div('set-row', div('', div('set-label', '侧边栏收起'), div('set-desc', '收起后仅显示图标，宽度收缩为 64px')));
-    const sideSw = switchEl(false, (v) => {
-      const isCollapsed = sidebarEl.classList.contains('collapsed');
-      if (v !== isCollapsed) sidebarEl.querySelector('.collapse-btn').click();
-    });
-    const syncSide = () => sideSw.set(sidebarEl.classList.contains('collapsed'));
-    if (!drawAppearance._sideHandler) { // 稳定监听引用，避免反复进入本分区时累积
-      drawAppearance._sideHandler = () => { if (drawAppearance._lastSw) drawAppearance._lastSw.set(sidebarEl.classList.contains('collapsed')); };
-      sidebarEl.addEventListener('transitionend', drawAppearance._sideHandler);
-    }
-    drawAppearance._lastSw = sideSw;
-    row2.appendChild(div('set-control', sideSw));
-    body.appendChild(row2);
+    // 侧边栏收起已由侧栏底部按钮提供，此处不再重复放开关
   }
   async function drawData(body, token) {
     let userData = '(浏览器演示模式)';
@@ -616,16 +597,45 @@
     }))));
     body.appendChild(div('set-row', div('', div('set-label', '隐私承诺'), div('set-desc', '核核工具箱不收集任何操作日志与个人信息；联网功能仅在主动触发时执行；所有本地数据仅存于用户电脑'))));
   }
-  async function drawAboutSetting(body, token) {
+
+  /* ============ 关于页（唯一的版本/更新入口） ============ */
+  async function renderAbout(page) {
     const info = await invoke('app:get-info');
-    if (token !== undefined && token !== drawToken) return;
-    const updLine = h('div', { class: 'set-desc', style: { padding: '0 4px 8px' } }, '');
-    const updActions = h('div', { style: { padding: '0 4px 10px', display: 'flex', gap: '8px', flexWrap: 'wrap' } });
-    async function checkUpdate() {
+    page.appendChild(div('tool-header', div('th-icon', iconLg('info')), div('', h('h2', null, '关于'), h('div', { class: 'th-desc' }, '版本信息与更新'))));
+
+    const updLine = h('div', { class: 'field-hint', style: { padding: '8px 4px 0' } }, '');
+    const updActions = div('', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '8px 4px 0' } });
+    const checkBtn = btn('检查更新', 'btn-sm btn-secondary', checkUpdate);
+
+    const card = div('card');
+    const head = div('', { style: { display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '16px' } });
+    head.appendChild(h('img', { src: 'assets/icon.png', style: { width: '56px', height: '56px', borderRadius: '12px' } }));
+    head.appendChild(div('', h('div', { style: { fontWeight: 600, fontSize: '18px' } }, '核核工具箱'), h('div', { class: 'set-desc' }, 'HeHe Toolbox v' + info.appVersion)));
+    head.appendChild(div('', { style: { marginLeft: 'auto' } }, checkBtn));
+    card.appendChild(head);
+    card.appendChild(window.ui.kvGrid([
+      ['运行环境', `Electron ${info.electron} · Chromium ${info.chrome}`],
+      ['当前用户', info.username + '@' + info.hostname],
+      ['数据目录', info.userData]
+    ]));
+    card.appendChild(updLine);
+    card.appendChild(updActions);
+    page.appendChild(card);
+
+    // 升级后清理残留下载包（每次升级都会留一份 90MB+，进本页时顺手清掉）
+    invoke('update:cleanup').then((r) => {
+      if (r && r.removed) console.log('[update] 清理旧安装包', r.removed, '个', (r.bytes / 1048576).toFixed(1) + 'MB');
+    }).catch(() => {});
+
+    async function checkUpdate(ev) {
+      const trigger = ev && (ev.currentTarget || ev.target);
+      if (trigger && trigger.disabled) return;
+      if (trigger) trigger.disabled = true;
       updLine.textContent = '正在检查更新…';
       updActions.innerHTML = '';
       try {
         const r = await invoke('update:check', { force: true });
+        if (r.throttled) { updLine.textContent = `检查太频繁，${r.retryAfter} 秒后可再试（当前最新 v${r.latest}）`; return; }
         if (!r.hasUpdate) { updLine.textContent = `✓ 已是最新版本（v${r.current}）`; return; }
         updLine.textContent = `发现新版本 v${r.latest}（当前 v${r.current}），正在下载…`;
         if (!r.assetUrl) { updLine.textContent = `发现新版本 v${r.latest}，请到 GitHub Releases 下载：${r.htmlUrl}`; return; }
@@ -640,9 +650,15 @@
             updLine.textContent = `✓ v${r.latest} 已下载完成：${out}`;
             toast('新版本已下载', 'success');
             updActions.appendChild(btn('🚀 重启并替换', 'btn-sm btn-primary', async () => {
-              if (!(await confirmBox({ title: '重启并替换', message: `将退出当前版本，用 v${r.latest} 覆盖程序文件并自动重启。\n\n配置文件与数据不受影响。`, okText: '重启并替换' }))) return;
-              try { await invoke('update:apply', { newExe: out }); updLine.textContent = '正在退出并替换，稍候会自动重启…'; }
-              catch (e) { updLine.textContent = '✗ 替换失败：' + e.message; }
+              if (!(await confirmBox({ title: '重启并替换', message: `将退出当前版本，用 v${r.latest} 覆盖程序文件并自动重启。
+
+旧版本会自动备份为 .bak，若新版无法启动可运行「回滚」脚本退回。
+配置文件与数据不受影响。`, okText: '重启并替换' }))) return;
+              try {
+                const ap = await invoke('update:apply', { newExe: out });
+                updLine.textContent = '正在退出并替换，稍候会自动重启…';
+                if (ap && ap.rollbackScript) updActions.appendChild(div('field-hint', '回滚脚本：' + ap.rollbackScript));
+              } catch (e) { updLine.textContent = '✗ 替换失败：' + e.message; }
             }));
             updActions.appendChild(btn('打开所在目录', 'btn-sm btn-secondary', () => invoke('fs:show-item', out).catch(() => {})));
           } catch (e) {}
@@ -650,38 +666,8 @@
         const dl = await invoke('net:download', { url: r.assetUrl, out });
         if (!dl || !dl.id) { unsub(); updLine.textContent = '✗ 下载启动失败'; }
       } catch (e) { updLine.textContent = '✗ ' + e.message; }
+      finally { if (trigger) trigger.disabled = false; }
     }
-    body.appendChild(div('set-row', div('',
-      h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' } },
-        h('img', { src: 'assets/icon.png', style: { width: '44px', height: '44px', borderRadius: '10px' } }),
-        div('', h('div', { style: { fontWeight: 600, fontSize: '16px' } }, '核核工具箱'), h('div', { class: 'set-desc' }, 'HeHe Toolbox v' + info.appVersion))),
-      div('set-desc', `Electron ${info.electron} · Chromium ${info.chrome} · Node ${info.node}`),
-      div('set-desc', '本地优先 · 插件化 · 无广告 · 不收集隐私'),
-      div('set-desc', '设计规范：商务科技蓝 #165DFF 主题')),
-      div('set-control', btn('检查更新', 'btn-sm btn-secondary', checkUpdate))));
-    body.appendChild(updLine);
-    body.appendChild(updActions);
-  }
-
-  /* ============ 关于页 ============ */
-  async function renderAbout(page) {
-    const info = await invoke('app:get-info');
-    const card = div('card');
-    card.style.textAlign = 'center';
-    card.appendChild(h('img', { src: 'assets/icon.png', style: { width: '72px', height: '72px', borderRadius: '16px', margin: '12px 0' } }));
-    card.appendChild(h('h2', { style: { fontSize: '20px', fontWeight: 600 } }, '核核工具箱'));
-    card.appendChild(h('p', { style: { color: 'var(--text-3)', fontSize: '13px', margin: '6px 0 16px' } }, 'HeHe Toolbox v' + info.appVersion + ' · 万能桌面效率工具箱'));
-    const stats = window.ui.div('', '');
-    const grid = window.ui.kvGrid([
-      ['运行环境', `Electron ${info.electron}`],
-      ['当前用户', info.username + '@' + info.hostname],
-      ['数据目录', info.userData],
-      ['设计主题', '商务科技蓝 #165DFF']
-    ]);
-    grid.style.textAlign = 'left';
-    card.appendChild(grid);
-    card.appendChild(h('p', { style: { color: 'var(--text-3)', fontSize: '12px', marginTop: '16px' } }, '本地优先 · 模块化 · 轻量启动 · 无侵入 —— 基于《万能桌面工具箱需求规格说明书》实现'));
-    page.appendChild(card);
   }
 
   /* ============ 状态 ============ */

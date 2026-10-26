@@ -1,7 +1,7 @@
 {
   "name": "hehe-toolbox",
   "productName": "核核工具箱",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "核核工具箱 —— 本地优先、轻量聚合的桌面效率工具箱",
   "main": "main.js",
   "author": "hehe",
@@ -9,7 +9,8 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win portable",
-    "dist:installer": "electron-builder --win nsis"
+    "dist:installer": "electron-builder --win nsis",
+    "dist:retry": "bash scripts/build-portable.sh D:/zcode/hehe-out8 3"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",

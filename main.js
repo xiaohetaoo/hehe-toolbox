@@ -82,6 +82,11 @@ function ps(script, timeout = 30000, cwd) {
   return runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + script], { timeout, encoding: 'utf8', cwd });
 }
 
+// 异步存在性判断：批量文件操作里替代 fs.existsSync，避免阻塞主进程
+async function pathExists(p) {
+  try { await fsp.access(p); return true; } catch (e) { return false; }
+}
+
 /* ---------------- window ---------------- */
 // 系统主题变化时广播到渲染端（跟随系统模式下同步深浅色）
 nativeTheme.on('updated', () => {
@@ -140,7 +145,7 @@ function createTray() {
           const img = clipboard.readImage();
           if (img.isEmpty()) { showMainWindow(); send('tray:err', '剪贴板中没有图片'); return; }
           const file = snipTmp();
-          fs.writeFileSync(file, img.toPNG());
+          await fsp.writeFile(file, img.toPNG());
           showMainWindow();
           send('snip:ocr', file);
         } },
@@ -494,9 +499,13 @@ async function cryptStream(p, outPath, password, decrypt) {
     cipher = crypto.createCipheriv('aes-256-cbc', deriveKey(password, salt), iv);
   } else {
     // 先读取 40 字节文件头，再从第 40 字节起进入解密管道
+    if (st.size < 64) throw new Error('文件不完整：加密文件至少应有 64 字节（当前 ' + st.size + ' 字节），可能下载或复制时被截断');
     const fh = await fsp.open(p, 'r');
     const head = Buffer.alloc(40);
-    try { await fh.read(head, 0, 40, 0); } finally { await fh.close().catch(() => {}); }
+    try {
+      const { bytesRead } = await fh.read(head, 0, 40, 0);
+      if (bytesRead < 40) throw new Error('文件不完整：无法读取完整的加密文件头（只读到 ' + bytesRead + ' 字节）');
+    } finally { await fh.close().catch(() => {}); }
     if (!head.subarray(0, 8).equals(ENC_MAGIC)) throw new Error('不是有效的核核加密文件（缺少文件头）');
     cipher = crypto.createDecipheriv('aes-256-cbc', deriveKey(password, head.subarray(8, 24)), head.subarray(24, 40));
     srcStart = 40;
@@ -530,7 +539,9 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
   const st = fs.statSync(p);
   const chunkSize = Math.max(1, chunkMB) * 1024 * 1024;
   const base = path.basename(p);
-  const parts = Math.ceil(st.size / chunkSize);
+  // 空文件没有可分割的内容：parts 记为 1 并与实际产生的 part1 保持一致，
+  // 否则清单 parts=0 而磁盘上留着 0 字节 part1，合并时会按 0 片处理，分片成为孤儿文件。
+  const parts = Math.max(1, Math.ceil(st.size / chunkSize));
   const pad = String(parts).length;
   await fsp.mkdir(outDir, { recursive: true });
   await new Promise((resolve, reject) => {
@@ -631,15 +642,16 @@ handle('fs:dedupe', async (e, root, opts = {}) => {
           if (cancelRef.canceled) throw new Error('已取消');
           let k = 'err' + f;
           try {
-            const fd = fs.openSync(f, 'r');
+            // 用异步文件句柄读头尾 8KB，避免大目录查重时阻塞主进程
+            const fh = await fsp.open(f, 'r');
             try {
-              const sz = fs.fstatSync(fd).size;
+              const sz = (await fh.stat()).size;
               const len = Math.min(8192, sz);
               const buf = Buffer.alloc(len * 2);
-              fs.readSync(fd, buf, 0, len, 0);
-              fs.readSync(fd, buf, len, len, Math.max(0, sz - len));
-            } finally { fs.closeSync(fd); }
-            k = crypto.createHash('md5').update(buf).digest('hex');
+              await fh.read(buf, 0, len, 0);
+              await fh.read(buf, len, len, Math.max(0, sz - len));
+              k = crypto.createHash('md5').update(buf).digest('hex');
+            } finally { await fh.close(); }
           } catch (err) { /* 文件被删/锁定：跳过快筛 */ }
           if (!quick.has(k)) quick.set(k, []);
           quick.get(k).push(f);
@@ -664,11 +676,22 @@ handle('fs:dedupe', async (e, root, opts = {}) => {
     }
     const groups = [];
     for (const files of candidates) {
-      const st = await fsp.stat(files[0]).catch(() => null);
-      groups.push({ size: st ? st.size : 0, hash: mode === 'content' ? 'md5' : mode, files });
+      // 按名称分组时组内各文件大小可以不同，必须逐个统计，否则「可省空间」会失真。
+      // 保守估计：删掉除「最大一份」外的其余文件，因此可省 = 组内总和 - 最大文件大小。
+      const sizes = [];
+      for (const f of files) {
+        const st = await fsp.stat(f).catch(() => null);
+        sizes.push(st ? st.size : 0);
+      }
+      const groupSize = sizes.reduce((a, b) => a + b, 0);
+      const maxSize = sizes.length ? Math.max(...sizes) : 0;
+      groups.push({
+        size: maxSize, totalSize: groupSize, waste: Math.max(0, groupSize - maxSize),
+        hash: mode === 'content' ? 'md5' : mode, files, sizes
+      });
     }
-    groups.sort((a, b) => b.size * b.files.length - a.size * a.files.length);
-    return { groups, mode, totalWasted: groups.reduce((s, g) => s + g.size * (g.files.length - 1), 0) };
+    groups.sort((a, b) => b.waste - a.waste);
+    return { groups, mode, totalWasted: groups.reduce((s, g) => s + g.waste, 0) };
   } finally { jobs.delete(id); }
 });
 
@@ -1042,7 +1065,23 @@ handle('autostart:disabled-list', () => storeGet('autostartBackup', []));
 const HOSTS_PATH = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts');
 handle('hosts:read', async () => ({ content: await fsp.readFile(HOSTS_PATH, 'utf8'), path: HOSTS_PATH }));
 handle('hosts:write', async (e, content) => {
-  await fsp.writeFile(HOSTS_PATH, content, 'utf8');
+  // 直接覆盖系统 hosts 有风险（写入中途失败会留下半截文件，影响全机 DNS）。
+  // 先自动备份，再写临时文件后原子替换。
+  const dir = path.join(app.getPath('userData'), 'hosts-backup');
+  try {
+    await fsp.mkdir(dir, { recursive: true });
+    const name = `hosts-${new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)}.bak`;
+    await fsp.copyFile(HOSTS_PATH, path.join(dir, name));
+  } catch (err) { /* 备份失败不阻断，但下面仍是原子写入 */ }
+  const tmp = HOSTS_PATH + '.hehe.tmp';
+  await fsp.writeFile(tmp, content, 'utf8');
+  try {
+    await fsp.rename(tmp, HOSTS_PATH);
+  } catch (err) {
+    // Windows 上目标存在时 rename 可能失败：退化为先删后改，并清理临时文件
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    await fsp.writeFile(HOSTS_PATH, content, 'utf8');
+  }
   try { await runCmd('ipconfig', ['/flushdns'], { timeout: 10000 }); } catch (err) {}
   return true;
 });
@@ -1058,7 +1097,15 @@ handle('hosts:backups', async () => {
   try { return (await fsp.readdir(dir)).map(n => path.join(dir, n)).reverse(); } catch (err) { return []; }
 });
 handle('hosts:restore', async (e, backupPath) => {
-  await fsp.copyFile(backupPath, HOSTS_PATH);
+  // 只允许还原本机制作、且位于 hosts-backup 目录内的备份，
+  // 避免误传/构造任意路径把无关文件写进系统 hosts。
+  const dir = path.resolve(path.join(app.getPath('userData'), 'hosts-backup'));
+  const abs = path.resolve(String(backupPath || ''));
+  if (!abs.startsWith(dir + path.sep) || !/\.bak$/i.test(abs)) {
+    throw new Error('备份文件无效：只能还原本机生成的 hosts 备份');
+  }
+  if (!(await pathExists(abs))) throw new Error('备份文件不存在：' + path.basename(abs));
+  await fsp.copyFile(abs, HOSTS_PATH);
   try { await runCmd('ipconfig', ['/flushdns'], { timeout: 10000 }); } catch (err) {}
   return true;
 });
@@ -1344,7 +1391,7 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
       const base = path.basename(input).replace(/\.[^.]+$/, '');
       const ext = extMap[opts.format] || 'mp4';
       let out = path.join(outDir, `${base}.${ext}`);
-      for (let k = 1; fs.existsSync(out); k++) out = path.join(outDir, `${base}(${k}).${ext}`);
+      for (let k = 1; await pathExists(out); k++) out = path.join(outDir, `${base}(${k}).${ext}`);
       let dur = 0;
       try {
         const ffprobe = findFfprobe();
@@ -1396,9 +1443,9 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
         proc.on('exit', (code) => resolve({ code, errOut }));
         proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
       });
-      if (state.cancel) { try { fs.rmSync(out, { force: true }); } catch (err) {} results.push({ input, out: null, ok: false, err: '已取消' }); break; }
-      const ok = r.code === 0 && fs.existsSync(out);
-      if (!ok) { try { fs.rmSync(out, { force: true }); } catch (err) {} } // 清理半成品
+      if (state.cancel) { try { await fsp.rm(out, { force: true }); } catch (err) {} results.push({ input, out: null, ok: false, err: '已取消' }); break; }
+      const ok = r.code === 0 && await pathExists(out);
+      if (!ok) { try { await fsp.rm(out, { force: true }); } catch (err) {} } // 清理半成品
       results.push({ input, out: ok ? out : null, ok, err: ok ? '' : (r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code)) });
       send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok }) });
     }
@@ -1423,7 +1470,7 @@ handle('ffmpeg:press', async (e, { items, outDir, opts }) => {
       const input = items[i];
       const base = path.basename(input).replace(/\.[^.]+$/, '');
       let out = path.join(outDir, `${base}_pressed.mp4`);
-      for (let k = 1; fs.existsSync(out); k++) out = path.join(outDir, `${base}_pressed(${k}).mp4`);
+      for (let k = 1; await pathExists(out); k++) out = path.join(outDir, `${base}_pressed(${k}).mp4`);
       let dur = 0;
       try {
         const ffprobe = findFfprobe();
@@ -1466,11 +1513,11 @@ handle('ffmpeg:press', async (e, { items, outDir, opts }) => {
         proc.on('exit', (code) => resolve({ code, errOut }));
         proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
       });
-      if (state.cancel) { try { fs.rmSync(out, { force: true }); } catch (err) {} results.push({ input, out: null, ok: false, err: '已取消' }); break; }
-      const ok = r.code === 0 && fs.existsSync(out);
-      if (!ok) { try { fs.rmSync(out, { force: true }); } catch (err) {} } // 清理半成品
+      if (state.cancel) { try { await fsp.rm(out, { force: true }); } catch (err) {} results.push({ input, out: null, ok: false, err: '已取消' }); break; }
+      const ok = r.code === 0 && await pathExists(out);
+      if (!ok) { try { await fsp.rm(out, { force: true }); } catch (err) {} } // 清理半成品
       let inSize = 0, outSize = 0;
-      try { inSize = fs.statSync(input).size; if (ok) outSize = fs.statSync(out).size; } catch (err) {}
+      try { inSize = (await fsp.stat(input)).size; if (ok) outSize = (await fsp.stat(out)).size; } catch (err) {}
       results.push({ input, out: ok ? out : null, ok, inSize, outSize, err: ok ? '' : (r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code)) });
       send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok }) });
     }
@@ -1537,8 +1584,8 @@ handle('ffmpeg:audio-cut', async (e, { input, out, ss, dur, fadeIn, fadeOut, gai
   if (filters.length) args.push('-af', filters.join(','));
   args.push(out);
   const r = await runCmd(ffmpeg, args, { timeout: 300000 });
-  if (r.code !== 0 || !fs.existsSync(out)) throw new Error('剪辑失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
-  return { out, size: fs.statSync(out).size };
+  if (r.code !== 0 || !(await pathExists(out))) throw new Error('剪辑失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+  return { out, size: (await fsp.stat(out)).size };
 });
 
 /* ================= IPC: Office 文档转换（LibreOffice / Office COM 双引擎） ================= */
@@ -1571,7 +1618,8 @@ handle('office:convert', async (e, { files, target, outDir }) => {
       try {
         await runCmd(soffice, ['--headless', '--norestore', '--convert-to', target, '--outdir', outDir, f], { timeout: 180000 });
         const out = path.join(outDir, path.basename(f).replace(/\.[^.]+$/, '') + '.' + target);
-        results.push({ input: f, out: fs.existsSync(out) ? out : null, ok: fs.existsSync(out), err: '' });
+        const exists = await pathExists(out);
+        results.push({ input: f, out: exists ? out : null, ok: exists, err: '' });
       } catch (err) { results.push({ input: f, out: null, ok: false, err: fmtErr(err) }); }
     }
     return { engine: 'LibreOffice', results };
@@ -1601,7 +1649,7 @@ handle('office:convert', async (e, { files, target, outDir }) => {
         continue;
       }
       const r = await ps(script, 180000);
-      const ok = fs.existsSync(out);
+      const ok = await pathExists(out);
       results.push({ input: f, out: ok ? out : null, ok, err: ok ? '' : (r.stdout + r.stderr).slice(-200) || '转换失败（文件可能受密码保护）' });
     } catch (err) {
       results.push({ input: f, out: null, ok: false, err: (err.message || '').includes('Cannot create') || /0x80040154/.test(err.message) ? '未检测到 Microsoft Office，请安装 Office 或 LibreOffice' : fmtErr(err) });
@@ -2012,7 +2060,15 @@ handle('rec:start', async (e, { outPath, fps, rect, audio, camera, camPos, camSc
   recSegs = [];
   recSegDir = path.join(app.getPath('temp'), 'hehe-rec-' + Date.now());
   await fsp.mkdir(recSegDir, { recursive: true });
-  return await recStartSeg();
+  try {
+    return await recStartSeg();
+  } catch (err) {
+    // 启动失败必须回滚状态：否则临时目录泄漏，且下次 resume 会误判会话仍在
+    const dir = recSegDir;
+    recOpts = null; recSegs = []; recSegDir = null; recProc = null;
+    if (dir) await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
 });
 async function recStartSeg() {
   const seg = path.join(recSegDir, `seg-${recSegs.length + 1}.mp4`);
@@ -2041,38 +2097,44 @@ async function recStopSeg() {
 }
 handle('rec:pause', async () => { await recStopSeg(); return { ok: true, paused: true }; });
 handle('rec:resume', async () => {
-  if (!recOpts) throw new Error('没有进行中的录制会话');
+  // rec:stop 的 finally 会把 recOpts/recSegDir 置空；只检查 recOpts 会漏掉 recSegDir 已失效的情况
+  if (!recOpts || !recSegDir) throw new Error('没有进行中的录制会话');
   return await recStartSeg();
 });
 handle('rec:stop', async (e, makeGif) => {
   await recStopSeg();
   if (!recSegs.length) return { ok: true, size: 0, outPath: recOut };
+  // 用 try/finally 保证临时分段目录一定被清理（原先清理写在末尾，中途抛错就泄漏）
   try {
-    if (recSegs.length === 1 && recSegs[0]) {
-      fs.copyFileSync(recSegs[0], recOut);
-    } else {
-      // 分段无损拼接（相同编码参数）
-      const listFile = path.join(recSegDir, 'list.txt');
-      await fsp.writeFile(listFile, recSegs.map(s => `file '${s.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
-      const ffmpeg = findFfmpeg();
-      const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', recOut], { timeout: 120000 });
-      if (r.code !== 0) throw new Error('分段拼接失败：' + (r.stderr || '').split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
-    }
-  } catch (err) {
-    try { if (recSegs[0]) fs.copyFileSync(recSegs[0], recOut); } catch (e2) {}
-  }
-  let gifOut = null;
-  if (makeGif) {
     try {
-      gifOut = recOut.replace(/\.mp4$/i, '.gif');
-      const ffmpeg = findFfmpeg();
-      await runCmd(ffmpeg, ['-y', '-hide_banner', '-i', recOut, '-vf', 'fps=10,scale=480:-2:flags=lanczos', gifOut], { timeout: 300000 });
-    } catch (err) { gifOut = null; }
+      if (recSegs.length === 1 && recSegs[0]) {
+        await fsp.copyFile(recSegs[0], recOut);
+      } else {
+        // 分段无损拼接（相同编码参数）
+        const listFile = path.join(recSegDir, 'list.txt');
+        await fsp.writeFile(listFile, recSegs.map(s => `file '${s.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+        const ffmpeg = findFfmpeg();
+        const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', recOut], { timeout: 120000 });
+        if (r.code !== 0) throw new Error('分段拼接失败：' + (r.stderr || '').split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+      }
+    } catch (err) {
+      try { if (recSegs[0]) await fsp.copyFile(recSegs[0], recOut); } catch (e2) {}
+    }
+    let gifOut = null;
+    if (makeGif) {
+      try {
+        gifOut = recOut.replace(/\.mp4$/i, '.gif');
+        const ffmpeg = findFfmpeg();
+        await runCmd(ffmpeg, ['-y', '-hide_banner', '-i', recOut, '-vf', 'fps=10,scale=480:-2:flags=lanczos', gifOut], { timeout: 300000 });
+      } catch (err) { gifOut = null; }
+    }
+    let size = 0;
+    try { size = (await fsp.stat(recOut)).size; } catch (e) {}
+    return { ok: true, size, outPath: recOut, gif: gifOut };
+  } finally {
+    await fsp.rm(recSegDir, { recursive: true, force: true }).catch(() => {});
+    recOpts = null; recSegs = []; recSegDir = null;
   }
-  await fsp.rm(recSegDir, { recursive: true, force: true }).catch(() => {});
-  recOpts = null; recSegs = [];
-  let size = 0; try { size = fs.statSync(recOut).size; } catch (e) {}
-  return { ok: true, size, outPath: recOut, gif: gifOut };
 });
 
 /* ================= IPC: 文件内容搜索（流式） ================= */
@@ -2185,6 +2247,12 @@ handle('winmgr:opacity', (e, hwnd, alpha) => winmgrRun(`[HeheWin.Util]::Opacity(
 
 /* ================= IPC: 7z 压缩包（7za / 系统 7-Zip） ================= */
 const sevenZa = (() => { try { return require('7zip-bin').path7za; } catch (e) { return null; } })();
+// 7z 会按引号解析参数：密码里的 " 必须双写，否则整条命令被截断
+// （实测密码含一个 " 时报 "Cannot find archive name"）
+function sevenPwdArg(password) {
+  if (!password) return '-p'; // 裸 -p 阻止交互式等待输入
+  return '-p' + String(password).replace(/"/g, '""');
+}
 function findSevenFull() {
   for (const c of ['C:\\Program Files\\7-Zip\\7z.exe', 'C:\\Program Files (x86)\\7-Zip\\7z.exe']) {
     try { if (fs.existsSync(c)) return c; } catch (e) {}
@@ -2197,20 +2265,21 @@ handle('seven:compress', async (e, { files, out, password, volumeMB }) => {
   if (!bin) throw new Error('未找到 7z 引擎');
   if (!/\.7z$/i.test(out)) out += '.7z';
   const args = ['a', '-y', '-bd'];
-  if (password) args.push('-p' + password, '-mhe=on');
+  if (password) args.push(sevenPwdArg(password), '-mhe=on');
   if (volumeMB) args.push('-v' + Math.max(1, volumeMB) + 'm');
   args.push(out, ...files);
   const r = await runCmd(bin, args, { timeout: 600000 });
   if (r.code !== 0) throw new Error('压缩失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
   const first = volumeMB ? out + '.001' : out;
-  return { out: first, size: fs.existsSync(first) ? fs.statSync(first).size : 0 };
+  let size = 0; try { size = (await fsp.stat(first)).size; } catch (e) {}
+  return { out: first, size };
 });
 handle('seven:extract', async (e, { archive, outDir, password }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
   await fsp.mkdir(outDir, { recursive: true });
   const args = ['x', '-y', '-bd', '-o' + outDir];
-  args.push(password ? '-p' + password : '-p'); // 无密码时 -p 阻止交互挂起
+  args.push(sevenPwdArg(password)); // 无密码时 -p 阻止交互挂起
   args.push(archive);
   const r = await runCmd(bin, args, { timeout: 600000 });
   if (r.code !== 0) throw new Error('解压失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
@@ -2260,8 +2329,8 @@ handle('tts:wav', async (e, { text, out, voice, rate }) => {
     (voice ? `try{$p.SelectVoice('${ttsEsc(voice)}')}catch{};` : '') +
     `$p.Rate=[int]${Math.max(-10, Math.min(10, rate || 0))};$p.SetOutputToWaveFile('${ttsEsc(out)}');$p.Speak('${ttsEsc(text)}');$p.Dispose();Write-Output OK`;
   const r = await ps(script, 300000);
-  if (!fs.existsSync(out)) throw new Error('导出失败' + (r.stderr ? '：' + r.stderr.slice(0, 200) : ''));
-  return { out, size: fs.statSync(out).size };
+  if (!(await pathExists(out))) throw new Error('导出失败' + (r.stderr ? '：' + r.stderr.slice(0, 200) : ''));
+  return { out, size: (await fsp.stat(out)).size };
 });
 
 /* ================= IPC: 服务与电源计划 ================= */
@@ -2334,7 +2403,7 @@ async function snipStart(mode) {
   const display = screen.getDisplayNearestPoint(pt);
   const img = await captureDisplay(display);
   const file = snipTmp();
-  fs.writeFileSync(file, img.toPNG());
+  await fsp.writeFile(file, img.toPNG());
   snipWin = new BrowserWindow({
     x: display.bounds.x, y: display.bounds.y, width: display.bounds.width, height: display.bounds.height,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false, skipTaskbar: true, hasShadow: false,
@@ -2405,9 +2474,23 @@ function updateCacheGet() {
 function updateCacheSet(patch) {
   storeSet('updateCache', Object.assign({}, updateCacheGet() || {}, patch));
 }
+// force 节流：设置页连点「检查更新」不应连发请求（防止打满限流配额）
+const UPDATE_FORCE_MIN_GAP = 10 * 1000;
+let lastForceCheckAt = 0;
 handle('update:check', async (e, opts = {}) => {
   const current = app.getVersion();
   const force = !!(opts && opts.force);
+  if (force) {
+    const since = Date.now() - lastForceCheckAt;
+    if (since < UPDATE_FORCE_MIN_GAP) {
+      const cached = updateCacheGet();
+      if (cached && cached.payload) {
+        return Object.assign({}, cached.payload, { cached: true, throttled: true, retryAfter: Math.ceil((UPDATE_FORCE_MIN_GAP - since) / 1000) });
+      }
+      throw new Error('检查更新太频繁，请稍后再试（' + Math.ceil((UPDATE_FORCE_MIN_GAP - since) / 1000) + ' 秒后可用）');
+    }
+    lastForceCheckAt = Date.now();
+  }
   // 安装版：electron-updater（可用则直接通知升级）
   try {
     if (process.env.HEHE_PORTABLE !== '1' && app.isPackaged && fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml'))) {
@@ -2417,7 +2500,7 @@ handle('update:check', async (e, opts = {}) => {
         return { current, latest: res.updateInfo.version, hasUpdate: true, engine: 'electron-updater', notes: String(res.updateInfo.releaseNotes || '').slice(0, 4000) };
       }
     }
-  } catch (e) { /* 回退 GitHub API */ }
+  } catch (e) { console.warn('[update] electron-updater 不可用，回退 GitHub API：', e.message); }
   // 缓存未过期且非强制刷新：直接返回，完全不发请求
   const cached = updateCacheGet();
   if (cached && cached.payload && !force && Date.now() - (cached.checkedAt || 0) < UPDATE_TTL) {
@@ -2464,6 +2547,9 @@ handle('update:apply', async (e, opts = {}) => {
   const scriptDir = path.join(app.getPath('userData'), 'update');
   await fsp.mkdir(scriptDir, { recursive: true });
   const script = path.join(scriptDir, 'apply-update.ps1');
+  // 备份原 exe：升级失败时用户可双击回滚，脚本自身也会在启动失败时尝试回滚
+  const backup = target + '.bak';
+  const rollbackScript = path.join(scriptDir, 'rollback.ps1');
   const myPid = process.pid;
   // 注意：$PID 是 PowerShell 自动变量（只读），这里必须换个名字
   const ps = [
@@ -2471,31 +2557,71 @@ handle('update:apply', async (e, opts = {}) => {
     '$targetPid = ' + myPid,
     '$newExe = ' + psSingleQuote(newExe),
     '$target = ' + psSingleQuote(target),
+    '$backup = ' + psSingleQuote(backup),
     '$log = Join-Path $env:TEMP ("hehe-update-" + [DateTime]::Now.ToString("yyyyMMdd-HHmmss") + ".log")',
     'try {',
     '  $deadline = [DateTime]::Now.AddSeconds(90)',
     '  while ((Get-Process -Id $targetPid -ErrorAction SilentlyContinue) -and ([DateTime]::Now -lt $deadline)) { Start-Sleep -Milliseconds 300 }',
     '  Start-Sleep -Milliseconds 600',
+    // 先备份旧版，再覆盖：备份失败就中止，避免没有退路
+    '  if (Test-Path -LiteralPath $target) { Copy-Item -LiteralPath $target -Destination $backup -Force }',
     '  Copy-Item -LiteralPath $newExe -Destination $target -Force',
     '  Add-Content -LiteralPath $log -Value ("replaced: " + $target)',
     '} catch {',
     '  Add-Content -LiteralPath $log -Value ("failed: " + $_.Exception.Message)',
+    // 替换失败则把备份还原回去
+    '  try { if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $target -Force; Add-Content -LiteralPath $log -Value "restored-from-backup" } } catch {}',
     '  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue',
     '  exit 1',
     '}',
     // 启动失败不应算作替换失败：文件已就位，用户手动双击即可
     'try { Start-Process -FilePath $target } catch { Add-Content -LiteralPath $log -Value ("launch-failed: " + $_.Exception.Message) }',
+    // 新版成功拉起后删除下载包（避免每次升级都留一份 90MB+）
+    'try { if ($newExe -ne $target) { Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue } } catch {}',
     'Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue'
   ].join('\r\n');
+  // 回滚脚本：任何时候双击即可退回升级前的版本
+  const rb = [
+    '$ErrorActionPreference = "Stop"',
+    '$target = ' + psSingleQuote(target),
+    '$backup = ' + psSingleQuote(backup),
+    '$log = Join-Path $env:TEMP ("hehe-rollback-" + [DateTime]::Now.ToString("yyyyMMdd-HHmmss") + ".log")',
+    'try {',
+    '  if (-not (Test-Path -LiteralPath $backup)) { throw "备份文件不存在：$backup" }',
+    '  Get-Process -Name "核核工具箱" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue',
+    '  Start-Sleep -Milliseconds 800',
+    '  Copy-Item -LiteralPath $backup -Destination $target -Force',
+    '  Add-Content -LiteralPath $log -Value ("rolled-back: " + $target)',
+    '  Start-Process -FilePath $target',
+    '} catch { Add-Content -LiteralPath $log -Value ("rollback-failed: " + $_.Exception.Message) }'
+  ].join('\r\n');
   await fsp.writeFile(script, ps, 'utf8');
+  await fsp.writeFile(rollbackScript, rb, 'utf8');
   const spawnArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script];
   if (opts && opts.dryRun) {
-    return { ok: true, dryRun: true, script, target, newExe, args: spawnArgs };
+    return { ok: true, dryRun: true, script, rollbackScript, target, newExe, backup, args: spawnArgs };
   }
   spawn('powershell.exe', spawnArgs, { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
   // 给脚本 ~1 秒启动时间后退出，脚本会等待本进程消失再替换
   setTimeout(() => { try { isQuitting = true; app.exit(0); } catch (err) { app.quit(); } }, 1000);
-  return { ok: true, target, newExe, script };
+  return { ok: true, target, newExe, backup, rollbackScript, script };
+});
+// 升级后清理 update 下载目录里旧的安装包（只保留当前正在用的那份之外的全部）
+handle('update:cleanup', async () => {
+  const dir = path.join(app.getPath('userData'), 'update');
+  let removed = 0, bytes = 0;
+  try {
+    for (const n of await fsp.readdir(dir)) {
+      if (!/^hehe-toolbox-Portable-.*\.exe$/i.test(n)) continue;
+      const full = path.join(dir, n);
+      try {
+        const st = await fsp.stat(full);
+        await fsp.unlink(full);
+        removed++; bytes += st.size;
+      } catch (e) {}
+    }
+  } catch (e) { /* 目录不存在 */ }
+  return { removed, bytes };
 });
 function cmpVer(a, b) {
   const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
@@ -2573,7 +2699,7 @@ handle('seven:list', async (e, { archive, password }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
   const args = ['l', '-bd', '-slt'];
-  args.push(password ? '-p' + password : '-p');
+  args.push(sevenPwdArg(password));
   args.push(archive);
   const r = await runCmd(bin, args, { timeout: 60000 });
   if (r.code !== 0) throw new Error('读取压缩包失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
@@ -2615,9 +2741,44 @@ handle('notes:pdf', async (e, { title, html, outPath }) => {
 handle('clip:save-image', async (e, dataUrl) => {
   const dir = path.join(app.getPath('userData'), 'clip-img');
   await fsp.mkdir(dir, { recursive: true });
-  const name = 'clip-' + Date.now() + '.png';
+  const name = 'clip-' + Date.now() + '-' + (++clipImgSeq) + '.png';
   await fsp.writeFile(path.join(dir, name), Buffer.from(dataUrl.split(',')[1] || '', 'base64'));
   return { path: path.join(dir, name) };
+});
+let clipImgSeq = 0;
+// 删除剪贴板历史图片文件。只允许删 clip-img 目录内的文件，防止越权删除任意路径
+const clipImgDir = () => path.join(app.getPath('userData'), 'clip-img');
+function isClipImgPath(p) {
+  try {
+    const abs = path.resolve(p), dir = path.resolve(clipImgDir());
+    return abs.startsWith(dir + path.sep) && /\.png$/i.test(abs);
+  } catch (e) { return false; }
+}
+handle('clip:remove-images', async (e, files) => {
+  let removed = 0, failed = 0;
+  for (const f of (Array.isArray(files) ? files : [files])) {
+    if (!f || !isClipImgPath(f)) { failed++; continue; }
+    try { await fsp.unlink(f); removed++; } catch (err) { if (err.code !== 'ENOENT') failed++; }
+  }
+  return { removed, failed };
+});
+// 孤儿图片清扫：store 里已无引用的 clip-img 文件（崩溃/旧版本遗留）
+handle('clip:gc-images', async () => {
+  const dir = clipImgDir();
+  let names = [];
+  try { names = await fsp.readdir(dir); } catch (e) { return { removed: 0, kept: 0 }; }
+  const used = new Set();
+  for (const it of (storeGet('clipHistory', []) || [])) {
+    if (it && it.file && isClipImgPath(it.file)) used.add(path.resolve(it.file));
+  }
+  let removed = 0;
+  for (const n of names) {
+    if (!/\.png$/i.test(n)) continue;
+    const full = path.resolve(path.join(dir, n));
+    if (used.has(full)) continue;
+    try { await fsp.unlink(full); removed++; } catch (err) {}
+  }
+  return { removed, kept: used.size };
 });
 
 /* ================= IPC: Win11 经典右键菜单切换 ================= */
@@ -2636,6 +2797,57 @@ handle('ctxmenu:classic-status', async () => {
   catch (e) { return { on: false }; }
 });
 
+/* ================= 启动清扫（临时文件 / 孤儿录制目录 / 孤儿剪贴板图片） ================= */
+// 截图临时 PNG 与录制分段是「写一次就丢」的产物；崩溃或强杀会留下残骸。
+// 只在启动时清一次，且按 mtime 保留最近的，避免误删正在进行的会话。
+async function sweepTempFiles(maxAgeMs = 24 * 3600 * 1000) {
+  const tmp = app.getPath('temp');
+  const now = Date.now();
+  let removed = 0;
+  // 1) 截图临时 PNG：hehe-snip-*.png
+  try {
+    for (const n of await fsp.readdir(tmp)) {
+      if (!/^hehe-snip-\d+\.png$/i.test(n)) continue;
+      const full = path.join(tmp, n);
+      try {
+        const st = await fsp.stat(full);
+        if (now - st.mtimeMs > maxAgeMs) { await fsp.unlink(full); removed++; }
+      } catch (e) {}
+    }
+  } catch (e) {}
+  // 2) 录制分段目录：hehe-rec-* （正常流程 rec:stop 会自删，残留即孤儿）
+  try {
+    for (const n of await fsp.readdir(tmp)) {
+      if (!/^hehe-rec-\d+$/i.test(n)) continue;
+      const full = path.join(tmp, n);
+      try {
+        const st = await fsp.stat(full);
+        if (now - st.mtimeMs > maxAgeMs) { await fsp.rm(full, { recursive: true, force: true }); removed++; }
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return removed;
+}
+async function sweepClipImages() {
+  // 依赖 store 已加载：删掉 clipHistory 里已无引用的图片文件
+  try {
+    const dir = path.join(app.getPath('userData'), 'clip-img');
+    const names = await fsp.readdir(dir);
+    const used = new Set();
+    for (const it of (storeGet('clipHistory', []) || [])) {
+      if (it && it.file) used.add(path.resolve(it.file));
+    }
+    let removed = 0;
+    for (const n of names) {
+      if (!/\.png$/i.test(n)) continue;
+      const full = path.resolve(path.join(dir, n));
+      if (used.has(full)) continue;
+      try { await fsp.unlink(full); removed++; } catch (e) {}
+    }
+    return removed;
+  } catch (e) { return 0; }
+}
+
 /* ================= lifecycle ================= */
 // 测试隔离：HEHE_TEST_DATA 指定独立的 userData 目录（不影响正式数据与单实例锁）
 if (process.env.HEHE_TEST_DATA) app.setPath('userData', process.env.HEHE_TEST_DATA);
@@ -2646,9 +2858,42 @@ if (!gotLock) { app.quit(); } else {
     loadStore();
     createWindow();
     createTray();
+    // 启动清扫：延迟执行，不阻塞窗口首帧
+    setTimeout(() => {
+      Promise.all([sweepTempFiles(), sweepClipImages()])
+        .then(([n1, n2]) => { if (n1 || n2) console.log('[sweep] 清理临时文件', n1, '个，孤儿剪贴板图片', n2, '个'); })
+        .catch(() => {});
+    }, 4000);
     nativeTheme.themeSource = storeGet('settings.theme', 'system');
     applyHotkey(storeGet('settings.hotkey', 'Alt+Shift+H'));
     armAllSchedules(); // 周期任务（每日提醒/循环提醒/自动清理）
+// 冒烟测试：遍历全部工具页 + 非工具视图，捕获渲染异常。
+// 注意：主窗启动时 show:false，隐藏窗口里 requestAnimationFrame 不触发，
+// 所以这里用 setTimeout(0) 让出事件循环（渲染同步完成，无需长等待）。
+if (process.env.HEHE_SMOKE) {
+  setTimeout(async () => {
+    try {
+      const r = await win.webContents.executeJavaScript(`(async () => {
+        const errs = [];
+        const tick = () => new Promise(res => setTimeout(res, 0));
+        for (const t of window.Registry.all) {
+          try { window.App.openTool(t.id); await tick(); } catch (e) { errs.push(t.id + ': ' + e.message); }
+        }
+        for (const v of ['home', 'fav', 'settings', 'about']) {
+          try { window.App.showView({ type: v }); await tick(); } catch (e) { errs.push('view:' + v + ': ' + e.message); }
+        }
+        return { total: window.Registry.all.length, errs };
+      })()`, true);
+      const fail = r.errs.length ? 1 : 0;
+      console.log('SMOKE_RESULT: pages=' + r.total + ' ' + (fail ? 'FAIL' : 'PASS'));
+      r.errs.forEach(e => console.log('SMOKE_RESULT: FAIL ' + e));
+      app.exit(fail ? 3 : 0);
+    } catch (e) {
+      console.log('SMOKE_RESULT: ERR ' + e.message);
+      app.exit(3);
+    }
+  }, 2000);
+}
 if (process.env.HEHE_SHOT) {
       // 截图输出目录：开发态写到项目根，打包后 asar 内部不可写，改写到 userData
       const shotDir = (() => {

@@ -13,11 +13,13 @@
     render(page) {
       let mode = 'pomodoro'; // pomodoro | countdown | stopwatch
       let total = 25 * 60, remain = 25 * 60, running = false, timer = null, startTs = 0;
-      const display = h('div', { class: 'stat-num', style: { fontSize: '64px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' } }, '25:00');
+      const display = h('div', { class: 'stat-num', style: { fontSize: '64px', textAlign: 'center', fontVariantNumeric: 'tabular-nums', position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)' } }, '25:00');
       const statusText = h('div', { style: { textAlign: 'center', color: 'var(--text-3)', marginBottom: '10px' } }, '专注模式 · 25 分钟');
-      const ring = h('div', { style: { display: 'flex', justifyContent: 'center', margin: '10px 0' } });
+      // 数字叠在圆环中央，作为一个整体呈现
+      const ring = h('div', { style: { position: 'relative', display: 'flex', justifyContent: 'center', margin: '10px 0 18px' } });
       const canvas = h('canvas', { width: 220, height: 220 });
       ring.appendChild(canvas);
+      ring.appendChild(display);
       const workIn = h('input', { type: 'number', class: 'input input-sm', value: '25', min: '1', max: '120', style: { width: '70px' } });
       const restIn = h('input', { type: 'number', class: 'input input-sm', value: '5', min: '1', max: '60', style: { width: '70px' } });
       const countIn = h('input', { type: 'number', class: 'input input-sm', value: '4', min: '1', max: '20', style: { width: '70px' } });
@@ -107,7 +109,7 @@
           btns[m].className = 'btn btn-sm btn-primary';
         });
       }
-      const startBtn = btn('▶ 开始', 'btn-primary', () => {
+      const startBtn = btn('▶ 开始计时', 'btn-primary', () => {
         if (mode === 'countdown') total = (parseInt(workIn.value) || 25) * 60;
         start();
       });
@@ -115,11 +117,11 @@
       const resetBtn = btn('↺ 重置', 'btn-secondary', () => { stop(); setMode(mode); });
       drawRing(1);
       page.appendChild(div('card', div('card-title', '模式', ...Object.values(btns)),
-        statusText, display, ring,
+        statusText, ring,
         div('form-row', startBtn, pauseBtn, resetBtn)));
       page.appendChild(div('card', div('card-title', '参数'),
-        div('form-row', h('span', { class: 'form-label' }, '专注时长(分)'), workIn,
-          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '休息(分)'), restIn,
+        div('form-row', h('span', { class: 'form-label' }, '专注时长（分）'), workIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '休息（分）'), restIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '目标番茄数'), countIn,
           h('span', { class: 'field-hint' }, `已完成 ${pomodoros}`))));
     }

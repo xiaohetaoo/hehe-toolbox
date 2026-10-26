@@ -330,7 +330,7 @@
           card.style.border = '1px solid var(--border)';
           card.appendChild(div('form-row',
             h('span', { class: 'tag tag-blue' }, `组 ${gi + 1}`),
-            h('span', { class: 'field-hint' }, `${g.files.length} 个文件 · 每个 ${fmtBytes(g.size)} · 浪费 ${fmtBytes(g.size * (g.files.length - 1))}`),
+            h('span', { class: 'field-hint' }, `${g.files.length} 个文件 · 浪费 ${fmtBytes(g.waste != null ? g.waste : g.size * (g.files.length - 1))}`),
             h('span', { style: { marginLeft: 'auto' } }, btn('保留第一个，删除其余', 'btn-sm btn-danger-plain', () => deleteIn(g, 0)))));
           const checks = [];
           g.files.forEach((f, fi) => {
@@ -371,7 +371,7 @@
   /* ---------- 压缩解压（ZIP） ---------- */
   register({
     id: 'zip-tool', name: '压缩解压', module: MOD, icon: 'box',
-    desc: 'ZIP 压缩与解压（7Z/RAR 需外部引擎，暂不支持密码）',
+    desc: 'ZIP 压缩与解压（不支持密码与分卷；需要密码请用「7z 压缩包」工具）',
     keywords: ['压缩', '解压', 'zip'],
     render(page) {
       const cPaths = [];
@@ -482,7 +482,7 @@
         const engine = env && env.es ? 'es' : (Object.keys(builtInfo).length ? 'mft' : null);
         if (!engine) {
           engTag.textContent = '无可用引擎'; engTag.className = 'tag tag-orange';
-          listBox.appendChild(div('empty-tip', '没有可用搜索引擎：请点击上方「建索引」（需管理员），安装 Everything（es.exe），或使用下方「快速扫描」'));
+          listBox.appendChild(div('empty-tip', '还没有可用的索引引擎，任选一种：点「建索引」（需管理员权限，最快）、安装 Everything 后用 es.exe，或直接用「快速扫描」（较慢但无需权限）'));
           return;
         }
         engTag.textContent = engine === 'es' ? '引擎：Everything(es.exe)' : '引擎：NTFS 索引';

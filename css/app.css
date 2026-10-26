@@ -237,7 +237,7 @@ body {
   background: var(--card-bg); box-shadow: var(--shadow-card); transition: all 0.15s; flex: none;
 }
 .recent-chip:hover { border-color: var(--primary); color: var(--primary); background: var(--hover-fill); }
-.empty-tip { text-align: center; color: var(--text-3); padding: 40px 0; font-size: 13px; }
+.empty-tip { text-align: center; color: var(--text-3); padding: 20px 0; font-size: 13px; }
 
 /* ============ 工具页通用 ============ */
 .tool-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }

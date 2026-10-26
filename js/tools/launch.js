@@ -14,7 +14,7 @@
       async function load() {
         const items = await invoke('store:get', 'quicklaunch', []);
         list.innerHTML = '';
-        if (!items.length) { list.appendChild(div('empty-tip', '还没有快捷项，点击下方「添加」按钮创建')); return; }
+        if (!items.length) { list.appendChild(div('empty-tip', '还没有快捷项，点「＋ 添加」创建一个')); return; }
         const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' } });
         for (const [i, it] of items.entries()) {
           const card = div('tool-card');

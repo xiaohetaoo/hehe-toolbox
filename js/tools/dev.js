@@ -165,7 +165,7 @@
       page.appendChild(div('card', div('card-title', '取色'),
         btn('🎨 开始取色', 'btn-primary btn-lg', pick, 'target'),
         div('form-row', preview, valEl),
-        div('field-hint', '原理：点击后截取当前屏幕，在放大镜中选取像素颜色；取色期间按 Esc 退出')));
+        div('field-hint', '点击后截取当前屏幕，在放大镜中选取像素颜色，按 Esc 退出')));
     }
   });
 
@@ -257,8 +257,8 @@
         div('form-row', btn('UUID', 'btn-secondary', () => gen('uuid')),
           btn('随机数字', 'btn-secondary', () => gen('num')), rangeA, '~', rangeB),
         div('form-row', btn('随机字符串', 'btn-secondary', () => gen('str')), h('span', { class: 'field-hint' }, '长度'), rangeA),
-        div('form-row', btn('手机号(测试)', 'btn-secondary', () => gen('phone')),
-          btn('随机姓名(测试)', 'btn-secondary', () => gen('name')))));
+        div('form-row', btn('随机手机号', 'btn-secondary', () => gen('phone')),
+          btn('随机姓名', 'btn-secondary', () => gen('name')))));
       page.appendChild(div('card', div('card-title', '结果'), out));
       gen('uuid');
     }
@@ -317,8 +317,8 @@
       const statusEl = h('span', { class: 'field-hint' }, '未启动');
       const logEl = div('term', '');
       let running = false;
-      const startBtn = btn('▶ 启动', 'btn-primary', start);
-      const stopBtn = btn('■ 停止', 'btn-danger-plain', stop);
+      const startBtn = btn('▶ 启动服务', 'btn-primary', start);
+      const stopBtn = btn('■ 停止服务', 'btn-danger-plain', stop);
       stopBtn.disabled = true;
       async function start() {
         if (!dirIn.value.trim()) return toast('请选择目录', 'warn');
@@ -355,7 +355,7 @@
     desc: 'Markdown 实时渲染预览，支持导出 HTML',
     keywords: ['markdown', 'md', '预览'],
     render(page) {
-      const ta = h('textarea', { class: 'pane-ta', placeholder: '# 输入 Markdown…', style: { minHeight: '380px' } });
+      const ta = h('textarea', { class: 'pane-ta', placeholder: '在这里输入 Markdown，右侧实时预览…', style: { minHeight: '380px' } });
       const view = h('div', {
         class: 'md-view', style: {
           minHeight: '380px', padding: '18px', border: '1px solid var(--border)', borderRadius: '6px',

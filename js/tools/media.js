@@ -450,7 +450,7 @@
   /* ---------- 音视频信息查看（ffprobe） ---------- */
   register({
     id: 'av-info', name: '音视频信息查看', module: MOD, icon: 'film',
-    desc: '查看音视频编码、分辨率、码率、时长、声道等元数据（基于 ffprobe）',
+    desc: '查看音视频编码、分辨率、码率、时长、声道等详细参数',
     keywords: ['音视频', '信息', 'ffprobe', '元数据'],
     render(page) {
       const result = div('');
@@ -513,7 +513,7 @@
   /* ---------- 音视频格式转换（ffmpeg） ---------- */
   register({
     id: 'av-convert', name: '音视频格式转换', module: MOD, icon: 'film',
-    desc: '批量转换格式、压缩、提取音频、转 GIF（基于 ffmpeg，可配参数）',
+    desc: '批量转换格式、压缩、提取音频、转 GIF，参数可调',
     keywords: ['转换', 'ffmpeg', '压缩', '音频', 'gif'],
     render(page) {
       const files = [];
@@ -618,7 +618,7 @@
         div('form-row', h('span', { class: 'form-label' }, '分辨率'), scaleSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '帧率'), fpsIn,
           h('label', { class: 'field-hint' }, muteChk, ' 移除音频')),
-        div('form-row', h('span', { class: 'form-label' }, '剪辑'), '从', ssIn, '持续(秒)', toIn,
+        div('form-row', h('span', { class: 'form-label' }, '剪辑'), '从', ssIn, '持续（秒）', toIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, 'GIF宽度'), gifWIn),
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
         div('form-row', startBtn, ' ', cancelBtn, status)));
@@ -1070,6 +1070,29 @@
       const camSizeSel = h('select', { class: 'select input-sm' },
         h('option', { value: '0.15' }, '小（15%）'), h('option', { value: '0.25', selected: true }, '中（25%）'), h('option', { value: '0.35' }, '大（35%）'));
       camSizeSel.disabled = true;
+      // 摄像头实时预览：选完就能看到画面，避免录完才发现角度/位置不对
+      const camPreview = h('video', { autoplay: true, muted: true, playsinline: true,
+        style: { width: '160px', height: '120px', objectFit: 'cover', borderRadius: '8px', background: '#000', display: 'none' } });
+      const camPreviewHint = h('span', { class: 'field-hint' }, '选择摄像头后在此预览');
+      let previewStream = null;
+      async function stopPreview() {
+        if (previewStream) { previewStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} }); previewStream = null; }
+        camPreview.srcObject = null;
+        camPreview.style.display = 'none';
+      }
+      async function startPreview(deviceId) {
+        await stopPreview();
+        if (!deviceId) { camPreviewHint.textContent = '选择摄像头后在此预览'; return; }
+        try {
+          // label 精确匹配 dshow 设备名；getUserMedia 的 label 与 ffmpeg 的 dshow 名称同源
+          previewStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { ideal: deviceId } }, audio: false });
+          camPreview.srcObject = previewStream;
+          camPreview.style.display = 'block';
+          camPreviewHint.textContent = '预览中（录制时叠加到画面角落）';
+        } catch (e) {
+          camPreviewHint.textContent = '预览不可用：' + e.message + '（不影响录制）';
+        }
+      }
       const regionBtn = btn('▭ 选择区域', 'btn-sm btn-secondary', pickRegion);
       const clearRegionBtn = btn('✕ 全屏', 'btn-sm btn-text', () => { region = null; regionLabel.textContent = '全屏'; });
       const regionLabel = h('span', { class: 'field-hint' }, '全屏');
@@ -1081,13 +1104,43 @@
       const stopBtn = btn('⏹ 停止并保存', 'btn-danger-plain', stop);
       pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
       let recording = false, paused = false, region = null;
-      const camOn = () => { const on = !!camSel.value; camPosSel.disabled = !on; camSizeSel.disabled = !on; };
+      const camOn = () => {
+        const on = !!camSel.value;
+        camPosSel.disabled = !on; camSizeSel.disabled = !on;
+        if (!on) { stopPreview(); camPreviewHint.textContent = '选择摄像头后在此预览'; }
+        else startPreview(camSel.value);
+        saveRecPrefs();
+      };
       camSel.addEventListener('change', camOn);
+      // 记住上次的录制设置（麦克风/摄像头/位置/大小/帧率/GIF）
+      function saveRecPrefs() {
+        try {
+          invoke('store:set', 'settings.recPrefs', {
+            fps: fpsSel.value, audio: audioSel.value, camera: camSel.value,
+            camPos: camPosSel.value, camScale: camSizeSel.value, gif: gifChk.checked
+          }).catch(() => {});
+        } catch (e) {}
+      }
       invoke('rec:audio-devices').then((r) => {
+        const prefsP = invoke('store:get', 'settings.recPrefs', null).catch(() => null);
         for (const d of (r.devices || [])) audioSel.appendChild(h('option', { value: d }, '🎤 ' + d));
         // 兼容旧返回：新版本才有 video 字段
         for (const d of (r.video || [])) camSel.appendChild(h('option', { value: d }, '📷 ' + d));
+        prefsP.then((p) => {
+          if (!p || typeof p !== 'object') return;
+          // 只在设备仍存在时恢复，否则回落到默认值
+          if (p.fps && [...fpsSel.options].some(o => o.value === String(p.fps))) fpsSel.value = String(p.fps);
+          if (p.audio && [...audioSel.options].some(o => o.value === p.audio)) audioSel.value = p.audio;
+          if (p.camera && [...camSel.options].some(o => o.value === p.camera)) camSel.value = p.camera;
+          if (p.camPos) camPosSel.value = p.camPos;
+          if (p.camScale) camSizeSel.value = String(p.camScale);
+          if (p.gif) gifChk.checked = true;
+          camOn();
+        }).catch(() => {});
+        window.App.onCleanup(() => { stopPreview(); });
       }).catch(() => {});
+      [fpsSel, audioSel, camPosSel, camSizeSel].forEach(el => el.addEventListener('change', saveRecPrefs));
+      gifChk.addEventListener('change', saveRecPrefs);
       async function pickRegion() {
         try {
           await invoke('snip:start', 'region');
@@ -1107,12 +1160,15 @@
         const p = await invoke('dialog:save', { defaultPath: '录屏-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
         if (!p) return;
         try {
+          // 摄像头是独占设备：录制前必须先释放预览流，否则 ffmpeg 打不开设备
+          await stopPreview();
           await invoke('rec:start', { outPath: p, fps: +fpsSel.value, rect: region, audio: audioSel.value || null,
             camera: camSel.value || null, camPos: camPosSel.value, camScale: +camSizeSel.value });
           recording = true; paused = false;
           startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
           status.textContent = '🔴 录制中…' + (region ? `（${region.w}×${region.h}）` : '（全屏）') + (audioSel.value ? ' + 🎤' : '') + (camSel.value ? ' + 📷 画中画' : '');
-        } catch (e) { toast(e.message, 'error'); }
+          camPreviewHint.textContent = '录制中（预览已让给录制）';
+        } catch (e) { toast(e.message, 'error'); if (camSel.value) startPreview(camSel.value); }
       }
       async function ctl(ch) {
         try {
@@ -1130,6 +1186,8 @@
           status.textContent = `✓ 已保存：${r.outPath}（${fmtBytes(r.size || 0)}）` + (r.gif ? ` · GIF：${r.gif}` : '');
           toast('录制完成：' + fmtBytes(r.size || 0), 'success');
         } catch (e) { recording = false; startBtn.disabled = false; status.textContent = '✗ ' + e.message; }
+        // 录制结束把摄像头交还给预览
+        if (camSel.value) startPreview(camSel.value);
       }
       window.App.onCleanup(() => { if (recording) invoke('rec:stop', false).catch(() => {}); });
       page.appendChild(div('card', div('card-title', '录制'),
@@ -1137,8 +1195,8 @@
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '区域'), regionBtn, clearRegionBtn, regionLabel),
         div('form-row', h('span', { class: 'form-label' }, '声音'), audioSel,
           h('label', { class: 'field-hint' }, gifChk, ' 停止时同时导出 GIF')),
-        div('form-row', h('span', { class: 'form-label' }, '摄像头'), camSel, camPosSel, camSizeSel,
-          h('span', { class: 'field-hint' }, '画面叠加在录屏角落；无需摄像头选「不录摄像头」')),
+        div('form-row', h('span', { class: 'form-label' }, '摄像头'), camSel, camPosSel, camSizeSel),
+        div('form-row', h('span', { class: 'form-label' }, '预览'), camPreview, camPreviewHint),
         div('form-row', startBtn, ' ', pauseBtn, resumeBtn, ' ', stopBtn, status)));
     }
   });
@@ -1191,7 +1249,7 @@
       page.appendChild(div('card', div('card-title', '参数'),
         div('form-row', h('span', { class: 'form-label' }, '模式'), modeSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时间点'), timeIn,
-          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '间隔(秒)'), everyIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '间隔（秒）'), everyIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '最多'), countIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '宽度'), wIn),
         div('form-row', goBtn, outLabel)));
@@ -1216,7 +1274,7 @@
       const status = h('span', { class: 'field-hint' }, '');
       const out = h('textarea', { class: 'pane-ta', placeholder: '识别结果（文件名 + 内容）…', style: { minHeight: '220px' } });
       const saveBtn = btn('导出 TXT', 'btn-sm btn-secondary', async () => {
-        if (!out.value) return toast('暂无结果', 'warn');
+        if (!out.value) return toast('还没有识别结果，请先点「开始批量识别」', 'warn');
         const p = await invoke('dialog:save', { defaultPath: 'ocr-result.txt' });
         if (!p) return;
         await invoke('fs:write-text', p, out.value);
@@ -1298,7 +1356,7 @@
       page.appendChild(div('card', div('card-title', '音频'), dz, label));
       page.appendChild(div('card', div('card-title', '剪辑参数'),
         div('form-row', h('span', { class: 'form-label' }, '起点'), ssIn,
-          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时长(秒)'), toIn,
+          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时长（秒）'), toIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '淡入'), fadeInIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '淡出'), fadeOutIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '增益dB'), gainIn,

@@ -61,8 +61,8 @@
       });
       let latencies = [], sent = 0, recv = 0, running = false;
       let unsubStream, unsubExit;
-      const startBtn = btn('▶ 开始', 'btn-primary', start);
-      const stopBtn = btn('■ 停止', 'btn-danger-plain', stop);
+      const startBtn = btn('▶ 开始 Ping', 'btn-primary', start);
+      const stopBtn = btn('■ 停止 Ping', 'btn-danger-plain', stop);
       stopBtn.disabled = true;
       function updateStats() {
         const min = latencies.length ? Math.min(...latencies) : 0;
@@ -433,7 +433,7 @@
       }
       page.appendChild(div('card', div('card-title', '已保存的 WiFi'),
         div('form-row', refreshBtn, status), listBox,
-        div('field-hint', '密码以明文保存在 Windows 无线配置中，本工具仅本机读取显示')));
+        div('field-hint', '密码来自 Windows 已保存的无线网络配置，仅在本机读取，不会上传')));
       load();
     }
   });

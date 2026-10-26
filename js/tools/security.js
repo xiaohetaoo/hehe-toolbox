@@ -138,6 +138,19 @@
       let watching = false, timer = null, lastClip = '';
       window.App.onCleanup(() => { watching = false; if (timer) { clearTimeout(timer); timer = null; } });
       let history = [];
+      // 删除条目时连带删掉它落盘的图片文件（否则 clip-img 会无限堆积）
+      async function dropImages(entries) {
+        const files = (entries || []).filter(x => x && x.type === 'image' && x.file).map(x => x.file);
+        if (!files.length) return;
+        try { await invoke('clip:remove-images', files); } catch (e) {}
+      }
+      // 超出上限被截断的条目，一并清理其图片文件
+      async function trimHistory(list, cap) {
+        if (list.length <= cap) return list;
+        const dropped = list.slice(cap);
+        await dropImages(dropped);
+        return list.slice(0, cap);
+      }
       async function load() {
         history = await invoke('store:get', 'clipHistory', []);
         render();
@@ -160,7 +173,7 @@
               let entry = { type: 'image', content: img, time: Date.now() };
               try { const r = await invoke('clip:save-image', img); entry = { type: 'image', file: r.path, time: Date.now() }; } catch (e) {}
               history.unshift(entry);
-              history = history.slice(0, 100);
+              history = await trimHistory(history, 100);
               await invoke('store:set', 'clipHistory', history);
               render();
             }
@@ -203,7 +216,8 @@
           }));
           btns.appendChild(btn('删除', 'btn-sm btn-text', async () => {
             const idx = history.indexOf(item);
-            history.splice(idx, 1);
+            if (idx >= 0) history.splice(idx, 1);
+            await dropImages([item]);
             await invoke('store:set', 'clipHistory', history);
             render();
           }));
@@ -231,9 +245,11 @@
       }
       searchIn.addEventListener('input', render);
       const clearBtn = btn('清空历史', 'btn-sm btn-danger-plain', async () => {
-        if (!(await window.ui.confirmBox({ title: '清空剪贴板历史', message: '确定清空全部剪贴板历史？', danger: true, okText: '清空' }))) return;
+        if (!(await window.ui.confirmBox({ title: '清空剪贴板历史', message: '确定清空全部剪贴板历史？图片文件也会一并删除。', danger: true, okText: '清空' }))) return;
+        const old = history.slice();
         history = [];
         await invoke('store:set', 'clipHistory', []);
+        await dropImages(old);
         render();
       });
       page.appendChild(div('card', div('card-title', '控制'),

@@ -38,21 +38,22 @@
       const pageIn = h('input', { class: 'input input-sm mono', placeholder: '页码范围，如 1-3,5', style: { width: '160px' } });
       const extractBtn = btn('📄 提取页面', 'btn-secondary', async () => {
         if (!files.length) return toast('请先选择 PDF', 'warn');
-        const ranges = parseRanges(pageIn.value);
-        if (!ranges.length) return toast('请输入页码范围', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
           const r = await invoke('fs:read-file-b64', files[0]);
           const src = await PDFDocument.load(r.b64, { ignoreEncryption: true });
+          const total = src.getPageCount();
+          const parsed = parseRanges(pageIn.value, total);
+          if (parsed.bad.length) return toast('页码无法识别：' + parsed.bad.join('、') + `（文档共 ${total} 页）`, 'warn');
+          if (!parsed.pages.length) return toast('请输入页码范围，如 1-3,5', 'warn');
           const out = await PDFDocument.create();
-          const indices = ranges.filter(i => i < src.getPageCount());
-          const pages = await out.copyPages(src, indices);
+          const pages = await out.copyPages(src, parsed.pages);
           pages.forEach(pg => out.addPage(pg));
           const bytes = await out.save();
           const outPath = await invoke('dialog:save', { defaultPath: 'extracted.pdf' });
           if (!outPath) return;
           await invoke('fs:write-file-b64', outPath, arrayB64(bytes));
-          toast(`提取 ${indices.length} 页完成`, 'success');
+          toast(`已提取 ${parsed.pages.length} 页`, 'success');
         } catch (e) { toast('提取失败：' + e.message, 'error'); }
       });
 
@@ -96,14 +97,29 @@
         } catch (e) { toast('旋转失败：' + e.message, 'error'); }
       });
 
-      function parseRanges(v) {
+      function parseRanges(v, maxPage) {
         const set = [];
+        const bad = [];
         for (const part of (v || '').split(/[,，]/)) {
-          const m = part.trim().match(/^(\d+)-(\d+)$/);
-          if (m) { for (let i = +m[1]; i <= +m[2]; i++) set.push(i - 1); }
-          else if (/^\d+$/.test(part.trim())) set.push(parseInt(part) - 1);
+          const t = part.trim();
+          if (!t) continue;
+          const m = t.match(/^(\d+)\s*-\s*(\d+)$/);
+          if (m) {
+            let a = +m[1], b = +m[2];
+            if (a > b) { bad.push(t + '（范围起点大于终点）'); continue; } // 反向区间过去会静默产出空集
+            if (maxPage) { a = Math.max(1, a); b = Math.min(maxPage, b); }
+            if (a > b) { bad.push(t + '（超出页数范围）'); continue; }
+            for (let i = a; i <= b; i++) set.push(i - 1);
+          } else if (/^\d+$/.test(t)) {
+            let n = +t;
+            if (n < 1 || (maxPage && n > maxPage)) { bad.push(t + '（超出页数范围 1-' + maxPage + '）'); continue; }
+            set.push(n - 1);
+          } else bad.push(t);
         }
-        return set.filter(i => i >= 0);
+        // 去重并保持用户输入顺序，避免同一页被重复提取
+        const seen = new Set();
+        const uniq = set.filter(i => (seen.has(i) ? false : (seen.add(i), true)));
+        return { pages: uniq, bad };
       }
       function arrayB64(bytes) {
         let bin = '';
@@ -241,7 +257,7 @@
             status.textContent = '转换完成，渲染中…';
             return await renderPdf(res.out);
           }
-          toast('不支持的格式：' + ext, 'warn');
+          toast(`不支持预览 .${ext} 文件；可预览 PDF / TXT / MD / Word / Excel / PPT`, 'warn');
         } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
       }
       async function renderPdf(p) {
