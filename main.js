@@ -294,8 +294,13 @@ function createSplash() {
         v: app.getVersion()
       }
     });
-    // 兜底：启动窗自身出问题也不允许拖住主界面
-    setTimeout(() => { if (!mainShown) splashSend('splash:step', { pct: 55, label: '加载界面…' }); }, 300);
+    // 兜底：启动窗自身出问题也不允许拖住主界面。
+    // 但只能在真实进度还没超过它时才发，否则会把已经跑到的 70% 阶段
+    // 反向改写回 55% —— 渲染端 pct 有 Math.max 保护，label 却是无条件覆盖的。
+    setTimeout(() => {
+      if (mainShown || splashStage.pct >= 55) return;
+      splashSend('splash:step', { pct: 55, label: '加载界面…' });
+    }, 300);
     // 兜底：万一主窗 ready-to-show 一直不触发（渲染层崩溃等），启动窗也不能永远盖在最前面
     setTimeout(() => {
       if (mainShown) return;
@@ -322,7 +327,10 @@ function showWindowAfterSplash() {
   // 启动窗根本没显示过（启动太快）→ 直接显示主窗，不做任何淡出等待
   if (!splashVisible || !splashWin || splashWin.isDestroyed()) { reveal(); return; }
   splashSend('splash:done', {});
-  setTimeout(reveal, 180); // 与 splash.js 的淡出动画时长保持一致
+  // CSS transition 要到下一帧才开始计时，0.18s 的淡出实际完成时间更晚；
+  // 原来用 180ms 会在动画还差最后一点时 destroy()，视觉上是一次硬消失。
+  // 留出启动窗隐藏的 await 时间，取 260ms 与 transition 时长匹配。
+  setTimeout(reveal, 260);
 }
 
 function createWindow() {
@@ -3241,6 +3249,7 @@ if (process.env.HEHE_SMOKE) {
     }
   }, 2000);
 }
+
 if (process.env.HEHE_SHOT) {
       // 截图输出目录：开发态写到项目根，打包后 asar 内部不可写，改写到 userData
       const shotDir = (() => {

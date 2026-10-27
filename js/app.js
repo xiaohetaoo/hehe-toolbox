@@ -211,11 +211,11 @@
       await changeTheme(cur === 'dark' ? 'light' : 'dark', { x: e.clientX, y: e.clientY });
     });
     const minBtn = h('button', { class: 'tb-btn', title: '最小化' }, icon('minus', 'icon-lg'));
-    minBtn.addEventListener('click', () => invoke('win:minimize'));
+    minBtn.addEventListener('click', () => invoke('win:minimize').catch(() => {}));
     maxBtn = h('button', { class: 'tb-btn', title: '最大化' }, icon('square', 'icon-lg'));
-    maxBtn.addEventListener('click', () => invoke('win:maximize'));
+    maxBtn.addEventListener('click', () => invoke('win:maximize').catch(() => {}));
     const closeBtn = h('button', { class: 'tb-btn close', title: '关闭' }, icon('x', 'icon-lg'));
-    closeBtn.addEventListener('click', () => invoke('win:close'));
+    closeBtn.addEventListener('click', () => invoke('win:close').catch(() => {}));
     tbRight.appendChild(themeBtn); tbRight.appendChild(minBtn); tbRight.appendChild(maxBtn); tbRight.appendChild(closeBtn);
 
     titlebar.appendChild(breadcrumbEl);
@@ -404,7 +404,19 @@
       else if (v.type === 'module') renderModulePage(page, v.moduleId);
       else if (v.type === 'tool') renderToolPage(page, v.toolId);
       else if (v.type === 'settings') renderSettings(page);
-      else if (v.type === 'about') renderAbout(page);
+      else if (v.type === 'about') {
+        // renderAbout 是 async 且首行就 await IPC：原来既不 await 也不 catch，
+        // rejection 会逃逸成 unhandled rejection，而 try/catch 只能接同步异常，
+        // 结果是「关于」页永久空白、下面的兜底卡也不生效。这里显式接住。
+        const p = renderAbout(page);
+        if (p && typeof p.catch === 'function') {
+          p.catch((e) => {
+            console.error('关于页渲染失败', e);
+            page.innerHTML = '';
+            page.appendChild(div('tool-header', div('th-icon', iconLg('alert')), div('', h('h2', null, '页面加载失败'), h('div', { class: 'th-desc' }, String(e && e.message || e)))));
+          });
+        }
+      }
     } catch (e) {
       // 兜底：任一页面渲染异常都不能让内容区白屏，至少给出可读错误和返回入口
       console.error('页面渲染失败', v, e);
@@ -550,6 +562,10 @@
 
   /* ============ 设置 ============ */
   let drawToken = 0; // 模块级：drawBody 与闭包外的 drawGeneral/drawAppearance/drawData 共享
+  // 当前设置分区必须是模块级状态：高危开关保存后会调 refresh() 全量重绘，
+  // 若 current 只是 renderSettings 的局部变量，重绘时会被重置回「通用」，
+  // 用户刚点的开关所在面板直接被换掉（连点多项就得每次重新点回分区）。
+  let settingsSection = 'general';
   function renderSettings(page) {
     page.appendChild(div('tool-header', div('th-icon', iconLg('settings')), div('', h('h2', null, '设置'), h('div', { class: 'th-desc' }, '个性化你的核核工具箱'))));
     const wrap = div('settings-wrap');
@@ -561,7 +577,7 @@
       { id: 'danger', name: '高危功能', icon: 'alert' },
       { id: 'data', name: '数据与隐私', icon: 'shield' }
     ];
-    let current = 'general';
+    let current = sections.some(s => s.id === settingsSection) ? settingsSection : 'general';
     function drawBody() {
       const token = ++drawToken;
       body.innerHTML = '';
@@ -574,7 +590,7 @@
     for (const s of sections) {
       const item = div('settings-nav-item', icon(s.icon), ' ' + s.name);
       item.dataset.sid = s.id;
-      item.addEventListener('click', () => { current = s.id; drawBody(); });
+      item.addEventListener('click', () => { current = s.id; settingsSection = s.id; drawBody(); });
       nav.appendChild(item);
     }
     wrap.appendChild(nav); wrap.appendChild(body);
@@ -589,12 +605,16 @@
       row1.appendChild(div('set-control', sw));
     } catch (e) { row1.appendChild(div('set-control', h('span', { class: 'field-hint' }, '浏览器模式不可用'))); }
 
-    const closeToTray = await invoke('store:get', 'settings.closeToTray', true);
+    // 后两项的 await 也要各自兜底：任一 IPC 拒绝都会让整个「通用」面板空白，
+    // 而且是以 unhandled rejection 形式静默失败。失败时降级成一行提示即可。
+    let closeToTray = true;
+    try { closeToTray = await invoke('store:get', 'settings.closeToTray', true); } catch (e) { console.error('读取托盘设置失败', e); }
     const row2 = div('set-row', div('', div('set-label', '关闭时最小化到托盘'), div('set-desc', '点击关闭按钮时隐藏窗口而不是退出')));
-    row2.appendChild(div('set-control', switchEl(closeToTray, (v) => invoke('store:set', 'settings.closeToTray', v))));
+    row2.appendChild(div('set-control', switchEl(closeToTray, (v) => invoke('store:set', 'settings.closeToTray', v).catch((e) => toast(e.message, 'error')))));
 
     const row3 = div('set-row', div('', div('set-label', '全局唤起热键'), div('set-desc', '任意界面一键调出主窗口')));
-    const hotkey = await invoke('store:get', 'settings.hotkey', 'Alt+Shift+H');
+    let hotkey = 'Alt+Shift+H';
+    try { hotkey = await invoke('store:get', 'settings.hotkey', 'Alt+Shift+H'); } catch (e) { console.error('读取热键设置失败', e); }
     const hkInput = h('input', { class: 'input input-sm', value: hotkey, style: { width: '140px', textAlign: 'center' } });
     const hkBtn = btn('应用', 'btn-sm btn-primary', async () => {
       const v = hkInput.value.trim();

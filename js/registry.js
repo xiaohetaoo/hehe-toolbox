@@ -15,6 +15,12 @@
 
   const tools = [];
   function register(tool) {
+    // 必填字段校验：漏写 name 时 search() 里的 t.name.toLowerCase() 会抛 TypeError，
+    // 而那个异常发生在 debounce 的 setTimeout 里，会逃出调用栈让搜索框整个失效且无提示。
+    if (!tool || typeof tool !== 'object') { console.error('工具注册失败：非法对象', tool); return; }
+    if (typeof tool.id !== 'string' || !tool.id) { console.error('工具注册失败：缺少 id', tool); return; }
+    if (typeof tool.name !== 'string' || !tool.name) { console.error('工具注册失败：缺少 name', tool.id); return; }
+    if (typeof tool.render !== 'function') { console.error('工具注册失败：缺少 render', tool.id); return; }
     if (tools.find(t => t.id === tool.id)) { console.warn('重复工具 id:', tool.id); return; }
     tools.push(tool);
   }

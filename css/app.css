@@ -59,6 +59,10 @@
   --shadow-modal: 0 8px 40px rgba(var(--shadow-rgb), 0.25);
   --input-bg: #FFFFFF;
   --code-bg: #1D2129;
+  /* 次级背景：Markdown / 文档预览面板的底。之前被 office.js、text-tools.js
+     引用但从未定义，未定义且无 fallback 会让整条 background 声明失效，
+     预览区退回透明、失去层次。 */
+  --bg-2: color-mix(in srgb, var(--page-bg) 70%, var(--card-bg));
 }
 
 /* ---- 语义层：深色 ---- */
@@ -360,7 +364,10 @@ body {
 .tool-card .tc-desc { font-size: 12px; color: var(--text-3); margin-top: 3px; line-height: 1.4; }
 .tool-card .tc-star { position: absolute; right: 10px; top: 10px; color: var(--text-3); opacity: 0; transition: opacity 0.15s; }
 .tool-card:hover .tc-star { opacity: 1; }
-.tool-card .tc-star.on { opacity: 1; color: var(--warning); fill: var(--warning); }
+/* fill 必须落在 svg 自身：.icon 自己写了 fill:none，父级 .tc-star.on 的 fill 继承不过去，
+   否则收藏后星标只会变橙色描边、永远不填充。 */
+.tool-card .tc-star.on { opacity: 1; color: var(--warning); }
+.tool-card .tc-star.on .icon { fill: var(--warning); }
 
 /* ---- 高危工具卡片：红色区分 ----
    涉及删文件 / 杀进程 / 改系统的高危工具用红色描边与红色图标，
