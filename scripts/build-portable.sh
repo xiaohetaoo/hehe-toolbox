@@ -1,8 +1,9 @@
 #!/bin/bash
 # 便携版构建：带文件锁重试（本机常见 EBUSY：app.asar 被外部进程观察/扫描）
-# 用法：build-portable.sh <输出目录> [重试次数]
+# 用法：build-portable.sh [输出目录] [重试次数]
+# 默认输出到项目内 dist/（与 package.json 的 directories.output 一致）
 set -u
-OUT="${1:-D:/zcode/hehe-out8}"
+OUT="${1:-D:/zcode/hehe/dist}"
 RETRIES="${2:-3}"
 cd /d/zcode/hehe || exit 1
 unset ELECTRON_RUN_AS_NODE

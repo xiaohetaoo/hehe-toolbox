@@ -10,7 +10,7 @@
     "start": "electron .",
     "dist": "electron-builder --win portable",
     "dist:installer": "electron-builder --win nsis",
-    "dist:retry": "bash scripts/build-portable.sh D:/zcode/hehe-out8 3"
+    "dist:retry": "bash scripts/build-portable.sh D:/zcode/hehe/dist 3"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",
