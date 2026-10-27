@@ -1,5 +1,14 @@
 'use strict';
+/* 启动耗时打点（仅 HEHE_BOOTTIME 设置时启用，不影响正常运行） */
+const BOOT_T0 = Date.now();
+const BOOT_FILE = process.env.HEHE_BOOTTIME || null;
+function bootMark(name) {
+  if (!BOOT_FILE) return;
+  try { fs.appendFileSync(BOOT_FILE, name + '\t' + (Date.now() - BOOT_T0) + '\n'); } catch (e) {}
+}
+bootMark('main-start');
 const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, Tray, Menu, screen, globalShortcut, nativeTheme, desktopCapturer } = require('electron');
+bootMark('electron-loaded');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -10,6 +19,7 @@ const http = require('http');
 const zlib = require('zlib');
 const AdmZip = require('adm-zip');
 const solarlunar = require('solarlunar');
+bootMark('deps-loaded');
 
 const isMac = process.platform === 'darwin';
 const isWin = process.platform === 'win32';
@@ -195,6 +205,7 @@ nativeTheme.on('updated', () => {
   send('settings.theme-changed', nativeTheme.shouldUseDarkColors);
 });
 function createWindow() {
+  bootMark('create-window-start');
   win = new BrowserWindow({
     width: 1000, height: 660, minWidth: 860, minHeight: 580,
     frame: false, show: false,
@@ -208,6 +219,7 @@ function createWindow() {
     }
   });
   Menu.setApplicationMenu(null);
+  bootMark('window-created');
   win.loadFile('index.html');
   win.webContents.on('console-message', (...args) => {
     let level, message, source, line;
@@ -215,7 +227,8 @@ function createWindow() {
     else { const ev = args[0]; level = ev.level; message = ev.message; source = ev.sourceId; line = ev.lineNumber; }
     console.log(`[renderer:${level}]`, message, `(${source}:${line})`);
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => { bootMark('ready-to-show'); win.show(); bootMark('window-shown'); });
+  win.webContents.once('did-finish-load', () => { bootMark('renderer-loaded'); });
   win.on('maximize', () => send('win:maximized', true));
   win.on('unmaximize', () => send('win:maximized', false));
   win.on('close', (e) => {
@@ -3020,7 +3033,9 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); } else {
   app.on('second-instance', showMainWindow);
   app.whenReady().then(() => {
+    bootMark('app-ready');
     loadStore();
+    bootMark('store-loaded');
     createWindow();
     createTray();
     // 启动清扫：延迟执行，不阻塞窗口首帧
