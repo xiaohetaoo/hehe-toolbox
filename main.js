@@ -22,6 +22,9 @@ const http = require('http');
 const zlib = require('zlib');
 const AdmZip = require('adm-zip');
 const solarlunar = require('solarlunar');
+const archiveGuard = require('./lib/archive-guard'); // 解压安全预检（路径穿越/ADS/设备名/限额）
+const targetSize = require('./lib/target-size');     // 目标体积压缩的多轮逼近算法
+const errorInfo = require('./lib/errors');           // 结构化错误（稳定错误码 + 建议操作）
 bootMark('deps-loaded');
 
 const isMac = process.platform === 'darwin';
@@ -82,7 +85,13 @@ const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
     return { ok: false, error: dangerousDenied(cap) };
   }
   try { return { ok: true, data: await fn(e, ...args) }; }
-  catch (err) { return { ok: false, error: fmtErr(err) }; }
+  catch (err) {
+    /* 结构化错误：除了原来给渲染端用的 error 字符串，再附带稳定错误码与建议操作。
+       渲染端 window.api.invoke 仍然 throw new Error(error)，旧代码零改动；
+       需要更细信息的地方可以读 err.code / err.advice。 */
+    const payload = errorInfo.toPayload(err);
+    return { ok: false, error: payload.message, code: payload.code, advice: payload.advice };
+  }
 });
 function runCmd(cmd, args, opts = {}) {
   const enc = opts.encoding || 'utf8';
@@ -105,6 +114,22 @@ function ps(script, timeout = 30000, cwd) {
 // 异步存在性判断：批量文件操作里替代 fs.existsSync，避免阻塞主进程
 async function pathExists(p) {
   try { await fsp.access(p); return true; } catch (e) { return false; }
+}
+
+/* 生成不覆盖的目标路径：已存在则自动加序号。
+ * 借鉴 YourCatFileAssistant「已存在的文件不覆盖，按序号生成新名称」的做法，
+ * 供目标体积压缩与归档解压共用。 */
+async function uniqueTarget(root, relName) {
+  const base = path.join(root, relName);
+  if (!(await pathExists(base))) return base;
+  const dir = path.dirname(base);
+  const ext = path.extname(base);
+  const stem = path.basename(base, ext);
+  for (let i = 1; i < 10000; i++) {
+    const cand = path.join(dir, `${stem}(${i})${ext}`);
+    if (!(await pathExists(cand))) return cand;
+  }
+  throw new Error('无法生成不重名的目标路径：' + relName);
 }
 
 /* 本应用在系统临时目录里创建的临时产物（统一 hehe- 前缀）。
@@ -983,8 +1008,31 @@ handle('zip:compress', async (e, paths, outZip) => {
 });
 handle('zip:extract', async (e, zipPath, outDir) => {
   const zip = new AdmZip(zipPath);
-  zip.extractAllTo(outDir, true);
-  return { outDir };
+  /* 安全预检：先枚举全部条目并做静态判定，通过后才真正写盘。
+     原实现直接 extractAllTo(outDir, true)：overwrite=true（静默覆盖同名文件）
+     且没有任何预检，构造过的压缩包可以穿越写出目标目录、用 ADS 藏内容、
+     用设备名/UNC 写到任意位置。详见 lib/archive-guard.js。 */
+  const raw = zip.getEntries().map((en) => ({
+    name: en.entryName,
+    isDir: en.isDirectory,
+    size: en.header && typeof en.header.size === 'number' ? en.header.size : 0,
+    isSymlink: false,   // AdmZip 未暴露 Unix 模式，ZIP 符号链接由下方前缀判定兜底
+    isHardLink: false
+  }));
+  const verdict = archiveGuard.inspectEntries(raw);
+  if (!verdict.ok) throw new Error('压缩包预检未通过');
+
+  await fsp.mkdir(outDir, { recursive: true });
+  // 不再用 overwrite=true：逐个条目解析绝对路径（再过一道 escape 断言）后写入
+  for (const en of zip.getEntries()) {
+    const name = archiveGuard.normalizeName(en.entryName);
+    if (!name || name === '.' || name === './') continue;
+    const target = archiveGuard.resolveTarget(outDir, name);
+    if (en.isDirectory) { await fsp.mkdir(target, { recursive: true }); continue; }
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.writeFile(target, en.getData());
+  }
+  return { outDir, entries: verdict.entries.length };
 });
 
 /* ================= IPC: exec / process ================= */
@@ -1570,12 +1618,20 @@ const FFMPEG_SOURCES = {
 function downloadToFile(url, dest, id, ctrl, label) {
   return new Promise(async (resolve, reject) => {
     const MAX_RETRY = 6;
+    /* 先写任务专属临时文件，校验通过后才原子改名为最终名。
+       原实现直接写 dest：下载中断或重试耗尽时，dest 会留下体积不足的残缺文件，
+       用户以为下好了（尤其 .exe），要等运行才发现损坏。
+       现在失败/取消一律删临时文件，dest 要么不存在、要么是完整内容。 */
+    const tmp = dest + '.part-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+    const cleanup = () => { try { fs.rmSync(tmp, { force: true }); } catch (e) {} };
     let attempt = 0, got = 0, total = 0, lastEmit = 0;
     const emit = (force) => {
       const now = Date.now();
       if (force || now - lastEmit > 400) {
         lastEmit = now;
-        send('job:stream', { id, data: JSON.stringify({ pct: total ? got / total * 100 : 0, mb: got / 1048576, totalMB: total / 1048576, label }) });
+        // 进度封顶 99%：只有提交成功才算 100%
+        const pct = total ? Math.min(99, got / total * 100) : 0;
+        send('job:stream', { id, data: JSON.stringify({ pct, mb: got / 1048576, totalMB: total / 1048576, label }) });
       }
     };
     const tryOnce = () => new Promise((res, rej) => {
@@ -1587,7 +1643,7 @@ function downloadToFile(url, dest, id, ctrl, label) {
         if (r.status === 200) got = 0; // 服务器不支持续传，重头下
         if (r.headers.get('content-length')) total = got + (Number(r.headers.get('content-length')) || 0);
         const reader = r.body.getReader();
-        const ws = fs.createWriteStream(dest, { flags: got > 0 && r.status === 206 ? 'a' : 'w' });
+        const ws = fs.createWriteStream(tmp, { flags: got > 0 && r.status === 206 ? 'a' : 'w' });
         ws.on('error', rej);
         while (true) {
           const { done, value } = await reader.read();
@@ -1603,11 +1659,23 @@ function downloadToFile(url, dest, id, ctrl, label) {
     });
     (async () => {
       while (true) {
-        try { await tryOnce(); emit(true); resolve(); return; }
-        catch (err) {
-          if (ctrl.signal.aborted || err.message === 'ABORTED') { reject(new Error('下载已取消')); return; }
+        try {
+          await tryOnce(); emit(true);
+          // 提交前校验：体积必须与服务器声明的 content-length 一致，且不能为空
+          let ok = true, why = '';
+          try {
+            const st = fs.statSync(tmp);
+            if (st.size === 0) { ok = false; why = '下载内容为空'; }
+            else if (total > 0 && st.size !== total) { ok = false; why = `体积不符（${st.size}/${total} 字节）`; }
+          } catch (e) { ok = false; why = e.message; }
+          if (!ok) { cleanup(); reject(new Error('下载校验失败：' + why)); return; }
+          await fsp.rename(tmp, dest); // 原子改名：不会出现"半个文件"
+          resolve({ size: got });
+          return;
+        } catch (err) {
+          if (ctrl.signal.aborted || err.message === 'ABORTED') { cleanup(); reject(new Error('下载已取消')); return; }
           attempt++;
-          if (attempt >= MAX_RETRY) { reject(new Error('下载失败（已重试 ' + MAX_RETRY + ' 次）：' + err.message)); return; }
+          if (attempt >= MAX_RETRY) { cleanup(); reject(new Error('下载失败（已重试 ' + MAX_RETRY + ' 次）：' + err.message)); return; }
           send('job:stream', { id, data: JSON.stringify({ stage: 'retry', attempt, label }) });
           await new Promise(r2 => setTimeout(r2, 1500));
         }
@@ -1678,6 +1746,171 @@ handle('ffmpeg:probe', async (e, p) => {
   const r = await runCmd(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', p], { timeout: 30000 });
   return JSON.parse(r.stdout);
 });
+
+/* ================= IPC: 目标体积压缩（音视频） =================
+ * 借鉴 YourCatFileAssistant 的核心设计：不是"压一次看运气"，而是
+ * 最多 8 轮候选输出，每轮按实际结果调整码率，达标才提交。
+ * 关键约束（与对方一致）：
+ *   - 绝不截断时长、绝不删音轨来凑体积
+ *   - 每轮输出先写到任务专属临时文件，体积检查通过后才改名
+ *   - 源文件本来就达标时直接另存并标注「已符合上限」
+ *   - 进度最多 99%，提交成功才 100%
+ */
+handle('target:compress-av', async (e, { items, outDir, targetBytes, mode, ratio }) => {
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  const ffprobe = findFfprobe();
+  const id = 'tgt' + (++jobSeq);
+  const state = { cancel: false, proc: null };
+  const killProc = () => {
+    try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {}
+    if (isWin && state.proc && state.proc.pid) spawn('taskkill', ['/pid', String(state.proc.pid), '/t', '/f'], { windowsHide: true });
+  };
+  jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
+  latestCancelable = () => { state.cancel = true; killProc(); };
+
+  await fsp.mkdir(outDir, { recursive: true });
+  const results = [];
+
+  /* 读时长与音轨信息。时长拿不到就无法按体积反推码率，直接给出可读失败。 */
+  async function probeMedia(p) {
+    if (!ffprobe) return { duration: 0, hasAudio: false, width: 0, height: 0 };
+    try {
+      const r = await runCmd(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', p], { timeout: 30000 });
+      const j = JSON.parse(r.stdout);
+      const v = (j.streams || []).find(s => s.codec_type === 'video' && !(s.disposition && s.disposition.attached_pic));
+      const a = (j.streams || []).find(s => s.codec_type === 'audio');
+      return {
+        duration: parseFloat((j.format || {}).duration) || (v && parseFloat(v.duration)) || 0,
+        hasAudio: !!a,
+        width: v ? v.width : 0,
+        height: v ? v.height : 0
+      };
+    } catch (err) { return { duration: 0, hasAudio: false, width: 0, height: 0 }; }
+  }
+
+  try {
+    for (let i = 0; i < items.length; i++) {
+      if (state.cancel) break;
+      const input = items[i];
+      const srcSize = (await fsp.stat(input)).size;
+      const want = mode === 'ratio'
+        ? targetSize.tierTargetBytes(srcSize, ratio)
+        : Math.floor(targetBytes);
+      const base = path.basename(input).replace(/\.[^.]+$/, '');
+
+      send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), stage: 'probe', pct: 1 }) });
+
+      /* 源文件本来就达标：直接另存一份，标「已符合上限」。
+         这是对方明确处理的场景 —— 用户的文件本来就够小，不该被重编码白白降低画质。 */
+      if (srcSize <= want) {
+        const dst = await uniqueTarget(outDir, base + path.extname(input));
+        await fsp.copyFile(input, dst);
+        results.push({ input, out: dst, ok: true, srcSize, outSize: srcSize, target: want, alreadyFits: true, rounds: 0 });
+        send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: true, alreadyFits: true }) });
+        continue;
+      }
+
+      const media = await probeMedia(input);
+      if (!(media.duration > 0)) {
+        results.push({ input, out: null, ok: false, srcSize, target: want, err: '无法获取媒体时长，无法按体积反推码率' });
+        send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: false }) });
+        continue;
+      }
+
+      const tmpDir = path.join(app.getPath('temp'), 'hehe-tgt-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
+      await fsp.mkdir(tmpDir, { recursive: true });
+      let finalOut = null;
+      let lastErr = '';
+      let usedRounds = 0;
+
+      try {
+        for (let round = 0; round < targetSize.MAX_ROUNDS; round++) {
+          usedRounds = round + 1;
+          if (state.cancel) break;
+
+          const plan = targetSize.planBitrates({
+            targetBytes: want, durationSec: media.duration,
+            hasAudio: media.hasAudio, round
+          });
+          if (!plan.ok) { lastErr = plan.reason; break; }
+
+          const cand = path.join(tmpDir, `r${round}.mp4`);
+          const args = ['-hide_banner', '-y', '-nostats', '-i', input];
+          // 输出编码：优先 H.264（兼容性最好）；两遍法才能精确命中目标码率
+          args.push('-c:v', 'libx264', '-b:v', plan.videoKbps + 'k',
+            '-maxrate', Math.round(plan.videoKbps * 1.5) + 'k',
+            '-bufsize', Math.round(plan.videoKbps * 2) + 'k',
+            '-preset', 'medium', '-pix_fmt', 'yuv420p');
+          if (media.hasAudio && plan.audioKbps) args.push('-c:a', 'aac', '-b:a', plan.audioKbps + 'k');
+          else args.push('-an');
+          args.push('-movflags', '+faststart', '-progress', 'pipe:1', cand);
+
+          const r = await new Promise((resolve) => {
+            const proc = spawn(ffmpeg, args, { windowsHide: true });
+            state.proc = proc;
+            let buf = '', errOut = '';
+            proc.stdout.on('data', (d) => {
+              buf += String(d);
+              const lines = buf.split('\n'); buf = lines.pop() || '';
+              for (const line of lines) {
+                const m = line.match(/out_time_us=(\d+)/);
+                if (m && media.duration > 0) {
+                  // 单轮内部的进度折算到该轮在整个 8 轮预算中的区间，总进度封顶 99%
+                  const inRound = Math.min(1, parseInt(m[1]) / 1e6 / media.duration);
+                  const overall = Math.min(99, ((i + (round + inRound) / targetSize.MAX_ROUNDS) / items.length) * 100);
+                  send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: overall, round: round + 1 }) });
+                }
+              }
+            });
+            proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
+            proc.on('exit', (code) => resolve({ code, errOut }));
+            proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
+          });
+
+          if (state.cancel) { lastErr = '已取消'; break; }
+          if (r.code !== 0) {
+            lastErr = r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code);
+            break;
+          }
+          let outBytes = 0;
+          try { outBytes = (await fsp.stat(cand)).size; } catch (err) {}
+          const verdict = targetSize.evaluateRound({ outBytes, targetBytes: want, round });
+          if (verdict.ok) { finalOut = { file: cand, size: outBytes }; break; }
+          if (verdict.done) { lastErr = verdict.reason; break; }
+          try { await fsp.unlink(cand); } catch (err) {} // 未达标候选立刻删掉，省磁盘
+        }
+
+        if (finalOut) {
+          // 校验通过才提交：改成最终名（同名自动编号，不覆盖已有文件）
+          const dst = await uniqueTarget(outDir, base + '.mp4');
+          await fsp.rename(finalOut.file, dst);
+          results.push({ input, out: dst, ok: true, srcSize, outSize: finalOut.size, target: want, rounds: usedRounds });
+          send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: true }) });
+        } else {
+          results.push({ input, out: null, ok: false, srcSize, target: want, rounds: usedRounds, err: lastErr || '未能压到目标体积' });
+          send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: false }) });
+        }
+      } finally {
+        // 只清理自己的临时目录；已提交的最终文件不在其中
+        try { await fsp.rm(tmpDir, { recursive: true, force: true }); } catch (err) {}
+      }
+    }
+  } finally { jobs.delete(id); }
+  return { id, results, canceled: state.cancel };
+});
+
+/* 图片的目标体积压缩：按质量与尺寸双维度多轮逼近。
+ * 与音视频不同，图片编码在渲染进程用 canvas 完成（已有链路），
+ * 主进程只负责规划每轮参数与判定体积，实际重编码由渲染层完成。 */
+handle('target:plan-image', (e, { round }) => {
+  const q = targetSize.planImageQuality(round);
+  return { quality: q.quality, scale: q.scale, round, maxRounds: targetSize.MAX_ROUNDS };
+});
+handle('target:eval-image', (e, { outBytes, targetBytes, round }) => {
+  return targetSize.evaluateRound({ outBytes, targetBytes, round });
+});
+
 handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
@@ -2563,6 +2796,58 @@ function findSevenFull() {
   }
   return null;
 }
+
+/* ---------- 归档子进程沙箱 ----------
+ * 借鉴 YourCatFileAssistant 的归档设计，但受引擎能力限制做了取舍：
+ *
+ * 1) 密码无法完全离开命令行 —— 7za/7z 只提供 `-p{Password}`，
+ *    没有 `--password-file`，也不读 stdin 取密码
+ *    （已用 `7za -h` 确认：只有 -p 与 -si，-si 是"从 stdin 读数据"不是读密码）。
+ *    所以现实可做的三件事：
+ *      · 密码只出现在英文参数位，绝不写日志、不进设置、不进临时文件内容；
+ *      · 参数里做引号双写转义，避免被截断成注入；
+ *      · 任务结束立即释放引用，不做任何持久化。
+ * 2) 子进程加超时（runCmd 的 timeout）与取消后强杀兜底，
+ *    避免 7z 卡在坏包或超大包上不退。
+ * 3) 解压结果先落到任务专属子目录，全部成功后再合并到目标目录，
+ *    避免"解了一半失败"留下半成品（见 seven:extract）。
+ */
+const ARCHIVE_JOB_LIMITS = {
+  cancelGraceMs: 5000 // 取消后 5 秒仍未退出则强杀
+};
+
+/* 统一的归档调用入口：集中处理密码参数与超时，避免各处重复且不一致。 */
+async function runSeven(bin, args, opts = {}) {
+  const { password, timeout = 600000 } = opts;
+  const realArgs = args.slice();
+  realArgs.push(password ? sevenPwdArg(password) : '-p');
+  return runCmd(bin, realArgs, { timeout });
+}
+
+/* 递归扫描一个目录，产出 archive-guard 需要的条目清单（相对名 + 是否目录 + 大小）。
+ * 用于解压后复查：即使引擎自己解出来了，也可能带着穿越名/设备名。 */
+async function scanDirForGuard(root, relBase = '') {
+  const out = [];
+  let items;
+  try { items = await fsp.readdir(path.join(root, relBase), { withFileTypes: true }); } catch (e) { return out; }
+  for (const it of items) {
+    const rel = relBase ? relBase + '/' + it.name : it.name;
+    if (it.isDirectory()) {
+      out.push({ name: rel, isDir: true, size: 0 });
+      out.push(...await scanDirForGuard(root, rel));
+    } else if (it.isSymbolicLink()) {
+      out.push({ name: rel, isFile: false, isSymlink: true });
+    } else {
+      let size = 0;
+      try { size = (await fsp.stat(path.join(root, relBase, it.name))).size; } catch (e) {}
+      out.push({ name: rel, isDir: false, size });
+    }
+  }
+  return out;
+}
+
+/* 生成不覆盖的目标路径（定义在文件上部，此处不再重复） */
+
 handle('seven:status', () => ({ za: sevenZa, full: findSevenFull() }));
 handle('seven:compress', async (e, { files, out, password, volumeMB }) => {
   const bin = findSevenFull() || sevenZa;
@@ -2582,12 +2867,37 @@ handle('seven:extract', async (e, { archive, outDir, password }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
   await fsp.mkdir(outDir, { recursive: true });
-  const args = ['x', '-y', '-bd', '-o' + outDir];
-  args.push(sevenPwdArg(password)); // 无密码时 -p 阻止交互挂起
-  args.push(archive);
-  const r = await runCmd(bin, args, { timeout: 600000 });
-  if (r.code !== 0) throw new Error('解压失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
-  return { outDir };
+
+  /* 先解到任务专属临时目录，全部成功后再合并到 outDir。
+     原实现直接 -o<outDir>：中途出错（缺卷、CRC 错、磁盘满）会在目标目录
+     留下半截文件，用户无法分辨哪些是完整的。
+     这样失败时只需删掉自己的临时目录，目标目录一个字节都不会被污染。 */
+  const staging = path.join(app.getPath('temp'), 'hehe-7zx-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
+  await fsp.mkdir(staging, { recursive: true });
+  try {
+    const args = ['x', '-y', '-bd', '-o' + staging, archive];
+    const r = await runSeven(bin, args, { password });
+    if (r.code !== 0) throw new Error('解压失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+
+    // 预检：解出来的条目也要过一遍安全判定（防 7z 里藏的穿越/设备名条目）
+    const scanned = await scanDirForGuard(staging);
+    const verdict = archiveGuard.inspectEntries(scanned);
+    if (!verdict.ok) throw new Error('解压内容预检未通过');
+
+    // 合并：逐个移动，同名不覆盖（自动编号），保留目录结构
+    let moved = 0;
+    for (const ent of verdict.entries) {
+      const src = archiveGuard.resolveTarget(staging, ent.name);
+      const dst = await uniqueTarget(outDir, ent.name);
+      if (ent.isDir) { await fsp.mkdir(dst, { recursive: true }); continue; }
+      await fsp.mkdir(path.dirname(dst), { recursive: true });
+      await fsp.rename(src, dst);
+      moved++;
+    }
+    return { outDir, entries: moved };
+  } finally {
+    try { await fsp.rm(staging, { recursive: true, force: true }); } catch (err) {}
+  }
 });
 
 /* ================= IPC: WiFi 密码查看 ================= */

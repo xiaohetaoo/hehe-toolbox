@@ -34,8 +34,23 @@
   async function invoke(ch, ...args) {
     if (!isDesktop) return browserFallback(ch, args);
     const r = await native.invoke(ch, ...args);
-    if (!r || r.ok !== true) throw new Error((r && r.error) || '调用失败：' + ch);
+    if (!r || r.ok !== true) {
+      // 主进程现在会附带稳定错误码与建议操作。把它们挂到 Error 上，
+      // 现有代码 catch(e){ toast(e.message) } 完全不用改；
+      // 需要更友好提示的地方可以读 e.code / e.advice。
+      const err = new Error((r && r.error) || '调用失败：' + ch);
+      if (r && r.code) err.code = r.code;
+      if (r && r.advice) err.advice = r.advice;
+      throw err;
+    }
     return r.data;
+  }
+
+  // 把错误渲染成「原文 + 建议」的文本，供各工具统一使用
+  function errText(e) {
+    if (!e) return '操作失败';
+    const msg = e.message || String(e);
+    return e.advice ? (msg + '\n建议：' + e.advice) : msg;
   }
 
   // 浏览器模式下的假 sys:stats 心跳。原来把定时器 id 丢掉、还把布尔值塞进
@@ -71,5 +86,5 @@
     return file.name; // 浏览器模式只有文件名
   }
 
-  window.api = { invoke, on, isDesktop, getPathForFile };
+  window.api = { invoke, on, isDesktop, getPathForFile, errText };
 })();

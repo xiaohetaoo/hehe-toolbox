@@ -8,7 +8,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node scripts/test-lib.js",
+    "test": "node scripts/test-lib.js && node scripts/test-archive-guard.js && node scripts/test-target-size.js && node scripts/test-zip-extract.js",
     "dist": "electron-builder --win portable && node scripts/pack-zip.js",
     "dist:installer": "electron-builder --win nsis",
     "dist:retry": "bash scripts/build-portable.sh D:/zcode/hehe/dist 3"
@@ -47,6 +47,7 @@
       "snip.html",
       "css/**/*",
       "js/**/*",
+      "lib/**/*",
       "assets/**/*",
       "!assets/splash.bmp",
       "package.json",
