@@ -40,12 +40,14 @@
       "main.js",
       "preload.js",
       "index.html",
+      "splash.html",
       "ruler.html",
       "pin.html",
       "snip.html",
       "css/**/*",
       "js/**/*",
       "assets/**/*",
+      "!assets/splash.bmp",
       "package.json",
       "!node_modules/pdfjs-dist/legacy/**",
       "!node_modules/pdfjs-dist/types/**",
@@ -70,7 +72,8 @@
       ]
     },
     "portable": {
-      "artifactName": "hehe-toolbox-Portable-${version}.exe"
+      "artifactName": "hehe-toolbox-Portable-${version}.exe",
+      "splashImage": "assets/splash.bmp"
     },
     "npmRebuild": false,
     "compression": "maximum",

@@ -28,16 +28,18 @@ jobs:
           for f in main.js preload.js js/*.js js/tools/*.js; do node --check "$f"; done
           echo "syntax OK"
 
-      - name: Build portable exe
+      - name: Build portable exe + zip
         run: npm run dist
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create draft release with asset
+      - name: Create draft release with assets
         uses: softprops/action-gh-release@v2
         with:
           draft: true
           generate_release_notes: true
-          files: dist/hehe-toolbox-Portable-*.exe
+          files: |
+            dist/hehe-toolbox-Portable-*.exe
+            dist/hehe-toolbox-*-win-x64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

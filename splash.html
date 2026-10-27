@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'self'">
+  <title>核核工具箱 · 启动中</title>
+  <style>
+    /* 启动进度窗：独立小窗，不加载 app.css（要尽量快地画出第一帧），
+       配色只取主色槽位 + 明暗两组基础色。 */
+    :root {
+      --l-primary: #165DFF; --d-primary: #4080FF;
+      --primary: var(--l-primary);
+      --card: #FFFFFF; --text: #1D2129; --sub: #86909C; --track: #E5E6EB;
+    }
+    html[data-accent='polar']  { --l-primary: #165DFF; --d-primary: #4080FF; }
+    html[data-accent='mist']   { --l-primary: #3D6FE0; --d-primary: #6E9BFF; }
+    html[data-accent='jade']   { --l-primary: #0B8650; --d-primary: #3DD68C; }
+    html[data-accent='violet'] { --l-primary: #7C4DFF; --d-primary: #A78BFA; }
+    html[data-accent='rose']   { --l-primary: #E0457B; --d-primary: #FF7EB3; }
+    html[data-accent='gold']   { --l-primary: #9A6E00; --d-primary: #F0C040; }
+    html[data-accent='teal']   { --l-primary: #00938F; --d-primary: #2FD8D8; }
+    html[data-accent='sand']   { --l-primary: #C2612F; --d-primary: #E8885C; }
+    html[data-accent='mono']   { --l-primary: #2B2B2D; --d-primary: #C9C9CE; }
+    html[data-theme='dark'] {
+      --primary: var(--d-primary);
+      --card: #2B2B2D; --text: #F2F3F5; --sub: #7A7C82; --track: #38383B;
+    }
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none;
+      font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif; }
+    .card {
+      position: fixed; inset: 0; box-sizing: border-box;
+      display: flex; flex-direction: column; justify-content: center;
+      padding: 26px 30px; border-radius: 14px;
+      background: var(--card);
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.28);
+      border: 1px solid color-mix(in srgb, var(--track) 70%, transparent);
+      color: var(--text);
+      animation: pop 0.16s ease-out;
+      transition: opacity 0.18s ease, transform 0.18s ease;
+    }
+    body.out .card { opacity: 0; transform: scale(0.985); }
+    @keyframes pop { from { opacity: 0; transform: scale(0.975); } to { opacity: 1; transform: none; } }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+    .brand img { width: 40px; height: 40px; border-radius: 10px; }
+    .name { font-size: 16px; font-weight: 600; letter-spacing: 0.4px; }
+    .ver { font-size: 11px; color: var(--sub); margin-top: 3px; }
+    .bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+    .bar > i {
+      display: block; height: 100%; width: 0;
+      border-radius: 3px;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--primary) 62%, var(--card)),
+        var(--primary));
+      transition: width 0.18s ease-out;
+    }
+    .row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 12px; }
+    #label { font-size: 12px; color: var(--sub); }
+    #pct { font-size: 12px; color: var(--primary); font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <img src="assets/icon.png" alt="">
+      <div>
+        <div class="name">核核工具箱</div>
+        <div class="ver" id="ver"></div>
+      </div>
+    </div>
+    <div class="bar"><i id="fill"></i></div>
+    <div class="row">
+      <span id="label">正在启动…</span>
+      <span id="pct">0%</span>
+    </div>
+  </div>
+  <script src="js/splash.js"></script>
+</body>
+</html>

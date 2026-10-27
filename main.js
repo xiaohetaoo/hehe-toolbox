@@ -204,8 +204,127 @@ handle('dangerous:tool-caps', () => {
 nativeTheme.on('updated', () => {
   send('settings.theme-changed', nativeTheme.shouldUseDarkColors);
 });
+/* ---------------- 启动进度窗 ---------------- */
+// 两条启动路径的耗时结构完全不同，所以启动窗只对慢的那条启用：
+//
+// 【便携版单 exe】双击 → NSIS 解压整个 Electron（实测 6~16s）→ 启动应用（~0.85s）→ 主窗
+//   解压阶段由打包时的 NSIS splashImage（assets/splash.bmp）显示；
+//   但它只覆盖到解压完成，portable.nsi 在 ExecWait 前就 BgImage::Destroy 了，
+//   之后到主窗出现还有 ~0.85s 什么都没画。本启动窗接管这一段，让全程都有反馈。
+//
+// 【zip 免安装目录版】双击 → 启动应用（~0.64s）→ 主窗
+//   快到弹启动窗只会「闪一下」，反而更难看，所以不弹。
+//
+// 判别依据：PORTABLE_EXECUTABLE_FILE 由 portable.nsi 在 ExecWait 前注入环境变量，
+// 只有单文件便携版才有。zip 解压出来的 exe 没有这个变量。
+//
+// 环境变量：HEHE_SPLASH=1 强制显示（调试用）；HEHE_NOSPLASH=1 关闭；自检（SMOKE/SHOT）一律关闭。
+let splashWin = null;
+let splashVisible = false; // 启动窗是否真的显示过（没显示过就不需要等淡出）
+let mainShown = false;
+let splashStage = { pct: 8, label: '正在启动…' }; // 记住最新阶段：启动窗还没加载完时消息会丢，就绪后补发
+
+function splashEnabled() {
+  if (process.env.HEHE_NOSPLASH || process.env.HEHE_SMOKE || process.env.HEHE_SHOT) return false;
+  if (process.env.HEHE_SPLASH) return true;  // 调试：强制显示
+  return !!process.env.PORTABLE_EXECUTABLE_FILE; // 只有单文件便携版慢到值得弹
+}
+
+function splashSend(ev, data) {
+  if (ev === 'splash:step' && data) splashStage = data;
+  if (!splashWin || splashWin.isDestroyed()) return;
+  try { splashWin.webContents.send(ev, data); } catch (e) {}
+}
+
+function destroySplash() {
+  if (!splashWin || splashWin.isDestroyed()) { splashWin = null; return; }
+  const s = splashWin;
+  splashWin = null;
+  try { s.destroy(); } catch (e) {}
+}
+
+// 启动窗位置：屏幕正中偏上，避免正好压住主窗将来的位置
+function centerSplash(self) {
+  try {
+    const d = screen.getPrimaryDisplay();
+    const wa = d.workArea;
+    const [w, h] = self.getSize();
+    self.setPosition(
+      Math.round(wa.x + (wa.width - w) / 2),
+      Math.round(wa.y + (wa.height - h) / 2 - Math.round(wa.height * 0.06))
+    );
+  } catch (e) {}
+}
+
+function createSplash() {
+  if (!splashEnabled()) return;
+  try {
+    splashWin = new BrowserWindow({
+      width: 396, height: 188,
+      frame: false, transparent: true, resizable: false, movable: true,
+      minimizable: false, maximizable: false, fullscreenable: false,
+      skipTaskbar: true, alwaysOnTop: true, hasShadow: false,
+      show: false, backgroundColor: '#00000000',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true, nodeIntegration: false, sandbox: false, spellcheck: false
+      }
+    });
+    const self = splashWin;
+    // 便携版：NSIS 在 ExecWait 前已经 BgImage::Destroy 拆掉了自己的解压画面，
+    // 之后到主窗出现这一段是「什么都没画」的空档，所以启动窗要立刻显示，越早越好。
+    // （zip 版不会走到这里，splashEnabled 已按 PORTABLE_EXECUTABLE_FILE 过滤）
+    self.setAlwaysOnTop(true, 'screen-saver');
+    centerSplash(self);
+    self.on('closed', () => { if (splashWin === self) splashWin = null; });
+    // 一有内容就显示（用 ready-to-show 而不是固定延时：延时短了会闪空白窗口，长了又拉大空档）
+    self.once('ready-to-show', () => {
+      if (mainShown || self.isDestroyed()) return;
+      splashVisible = true;
+      try { self.showInactive(); } catch (e) { try { self.show(); } catch (e2) {} }
+      splashSend('splash:step', splashStage); // 补发启动窗加载期间错过的阶段
+    });
+    self.loadFile('splash.html', {
+      query: {
+        accent: storeGet('settings.accent', 'polar') || 'polar',
+        theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+        v: app.getVersion()
+      }
+    });
+    // 兜底：启动窗自身出问题也不允许拖住主界面
+    setTimeout(() => { if (!mainShown) splashSend('splash:step', { pct: 55, label: '加载界面…' }); }, 300);
+    // 兜底：万一主窗 ready-to-show 一直不触发（渲染层崩溃等），启动窗也不能永远盖在最前面
+    setTimeout(() => {
+      if (mainShown) return;
+      mainShown = true;
+      try { if (win && !win.isDestroyed()) win.show(); } catch (e) {}
+      destroySplash();
+    }, 30000);
+  } catch (e) {
+    console.error('splash failed', e.message);
+    splashWin = null;
+  }
+}
+
+// 主窗显示：先让启动窗淡出，再显示主窗，避免中间出现一帧空白
+function showWindowAfterSplash() {
+  if (mainShown) return;
+  mainShown = true;
+  const reveal = () => {
+    if (!win || win.isDestroyed()) return;
+    try { win.show(); } catch (e) {}
+    bootMark('window-shown');
+    destroySplash();
+  };
+  // 启动窗根本没显示过（启动太快）→ 直接显示主窗，不做任何淡出等待
+  if (!splashVisible || !splashWin || splashWin.isDestroyed()) { reveal(); return; }
+  splashSend('splash:done', {});
+  setTimeout(reveal, 180); // 与 splash.js 的淡出动画时长保持一致
+}
+
 function createWindow() {
   bootMark('create-window-start');
+  mainShown = false; // 窗口可能被销毁后重建（从托盘重新打开），需要重新走一次显示流程
   win = new BrowserWindow({
     width: 1000, height: 660, minWidth: 860, minHeight: 580,
     frame: false, show: false,
@@ -227,7 +346,8 @@ function createWindow() {
     else { const ev = args[0]; level = ev.level; message = ev.message; source = ev.sourceId; line = ev.lineNumber; }
     console.log(`[renderer:${level}]`, message, `(${source}:${line})`);
   });
-  win.once('ready-to-show', () => { bootMark('ready-to-show'); win.show(); bootMark('window-shown'); });
+  win.once('ready-to-show', () => { bootMark('ready-to-show'); showWindowAfterSplash(); });
+  win.webContents.once('dom-ready', () => splashSend('splash:step', { pct: 72, label: '准备界面…' }));
   win.webContents.once('did-finish-load', () => { bootMark('renderer-loaded'); });
   win.on('maximize', () => send('win:maximized', true));
   win.on('unmaximize', () => send('win:maximized', false));
@@ -3036,7 +3156,10 @@ if (!gotLock) { app.quit(); } else {
     bootMark('app-ready');
     loadStore();
     bootMark('store-loaded');
+    createSplash(); // 配置读完后起启动窗（要用到用户选的配色），页面极小，抢在加载主界面前画出进度
+    splashSend('splash:step', { pct: 62, label: '读取配置…' });
     createWindow();
+    splashSend('splash:step', { pct: 70, label: '加载界面…' });
     createTray();
     // 启动清扫：延迟执行，不阻塞窗口首帧
     setTimeout(() => {
@@ -3160,7 +3283,7 @@ if (process.env.HEHE_SHOT) {
       }
     }
   });
-  app.on('before-quit', () => { isQuitting = true; });
+  app.on('before-quit', () => { isQuitting = true; destroySplash(); });
   app.on('will-quit', () => { flushStore(); try { globalShortcut.unregisterAll(); } catch (err) {} });
   app.on('window-all-closed', () => { app.quit(); });
 }
