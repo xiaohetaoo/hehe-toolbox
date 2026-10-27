@@ -1,7 +1,7 @@
 {
   "name": "hehe-toolbox",
   "productName": "核核工具箱",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "description": "核核工具箱 —— 本地优先、轻量聚合的桌面效率工具箱",
   "main": "main.js",
   "author": "hehe",
