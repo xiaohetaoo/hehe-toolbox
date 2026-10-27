@@ -56,12 +56,30 @@ for i in $(seq 1 "$RETRIES"); do
   echo "    产物: $DEST" | tee -a "$LOG"
   if npx electron-builder --win portable "--config.directories.output=$STAGE" >>"$LOG" 2>&1; then
     echo "=== 构建成功，拷贝产物到 $DEST ===" | tee -a "$LOG"
-    cp -f "$STAGE_SH"/*.exe "$DEST_SH"/ 2>>"$LOG"
-    pack_zip
-    # 尽力清理暂存目录（被锁也不影响产物）
-    rm -rf "$STAGE_SH" 2>/dev/null
-    ls -lh "$DEST_SH"/*.exe "$DEST_SH"/*.zip 2>/dev/null
-    exit 0
+    # 关键：cp 失败必须当作构建失败，并重试。
+    # dist/ 里的产物同样会被 DSH 观察器锁住，cp -f 会报
+    #   cannot remove '...exe': Device or resource busy
+    # 早期版本忽略了 cp 的返回值，于是在产物还是旧文件的情况下打印
+    # 「构建成功」并 exit 0 —— 后续发布/上传就会拿到过期产物。
+    # 这个坑真实发生过：v0.0.11 第一次构建时 exe 停留在上一次的时间戳。
+    COPY_OK=1
+    for c in 1 2 3 4 5; do
+      if cp -f "$STAGE_SH"/*.exe "$DEST_SH"/ 2>>"$LOG"; then COPY_OK=1; break; fi
+      COPY_OK=0
+      echo "=== 拷贝失败，5s 后重试（$c/5）===" | tee -a "$LOG"
+      sleep 5
+    done
+    if [ "$COPY_OK" -ne 1 ]; then
+      echo "=== 拷贝产物失败（产物被占用或不可写），本次尝试作废 ===" | tee -a "$LOG"
+      tail -5 "$LOG"
+      # 落到下面的占用重试分支
+    else
+      pack_zip
+      # 尽力清理暂存目录（被锁也不影响产物）
+      rm -rf "$STAGE_SH" 2>/dev/null
+      ls -lh "$DEST_SH"/*.exe "$DEST_SH"/*.zip 2>/dev/null
+      exit 0
+    fi
   fi
   # 判断是否资源占用：是则等待后重试，否则直接失败
   if grep -qE "EBUSY|EPERM|resource busy or locked|Device or resource busy" "$LOG"; then
