@@ -31,10 +31,29 @@
   }
 
   /* ============ 主题 ============ */
+  /* 两个正交维度：
+     明暗 data-theme  = light | dark（由系统偏好或用户选择决定）
+     配色 data-accent = 极地白/雾霭蓝/苔原/紫罗兰/樱粉/鎏金/青碧/暖砂/纯黑白
+     配色只写 data-accent，明暗只写 data-theme，CSS 变量层负责组合。 */
+  const ACCENTS = [
+    { id: 'polar', name: '极地白', desc: '经典商务蓝，清爽专业' },
+    { id: 'mist', name: '雾霭蓝', desc: '冷调低饱和，安静专注' },
+    { id: 'jade', name: '苔原绿', desc: '低饱和绿，久看不累' },
+    { id: 'violet', name: '紫罗兰', desc: '科技感，适合开发调试' },
+    { id: 'rose', name: '樱花粉', desc: '柔和轻盈' },
+    { id: 'gold', name: '鎏金', desc: '暖调沉稳，商务质感' },
+    { id: 'teal', name: '青碧', desc: '清新冷静' },
+    { id: 'sand', name: '暖砂', desc: '暖调复古，纸质感' },
+    { id: 'mono', name: '纯黑白', desc: '无彩极简，高对比' }
+  ];
+  let currentAccent = 'polar';
   let themeListeners = [];
   function applyTheme() {
     invoke('store:get', 'settings.theme', 'system').then(mode => {
       setThemeAttr(mode);
+    });
+    invoke('store:get', 'settings.accent', 'polar').then(accent => {
+      setAccent(accent || 'polar');
     });
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', async () => {
       const mode = await invoke('store:get', 'settings.theme', 'system');
@@ -46,6 +65,13 @@
         if (m === 'system') setThemeAttr('system');
       });
     }));
+  }
+  function setAccent(accent) {
+    const id = ACCENTS.some(a => a.id === accent) ? accent : 'polar';
+    currentAccent = id;
+    document.documentElement.dataset.accent = id;
+    // 通知主进程广播给辅助窗口（标尺/贴图/截图标注），让它们同步换色
+    if (isDesktop) invoke('app:set-accent', id).catch(() => {});
   }
   function setThemeAttr(mode) {
     let dark = false;
@@ -584,29 +610,56 @@
     body.appendChild(row1); body.appendChild(row2); body.appendChild(row3);
   }
   function drawAppearance(body) {
-    const row = div('set-row', div('', div('set-label', '主题模式'), div('set-desc', '选择应用的整体色彩模式，深色模式主色为亮蓝 #4080FF')));
+    /* ---- 第一块：明暗模式 ---- */
+    const row = div('set-row', div('', div('set-label', '明暗模式'), div('set-desc', '选择界面的明暗，与下面的配色主题自由组合')));
     body.appendChild(row);
 
-    /* Win11 风格主题卡片：迷你预览 + 点击即切换 */
+    /* Win11 风格主题卡片：迷你预览 + 点击即切换。
+       预览色值全部走 CSS 变量（见下方 MODE_VARS），不再写死十六进制。 */
     const grid = div('theme-cards');
     const MODES = [
-      { id: 'light', name: '浅色', page: '#F2F3F5', card: '#FFFFFF', line: '#E5E6EB', text: '#1D2129' },
-      { id: 'dark', name: '深色', page: '#202020', card: '#2B2B2D', line: '#38383B', text: '#F2F3F5' },
-      { id: 'system', name: '跟随系统', page: 'linear-gradient(115deg, #F2F3F5 49.5%, #202020 50.5%)', card: '#FFFFFF', line: '#E5E6EB', text: '#1D2129' }
+      { id: 'light', name: '浅色' },
+      { id: 'dark', name: '深色' },
+      { id: 'system', name: '跟随系统' }
     ];
     let currentMode = null;
     const cards = [];
+    /* 预览用 CSS 变量而不是写死色值：这样预览会跟着当前配色主题走，
+       否则选了鎏金/樱粉，明暗预览里还是极地白的灰底，看着自相矛盾。 */
+    const MODE_VARS = {
+      light: { page: 'var(--l-page-bg)', card: 'var(--l-card-bg)', line: 'var(--l-border)', primary: 'var(--l-primary)' },
+      dark: { page: 'var(--d-page-bg)', card: 'var(--d-card-bg)', line: 'var(--d-border)', primary: 'var(--d-primary)' }
+    };
     function preview(m) {
       const pv = div('theme-preview');
-      pv.style.background = m.page;
-      const bar = div('tp-titlebar'); bar.style.background = m.id === 'dark' ? '#1B1B1D' : '#FFFFFF';
+      const isSystem = m.id === 'system';
+      // 跟随系统：左浅右深拼接
+      pv.style.background = isSystem
+        ? 'linear-gradient(115deg, var(--l-page-bg) 49.5%, var(--d-page-bg) 50.5%)'
+        : MODE_VARS[m.id].page;
+      const v = MODE_VARS[isSystem ? 'light' : m.id];
+      const v2 = MODE_VARS[isSystem ? 'dark' : m.id];
+      const bar = div('tp-titlebar');
+      bar.style.background = isSystem
+        ? 'linear-gradient(115deg, var(--l-card-bg) 49.5%, var(--d-card-bg) 50.5%)'
+        : v.card;
       const bodyEl = div('tp-body');
-      const side = div('tp-side'); side.style.background = m.id === 'dark' ? '#1B1B1D' : '#FFFFFF';
+      const side = div('tp-side');
+      side.style.background = isSystem
+        ? 'linear-gradient(115deg, var(--l-card-bg) 49.5%, var(--d-card-bg) 50.5%)'
+        : v.card;
       const content = div('tp-content');
       for (let i = 0; i < 3; i++) {
         const line = div('tp-line');
-        line.style.background = i === 0 ? m.card : m.line;
-        if (i === 0) { line.style.height = '16px'; line.style.borderRadius = '4px'; line.style.width = '70%'; }
+        if (i === 0) {
+          // 第一根用主题主色，让预览体现当前配色
+          line.style.background = isSystem
+            ? 'linear-gradient(115deg, var(--l-primary) 49.5%, var(--d-primary) 50.5%)'
+            : v.primary;
+          line.style.height = '16px'; line.style.borderRadius = '4px'; line.style.width = '70%';
+        } else {
+          line.style.background = i === 1 ? v.line : v2.line;
+        }
         content.appendChild(line);
       }
       bodyEl.appendChild(side); bodyEl.appendChild(content);
@@ -637,6 +690,41 @@
     // 主题卡片放在标题下方独立区域
     row.style.display = 'block';
     row.appendChild(grid);
+
+    /* ---- 第二块：配色主题 ---- */
+    const row2 = div('set-row', div('', div('set-label', '配色主题'), div('set-desc', '选择界面的主色调，与明暗模式自由组合')));
+    body.appendChild(row2);
+
+    const accentGrid = div('accent-grid');
+    const accentSwatches = [];
+    function refreshAccent() {
+      accentSwatches.forEach(sw => sw.el.classList.toggle('selected', sw.id === currentAccent));
+    }
+    for (const a of ACCENTS) {
+      const card = div('accent-card');
+      card.dataset.accent = a.id; // 预览块用 data-accent 取到该套主题的 CSS 变量
+      const sw = div('accent-swatches');
+      // 上下两个色点分别取该主题的浅色主色与深色主色
+      const lightDot = div('accent-dot light');
+      const darkDot = div('accent-dot dark');
+      sw.appendChild(lightDot); sw.appendChild(darkDot);
+      card.appendChild(sw);
+      card.appendChild(div('tc-name2', a.name));
+      card.appendChild(div('accent-desc', a.desc));
+      card.addEventListener('click', async () => {
+        try {
+          await invoke('store:set', 'settings.accent', a.id);
+        } catch (e) { /* browser mode */ }
+        setAccent(a.id);
+        refreshAccent();
+        toast('已切换到「' + a.name + '」', 'success', 1200);
+      });
+      accentSwatches.push({ el: card, id: a.id });
+      accentGrid.appendChild(card);
+    }
+    refreshAccent();
+    row2.style.display = 'block';
+    row2.appendChild(accentGrid);
     // 侧边栏收起已由侧栏底部按钮提供，此处不再重复放开关
   }
   /* 高危功能：默认全部关闭，逐项开启。开启任一项都会二次确认。 */

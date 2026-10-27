@@ -3,13 +3,45 @@
 <head>
   <meta charset="utf-8">
   <style>
+
+    /* 主色由主窗口广播（aux:accent），未收到时默认商务蓝 */
+    :root {
+      --l-primary: #165DFF; --l-primary-hover: #0E42D2;
+      --d-primary: #4080FF; --d-primary-hover: #5A8CFF;
+    }
+    html[data-accent='polar'] { --l-primary: #165DFF; --l-primary-hover: #0E42D2; --d-primary: #4080FF; --d-primary-hover: #5A8CFF; }
+    html[data-accent='mist'] { --l-primary: #3D6FE0; --l-primary-hover: #2E58BE; --d-primary: #6E9BFF; --d-primary-hover: #8AB0FF; }
+    html[data-accent='jade'] { --l-primary: #0B8650; --l-primary-hover: #096E42; --d-primary: #3DD68C; --d-primary-hover: #62E0A4; }
+    html[data-accent='violet'] { --l-primary: #7C4DFF; --l-primary-hover: #6633E6; --d-primary: #A78BFA; --d-primary-hover: #BCA3FB; }
+    html[data-accent='rose'] { --l-primary: #E0457B; --l-primary-hover: #C22E63; --d-primary: #FF7EB3; --d-primary-hover: #FF9AC4; }
+    html[data-accent='gold'] { --l-primary: #9A6E00; --l-primary-hover: #805A00; --d-primary: #F0C040; --d-primary-hover: #F7CE62; }
+    html[data-accent='teal'] { --l-primary: #00938F; --l-primary-hover: #007A77; --d-primary: #2FD8D8; --d-primary-hover: #58E2E2; }
+    html[data-accent='sand'] { --l-primary: #C2612F; --l-primary-hover: #A45125; --d-primary: #E8885C; --d-primary-hover: #F0A17D; }
+    html[data-accent='mono'] { --l-primary: #2B2B2D; --l-primary-hover: #1A1A1C; --d-primary: #C9C9CE; --d-primary-hover: #DCDCE0; }
+    /* 辅助窗口都是浅底浮层，统一用浅色主色 */
+    :root { --aux-primary: var(--l-primary); --aux-primary-hover: var(--l-primary-hover); --aux-on: #fff; }
     html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
     #wrap { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; cursor: move; }
     img { max-width: 100%; max-height: 100%; border-radius: 4px; box-shadow: 0 2px 14px rgba(0,0,0,0.45); }
-    #hint { position: fixed; left: 6px; top: 4px; background: rgba(22,93,255,0.85); color: #fff; font: 11px sans-serif;
+    #hint { position: fixed; left: 6px; top: 4px; background: color-mix(in srgb, var(--aux-primary) 85%, transparent); color: var(--aux-on); font: 11px sans-serif;
       padding: 2px 8px; border-radius: 10px; opacity: 0; transition: opacity .25s; pointer-events: none; }
     #wrap:hover ~ #hint, #hint.show { opacity: 1; }
   </style>
+  <script>
+  // 跟随主窗口的配色主题
+  (function () {
+    var ids = ['polar','mist','jade','violet','rose','gold','teal','sand','mono'];
+    function apply(id) { if (ids.indexOf(id) !== -1) document.documentElement.dataset.accent = id; }
+    try {
+      var q = new URLSearchParams(location.search).get('accent');
+      if (q) apply(q);
+    } catch (e) {}
+    if (window.hehe && window.hehe.on) {
+      try { window.hehe.on('aux:accent', apply); } catch (e) {}
+    }
+  })();
+</script>
+
 </head>
 <body>
   <div id="wrap"><img id="pic"></div>

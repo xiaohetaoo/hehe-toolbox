@@ -3,6 +3,23 @@
 <head>
   <meta charset="utf-8">
   <style>
+
+    /* 主色由主窗口广播（aux:accent），未收到时默认商务蓝 */
+    :root {
+      --l-primary: #165DFF; --l-primary-hover: #0E42D2;
+      --d-primary: #4080FF; --d-primary-hover: #5A8CFF;
+    }
+    html[data-accent='polar'] { --l-primary: #165DFF; --l-primary-hover: #0E42D2; --d-primary: #4080FF; --d-primary-hover: #5A8CFF; }
+    html[data-accent='mist'] { --l-primary: #3D6FE0; --l-primary-hover: #2E58BE; --d-primary: #6E9BFF; --d-primary-hover: #8AB0FF; }
+    html[data-accent='jade'] { --l-primary: #0B8650; --l-primary-hover: #096E42; --d-primary: #3DD68C; --d-primary-hover: #62E0A4; }
+    html[data-accent='violet'] { --l-primary: #7C4DFF; --l-primary-hover: #6633E6; --d-primary: #A78BFA; --d-primary-hover: #BCA3FB; }
+    html[data-accent='rose'] { --l-primary: #E0457B; --l-primary-hover: #C22E63; --d-primary: #FF7EB3; --d-primary-hover: #FF9AC4; }
+    html[data-accent='gold'] { --l-primary: #9A6E00; --l-primary-hover: #805A00; --d-primary: #F0C040; --d-primary-hover: #F7CE62; }
+    html[data-accent='teal'] { --l-primary: #00938F; --l-primary-hover: #007A77; --d-primary: #2FD8D8; --d-primary-hover: #58E2E2; }
+    html[data-accent='sand'] { --l-primary: #C2612F; --l-primary-hover: #A45125; --d-primary: #E8885C; --d-primary-hover: #F0A17D; }
+    html[data-accent='mono'] { --l-primary: #2B2B2D; --l-primary-hover: #1A1A1C; --d-primary: #C9C9CE; --d-primary-hover: #DCDCE0; }
+    /* 辅助窗口都是浅底浮层，统一用浅色主色 */
+    :root { --aux-primary: var(--l-primary); --aux-primary-hover: var(--l-primary-hover); --aux-on: #fff; }
     html, body { margin: 0; width: 100vw; height: 100vh; background: transparent; overflow: hidden; user-select: none; font-family: 'Microsoft YaHei', sans-serif; }
     #stage { position: fixed; inset: 0; cursor: crosshair; }
     canvas { position: absolute; left: 0; top: 0; }
@@ -11,18 +28,39 @@
     .tbtn { min-width: 34px; height: 32px; border: none; border-radius: 7px; background: transparent; color: #C9D1E0;
       font-size: 13px; cursor: pointer; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; }
     .tbtn:hover { background: rgba(255,255,255,.12); }
-    .tbtn.on { background: #165DFF; color: #fff; }
-    .tbtn.act { color: #7AA6FF; }
+    .tbtn.on { background: var(--aux-primary); color: var(--aux-on); }
+    .tbtn.act { color: var(--aux-primary); }
     .sep { width: 1px; height: 20px; background: rgba(255,255,255,.15); }
     .sw { width: 18px; height: 18px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
-    .sw.on { border-color: #fff; box-shadow: 0 0 0 2px #165DFF; }
-    #tip { position: fixed; background: rgba(22,93,255,.92); color: #fff; font-size: 12px; padding: 3px 10px;
+    .sw.on { border-color: #fff; box-shadow: 0 0 0 2px var(--aux-primary); }
+    #tip { position: fixed; background: color-mix(in srgb, var(--aux-primary) 92%, transparent); color: var(--aux-on); font-size: 12px; padding: 3px 10px;
       border-radius: 4px; pointer-events: none; display: none; z-index: 98; }
     #sizeTip { position: fixed; color: #fff; background: rgba(0,0,0,.6); font: 12px Consolas, monospace; padding: 2px 8px;
       border-radius: 4px; pointer-events: none; display: none; z-index: 98; }
-    #textInput { position: fixed; display: none; background: transparent; border: 1px dashed #165DFF; outline: none;
+    #textInput { position: fixed; display: none; background: transparent; border: 1px dashed var(--aux-primary); outline: none;
       color: #fff; font-size: 16px; padding: 2px 4px; min-width: 60px; z-index: 97; }
   </style>
+  <script>
+  // 跟随主窗口的配色主题
+  (function () {
+    var ids = ['polar','mist','jade','violet','rose','gold','teal','sand','mono'];
+    function apply(id) { if (ids.indexOf(id) !== -1) document.documentElement.dataset.accent = id; }
+    try {
+      var q = new URLSearchParams(location.search).get('accent');
+      if (q) apply(q);
+    } catch (e) {}
+    if (window.hehe && window.hehe.on) {
+      try { window.hehe.on('aux:accent', apply); } catch (e) {}
+    }
+  })();
+</script>
+  // canvas 不能直接用 CSS 变量，取计算后的主色
+  function accentPrimary() {
+    try {
+      return getComputedStyle(document.documentElement).getPropertyValue('--aux-primary').trim() || '#165DFF';
+    } catch (e) { return '#165DFF'; }
+  }
+
 </head>
 <body>
   <div id="stage"><canvas id="c"></canvas></div>
@@ -64,7 +102,7 @@
         ctx.fillRect(sel.x + sel.w, sel.y, window.innerWidth - sel.x - sel.w, sel.h);
         ctx.fillRect(0, sel.y + sel.h, window.innerWidth, window.innerHeight - sel.y - sel.h);
         // 边框
-        ctx.strokeStyle = '#165DFF'; ctx.lineWidth = 1.5;
+        ctx.strokeStyle = accentPrimary(); ctx.lineWidth = 1.5;
         ctx.strokeRect(sel.x + .5, sel.y + .5, sel.w - 1, sel.h - 1);
         // 八个手柄
         ctx.fillStyle = '#fff';

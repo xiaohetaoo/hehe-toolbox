@@ -1238,6 +1238,30 @@ handle('hosts:restore', async (e, backupPath) => {
   return true;
 });
 
+/* 配色主题（accent）广播：主窗口改了配色后，标尺/贴图/截图标注这些辅助窗口
+   也要跟着换主色，否则它们会一直显示旧主题的蓝色。 */
+const ACCENT_IDS = ['polar', 'mist', 'jade', 'violet', 'rose', 'gold', 'teal', 'sand', 'mono'];
+let currentAccent = 'polar';
+function auxWindows() {
+  const list = [];
+  if (rulerWin && !rulerWin.isDestroyed()) list.push(rulerWin);
+  for (const bw of pinWins.values()) if (bw && !bw.isDestroyed()) list.push(bw);
+  if (snipWin && !snipWin.isDestroyed()) list.push(snipWin);
+  return list;
+}
+function broadcastAccent(id) {
+  for (const w of auxWindows()) {
+    try { w.webContents.send('aux:accent', id); } catch (e) {}
+  }
+}
+handle('app:set-accent', (e, id) => {
+  const accent = ACCENT_IDS.indexOf(id) !== -1 ? id : 'polar';
+  currentAccent = accent;
+  broadcastAccent(accent);
+  return accent;
+});
+handle('app:get-accent', () => currentAccent);
+
 /* screen ruler floating window */
 let rulerWin = null;
 handle('win:ruler', (e, dir) => {
@@ -1252,7 +1276,7 @@ handle('win:ruler', (e, dir) => {
   rulerWin.setAlwaysOnTop(true, 'screen-saver');
   const self = rulerWin;
   self.on('closed', () => { if (rulerWin === self) rulerWin = null; });
-  rulerWin.loadFile('ruler.html', { query: { dir: horizontal ? 'h' : 'v' } });
+  rulerWin.loadFile('ruler.html', { query: { dir: horizontal ? 'h' : 'v', accent: currentAccent } });
   return true;
 });
 handle('win:ruler:close', () => {
@@ -2329,7 +2353,7 @@ async function createPinWindow(srcPath) {
   bw.setAlwaysOnTop(true, 'screen-saver');
   pinWins.set(bw.id, bw);
   bw.on('closed', () => pinWins.delete(bw.id));
-  await bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath } });
+  await bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath, accent: currentAccent } });
   return { id: bw.id, w: size.width, h: size.height };
 }
 handle('win:pin-image', (e, srcPath) => createPinWindow(srcPath));
@@ -2554,7 +2578,8 @@ async function snipStart(mode) {
   await snipWin.loadFile('snip.html', { query: {
     src: file, mode: mode === 'region' ? 'region' : 'annotate',
     dx: String(display.bounds.x), dy: String(display.bounds.y),
-    scale: String(display.scaleFactor), w: String(display.bounds.width), h: String(display.bounds.height)
+    scale: String(display.scaleFactor), w: String(display.bounds.width), h: String(display.bounds.height),
+    accent: currentAccent
   } });
   snipWin.show();
   return { ok: true };

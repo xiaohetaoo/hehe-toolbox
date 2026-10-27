@@ -1,59 +1,191 @@
-/* ============ 核核工具箱 · 蓝色主题设计系统（Win11 融合风格） ============ */
+/* ============ 核核工具箱 · 主题系统（配色 × 明暗 正交） ============
+   架构分两层：
+   1) 槽位层：每套主题只提供 l-*（浅色）与 d-*（深色）两组原始色值。
+   2) 语义层：--primary / --page-bg / --text-1 等由槽位派生，
+      派生色（浅底、半透明填充）统一用 color-mix() 计算。
+   所以「新增一套主题」= 填两组色值，不用再手写十几个派生变量。
+   配色由 html[data-accent] 决定，明暗由 html[data-theme] 决定，两者正交。 */
 :root {
-  --primary: #165DFF;
-  --primary-hover: #0E42D2;
-  --primary-active: #0A34A5;
-  --primary-light: #E8F3FF;
-  --primary-mid: #4080FF;
+  /* ---- 浅色槽位（默认：极地白 / 商务蓝）---- */
+  --l-primary: #165DFF;  --l-primary-hover: #0E42D2;  --l-primary-active: #0A34A5;
+  --l-on-primary: #FFFFFF;
+  --l-page-bg: #F2F3F5;  --l-card-bg: #FFFFFF;
+  --l-text-1: #1D2129;  --l-text-2: #4E5969;  --l-text-3: #86909C;
+  --l-border: #E5E6EB;  --l-border-light: #EBEDF0;
+  --l-shadow-rgb: 29, 33, 41;
+
+  /* ---- 深色槽位 ---- */
+  --d-primary: #4080FF;  --d-primary-hover: #5A8CFF;  --d-primary-active: #2A5ED9;
+  --d-on-primary: #FFFFFF;
+  --d-page-bg: #202020;  --d-card-bg: #2B2B2D;
+  --d-text-1: #F2F3F5;  --d-text-2: #A9AEB8;  --d-text-3: #7A7C82;
+  --d-border: #38383B;  --d-border-light: #323234;
+  --d-shadow-rgb: 0, 0, 0;
+}
+
+/* ---- 语义层：浅色（默认） ---- */
+:root {
+  --primary: var(--l-primary);
+  --primary-hover: var(--l-primary-hover);
+  --primary-active: var(--l-primary-active);
+  --on-primary: var(--l-on-primary);
+  --page-bg: var(--l-page-bg);
+  --card-bg: var(--l-card-bg);
+  --text-1: var(--l-text-1);
+  --text-2: var(--l-text-2);
+  --text-3: var(--l-text-3);
+  --border: var(--l-border);
+  --border-light: var(--l-border-light);
+  --shadow-rgb: var(--l-shadow-rgb);
+
+  --primary-mid: color-mix(in srgb, var(--primary) 78%, #FFFFFF);
+  --primary-light: color-mix(in srgb, var(--primary) 12%, var(--card-bg));
+  --hover-fill: color-mix(in srgb, var(--primary) 6%, transparent);
+  --nav-active: color-mix(in srgb, var(--primary) 12%, var(--card-bg));
+  --nav-active-text: var(--primary);
+  --table-head: color-mix(in srgb, var(--primary) 12%, var(--card-bg));
+  --nav-hover: rgba(0, 0, 0, 0.045);
+
   --success: #00B42A;
   --warning: #FF7D00;
   --danger: #F53F3F;
+  --info: #86909C;
   --danger-light: #FFECE8;
   --danger-hover: rgba(245, 63, 63, 0.06);
   --danger-line: rgba(245, 63, 63, 0.45);
-  --info: #86909C;
-  --page-bg: #F2F3F5;
-  --card-bg: #FFFFFF;
-  --text-1: #1D2129;
-  --text-2: #4E5969;
-  --text-3: #86909C;
-  --border: #E5E6EB;
-  --border-light: #EBEDF0;
-  --hover-fill: rgba(22, 93, 255, 0.06);
-  --nav-hover: rgba(0, 0, 0, 0.045);
-  --nav-active: #E3EDFF;
-  --nav-active-text: #165DFF;
-  --shadow-card: 0 1px 3px rgba(29, 33, 41, 0.05), 0 1px 2px rgba(29, 33, 41, 0.04);
-  --shadow-hover: 0 4px 14px rgba(29, 33, 41, 0.12);
-  --shadow-modal: 0 8px 40px rgba(29, 33, 41, 0.25);
-  --table-head: #E8F3FF;
+  --shadow-card: 0 1px 3px rgba(var(--shadow-rgb), 0.05), 0 1px 2px rgba(var(--shadow-rgb), 0.04);
+  --shadow-hover: 0 4px 14px rgba(var(--shadow-rgb), 0.12);
+  --shadow-modal: 0 8px 40px rgba(var(--shadow-rgb), 0.25);
   --input-bg: #FFFFFF;
   --code-bg: #1D2129;
 }
+
+/* ---- 语义层：深色 ---- */
 html[data-theme='dark'] {
-  --primary: #4080FF;
-  --primary-hover: #5A8CFF;
-  --primary-active: #2A5ED9;
-  --primary-light: rgba(64, 128, 255, 0.16);
-  --page-bg: #202020;
-  --card-bg: #2B2B2D;
-  --text-1: #F2F3F5;
-  --text-2: #A9AEB8;
-  --text-3: #7A7C82;
-  --border: #38383B;
-  --border-light: #323234;
-  --hover-fill: rgba(64, 128, 255, 0.12);
+  --primary: var(--d-primary);
+  --primary-hover: var(--d-primary-hover);
+  --primary-active: var(--d-primary-active);
+  --on-primary: var(--d-on-primary);
+  --page-bg: var(--d-page-bg);
+  --card-bg: var(--d-card-bg);
+  --text-1: var(--d-text-1);
+  --text-2: var(--d-text-2);
+  --text-3: var(--d-text-3);
+  --border: var(--d-border);
+  --border-light: var(--d-border-light);
+  --shadow-rgb: var(--d-shadow-rgb);
+
+  --primary-mid: var(--primary);
+  --primary-light: color-mix(in srgb, var(--primary) 20%, var(--card-bg));
+  --hover-fill: color-mix(in srgb, var(--primary) 12%, transparent);
+  --nav-active: color-mix(in srgb, var(--primary) 22%, var(--card-bg));
+  --table-head: color-mix(in srgb, var(--primary) 16%, var(--card-bg));
   --nav-hover: rgba(255, 255, 255, 0.055);
-  --nav-active: rgba(64, 128, 255, 0.20);
-  --nav-active-text: #7AA6FF;
-  --shadow-card: 0 1px 4px rgba(0, 0, 0, 0.35);
-  --shadow-hover: 0 4px 14px rgba(0, 0, 0, 0.55);
-  --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.6);
-  --table-head: rgba(64, 128, 255, 0.14);
+
   --input-bg: #333336;
   --danger-light: rgba(245, 63, 63, 0.16);
   --danger-hover: rgba(245, 63, 63, 0.10);
-  --danger-line: rgba(245, 63, 63, 0.45);
+}
+
+/* ============ 配色主题（9 套） ============ */
+/* 极地白 = 默认值，无需覆盖，直接用 :root 里的槽位 */
+
+/* 雾霭蓝：冷调、专注，像 Linear */
+html[data-accent='mist'] {
+  --l-primary: #3D6FE0;  --l-primary-hover: #2E58BE;  --l-primary-active: #22468F;
+  --l-page-bg: #EEF2F8;  --l-text-1: #1A2130;  --l-text-2: #4A5568;  --l-text-3: #7C8AA0;
+  --l-border: #DFE5EF;  --l-border-light: #E9EDF5;
+  --d-primary: #6E9BFF;  --d-primary-hover: #8AB0FF;  --d-primary-active: #5385F5;
+  --d-on-primary: #16233A;
+  --d-page-bg: #151A24;  --d-card-bg: #1E2430;
+  --d-text-1: #EDF1F8;  --d-text-2: #A3AEC2;  --d-text-3: #76829A;
+  --d-border: #2C3442;  --d-border-light: #262D39;
+}
+
+/* 苔原绿：低饱和绿，长时间看不累 */
+html[data-accent='jade'] {
+  --l-primary: #0B8650;  --l-primary-hover: #096E42;  --l-primary-active: #075735;
+  --l-page-bg: #EFF3EC;  --l-text-1: #1A231C;  --l-text-2: #47574C;  --l-text-3: #7C8C80;
+  --l-border: #DFE7DC;  --l-border-light: #E9EFE6;
+  --d-primary: #3DD68C;  --d-primary-hover: #62E0A4;  --d-primary-active: #27BC77;
+  --d-on-primary: #06301C;
+  --d-page-bg: #18201A;  --d-card-bg: #212A23;
+  --d-text-1: #EDF4EE;  --d-text-2: #A3B3A8;  --d-text-3: #75857A;
+  --d-border: #2C362E;  --d-border-light: #262F28;
+}
+
+/* 紫罗兰：科技感，适合开发调试类工具 */
+html[data-accent='violet'] {
+  --l-primary: #7C4DFF;  --l-primary-hover: #6633E6;  --l-primary-active: #5227C4;
+  --l-page-bg: #F2F0F9;  --l-text-1: #1F1A2E;  --l-text-2: #524A66;  --l-text-3: #847C99;
+  --l-border: #E3DEEF;  --l-border-light: #EBE7F5;
+  --d-primary: #A78BFA;  --d-primary-hover: #BCA3FB;  --d-primary-active: #8F6DF7;
+  --d-on-primary: #1E1233;
+  --d-page-bg: #1B1928;  --d-card-bg: #262238;
+  --d-text-1: #F0EDFA;  --d-text-2: #ADA5C4;  --d-text-3: #7F7796;
+  --d-border: #322D45;  --d-border-light: #2B2739;
+}
+
+/* 樱花粉：柔和轻盈 */
+html[data-accent='rose'] {
+  --l-primary: #E0457B;  --l-primary-hover: #C22E63;  --l-primary-active: #A02351;
+  --l-page-bg: #FDF2F6;  --l-text-1: #2B1A22;  --l-text-2: #65454F;  --l-text-3: #9A7580;
+  --l-border: #F5DEE7;  --l-border-light: #FAE9EF;
+  --d-primary: #FF7EB3;  --d-primary-hover: #FF9AC4;  --d-primary-active: #F7639E;
+  --d-on-primary: #3A0E23;
+  --d-page-bg: #241A20;  --d-card-bg: #30242A;
+  --d-text-1: #FBEEF3;  --d-text-2: #C4A6B1;  --d-text-3: #967883;
+  --d-border: #3D2F36;  --d-border-light: #362930;
+}
+
+/* 鎏金：暖调、沉稳，商务感 */
+html[data-accent='gold'] {
+  --l-primary: #9A6E00;  --l-primary-hover: #805A00;  --l-primary-active: #684900;
+  --l-page-bg: #FAF5EA;  --l-text-1: #2B2415;  --l-text-2: #635839;  --l-text-3: #948A6E;
+  --l-border: #EDE3CC;  --l-border-light: #F4EDDF;
+  --d-primary: #F0C040;  --d-primary-hover: #F7CE62;  --d-primary-active: #E0AC26;
+  --d-on-primary: #2E2205;
+  --d-page-bg: #221C12;  --d-card-bg: #2E2719;
+  --d-text-1: #F7F0E0;  --d-text-2: #C0B494;  --d-text-3: #92876B;
+  --d-border: #3A3120;  --d-border-light: #332C1D;
+}
+
+/* 青碧：清新冷静 */
+html[data-accent='teal'] {
+  --l-primary: #00938F;  --l-primary-hover: #007A77;  --l-primary-active: #006260;
+  --l-page-bg: #EDF6F6;  --l-text-1: #16262A;  --l-text-2: #40585C;  --l-text-3: #6E868A;
+  --l-border: #D7E9E9;  --l-border-light: #E3F0F0;
+  --d-primary: #2FD8D8;  --d-primary-hover: #58E2E2;  --d-primary-active: #18BEBE;
+  --d-on-primary: #06302F;
+  --d-page-bg: #142121;  --d-card-bg: #1D2C2C;
+  --d-text-1: #E9F5F5;  --d-text-2: #9CB8B8;  --d-text-3: #6E8A8A;
+  --d-border: #27393A;  --d-border-light: #223334;
+}
+
+/* 暖砂：暖调复古，像纸质感 */
+html[data-accent='sand'] {
+  --l-primary: #C2612F;  --l-primary-hover: #A45125;  --l-primary-active: #87411D;
+  --l-page-bg: #F7F1E9;  --l-card-bg: #FFFCF7;
+  --l-text-1: #2C2118;  --l-text-2: #5E4C3D;  --l-text-3: #8E7B6A;
+  --l-border: #EADFD0;  --l-border-light: #F2E9DD;
+  --d-primary: #E8885C;  --d-primary-hover: #F0A17D;  --d-primary-active: #DB7546;
+  --d-on-primary: #3A1A0B;
+  --d-page-bg: #221C18;  --d-card-bg: #2C2420;
+  --d-text-1: #F6EEE6;  --d-text-2: #BFA99A;  --d-text-3: #948073;
+  --d-border: #3A302A;  --d-border-light: #332A25;
+}
+
+/* 纯黑白：无彩极简，高对比 */
+html[data-accent='mono'] {
+  --l-primary: #2B2B2D;  --l-primary-hover: #1A1A1C;  --l-primary-active: #0F0F10;
+  --l-page-bg: #F7F7F8;  --l-card-bg: #FFFFFF;
+  --l-text-1: #17171A;  --l-text-2: #4A4A50;  --l-text-3: #7E7E86;
+  --l-border: #E2E2E5;  --l-border-light: #EDEDEF;
+  --d-primary: #C9C9CE;  --d-primary-hover: #DCDCE0;  --d-primary-active: #AFAFB5;
+  --d-on-primary: #16161A;
+  --d-page-bg: #000000;  --d-card-bg: #131315;
+  --d-text-1: #F5F5F7;  --d-text-2: #A8A8AE;  --d-text-3: #75757B;
+  --d-border: #2A2A2E;  --d-border-light: #212125;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -140,7 +272,7 @@ body {
   box-shadow: var(--shadow-card);
   transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
 }
-.titlebar .search-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(22, 93, 255, 0.14); }
+.titlebar .search-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 14%, transparent); }
 .titlebar .search-icon { position: absolute; left: 12px; top: 9px; color: var(--text-3); pointer-events: none; }
 .search-dropdown {
   position: absolute; top: 40px; left: 0; right: 0; max-height: 420px; overflow-y: auto;
@@ -252,7 +384,7 @@ body {
   box-shadow: var(--shadow-card);
   transition: box-shadow 0.2s, border-color 0.2s;
 }
-.home-search input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(22, 93, 255, 0.14); }
+.home-search input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent); }
 .home-search .icon { position: absolute; left: 14px; top: 13px; color: var(--text-3); }
 .recent-row { display: flex; gap: 10px; flex-wrap: wrap; padding-bottom: 4px; }
 .recent-chip {
@@ -278,7 +410,7 @@ body {
 }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary { background: var(--primary); color: var(--on-primary); }
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn-primary:active:not(:disabled) { background: var(--primary-active); }
 .btn-secondary { background: var(--card-bg); border-color: var(--primary); color: var(--primary); }
@@ -300,7 +432,7 @@ body {
   padding: 6px 10px; font-size: 14px; outline: none; font-family: inherit;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.input:focus, .select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(22, 93, 255, 0.12); }
+.input:focus, .select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 12%, transparent); }
 .input:disabled { background: var(--page-bg); color: var(--text-3); border-style: dashed; }
 .input.error { border-color: var(--danger); }
 .input-sm { padding: 3px 8px; font-size: 13px; }
@@ -322,7 +454,7 @@ textarea.input { resize: vertical; line-height: 1.6; }
   outline: none; resize: vertical; font-family: Consolas, "Microsoft YaHei", monospace; line-height: 1.6;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.pane-ta:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(22, 93, 255, 0.12); }
+.pane-ta:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 12%, transparent); }
 .pane-ta.readonly { background: var(--page-bg); }
 .split-mid { display: flex; align-items: center; justify-content: center; }
 
@@ -390,7 +522,7 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .toast-container { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 2000; display: flex; flex-direction: column; gap: 8px; align-items: center; }
 .toast {
   display: flex; align-items: center; gap: 8px; padding: 8px 18px; border-radius: 6px; font-size: 13px;
-  color: #fff; background: var(--primary); box-shadow: var(--shadow-modal);
+  color: var(--on-primary); background: var(--primary); box-shadow: var(--shadow-modal);
   animation: toastIn 0.2s ease; white-space: nowrap;
 }
 .toast.toast-success { background: var(--success); }
@@ -487,10 +619,37 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .theme-preview .tp-line { height: 6px; border-radius: 3px; }
 .theme-card .tc-check {
   position: absolute; right: 14px; top: 14px; width: 20px; height: 20px; border-radius: 50%;
-  background: var(--primary); color: #fff; display: none; align-items: center; justify-content: center;
+  background: var(--primary); color: var(--on-primary); display: none; align-items: center; justify-content: center;
 }
 .theme-card.selected .tc-check { display: flex; }
 .theme-card .tc-name2 { font-size: 13px; color: var(--text-1); }
+
+/* 配色主题选择（accent）：每张卡上下两个色点 = 浅色主色 / 深色主色 */
+.accent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); gap: 10px; margin: 8px 0 4px; }
+.accent-card {
+  cursor: pointer; border-radius: 10px; border: 2px solid transparent;
+  padding: 12px 10px 10px; text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.accent-card:hover { background: var(--nav-hover); }
+.accent-card.selected { border-color: var(--primary); background: var(--primary-light); }
+.accent-swatches { display: flex; flex-direction: column; gap: 3px; align-items: center; margin-bottom: 8px; }
+/* 色点取该卡片自身 data-accent 下的槽位变量：上=浅色主色，下=深色主色 */
+.accent-dot { width: 100%; height: 15px; border-radius: 4px; }
+.accent-dot.light { background: var(--l-primary); border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.accent-dot.dark { background: var(--d-primary); border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+/* 色块取该卡片自身 data-accent 下的槽位变量 */
+.accent-card[data-accent='polar'] { --l-primary: #165DFF; --d-primary: #4080FF; }
+.accent-card[data-accent='mist'] { --l-primary: #3D6FE0; --d-primary: #6E9BFF; }
+.accent-card[data-accent='jade'] { --l-primary: #0B8650; --d-primary: #3DD68C; }
+.accent-card[data-accent='violet'] { --l-primary: #7C4DFF; --d-primary: #A78BFA; }
+.accent-card[data-accent='rose'] { --l-primary: #E0457B; --d-primary: #FF7EB3; }
+.accent-card[data-accent='gold'] { --l-primary: #9A6E00; --d-primary: #F0C040; }
+.accent-card[data-accent='teal'] { --l-primary: #00938F; --d-primary: #2FD8D8; }
+.accent-card[data-accent='sand'] { --l-primary: #C2612F; --d-primary: #E8885C; }
+.accent-card[data-accent='mono'] { --l-primary: #2B2B2D; --d-primary: #C9C9CE; }
+.accent-card .tc-name2 { font-size: 13px; color: var(--text-1); font-weight: 500; }
+.accent-desc { font-size: 11px; color: var(--text-3); margin-top: 3px; line-height: 1.4; }
 
 /* 快速键 kbd */
 kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 12px; font-family: Consolas, monospace; color: var(--text-2); }
@@ -502,7 +661,7 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
 /* 屏幕标尺窗口 */
 .ruler-body { margin: 0; background: transparent; overflow: hidden; }
 .ruler-canvas { display: block; cursor: move; }
-.ruler-tip { position: fixed; background: rgba(22,93,255,0.9); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 3px; pointer-events: none; font-family: Consolas, monospace; }
+.ruler-tip { position: fixed; background: color-mix(in srgb, var(--primary) 90%, transparent); color: var(--on-primary); font-size: 11px; padding: 1px 6px; border-radius: 3px; pointer-events: none; font-family: Consolas, monospace; }
 
 /* 图表容器 */
 .chart-box { width: 100%; height: 180px; position: relative; }
