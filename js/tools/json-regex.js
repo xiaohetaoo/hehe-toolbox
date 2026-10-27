@@ -34,7 +34,14 @@
           lastValid = obj;
           if (sortChk.checked) obj = sortKey(obj);
           out.value = JSON.stringify(obj, null, indentSel.value === '\t' ? '\t' : parseInt(indentSel.value));
-          status.textContent = `✓ 校验通过 · ${Object.keys(obj).length && typeof obj === 'object' && !Array.isArray(obj) ? Object.keys(obj).length + ' 个顶层键' : (Array.isArray(obj) ? obj.length + ' 个元素' : '标量')}`;
+          // 先算形态再拼文案：原来的写法在 obj 为 null 时 Object.keys(null) 会抛 TypeError，
+          // 于是「合法 JSON null」被判成校验失败、结果框被清空。
+          let desc;
+          if (obj === null) desc = 'null';
+          else if (Array.isArray(obj)) desc = obj.length + ' 个元素';
+          else if (typeof obj === 'object') desc = Object.keys(obj).length + ' 个顶层键';
+          else desc = '标量';
+          status.textContent = '✓ 校验通过 · ' + desc;
           status.style.color = 'var(--success)';
           drawTree(obj);
         } catch (e) {
@@ -144,7 +151,11 @@
             }).join('\n');
           }
           if (replaceIn.value !== '') {
-            const re2 = new RegExp(patternIn.value, flagsIn.value);
+            // flags 里没有 g 时，String.replace 只替换第一处，
+            // 而上面的计数显示「匹配 N 处」—— 结果与计数对不上。
+            // 替换场景默认补上 g（重复加也无害）。
+            const rf = flagsIn.value.includes('g') ? flagsIn.value : flagsIn.value + 'g';
+            const re2 = new RegExp(patternIn.value, rf);
             replOut.value = text.replace(re2, replaceIn.value);
           }
         } catch (e) { status.textContent = '✗ ' + e.message; status.style.color = 'var(--danger)'; }

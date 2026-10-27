@@ -41,7 +41,9 @@
       const run = () => {
         try {
           if (decodeMode) {
-            const b64 = ta.value.trim().replace(/-/g, '+').replace(/_/g, '/');
+            // 粘贴来的 Base64 常带换行/空格（邮件、JWT、base64 -w 76 的产物），
+            // atob 遇到这些非法字符会直接抛错，所以先剥掉空白再解。
+            const b64 = ta.value.replace(/[\s\r\n]+/g, '').replace(/-/g, '+').replace(/_/g, '/');
             const bin = atob(b64);
             out.value = bytesToUtf8(Uint8Array.from(bin, c => c.charCodeAt(0)));
           } else {
@@ -50,8 +52,10 @@
             for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); // 分块避免参数上限
             out.value = btoa(bin);
           }
-          box.el.parentElement && null;
-        } catch (e) { out.value = ''; }
+        } catch (e) {
+          // 静默清空会让用户以为工具"没反应"，这里必须把原因显示出来
+          out.value = '⚠ 不是合法的 Base64：' + e.message;
+        }
       };
       ta.addEventListener('input', run);
       run();
@@ -104,10 +108,21 @@
     desc: '文本与 \\uXXXX 转义序列互转，支持中文转 Unicode',
     keywords: ['unicode', 'uXXXX', '转义', 'escape'],
     render(page) {
+      /* 星形平面字符（emoji 等，码点 > 0xFFFF）必须拆成高低代理对两个 \uXXXX，
+         否则 charCodeAt(0) 只取到高代理项，低代理项被整个丢掉，
+         往返一次就变成乱码。（早期实现用 [...t].map(c => c.charCodeAt(0)) 就踩了这个坑） */
+      function escOne(c) {
+        const cp = c.codePointAt(0);
+        if (cp > 0xFFFF) {
+          const hi = Math.floor((cp - 0x10000) / 0x400) + 0xD800;
+          const lo = ((cp - 0x10000) % 0x400) + 0xDC00;
+          return '\\u' + hi.toString(16) + '\\u' + lo.toString(16);
+        }
+        return '\\u' + cp.toString(16).padStart(4, '0');
+      }
       const box = convertLayout({
         inputLabel: '原文', outputLabel: 'Unicode 转义', realtime: true,
-        onConvert: (t) => [...t].map(c => c.charCodeAt(0) > 127 || /[\u0000-\u001f]/.test(c)
-          ? '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0') : c).join('')
+        onConvert: (t) => [...t].map(c => c.codePointAt(0) > 127 || /[\u0000-\u001f]/.test(c) ? escOne(c) : c).join('')
       });
       page.appendChild(box.el);
       const ta = box.input, out = box.output;
@@ -124,9 +139,12 @@
       function fire() {
         try {
           if (decode) {
+            // 逐字符解析成 code point 再 fromCodePoint，代理对会自动重组
             out.value = ta.value.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+            out.value = out.value.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, (pair) =>
+              String.fromCodePoint((pair.charCodeAt(0) - 0xD800) * 0x400 + (pair.charCodeAt(1) - 0xDC00) + 0x10000));
           } else {
-            out.value = [...ta.value].map(c => c.charCodeAt(0) > 127 ? '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0') : c).join('');
+            out.value = [...ta.value].map(c => c.codePointAt(0) > 127 ? escOne(c) : c).join('');
           }
         } catch (e) { out.value = ''; }
       }

@@ -16,7 +16,8 @@
 
   /* ---- 深色槽位 ---- */
   --d-primary: #4080FF;  --d-primary-hover: #5A8CFF;  --d-primary-active: #2A5ED9;
-  --d-on-primary: #FFFFFF;
+  /* 深色主色 #4080FF 配白字对比度仅 3.65，改用深字后达 5.31 */
+  --d-on-primary: #0D0D10;
   --d-page-bg: #202020;  --d-card-bg: #2B2B2D;
   --d-text-1: #F2F3F5;  --d-text-2: #A9AEB8;  --d-text-3: #7A7C82;
   --d-border: #38383B;  --d-border-light: #323234;
@@ -129,6 +130,8 @@ html[data-accent='violet'] {
 /* 樱花粉：柔和轻盈 */
 html[data-accent='rose'] {
   --l-primary: #E0457B;  --l-primary-hover: #C22E63;  --l-primary-active: #A02351;
+  /* 浅色主色偏亮，白字对比度只有 3.96（低于 WCAG AA 4.5:1），故用同色系深字 */
+  --l-on-primary: #2B0A15;
   --l-page-bg: #FDF2F6;  --l-text-1: #2B1A22;  --l-text-2: #65454F;  --l-text-3: #9A7580;
   --l-border: #F5DEE7;  --l-border-light: #FAE9EF;
   --d-primary: #FF7EB3;  --d-primary-hover: #FF9AC4;  --d-primary-active: #F7639E;
@@ -153,6 +156,8 @@ html[data-accent='gold'] {
 /* 青碧：清新冷静 */
 html[data-accent='teal'] {
   --l-primary: #00938F;  --l-primary-hover: #007A77;  --l-primary-active: #006260;
+  /* 浅色主色偏亮，白字对比度只有 3.77，故用同色系深字 */
+  --l-on-primary: #02201E;
   --l-page-bg: #EDF6F6;  --l-text-1: #16262A;  --l-text-2: #40585C;  --l-text-3: #6E868A;
   --l-border: #D7E9E9;  --l-border-light: #E3F0F0;
   --d-primary: #2FD8D8;  --d-primary-hover: #58E2E2;  --d-primary-active: #18BEBE;
@@ -165,6 +170,8 @@ html[data-accent='teal'] {
 /* 暖砂：暖调复古，像纸质感 */
 html[data-accent='sand'] {
   --l-primary: #C2612F;  --l-primary-hover: #A45125;  --l-primary-active: #87411D;
+  /* 浅色主色偏亮，白字对比度只有 4.16，故用同色系深字 */
+  --l-on-primary: #1F0D04;
   --l-page-bg: #F7F1E9;  --l-card-bg: #FFFCF7;
   --l-text-1: #2C2118;  --l-text-2: #5E4C3D;  --l-text-3: #8E7B6A;
   --l-border: #EADFD0;  --l-border-light: #F2E9DD;

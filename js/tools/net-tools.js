@@ -77,9 +77,20 @@
         if (!isDesktop) return toast('桌面端可用', 'warn');
         const host = hostIn.value.trim();
         if (!host) return;
+        // ping -t 永不自行退出：重复点「开始」必须先杀掉上一个，
+        // 否则残留进程一直跑，而 stop() 只认最新的 jobId，旧进程再也取消不掉。
+        if (jobId) { try { await invoke('job:kill', jobId); } catch (e) {} jobId = null; }
         running = true; sent = 0; recv = 0; latencies = [];
         term.innerHTML = ''; startBtn.disabled = true; stopBtn.disabled = false;
-        jobId = await invoke('exec:stream', { command: 'ping', args: ['-t', host] });
+        try {
+          jobId = await invoke('exec:stream', { command: 'ping', args: ['-t', host] });
+        } catch (e) {
+          // 原来没兜底：exec 失败时按钮永久 disabled、状态停在「进行中」，只能切页恢复
+          running = false; startBtn.disabled = false; stopBtn.disabled = true;
+          status.textContent = '✗ ' + e.message;
+          toast(e.message, 'error');
+          return;
+        }
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
         unsubStream = on('job:stream', (d) => {
@@ -87,10 +98,16 @@
           const lines = String(d.data).split(/\r?\n/).filter(Boolean);
           for (const line of lines) {
             const el = h('div', null, line);
-            const m = line.match(/[=：:]\s*(\d+)ms/i) || line.match(/time[=<]\s*(\d+)ms/i);
+            /* Windows 中文版在局域网/本机（延迟 <1ms）会输出
+                 「来自 192.168.1.1 的回复: 字节=32 时间<1ms TTL=64」
+               原来的正则要求 [=：:] 后紧跟数字，遇到 `<` 就匹配不上，
+               于是这些成功回复既不计 sent 也不计 recv，丢包率被算高、曲线缺采样点。
+               这里统一处理 时间/时间/TTL 之后的 = : < 四种符号。 */
+            const m = line.match(/(?:时间|time)\s*[=:：<]\s*(\d+(?:\.\d+)?)\s*ms/i)
+              || line.match(/[=：:]\s*(\d+(?:\.\d+)?)\s*ms/i);
             if (m) {
               sent++; recv++;
-              latencies.push(parseInt(m[1]));
+              latencies.push(parseFloat(m[1]));
               if (latencies.length > 120) latencies.shift();
               el.className = 't-hl';
             } else if (/超时|timed out|unreachable|失败/i.test(line)) { sent++; el.className = 't-err'; }
@@ -252,9 +269,14 @@
     keywords: ['扫描', '端口', 'scan'],
     render(page) {
       const hostIn = h('input', { class: 'input mono', value: '127.0.0.1', style: { width: '180px' } });
-      const rangeIn = h('input', { class: 'input mono input-sm', value: '1-1024', style: { flex: '1' } });
+      const rangeIn = h('input', { class: 'input mono input-sm', value: '', style: { flex: '1' }, placeholder: '如 80,443,8000-8100' });
       const preset = h('select', { class: 'select input-sm' },
         h('option', { value: '' }, '常见端口'), h('option', { value: '1-1024' }, '1-1024'), h('option', { value: '1-65535' }, '1-65535（较慢）'));
+      // 预设下拉默认是「常见端口」（value=''），但输入框默认 '1-1024'，
+      // 而实际扫描范围只看 rangeIn —— 界面说扫常见端口，实际扫 1024 个。
+      // 选择预设时把值同步进输入框，让两者始终一致。
+      preset.value = '';
+      preset.addEventListener('change', () => { rangeIn.value = preset.value; });
       const result = div('');
       const status = h('span', { class: 'field-hint' }, '');
       const COMMON = [21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 873, 993, 995, 1433, 1521, 2375, 3306, 3389, 5432, 5900, 6379, 8080, 8443, 8888, 9090, 9200, 27017, 28017];
@@ -364,10 +386,15 @@
       const upBtn = btn('⬆ 测上传', 'btn-secondary', () => run('up'));
       async function run(dir) {
         if (!isDesktop) return toast('桌面端可用（需联网）', 'warn');
+        if (unsub) { try { unsub(); } catch (e) {} unsub = null; } // 防连点：先退订上一轮
         downBtn.disabled = upBtn.disabled = true;
         status.textContent = '测试中…'; samples = [];
+        /* job:stream 是全局通道，必须只认本次测速的 id，
+           否则别的任务发来的 samples 会被画到这条曲线上。 */
+        let speedId = null;
         unsub = on('job:stream', (d) => {
           try {
+            if (d.id) { if (!speedId) speedId = d.id; else if (d.id !== speedId) return; }
             const j = JSON.parse(d.data);
             if (j.samples && j.samples.length) {
               samples = j.samples.map(s => s.mbps);
@@ -421,7 +448,10 @@
               try {
                 const k = await invoke('wifi:key', name);
                 keyEl.textContent = k.key ? k.key : '（开放网络无密码）';
-                if (k.key) row.appendChild(btn('复制', 'btn-sm btn-text', () => copyText(k.key)));
+                // 反复点「查看密码」会重复追加「复制」按钮，一行里堆出好几个
+                if (k.key && !row.querySelector('.wifi-copy')) {
+                  row.appendChild(btn('复制', 'btn-sm btn-text wifi-copy', () => copyText(k.key)));
+                }
               } catch (e) { keyEl.textContent = '✗ ' + (e && e.message ? e.message : e); }
             }));
             listBox.appendChild(row);
@@ -472,16 +502,28 @@
         }
         prog.show(); status.textContent = '连接中…';
         startBtn.disabled = true; stopBtn.disabled = false;
+        /* job:stream 是全局通道，TTS/卸载/媒体转换等任务结束时都会广播 {done:true}。
+           而 net:download 的 id 要等 invoke 返回才有，注册监听时还拿不到 ——
+           所以先记下「本次下载的 id 前缀」：主进程用 'dl2' 前缀生成下载任务 id，
+           监听里只认这个前缀 + 已知 id，别的事件一律忽略，避免被别的任务提前判完成。 */
+        let myPrefixSeen = null;
         unsub = window.api.on('job:stream', (d) => {
           try {
             const j = JSON.parse(d.data);
+            // 还没拿到 jobId 时，只接受下载形态的 id；拿到之后严格比对
+            if (jobId) { if (d.id !== jobId) return; }
+            else {
+              if (!d.id || !/^dl2/.test(String(d.id))) return;
+              if (!myPrefixSeen) myPrefixSeen = d.id;
+              else if (d.id !== myPrefixSeen) return;
+            }
             if (j.pct != null) { prog.set(j.pct); status.textContent = `${(j.mb || 0).toFixed(1)} / ${(j.totalMB || 0).toFixed(1)} MB（${(j.pct || 0).toFixed(0)}%）`; }
             if (j.label && j.pct == null) status.textContent = j.label;
             if (j.done) {
               startBtn.disabled = false; stopBtn.disabled = true; jobId = null;
               prog.hide();
-              status.textContent = j.ok ? `✓ 已保存：${j.out}` : '✗ ' + (j.error || '失败');
-              if (j.ok) toast('下载完成：' + j.out, 'success');
+              status.textContent = j.ok ? `✓ 已保存：${j.out || out}` : '✗ ' + (j.error || '失败');
+              if (j.ok) toast('下载完成：' + (j.out || out), 'success');
             }
           } catch (e) {}
         });

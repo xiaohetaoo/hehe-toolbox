@@ -8,6 +8,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "test": "node scripts/test-lib.js",
     "dist": "electron-builder --win portable && node scripts/pack-zip.js",
     "dist:installer": "electron-builder --win nsis",
     "dist:retry": "bash scripts/build-portable.sh D:/zcode/hehe/dist 3"

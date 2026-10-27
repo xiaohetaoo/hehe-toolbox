@@ -23,7 +23,10 @@
           const neg = val.startsWith('-');
           const raw = neg ? val.slice(1) : val;
           if (!/^[0-9a-fA-F]+$/.test(raw)) throw new Error('包含非法字符');
-          const big = BigInt((neg ? '-' : '') + (from === 16 ? '0x' : from === 8 ? '0o' : from === 2 ? '0b' : '') + raw);
+          // 注意：BigInt('-0xFF') / BigInt('-0b101') 按规范是 SyntaxError（带符号的字符串只允许十进制）。
+          // 所以必须先按进制取绝对值，再取反。
+          const abs = BigInt((from === 16 ? '0x' : from === 8 ? '0o' : from === 2 ? '0b' : '') + raw);
+          const big = neg ? -abs : abs;
           const rows = [['十进制', big.toString(10)], ['二进制', big.toString(2)], ['八进制', big.toString(8)], ['十六进制', big.toString(16).toUpperCase()]];
           for (const [name, v] of rows) {
             const row = div('form-row');

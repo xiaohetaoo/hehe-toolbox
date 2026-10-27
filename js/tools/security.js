@@ -111,9 +111,15 @@
         for (const t of tips) suggestions.appendChild(div('form-row', h('span', { class: 'field-hint' }, t)));
       }
       function estimateCrack(bits) {
-        const combos = Math.pow(2, bits) / 1e11;
-        const seconds = combos;
-        if (seconds < 1) return '瞬间破解';
+        /* 用对数分档：直接 Math.pow(2, bits) 在 1024 bit 以上会溢出成 Infinity
+           （输入 157 位以上混合字符就会触发），显示「Infinity 亿年」；
+           即使用 64 位这种常见长密码，也会给出「1.9e50 亿年」这种没法读的数字。 */
+        const log10Seconds = bits * Math.LN2 / Math.LN10 - 11;
+        if (log10Seconds < 0) return '瞬间破解';
+        // 约 1.4e14 年 ≈ 宇宙年龄的 1 万倍，再往上给个上限文案即可
+        const MAX_LOG10_SECONDS = Math.log10(1.4e14 * 86400 * 365);
+        if (log10Seconds > MAX_LOG10_SECONDS) return '远超宇宙年龄';
+        const seconds = Math.pow(10, log10Seconds);
         if (seconds < 3600) return Math.ceil(seconds / 60) + ' 分钟';
         if (seconds < 86400) return Math.ceil(seconds / 3600) + ' 小时';
         if (seconds < 86400 * 365) return Math.ceil(seconds / 86400) + ' 天';

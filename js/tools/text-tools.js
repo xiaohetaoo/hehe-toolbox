@@ -319,10 +319,21 @@
       }
       async function save() {
         const name = ((titleIn.value.trim() || '未命名')).replace(/[\\/:*?"<>|]/g, '_') + '.md';
-        if (curName && curName !== name) await invoke('fs:delete', notesDir + '/' + curName).catch(() => {});
         const tags = tagsIn.value.split(/[,，]/).map(x => x.trim()).filter(Boolean).join(',');
         const body = (tags ? `<!--hehe:tags:${tags}-->\n` : '') + ta.value;
-        await invoke('fs:write-text', notesDir + '/' + name, body);
+        /* 顺序很重要：必须先写新文件、成功后再删旧文件。
+           原来是先 delete 旧文件再 write 新文件，一旦写入失败（磁盘满、路径被占用、
+           notes 目录被删）旧笔记已经没了、新文件也没写成 —— 整篇内容丢失。
+           而且下面的 30 秒自动保存会反复触发这个破坏性操作。 */
+        try {
+          await invoke('fs:write-text', notesDir + '/' + name, body);
+        } catch (e) {
+          toast('保存失败：' + e.message, 'error');
+          return;
+        }
+        if (curName && curName !== name) {
+          await invoke('fs:delete', notesDir + '/' + curName).catch(() => {}); // 旧副本删不掉也不影响新内容
+        }
         curName = name;
         toast('已保存', 'success', 1200);
         refreshList();
@@ -394,11 +405,31 @@
         if (text.length > 5000) return toast('文本过长（>5000 字），请分段朗读', 'warn');
         speakBtn.disabled = true; stopBtn.disabled = false;
         status.textContent = '朗读中…';
+        /* job:stream 是全局通道：别的任务（下载/媒体转换/卸载）结束时也会广播 {done:true}，
+           不加过滤会把正在进行的朗读误判成「已结束」。主进程 tts 任务 id 以 'tts' 开头，
+           拿到真实 jobId 之前先按前缀认领，拿到之后严格比对。 */
+        let seenId = null;
         unsub = window.api.on('job:stream', (d) => {
-          try { const j = JSON.parse(d.data); if (j.done) { speakBtn.disabled = false; stopBtn.disabled = true; jobId = null; status.textContent = '✓ 朗读结束'; } } catch (e) {}
+          try {
+            if (jobId) { if (d.id !== jobId) return; }
+            else {
+              if (!d.id || !/^tts/.test(String(d.id))) return;
+              if (!seenId) seenId = d.id; else if (d.id !== seenId) return;
+            }
+            const j = JSON.parse(d.data);
+            if (j.done) { speakBtn.disabled = false; stopBtn.disabled = true; jobId = null; status.textContent = '✓ 朗读结束'; }
+          } catch (e) {}
         });
-        const r = await invoke('tts:speak', { text, voice: voiceSel.value, rate: +rateIn.value, volume: +volIn.value });
-        jobId = r.id;
+        try {
+          const r = await invoke('tts:speak', { text, voice: voiceSel.value, rate: +rateIn.value, volume: +volIn.value });
+          jobId = r.id;
+        } catch (e) {
+          // 原来这里没有 catch：tts:speak 失败时函数直接抛出，
+          // speakBtn 永久 disabled、stopBtn 永久可用，只能切页才能恢复。
+          speakBtn.disabled = false; stopBtn.disabled = true; jobId = null;
+          status.innerHTML = '<span class="status-err">✗ ' + escapeHtml(e.message) + '</span>';
+          if (unsub) { try { unsub(); } catch (e2) {} unsub = null; }
+        }
       }
       page.appendChild(div('card', div('card-title', '文本'),
         ta,

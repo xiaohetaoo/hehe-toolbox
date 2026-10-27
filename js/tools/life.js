@@ -175,9 +175,14 @@
         if (t !== drawSeq) return;
         grid.appendChild(table);
       }
+      // 详情请求同样要序号守卫：连续点 3 号、15 号时，若 3 号的 IPC 后返回，
+      // 标题用的是后一次的 y/m/d，内容却是 3 号的农历 —— 用户看到自相矛盾的数据。
+      let infoSeq = 0;
       async function showInfo(y, m, d) {
+        const token = ++infoSeq;
         try {
           const l = await invoke('lunar:s2l', y, m, d);
+          if (token !== infoSeq) return; // 已切到别的日期，丢弃过期响应
           info.innerHTML = '';
           const card = div('card');
           card.style.marginTop = '12px';
@@ -188,7 +193,7 @@
             ['节气', l.isTerm ? l.term : '无'], ['星期', l.ncWeek]
           ]));
           info.appendChild(card);
-        } catch (e) { toast(e.message, 'error'); }
+        } catch (e) { if (token === infoSeq) toast(e.message, 'error'); }
       }
       // 公历→农历 & 农历→公历 转换器
       const convCard = div('card', div('card-title', '公历 ↔ 农历 互转'));

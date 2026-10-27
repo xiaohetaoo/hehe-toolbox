@@ -32,3 +32,6 @@ jobs:
           $n = (Select-String -Path js/tools/*.js -Pattern "register\(\{" -AllMatches | Measure-Object).Count
           Write-Host "registered tools: $n"
           if ($n -lt 90) { throw "tool count regressed: $n" }
+
+      - name: Pure-function regression tests
+        run: npm test

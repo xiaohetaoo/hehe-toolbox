@@ -211,14 +211,19 @@
       }
       const encBtn = btn('🔒 加密模式', 'btn-sm btn-primary', () => setMode('encrypt'));
       const decBtn = btn('🔓 解密模式', 'btn-sm btn-secondary', () => setMode('decrypt'));
+      // 主按钮必须提升为变量：原来在 appendChild 里用 btn(...) 一次性渲染，
+      // 文案被写死成「开始加密」，切到解密模式后按钮仍显示「开始加密」，
+      // 实际执行的是解密 —— 文案与动作相反，属于危险的误导。
+      const mainBtn = btn('开始加密', 'btn-primary', run);
       function setMode(m) {
         mode = m;
         encBtn.className = 'btn btn-sm ' + (m === 'encrypt' ? 'btn-primary' : 'btn-secondary');
         decBtn.className = 'btn btn-sm ' + (m === 'decrypt' ? 'btn-primary' : 'btn-secondary');
+        mainBtn.textContent = m === 'encrypt' ? '开始加密' : '开始解密';
       }
       page.appendChild(div('card', div('card-title', '选择文件', encBtn, ' ', decBtn), dz, fileLabel));
       page.appendChild(div('card', div('card-title', '密码'),
-        div('form-row', pwdIn, btn(mode === 'encrypt' ? '开始加密' : '开始解密', 'btn-primary', run)),
+        div('form-row', pwdIn, mainBtn),
         prog.el, status));
     }
   });
@@ -240,6 +245,9 @@
         tabBtn1.className = 'btn btn-sm ' + (t === 'split' ? 'btn-primary' : 'btn-secondary');
         tabBtn2.className = 'btn btn-sm ' + (t === 'merge' ? 'btn-primary' : 'btn-secondary');
       }
+      // 必须初始化一次：两个面板创建时都没设 display:none，只靠点击页签调用 switchT 的话，
+      // 直接打开本工具时「分割」和「合并」两张卡片会同时铺在首屏。
+      switchT('split');
 
       /* split */
       let spFile = null;

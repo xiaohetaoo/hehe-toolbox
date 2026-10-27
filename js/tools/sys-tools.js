@@ -527,8 +527,15 @@
           btn('切换为经典菜单', 'btn-primary', async () => {
             if (!(await confirmBox({ title: '切换经典菜单', message: '将注册表写入经典菜单开关，需要重启资源管理器后生效。立即重启资源管理器吗？（不重启也可稍后手动注销/重启系统）', okText: '切换并立即生效' })))
               return apply(true);
-            await invoke('ctxmenu:classic', true, true).catch((e) => toast(e.message, 'error'));
-            toast('已切换并重启资源管理器', 'success'); refresh();
+            // 成功/失败必须是互斥的：原来 catch 里弹了错误后又无条件弹「已切换并重启」，
+            // 用户会同时看到红色"需要管理员权限"和绿色"已切换"，无法判断到底改没改。
+            try {
+              await invoke('ctxmenu:classic', true, true);
+              toast('已切换并重启资源管理器', 'success');
+            } catch (e) {
+              toast('切换失败：' + e.message, 'error');
+            }
+            refresh();
           }),
           btn('恢复 Win11 菜单', 'btn-secondary', async () => {
             await apply(false);

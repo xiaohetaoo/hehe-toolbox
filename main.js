@@ -817,9 +817,17 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
         if (ws.bytesWritten >= chunkSize) { ws.end(); idx++; openPart(); if (pausedFor && pausedFor !== ws) { pausedFor = null; rs.resume(); } }
         const n = Math.min(chunk.length - off, chunkSize - ws.bytesWritten);
         const piece = chunk.subarray(off, off + n); off += n;
-        if (!ws.write(piece)) { // 背压：慢盘上防止内存无界堆积
-          pausedFor = ws; rs.pause();
-          ws.once('drain', () => { if (pausedFor === ws) { pausedFor = null; rs.resume(); } });
+        if (!ws.write(piece)) {
+          // 背压：慢盘上防止内存无界堆积。
+          // 注意 rs.pause() 只阻止后续 'data' 事件，当前这块 chunk 的 while 仍在继续写，
+          // 所以每次 write 返回 false 都会走到这里 —— 必须判断是否已经为这个 ws 注册过
+          // drain 监听，否则同一个 ws 上的监听器会无限累积（MaxListenersExceededWarning，
+          // 且触发 drain 时会重复注册/重复 resume）。
+          if (pausedFor !== ws) {
+            pausedFor = ws;
+            rs.pause();
+            ws.once('drain', () => { if (pausedFor === ws) { pausedFor = null; rs.resume(); } });
+          }
         }
       }
       done += chunk.length; send('job:progress', { id: p, kind: 'split', done, total: st.size });

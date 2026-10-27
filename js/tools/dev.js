@@ -231,10 +231,18 @@
             const a = parseInt(rangeA.value) || 0, b = parseInt(rangeB.value) || 100;
             lines.push(String(Math.floor(Math.random() * (b - a + 1)) + a));
           } else if (kind === 'str') {
-            const len = parseInt(rangeA.value) || 12;
+            // crypto.getRandomValues 单次上限 65536 字节，超了抛 QuotaExceededError
+            // （长度填 10 万会直接报错且 gen() 无 try/catch，用户看不到任何提示）。
+            // 这里钳到 65536，并分块填充避免一次申请过大。
+            const wantLen = parseInt(rangeA.value) || 12;
+            const len = Math.max(1, Math.min(65536, wantLen));
             const cs = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
             const arr = new Uint32Array(len);
-            crypto.getRandomValues(arr);
+            const CHUNK = 16384;
+            for (let i = 0; i < len; i += CHUNK) {
+              crypto.getRandomValues(arr.subarray(i, Math.min(i + CHUNK, len)));
+            }
+            if (wantLen > len) toast('长度上限 65536', 'warn');
             lines.push([...arr].map(x => cs[x % cs.length]).join(''));
           } else if (kind === 'phone') {
             const prefixes = ['130','131','132','133','135','136','137','138','139','150','151','152','155','157','158','159','170','176','177','178','180','181','182','185','186','187','188','189','191','198'];
