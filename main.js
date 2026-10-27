@@ -3032,7 +3032,7 @@ if (!gotLock) { app.quit(); } else {
     nativeTheme.themeSource = storeGet('settings.theme', 'system');
     applyHotkey(storeGet('settings.hotkey', 'Alt+Shift+H'));
     armAllSchedules(); // 周期任务（每日提醒/循环提醒/自动清理）
-// 冒烟测试：遍历全部工具页 + 非工具视图，捕获渲染异常。
+// 冒烟测试：遍历全部工具页 + 非工具视图，捕获渲染异常 + 校验关键布局。
 // 注意：主窗启动时 show:false，隐藏窗口里 requestAnimationFrame 不触发，
 // 所以这里用 setTimeout(0) 让出事件循环（渲染同步完成，无需长等待）。
 if (process.env.HEHE_SMOKE) {
@@ -3047,11 +3047,42 @@ if (process.env.HEHE_SMOKE) {
         for (const v of ['home', 'fav', 'settings', 'about']) {
           try { window.App.showView({ type: v }); await tick(); } catch (e) { errs.push('view:' + v + ': ' + e.message); }
         }
-        return { total: window.Registry.all.length, errs };
+        // 布局校验：页面不抛异常 ≠ 布局没崩。
+        // 之前出现过 CSS 出问题时「页面渲染成功但排版全乱」（元素失去 block/flex），
+        // 只查异常完全测不出来，所以这里补上关键布局属性的断言。
+        const styleErrs = [];
+        const expect = (sel, prop, want, label) => {
+          const el = document.querySelector(sel);
+          if (!el) { styleErrs.push(label + ': 找不到 ' + sel); return; }
+          const got = getComputedStyle(el)[prop];
+          if (got !== want) styleErrs.push(label + ': ' + sel + ' 的 ' + prop + ' 应为 ' + want + '，实际 ' + got);
+        };
+        window.App.showView({ type: 'home' });
+        await tick();
+        expect('.home-hero h1', 'display', 'block', '首页标题');
+        expect('.home-hero p', 'display', 'block', '首页副标题');
+        expect('.tool-card', 'display', 'flex', '工具卡片');
+        expect('.tool-card .tc-name', 'display', 'block', '卡片标题');
+        expect('.tool-card .tc-desc', 'display', 'block', '卡片描述');
+        expect('.tool-grid', 'display', 'grid', '工具网格');
+        const icon = document.querySelector('.tool-card .tc-icon');
+        if (icon && getComputedStyle(icon).width !== '38px') styleErrs.push('卡片图标尺寸异常: ' + getComputedStyle(icon).width);
+        window.App.showView({ type: 'settings' });
+        await tick();
+        expect('.settings-wrap', 'display', 'flex', '设置布局');
+        expect('.settings-nav', 'width', '180px', '设置导航宽度');
+        expect('.settings-nav-item', 'display', 'block', '设置导航项');
+        // CSS 是否被完整解析（解析中断会让后续规则全部失效）
+        const sheet = [...document.styleSheets].find(s => (s.href || '').includes('app.css'));
+        let ruleCount = -1;
+        try { ruleCount = sheet ? sheet.cssRules.length : -1; } catch (e) {}
+        if (ruleCount < 250) styleErrs.push('app.css 规则数异常（可能解析中断）: ' + ruleCount);
+        return { total: window.Registry.all.length, errs, styleErrs, ruleCount };
       })()`, true);
-      const fail = r.errs.length ? 1 : 0;
-      console.log('SMOKE_RESULT: pages=' + r.total + ' ' + (fail ? 'FAIL' : 'PASS'));
+      const fail = (r.errs.length || r.styleErrs.length) ? 1 : 0;
+      console.log('SMOKE_RESULT: pages=' + r.total + ' cssRules=' + r.ruleCount + ' ' + (fail ? 'FAIL' : 'PASS'));
       r.errs.forEach(e => console.log('SMOKE_RESULT: FAIL ' + e));
+      r.styleErrs.forEach(e => console.log('SMOKE_RESULT: LAYOUT ' + e));
       app.exit(fail ? 3 : 0);
     } catch (e) {
       console.log('SMOKE_RESULT: ERR ' + e.message);
