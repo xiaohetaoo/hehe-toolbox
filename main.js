@@ -1,10 +1,13 @@
 'use strict';
-/* 启动耗时打点（仅 HEHE_BOOTTIME 设置时启用，不影响正常运行） */
+/* 启动耗时打点（仅 HEHE_BOOTTIME 设置时启用，不影响正常运行）
+   注意：这里必须用 require 现场取 fs，不能引用下面 `const fs = require('fs')`。
+   那个 const 还没有初始化（TDZ），bootMark 里 try/catch 会把 ReferenceError
+   默默吞掉，导致最靠前的 main-start / electron-loaded 两条打点永远丢失。 */
 const BOOT_T0 = Date.now();
 const BOOT_FILE = process.env.HEHE_BOOTTIME || null;
 function bootMark(name) {
   if (!BOOT_FILE) return;
-  try { fs.appendFileSync(BOOT_FILE, name + '\t' + (Date.now() - BOOT_T0) + '\n'); } catch (e) {}
+  try { require('fs').appendFileSync(BOOT_FILE, name + '\t' + (Date.now() - BOOT_T0) + '\n'); } catch (e) {}
 }
 bootMark('main-start');
 const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, Tray, Menu, screen, globalShortcut, nativeTheme, desktopCapturer } = require('electron');
@@ -3156,6 +3159,9 @@ if (!gotLock) { app.quit(); } else {
     bootMark('app-ready');
     loadStore();
     bootMark('store-loaded');
+    // themeSource 必须在建窗之前设置：主窗的 backgroundColor 和启动窗的明暗
+    // 都直接读 nativeTheme.shouldUseDarkColors，设晚了会按系统默认值画一帧再跳变。
+    nativeTheme.themeSource = storeGet('settings.theme', 'system');
     createSplash(); // 配置读完后起启动窗（要用到用户选的配色），页面极小，抢在加载主界面前画出进度
     splashSend('splash:step', { pct: 62, label: '读取配置…' });
     createWindow();
@@ -3167,7 +3173,6 @@ if (!gotLock) { app.quit(); } else {
         .then(([n1, n2]) => { if (n1 || n2) console.log('[sweep] 清理临时文件', n1, '个，孤儿剪贴板图片', n2, '个'); })
         .catch(() => {});
     }, 4000);
-    nativeTheme.themeSource = storeGet('settings.theme', 'system');
     applyHotkey(storeGet('settings.hotkey', 'Alt+Shift+H'));
     armAllSchedules(); // 周期任务（每日提醒/循环提醒/自动清理）
 // 冒烟测试：遍历全部工具页 + 非工具视图，捕获渲染异常 + 校验关键布局。
