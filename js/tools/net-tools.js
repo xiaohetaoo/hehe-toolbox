@@ -5,6 +5,35 @@
   const { invoke, on, isDesktop } = window.api;
   const MOD = 'net';
 
+  /* 从 URL 推出安全的保存文件名。
+   *
+   * 原实现：name = decodeURIComponent(url.split('?')[0].split('/').pop())
+   *   恶意/特殊 URL 里的 %2F..%2F..%2F 会被还原成 /../../，
+   *   拼到 userData 后面就逃出目录，覆盖任意位置的文件。
+   *   例如 .../a%2F..%2F..%2FWindows%2Fwin.ini -> 可以写到 C:\Windows 附近。
+   *
+   * 现在：先解码，然后只取 basename，并逐项挡掉 Windows 危险名。
+   * 与主进程 lib/path-guard.js 的 checkFileName 保持同一套规则。 */
+  const BAD_NAME_BASE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+  function safeNameFromUrl(url) {
+    let raw = '';
+    try { raw = decodeURIComponent(String(url).split('?')[0].split('#')[0].split('/').pop() || ''); } catch (e) { raw = ''; }
+    // 只保留最后一段（挡掉解码后出现的 / 和 \）
+    raw = raw.split(/[\\/]/).pop() || '';
+    // 去掉控制字符与 Windows 非法字符
+    raw = raw.replace(/[\x00-\x1f<>:"|?*]/g, '_').replace(/^\.+/, '').replace(/[. ]+$/, '');
+    if (!raw || raw === '.' || raw === '..') return 'download.bin';
+    // 保留设备名但改成可用的名字
+    const base = raw.split('.')[0];
+    if (BAD_NAME_BASE.test(base)) raw = '_' + raw;
+    if (raw.length > 180) {
+      const dot = raw.lastIndexOf('.');
+      const ext = dot > 0 ? raw.slice(dot) : '';
+      raw = raw.slice(0, 180 - ext.length) + ext;
+    }
+    return raw;
+  }
+
   /* ---------- 网络信息查询 ---------- */
   register({
     id: 'net-info', name: '网络信息查询', module: MOD, icon: 'globe',
@@ -496,9 +525,8 @@
         if (!/^https?:\/\//.test(url)) return toast('请输入 http(s) 直链', 'warn');
         let out = fileIn.value.trim();
         if (!out) {
-          const name = decodeURIComponent(url.split('?')[0].split('/').pop() || 'download.bin');
           const info = await invoke('app:get-info').catch(() => null);
-          out = (info && info.userData ? info.userData : 'C:/Users/Public/Downloads') + '/' + name;
+          out = (info && info.userData ? info.userData : 'C:/Users/Public/Downloads') + '/' + safeNameFromUrl(url);
         }
         prog.show(); status.textContent = '连接中…';
         startBtn.disabled = true; stopBtn.disabled = false;

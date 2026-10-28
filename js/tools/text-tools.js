@@ -317,21 +317,65 @@
           refreshList();
         } catch (e) { toast(e.message, 'error'); }
       }
+      /* 笔记文件名净化。自制的一条 replace 挡不住 Windows 的坑：
+         - CON / NUL / AUX / COM1 / LPT1 等保留设备名：写出去看着成功，
+           实际指向设备，内容会丢失
+         - 尾随点/空格（"note." -> "note..md"）Windows 会静默截断，
+           与 "note.md" 在资源管理器里同名但实际是两个文件
+         - 纯点名称（".." -> "....md"）让用户困惑
+         规则与主进程 lib/path-guard.js 的 checkFileName 保持一致。 */
+      const DEVICE_BASE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+      function safeNoteName(raw) {
+        let s = String(raw || '').trim() || '未命名';
+        // 非法字符与控制字符统一换成下划线
+        s = s.replace(/[\x00-\x1f\\/:*?"<>|]/g, '_');
+        // 去掉首部的点（避免隐藏文件与 ".." 变形）
+        s = s.replace(/^\.+/, '');
+        // 去掉尾随的点和空格（Windows 会截断，导致两个不同名字指向同一文件）
+        s = s.replace(/[. ]+$/, '');
+        if (!s) s = '未命名';
+        // Windows 保留设备名（带扩展名也会命中，如 CON.md）
+        if (DEVICE_BASE.test(s.split('.')[0])) s = '_' + s;
+        if (s.length > 120) s = s.slice(0, 120);
+        return s + '.md';
+      }
       async function save() {
-        const name = ((titleIn.value.trim() || '未命名')).replace(/[\\/:*?"<>|]/g, '_') + '.md';
+        const name = safeNoteName(titleIn.value);
         const tags = tagsIn.value.split(/[,，]/).map(x => x.trim()).filter(Boolean).join(',');
         const body = (tags ? `<!--hehe:tags:${tags}-->\n` : '') + ta.value;
         /* 顺序很重要：必须先写新文件、成功后再删旧文件。
            原来是先 delete 旧文件再 write 新文件，一旦写入失败（磁盘满、路径被占用、
            notes 目录被删）旧笔记已经没了、新文件也没写成 —— 整篇内容丢失。
            而且下面的 30 秒自动保存会反复触发这个破坏性操作。 */
+
+        /* 撞名保护：净化的规则会把不同标题映射到同一个文件名
+           （"季度/a" 与 "季度_a" 都变成 "季度_a.md"），
+           而 Windows 又不区分大小写。不检测的话，在「新建」状态下把标题
+           填成已有笔记的名字，会静默覆盖掉那篇笔记的内容。 */
+        const key = name.toLowerCase();
+        const curKey = curName ? String(curName).toLowerCase() : null;
+        if (key !== curKey) {
+          let exists = false;
+          try { exists = await invoke('fs:exists', notesDir + '/' + name); } catch (e) {}
+          if (exists) {
+            const ok = await window.ui.confirmBox({
+              title: '笔记已存在',
+              message: `已有一篇名为「${name.replace(/\.md$/i, '')}」的笔记。\n\n继续保存会覆盖它的内容（不可恢复）。是否覆盖？`,
+              danger: true, okText: '覆盖', cancelText: '取消'
+            });
+            if (!ok) { toast('已取消保存（避免覆盖已有笔记）', 'warn'); return; }
+          }
+        }
+
         try {
           await invoke('fs:write-text', notesDir + '/' + name, body);
         } catch (e) {
           toast('保存失败：' + e.message, 'error');
           return;
         }
-        if (curName && curName !== name) {
+        // 大小写不敏感比较：Windows 上 "A.md" 与 "a.md" 是同一个文件，
+        // 用 !== 判断会误以为换了名字，进而把刚写好的文件当成旧副本删掉。
+        if (curName && String(curName).toLowerCase() !== key) {
           await invoke('fs:delete', notesDir + '/' + curName).catch(() => {}); // 旧副本删不掉也不影响新内容
         }
         curName = name;

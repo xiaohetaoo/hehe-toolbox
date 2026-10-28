@@ -17,6 +17,29 @@
       }
     });
   }
+  /* 判断两个路径是否指向同一个文件。
+   * 不能只做字符串归一化：用户会把输出目录填成 "D:\pics\sub\.." 这种形式，
+   * 字符串层面和 "D:\pics\a.jpg" 不同，但解析后是同一个文件，
+   * 于是自我覆盖保护不触发、原图被压缩结果盖掉。
+   * 渲染进程没有 path 模块，这里自己实现一段 resolve：
+   *   统一分隔符 -> 折叠 . 与 .. -> 盘符归一 -> 小写比较（Windows 不区分大小写）。 */
+  function normAbs(p) {
+    let s = String(p || '').replace(/[\\/]+/g, '/');
+    const drive = (s.match(/^([a-zA-Z]:)/) || [])[1] || '';
+    let rest = drive ? s.slice(drive.length) : s;
+    const abs = rest.startsWith('/');
+    const out = [];
+    for (const seg of rest.split('/')) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') { if (out.length) out.pop(); continue; }
+      out.push(seg);
+    }
+    const joined = (drive || (abs ? '' : '')) + '/' + out.join('/');
+    return joined.replace(/\/+$/, '').toLowerCase();
+  }
+  function samePath(a, b) {
+    try { return normAbs(a) === normAbs(b); } catch (e) { return false; }
+  }
   function pickPaths(multi = true) {
     return invoke('dialog:open', { properties: multi ? ['openFile', 'multiSelections'] : ['openFile'], filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] }] });
   }
@@ -84,10 +107,16 @@
             const dataUrl = canvas.toDataURL(mime, q);
             const name = p.split(/[\\/]/).pop().replace(/\.\w+$/, mime === 'image/jpeg' ? '.jpg' : mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.' + (p.split('.').pop()));
             const outPath = outDir.replace(/[\\/]$/, '') + '/' + name;
-            await invoke('fs:write-file-b64', outPath, dataUrl.split(',')[1]);
+            // 输出路径必须唯一：既要防止盖掉**输入原图**（输出目录选成原目录、
+            // 格式不变时输出名与原名相同），也要防止盖掉**目录里已有的同名文件**
+            // （例如 a.png 转 jpg 时会盖掉原本就存在的 a.jpg，
+            //  或上一轮的输出 a.jpg 被这一轮冲掉）。
+            // fs:unique-path 在目标不存在时原样返回，所以无损。
+            const finalPath = await invoke('fs:unique-path', outPath);
+            await invoke('fs:write-file-b64', finalPath, dataUrl.split(',')[1]);
             ok++;
             const origSize = (await invoke('fs:stat', p)).size;
-            const newSize = (await invoke('fs:stat', outPath)).size;
+            const newSize = (await invoke('fs:stat', finalPath)).size;
             preview.appendChild(div('form-row', h('span', { class: 'tag tag-green' }, '✓'), h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, name),
               h('span', { class: 'field-hint' }, `${fmtBytes(origSize)} → ${fmtBytes(newSize)}（${newSize <= origSize ? '-' : '+'}${Math.abs((1 - newSize / origSize) * 100).toFixed(0)}%）`)));
           } catch (e) { fail++; preview.appendChild(div('form-row', h('span', { class: 'tag tag-red' }, '✗'), h('span', { style: { fontSize: '12px' } }, p), h('span', { class: 'field-err' }, e.message))); }
@@ -162,8 +191,18 @@
             const ext = p.split('.').pop().toLowerCase();
             const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
             const dataUrl = canvas.toDataURL(mime, 0.92);
-            const name = p.split(/[\\/]/).pop();
-            await invoke('fs:write-file-b64', outDir + '/' + name.replace(/\.(\w+)$/, '_wm.$1'), dataUrl.split(',')[1]);
+            const rawName = p.split(/[\\/]/).pop();
+            // 原来用 name.replace(/\.(\w+)$/, '_wm.$1')：文件名**没有扩展名**时
+            // replace 不匹配，输出名就等于原名 -> 输出到原目录时把原图盖掉。
+            // 改成显式拆出扩展名再拼，没有扩展名时补一个默认的。
+            const dot = rawName.lastIndexOf('.');
+            const hasExt = dot > 0; // 0 表示以点开头（隐藏文件），负数表示无扩展名
+            const stem = hasExt ? rawName.slice(0, dot) : rawName;
+            const extPart = hasExt ? rawName.slice(dot + 1) : 'jpg';
+            const outName = stem + '_wm.' + extPart;
+            // 一律取唯一名：既防覆盖原图，也防覆盖目录里已存在的同名输出
+            const outPath = await invoke('fs:unique-path', outDir.replace(/[\\/]$/, '') + '/' + outName);
+            await invoke('fs:write-file-b64', outPath, dataUrl.split(',')[1]);
             ok++;
             if (i === 0) {
               preview.innerHTML = '';
@@ -1225,6 +1264,12 @@
           recording = false; startBtn.disabled = false;
           status.textContent = `✓ 已保存：${r.outPath}（${fmtBytes(r.size || 0)}）` + (r.gif ? ` · GIF：${r.gif}` : '');
           toast('录制完成：' + fmtBytes(r.size || 0), 'success');
+          // 降级（分段合并失败、只保住第一段）必须明确告知用户，
+          // 否则用户以为录到的是完整的，后半段其实丢了。
+          if (r.degraded) {
+            status.innerHTML = '<span class="status-err">✗ ' + escapeHtml(r.degraded) + '</span>';
+            toast('录制不完整：' + r.degraded, 'error', 8000);
+          }
         } catch (e) { recording = false; startBtn.disabled = false; status.textContent = '✗ ' + e.message; }
         // 录制结束把摄像头交还给预览
         if (camSel.value) startPreview(camSel.value);
@@ -1382,7 +1427,9 @@
         const fi = Math.max(0, +fadeInIn.value || 0), fo = Math.max(0, +fadeOutIn.value || 0), gain = +gainIn.value || 0;
         let fmt = fmtSel.value;
         if (fmt === 'keep') { const e = src.split('.').pop().toLowerCase(); fmt = ['mp3', 'm4a', 'wav', 'flac'].includes(e) ? e : 'mp3'; }
-        const out = src.replace(/\.\w+$/, '_cut.' + fmt);
+        // 固定 _cut 名会让「反复调参数试听剪辑」每次都覆盖上一次的成果
+        // （ffmpeg 带 -y 直接改写）。用 fs:unique-path 生成不重名的目标。
+        const out = await invoke('fs:unique-path', src.replace(/\.\w+$/, '_cut.' + fmt));
         goBtn.disabled = true; status.textContent = '处理中…';
         try {
           const r = await invoke('ffmpeg:audio-cut', {

@@ -66,7 +66,10 @@
           const src = await PDFDocument.load(r.b64, { ignoreEncryption: true });
           const n = src.getPageCount();
           const per = Math.max(1, parseInt(splitEvery.value) || 1);
-          const dir = files[0].replace(/\.pdf$/i, '') + '-split';
+          // 输出目录带时间戳：固定目录名会让第二次拆分（哪怕换了一个 PDF）
+          // 把上一次的 part-001.pdf 静默覆盖，甚至把两个不同文档的分页混进同一目录。
+          const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+          const dir = files[0].replace(/\.pdf$/i, '') + '-split-' + stamp;
           await invoke('fs:mkdir', dir);
           for (let i = 0; i < n; i += per) {
             const out = await PDFDocument.create();
@@ -74,7 +77,8 @@
             const pages = await out.copyPages(src, idx);
             pages.forEach(pg => out.addPage(pg));
             const bytes = await out.save();
-            await invoke('fs:write-file-b64', `${dir}/part-${String(i + 1).padStart(3, '0')}.pdf`, arrayB64(bytes));
+            const partPath = await invoke('fs:unique-path', `${dir}/part-${String(i + 1).padStart(3, '0')}.pdf`);
+            await invoke('fs:write-file-b64', partPath, arrayB64(bytes));
           }
           toast(`已拆分为 ${Math.ceil(n / per)} 个文件：${dir}`, 'success');
         } catch (e) { toast('拆分失败：' + e.message, 'error'); }
@@ -200,7 +204,10 @@
           const r = await invoke('fs:read-file-b64', pdfPath);
           const bytes = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
           const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
-          const outDir = pdfPath.replace(/\.pdf$/i, '') + '-images';
+          // 输出目录带时间戳：固定目录名 + 固定 page-NNN.png 会让第二次渲染
+          // 静默覆盖上一次的结果，不同 PDF 的输出还会混进同一目录。
+          const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+          const outDir = pdfPath.replace(/\.pdf$/i, '') + '-images-' + stamp;
           await invoke('fs:mkdir', outDir);
           const scale = parseFloat(scaleIn.value) || 2;
           for (let i = 1; i <= pdf.numPages; i++) {
@@ -210,7 +217,8 @@
             canvas.width = viewport.width; canvas.height = viewport.height;
             await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
             const b64 = canvas.toDataURL('image/png').split(',')[1];
-            await invoke('fs:write-file-b64', `${outDir}/page-${String(i).padStart(3, '0')}.png`, b64);
+            const pagePath = await invoke('fs:unique-path', `${outDir}/page-${String(i).padStart(3, '0')}.png`);
+            await invoke('fs:write-file-b64', pagePath, b64);
             status.textContent = `渲染中… ${i}/${pdf.numPages}`;
           }
           status.innerHTML = `<span class="status-ok">✓ 完成</span> 共 ${pdf.numPages} 页，输出目录 ${escapeHtml(outDir)}`;

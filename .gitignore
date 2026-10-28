@@ -15,3 +15,5 @@ _seg*
 .tmp-smoke*/
 .DS_Store
 Thumbs.db
+# 审查时的临时探测脚本目录
+.tmp-audit/

@@ -1,14 +1,14 @@
 {
   "name": "hehe-toolbox",
   "productName": "核核工具箱",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "核核工具箱 —— 本地优先、轻量聚合的桌面效率工具箱",
   "main": "main.js",
   "author": "hehe",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node scripts/test-lib.js && node scripts/test-archive-guard.js && node scripts/test-target-size.js && node scripts/test-zip-extract.js && node scripts/test-update-cleanup.js && node scripts/test-version.js && node scripts/test-regressions.js",
+    "test": "node scripts/test-lib.js && node scripts/test-archive-guard.js && node scripts/test-path-guard.js && node scripts/test-safename.js && node scripts/test-samepath.js && node scripts/test-target-size.js && node scripts/test-zip-extract.js && node scripts/test-update-cleanup.js && node scripts/test-version.js && node scripts/test-destructive.js && node scripts/test-regressions.js && node scripts/test-round2-fixes.js && node scripts/test-hosts-fallback.js && node scripts/test-extract-safety.js && node scripts/test-crossdrive.js && node scripts/test-destructive2.js && node scripts/test-sanitize.js && node scripts/test-powergate.js && node scripts/test-hosts-restore.js",
     "dist": "electron-builder --win portable && node scripts/pack-zip.js",
     "dist:installer": "electron-builder --win nsis",
     "dist:retry": "bash scripts/build-portable.sh D:/zcode/hehe/dist 3",

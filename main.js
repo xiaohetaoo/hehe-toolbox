@@ -25,6 +25,7 @@ const solarlunar = require('solarlunar');
 const archiveGuard = require('./lib/archive-guard'); // 解压安全预检（路径穿越/ADS/设备名/限额）
 const targetSize = require('./lib/target-size');     // 目标体积压缩的多轮逼近算法
 const errorInfo = require('./lib/errors');           // 结构化错误（稳定错误码 + 建议操作）
+const pathGuard = require('./lib/path-guard');       // 破坏性操作的路径安全网（删/写/覆盖）
 bootMark('deps-loaded');
 
 const isMac = process.platform === 'darwin';
@@ -113,9 +114,32 @@ function runCmd(cmd, args, opts = {}) {
         stdout = dec.decode(stdout || Buffer.alloc(0));
         stderr = dec.decode(stderr || Buffer.alloc(0));
       }
-      if (err && !stdout) reject(err); else resolve({ stdout: stdout || '', stderr: stderr || '', code: err ? err.code || 1 : 0 });
+      if (err && !stdout) reject(sanitizeCmdError(err, args)); else resolve({ stdout: stdout || '', stderr: stderr || '', code: err ? err.code || 1 : 0 });
     });
   });
+}
+/* 命令行脱敏：execFile 的 err.message 是**完整命令行**。
+ * 7z 只支持 -p<密码> 一种传参方式，密码必然会出现在 argv 里，
+ * 也就必然出现在 err.message 中。这个 message 会经 handle() 原样返回渲染层，
+ * 渲染层再 toast 出来 —— 等于把密码弹在屏幕上。
+ * 这里统一把 -p<非空白> 与 password= / token= 之类抹成 ***。 */
+function sanitizeCmdError(err, args) {
+  const msg = String((err && err.message) || err || '');
+  let clean = msg
+    .replace(/\s-p\S+/g, ' -p***')                       // 7z 密码
+    .replace(/\s--password[=\s]\S+/gi, ' --password=***')
+    .replace(/(password|passwd|token|secret|apikey|api_key)\s*[=:]\s*\S+/gi, '$1=***');
+  // 参数里若有长字符串（>=6 位）也抹掉，防止未命中上面模式的传递方式
+  for (const a of (args || [])) {
+    const s = String(a);
+    if (s.length >= 6 && /^[A-Za-z0-9!@#$%^&*()_+\-=\[\]{};:'",.<>\/?\\|`~]{6,}$/.test(s) && clean.includes(s)) {
+      clean = clean.split(s).join('***');
+    }
+  }
+  const e = new Error(clean);
+  e.code = (err && err.code) || 'CMD_FAILED';
+  if (err && err.stack) e.stack = err.stack;
+  return e;
 }
 // Windows PowerShell 输出默认是 OEM 代码页（GBK），强制其以 UTF-8 输出，避免中文乱码
 function ps(script, timeout = 30000, cwd) {
@@ -129,9 +153,10 @@ async function pathExists(p) {
 
 /* 生成不覆盖的目标路径：已存在则自动加序号。
  * 借鉴 YourCatFileAssistant「已存在的文件不覆盖，按序号生成新名称」的做法，
- * 供目标体积压缩与归档解压共用。 */
+ * 供目标体积压缩与归档解压共用。
+ * relName 来自压缩包条目等外部输入，必须挡住路径穿越（..）和绝对路径。 */
 async function uniqueTarget(root, relName) {
-  const base = path.join(root, relName);
+  const base = pathGuard.resolveInside(root, relName);
   if (!(await pathExists(base))) return base;
   const dir = path.dirname(base);
   const ext = path.extname(base);
@@ -145,14 +170,23 @@ async function uniqueTarget(root, relName) {
 
 /* 本应用在系统临时目录里创建的临时产物（统一 hehe- 前缀）。
    自动清理只允许碰这些文件，绝不能整目录清空——%TEMP% 是全机器共享的，
-   里面还有别的程序正在使用的文件，整目录删除会导致它们崩溃或丢数据。 */
+   里面还有别的程序正在使用的文件，整目录删除会导致它们崩溃或丢数据。
+
+   白名单必须覆盖**所有**本应用会创建的临时产物，否则会出现两种糟糕情况：
+     - 漏登记 -> 自己的垃圾永远清不掉
+     - 登记太宽 -> 把别人的东西也清了
+   新增临时产物目录时，记得在这里加一条。 */
 const OWN_TEMP_PATTERNS = [
   /^hehe-snip-\d+\.png$/i,       // 区域截图临时图
   /^hehe-rec-\d+$/i,             // 录制分段目录
   /^hehe-ffmpeg-.*\.zip$/i,      // FFmpeg 下载包
   /^hehe-ffmpeg-win.*\.gz$/i,    // FFmpeg 压缩包
   /^hehe-update-.*\.log$/i,      // 升级脚本日志
-  /^hehe-rollback-.*\.log$/i     // 回滚脚本日志
+  /^hehe-rollback-.*\.log$/i,    // 回滚脚本日志
+  /^hehe-7zx-.+/i,               // 7z 解压暂存目录
+  /^hehe-tgt-.+/i,               // 目标体积压缩暂存目录
+  /^hehe-uniq-.+/i,              // 通用解压暂存目录
+  /^\.?hehe-w-.+/i               // 原子写入的临时文件（实际名带前导点）
 ];
 function isOwnTempName(name) { return OWN_TEMP_PATTERNS.some(re => re.test(name)); }
 
@@ -192,7 +226,10 @@ const CAP_GATED_CHANNELS = {
   'hosts:restore': 'hosts-edit',
   'autostart:delete': 'registry-edit',
   'autostart:enable': 'registry-edit',
-  'ctxmenu:classic': 'registry-edit'
+  'ctxmenu:classic': 'registry-edit',
+  // 逐条禁用/启用右键菜单项改的是同一类 HKCR 键，与「Win11 经典菜单」等价，
+  // 之前漏在门禁外：没开开关的用户也能直接调它写注册表。
+  'ctxmenu:toggle': 'registry-edit'
 };
 // sys:power 通道里既有危险动作（关机/重启/休眠）也有无害动作（锁屏/睡眠），
 // 睡眠只是把内存转成待机状态、不会丢数据，所以不纳入高危门禁。
@@ -535,13 +572,74 @@ handle('fs:read-text', async (e, p) => {
   }
   return { content, size: st.size };
 });
-handle('fs:write-text', async (e, p, content) => { await fsp.writeFile(p, content, 'utf8'); return true; });
+// 写文件（覆盖式）。三个风险要挡住：
+//   1) 目标是系统关键目录里的文件 -> 拒绝
+//   2) 写入中途失败会留下半截文件，破坏用户原有内容
+//   3) 替换过程中目标路径出现「空窗期」，此时任何中断都会让原文件彻底消失
+// 做法：写同目录临时文件 -> 原子改名；Windows 上 rename 不能覆盖已存在目标，
+// 就用「把原文件改名备份 -> 临时文件改名到位 -> 删备份」三段式，
+// 任何一步失败都能把原文件恢复回去。
+async function writeFileAtomic(dest, data, encoding) {
+  const bad = pathGuard.checkOverwritable(dest);
+  if (bad) throw pathGuard.err(bad.code, bad.reason);
+  // 目标文件名本身也要过一遍：挡住 NTFS ADS（file.txt:stream）等写进去
+  // 却看不见的形态。目前所有调用点传的都是我们自己的文件名，属于纵深防御。
+  const nameBad = pathGuard.checkFileName(path.basename(String(dest || '')));
+  if (nameBad) throw pathGuard.err(nameBad.code, nameBad.reason);
+  const dir = path.dirname(dest);
+  await fsp.mkdir(dir, { recursive: true });
+  const tag = process.pid + '-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+  const tmp = path.join(dir, '.hehe-w-' + tag + '.tmp');
+  try {
+    if (encoding) await fsp.writeFile(tmp, data, encoding);
+    else await fsp.writeFile(tmp, data);
+  } catch (err) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+  try {
+    await fsp.rename(tmp, dest);   // POSIX 语义：直接覆盖
+    return dest;
+  } catch (err) {
+    // Windows：目标已存在时 rename 失败。绝不能「先 rm(dest) 再 rename」——
+    // 那样中途失败会留下空目录项，原文件永久丢失。
+    // 改为把原文件挪到备份名，新文件就位后再删备份。
+    const bak = path.join(dir, '.hehe-bak-' + tag);
+    let moved = false;
+    try {
+      await fsp.rename(dest, bak);
+      moved = true;
+    } catch (e2) { /* 目标不存在或无法改名，直接尝试下一步 */ }
+    try {
+      await fsp.rename(tmp, dest);
+      if (moved) await fsp.rm(bak, { force: true }).catch(() => {});
+      return dest;
+    } catch (err2) {
+      // 新文件没能就位：把原文件搬回去。若搬回**也失败**，绝不能静默吞掉 ——
+      // 原文件还躺在 .hehe-bak-* 隐藏文件里，按原路径找不到，等同于丢失。
+      // 必须把备份路径明确告诉用户。
+      if (moved) {
+        try {
+          await fsp.rename(bak, dest);
+        } catch (e3) {
+          await fsp.rm(tmp, { force: true }).catch(() => {});
+          const e = new Error('写入失败且原文件回滚失败。原文件已保全在：' + bak + '（请手动改回原名）');
+          e.code = 'ROLLBACK_FAILED';
+          throw e;
+        }
+      }
+      await fsp.rm(tmp, { force: true }).catch(() => {});
+      throw err2;
+    }
+  }
+}
+handle('fs:write-text', async (e, p, content) => { await writeFileAtomic(p, content, 'utf8'); return true; });
 handle('fs:read-file-b64', async (e, p) => {
   const st = await fsp.stat(p);
   if (st.size > BIN_LIMIT) throw new Error('文件超过 64MB 限制');
   return { b64: (await fsp.readFile(p)).toString('base64'), size: st.size };
 });
-handle('fs:write-file-b64', async (e, p, b64) => { await fsp.writeFile(p, Buffer.from(b64, 'base64')); return true; });
+handle('fs:write-file-b64', async (e, p, b64) => { await writeFileAtomic(p, Buffer.from(b64, 'base64')); return true; });
 handle('fs:stat', async (e, p) => { const st = await fsp.stat(p); return { size: st.size, mtime: st.mtimeMs, isDir: st.isDirectory() }; });
 handle('fs:exists', async (e, p) => { try { await fsp.access(p); return true; } catch (err) { return false; } });
 handle('fs:list', async (e, p) => {
@@ -570,7 +668,17 @@ handle('fs:rename', async (e, from, to, overwrite) => {
   await fsp.rename(from, to);
   return true;
 });
-handle('fs:delete', async (e, p, recursive) => { await fsp.rm(p, { recursive: !!recursive, force: true }); return true; });
+// 删除文件/目录。路径来自渲染层，必须设闸门：
+//   - 递归删除整个磁盘根目录、系统关键目录、用户主目录 -> 直接拒绝
+//   - 非递归删除单个文件时，仍然要挡住关键目录里的文件
+// 原实现是 fsp.rm(p, {recursive, force:true}) 裸调用，
+// 配合高危开关「文件删除」一旦开启，构造路径就能删掉 C:\Users 或整个 C 盘。
+handle('fs:delete', async (e, p, recursive) => {
+  const bad = pathGuard.checkDeletable(p, recursive);
+  if (bad) throw pathGuard.err(bad.code, bad.reason, '如确需删除该路径，请手动在资源管理器中操作');
+  await fsp.rm(p, { recursive: !!recursive, force: true });
+  return true;
+});
 handle('fs:open-path', async (e, p) => { const err = await shell.openPath(p); if (err) throw new Error(err); return true; });
 handle('fs:show-item', (e, p) => { shell.showItemInFolder(p); return true; });
 // 只允许 http/https：shell.openExternal 会把任意协议交给系统处理，
@@ -690,6 +798,9 @@ handle('fs:scan-empty-dirs', async (e, root) => {
 handle('fs:delete-empty', async (e, dirs) => {
   let deleted = 0; const errors = [];
   for (const p of dirs) { // deepest first (caller sorts)
+    // 闸门：不允许删系统关键目录 / 盘符根 / 用户主目录本身
+    const bad = pathGuard.checkDeletable(p, false);
+    if (bad) { errors.push(`${p}: ${bad.reason}`); continue; }
     try { await fsp.rmdir(p); deleted++; } catch (err) { if (err.code !== 'ENOENT') errors.push(`${p}: ${fmtErr(err)}`); }
   }
   return { deleted, errors };
@@ -717,13 +828,33 @@ async function dirSizeFast(p, maxFiles = 50000) {
 handle('fs:scan-junk', async () => {
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const cands = [
-    { id: 'temp', label: '用户临时文件', path: os.tmpdir() },
+    // 临时文件：**只扫本应用自己的产物**（hehe- 前缀白名单）。
+    // 原实现把整个 os.tmpdir() 当成一个清理目标，keepRoot 模式下会把 %TEMP%
+    // 下所有条目删光——实测本机 984 个条目里 908 个属于别的程序
+    // （浏览器、Office、安装程序正在用的临时文件），全被误删。
+    // v0.0.10 修过"清空整个 %TEMP%"，但这条路径绕过了那个白名单。
+    { id: 'temp', label: '本应用临时文件', path: os.tmpdir(), ownOnly: true },
     { id: 'chrome', label: 'Chrome 浏览器缓存', path: path.join(local, 'Google', 'Chrome', 'User Data'), pattern: /Cache|Code Cache|GPUCache/ },
     { id: 'edge', label: 'Edge 浏览器缓存', path: path.join(local, 'Microsoft', 'Edge', 'User Data'), pattern: /Cache|Code Cache|GPUCache/ },
     { id: 'thumb', label: '缩略图缓存', path: path.join(local, 'Microsoft', 'Windows', 'Explorer'), pattern: /thumbcache|thumbcache_.*\.db/i }
   ];
   const out = [];
   for (const c of cands) {
+    if (c.ownOnly) {
+      // 只列本应用自己的临时产物
+      let size = 0, files = 0;
+      const targets = [];
+      const entries = await fsp.readdir(c.path).catch(() => []);
+      for (const n of entries) {
+        if (!isOwnTempName(n)) continue;   // 白名单：绝不动别人的东西
+        const full = path.join(c.path, n);
+        const r = await dirSizeFast(full);
+        size += r.size; files += r.files;
+        targets.push(full);
+      }
+      if (files > 0) out.push({ id: c.id, label: c.label, path: c.path, size, files, targets });
+      continue;
+    }
     if (c.pattern) {
       // aggregate matching subdirs
       let size = 0, files = 0;
@@ -749,17 +880,32 @@ handle('fs:scan-junk', async () => {
 });
 handle('fs:clean-junk', async (e, targets, keepRoot) => {
   let cleaned = 0, bytes = 0; const errors = [];
+  const tmpRoot = path.resolve(os.tmpdir());
   for (const t of targets) {
     try {
-      const before = (await dirSizeFast(t)).size;
-      const st = await fsp.stat(t).catch(() => null);
+      const abs = path.resolve(String(t || ''));
+      // 最后一道防线：绝不允许把 %TEMP% 整体（或其子目录）当作清理目标。
+      // %TEMP% 是全机器共享的，里面有别的程序正在用的文件。
+      // 允许的只有「本应用自己的产物」这一项。
+      if (abs === tmpRoot || abs.startsWith(tmpRoot + path.sep)) {
+        const base = path.basename(abs);
+        if (!isOwnTempName(base)) {
+          errors.push(`${t}: 拒绝清理非本应用产物（%TEMP% 是全机器共享的）`);
+          continue;
+        }
+      }
+      // 系统关键目录也不许动
+      const crit = pathGuard.checkDeletable(abs, true);
+      if (crit) { errors.push(`${t}: ${crit.reason}`); continue; }
+      const before = (await dirSizeFast(abs)).size;
+      const st = await fsp.stat(abs).catch(() => null);
       if (st && st.isFile()) {
-        await fsp.rm(t, { force: true }); // 文件目标（缩略图缓存）直接删除
+        await fsp.rm(abs, { force: true }); // 文件目标（缩略图缓存）直接删除
       } else if (keepRoot) {
-        const entries = await fsp.readdir(t).catch(() => []);
-        for (const n of entries) await fsp.rm(path.join(t, n), { recursive: true, force: true });
+        const entries = await fsp.readdir(abs).catch(() => []);
+        for (const n of entries) await fsp.rm(path.join(abs, n), { recursive: true, force: true });
       } else {
-        await fsp.rm(t, { recursive: true, force: true });
+        await fsp.rm(abs, { recursive: true, force: true });
       }
       cleaned++; bytes += before;
     } catch (err) { errors.push(`${t}: ${fmtErr(err)}`); }
@@ -825,7 +971,11 @@ async function cryptStream(p, outPath, password, decrypt) {
     srcStart = 40;
   }
   const rs = fs.createReadStream(p, { highWaterMark: 1 << 20, start: srcStart });
-  const ws = fs.createWriteStream(outPath);
+  // 先写同目录临时文件，成功后才改名到 outPath。
+  // 原来直接写 outPath：失败时 catch 里 rmSync(outPath) 会把**用户原本就存在**的
+  // 同名文件一起删掉（探测脚本 t7 复现过：解密失败后用户的重要文件消失）。
+  const cryptTmp = outPath + '.hehe-crypt-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+  const ws = fs.createWriteStream(cryptTmp);
   if (header) ws.write(header);
   let done = 0;
   const total = Math.max(1, st.size - srcStart);
@@ -834,8 +984,10 @@ async function cryptStream(p, outPath, password, decrypt) {
     await new Promise((resolve, reject) => {
       require('stream').pipeline(rs, cipher, ws, (err) => (err ? reject(err) : resolve()));
     });
+    await fsp.rename(cryptTmp, outPath);
   } catch (err) {
-    try { fs.rmSync(outPath, { force: true }); } catch (e) {}
+    // 只清理我们自己的临时文件；目标位置的原有文件保持不动
+    try { fs.rmSync(cryptTmp, { force: true }); } catch (e) {}
     if (decrypt && /bad decrypt|BAD_DECRYPT|wrong final block/.test(String(err.message))) throw new Error('解密失败：密码错误或文件已损坏');
     throw err;
   }
@@ -858,12 +1010,24 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
   const parts = Math.max(1, Math.ceil(st.size / chunkSize));
   const pad = String(parts).length;
   await fsp.mkdir(outDir, { recursive: true });
+  let realParts = 0;      // 实际产出的分片数
+  let writtenBytes = 0;   // 实际写入的总字节数
   await new Promise((resolve, reject) => {
     const rs = fs.createReadStream(p, { highWaterMark: 1 << 20 });
     let idx = 1, ws = null, done = 0, pausedFor = null;
+    // 分片必须排他创建（flags: 'wx'）：默认的 'w' 会截断已存在的同名分片，
+    // 用户重复分割同一个文件时，旧分片被静默覆盖，合并结果就是新旧混合。
     const openPart = () => {
-      ws = fs.createWriteStream(path.join(outDir, `${base}.part${String(idx).padStart(pad, '0')}`));
-      ws.on('error', reject); // 磁盘满/权限错误时让 Promise 落定，而非悬挂
+      const partPath = path.join(outDir, `${base}.part${String(idx).padStart(pad, '0')}`);
+      ws = fs.createWriteStream(partPath, { flags: 'wx' });
+      ws.on('error', (e) => {
+        if (e && e.code === 'EEXIST') {
+          reject(new Error('目标目录已存在同名分片：' + path.basename(partPath) + '（为避免覆盖已中止，请换个输出目录或先清理旧分片）'));
+          return;
+        }
+        reject(e); // 磁盘满/权限错误时让 Promise 落定，而非悬挂
+      });
+      realParts = idx;
     };
     openPart();
     rs.on('data', (chunk) => {
@@ -872,6 +1036,7 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
         if (ws.bytesWritten >= chunkSize) { ws.end(); idx++; openPart(); if (pausedFor && pausedFor !== ws) { pausedFor = null; rs.resume(); } }
         const n = Math.min(chunk.length - off, chunkSize - ws.bytesWritten);
         const piece = chunk.subarray(off, off + n); off += n;
+        writtenBytes += n;
         if (!ws.write(piece)) {
           // 背压：慢盘上防止内存无界堆积。
           // 注意 rs.pause() 只阻止后续 'data' 事件，当前这块 chunk 的 while 仍在继续写，
@@ -890,10 +1055,20 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
     rs.on('end', () => { ws.end(); ws.on('finish', resolve); });
     rs.on('error', reject);
   });
-  const manifest = { tool: 'hehe-split', name: base, size: st.size, chunkSize, parts };
+  /* 源文件在分割期间被追加/截断会让「清单声明」与「磁盘实际」脱节：
+     清单说 3 片、磁盘却有 5 片，合并时只读前 3 片 —— 合并结果少 20MB，
+     而 UI 还显示「合并完成」。这里直接核对实际字节数与起始大小。 */
+  if (writtenBytes !== st.size) {
+    throw new Error(`源文件在分割期间发生变化（开始时 ${st.size} 字节，实际写出 ${writtenBytes} 字节），已中止。请重新分割。`);
+  }
+  // 分片数以磁盘实际为准，避免清单声明值与磁盘不符
+  const finalParts = realParts || parts;
+  const manifest = { tool: 'hehe-split', name: base, size: st.size, chunkSize, parts: finalParts };
   const manifestPath = path.join(outDir, `${base}.manifest.hehe.json`);
-  await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
-  return { parts, manifestPath, outDir, chunkSize };
+  // 清单必须原子写：它是合并分片的唯一索引。直接 writeFile 中途失败会把
+  // 原本有效的清单改成非法 JSON，分片还在但再也合不回来了。
+  await writeFileAtomic(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+  return { parts: finalParts, manifestPath, outDir, chunkSize };
 });
 handle('fs:merge-parts', async (e, pickedPath, outPath) => {
   let manifestPath;
@@ -906,30 +1081,90 @@ handle('fs:merge-parts', async (e, pickedPath, outPath) => {
   const man = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
   if (man.tool !== 'hehe-split') throw new Error('清单文件无效');
   const dir = path.dirname(manifestPath);
+  // man.name 来自清单文件（内容可被构造），必须限制在清单所在目录内，
+  // 否则 .. 分片名能把读取路径指向目录外。
+  const safeName = pathGuard.resolveInside(dir, String(man.name || '').replace(/[\\/]/g, path.sep));
+  /* 清单里的 parts / size 也必须校验：
+     - parts 少了会把磁盘上真实存在的分片静默丢掉（合并结果缺数据，UI 还说"完成"）
+     - size 是非数值时 UI 会显示离谱的体积
+     - parts 无上限时能触发上亿次 open 调用 */
+  const parts = Number(man.parts);
+  if (!Number.isInteger(parts) || parts < 1 || parts > 100000) {
+    throw new Error('清单文件损坏：分片数量非法（' + String(man.parts) + '）');
+  }
+  const declSize = Number(man.size);
+  if (!Number.isFinite(declSize) || declSize < 0) {
+    throw new Error('清单文件损坏：原始大小非法（' + String(man.size) + '）');
+  }
+  // 磁盘上实际有几个分片？少于清单声明说明中间丢片，必须明确拒绝而不是少合几片。
+  const partBase = path.basename(safeName);
+  let onDisk = 0;
+  try {
+    const names = await fsp.readdir(dir);
+    const re = new RegExp('^' + partBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.part(\\d+)$');
+    for (const n of names) if (re.test(n)) onDisk++;
+  } catch (e) {}
+  if (onDisk !== 0 && onDisk < parts) {
+    throw new Error(`分片不完整：清单声明 ${parts} 片，目录里只有 ${onDisk} 片`);
+  }
   // 默认输出「原名.merged.扩展名」，且被占用时自动加序号，避免覆盖原始文件
   let finalOut = outPath;
   if (!finalOut) {
-    const ext = path.extname(man.name);
-    const stem = path.basename(man.name, ext);
+    const ext = path.extname(safeName);
+    const stem = path.basename(safeName, ext);
     finalOut = path.join(dir, `${stem}.merged${ext}`);
     for (let i = 1; i < 1000 && fs.existsSync(finalOut); i++) finalOut = path.join(dir, `${stem}.merged(${i})${ext}`);
+  } else {
+    // 用户显式指定了输出路径：仍要挡住系统关键目录
+    const bad = pathGuard.checkOverwritable(finalOut);
+    if (bad) throw pathGuard.err(bad.code, bad.reason);
+    // 已存在的文件不静默覆盖，改名加序号（与默认路径的行为一致）
+    if (fs.existsSync(finalOut)) {
+      const ext = path.extname(finalOut), stem = path.basename(finalOut, ext);
+      for (let i = 1; i < 1000; i++) {
+        const cand = path.join(path.dirname(finalOut), `${stem}.merged(${i})${ext}`);
+        if (!fs.existsSync(cand)) { finalOut = cand; break; }
+      }
+    }
   }
-  await new Promise((resolve, reject) => {
-    const ws = fs.createWriteStream(finalOut);
-    ws.on('error', reject);
-    let i = 1, done = 0;
-    const next = () => {
-      if (i > man.parts) { ws.end(); ws.on('finish', resolve); return; }
-      const part = path.join(dir, `${man.name}.part${String(i).padStart(String(man.parts).length, '0')}`);
-      const rs = fs.createReadStream(part);
-      rs.on('data', (c) => { done += c.length; send('job:progress', { id: finalOut, kind: 'merge', done, total: man.size }); });
-      rs.on('end', () => { i++; next(); });
-      rs.on('error', reject);
-      rs.pipe(ws, { end: false });
-    };
-    next();
-  });
-  return { outPath: finalOut, size: man.size, parts: man.parts };
+  await fsp.mkdir(path.dirname(finalOut), { recursive: true });
+  // 先写到临时名，全部合并成功后再改名到 finalOut。
+  // 否则中途遇到缺失/损坏的分片，最终文件名下会留下一个「看起来正常」的半截文件，
+  // 用户拿去用才发现内容不全（探测脚本 t8 复现过：4000 字节的残留文件）。
+  const partTmp = finalOut + '.merging-' + Date.now();
+  try {
+    let mergedBytes = 0;
+    await new Promise((resolve, reject) => {
+      const ws = fs.createWriteStream(partTmp);
+      ws.on('error', reject);
+      let i = 1, done = 0, failed = false;
+      const fail = (e) => { if (!failed) { failed = true; try { ws.destroy(); } catch (err) {} reject(e); } };
+      const next = () => {
+        if (failed) return;
+        if (i > parts) { ws.end(); ws.on('finish', resolve); return; }
+        const part = path.join(dir, `${path.basename(safeName)}.part${String(i).padStart(String(parts).length, '0')}`);
+        const rs = fs.createReadStream(part);
+        rs.on('data', (c) => { done += c.length; mergedBytes += c.length; send('job:progress', { id: finalOut, kind: 'merge', done, total: declSize }); });
+        rs.on('end', () => { i++; next(); });
+        rs.on('error', (e) => fail(new Error(`分片缺失或无法读取：${path.basename(part)}`)));
+        rs.pipe(ws, { end: false });
+      };
+      next();
+    });
+    // 合并后的字节数必须与清单声明一致：不一致说明分片被改过或清单过期，
+    // 宁可报错也不要交出一个"看起来正常"的残缺文件。
+    if (declSize > 0 && mergedBytes !== declSize) {
+      throw new Error(`合并结果大小不符：实际 ${mergedBytes} 字节，清单声明 ${declSize} 字节（分片可能已被修改）`);
+    }
+    await fsp.rename(partTmp, finalOut);
+  } catch (err) {
+    await fsp.rm(partTmp, { force: true }).catch(() => {});
+    throw err;
+  }
+  // 返回真实体积，而不是清单里的声明值
+  let realSize = 0;
+  try { realSize = (await fsp.stat(finalOut)).size; } catch (e) {}
+  return { outPath: finalOut, size: realSize, parts };
 });
 
 handle('fs:dedupe', async (e, root, opts = {}) => {
@@ -1019,12 +1254,29 @@ handle('fs:dedupe', async (e, root, opts = {}) => {
 
 /* zip */
 handle('zip:compress', async (e, paths, outZip) => {
+  // 输出文件不得静默覆盖（outZip 来自渲染层，IPC 本身也要设闸门）
+  const bad = pathGuard.checkOverwritable(outZip);
+  if (bad) throw pathGuard.err(bad.code, bad.reason);
+  if (fs.existsSync(outZip)) throw new Error('输出文件已存在，为避免覆盖已拒绝：' + outZip);
   const zip = new AdmZip();
+  const used = new Set();
   for (const p of paths) {
     const st = await fsp.stat(p);
     if (st.isDirectory()) zip.addLocalFolder(p, path.basename(p));
-    else zip.addLocalFile(p);
+    else {
+      // addLocalFile 不传 zipPath 时条目名 = basename。两个不同目录下的同名文件
+      // 会命中同一个条目名，adm-zip 直接覆盖前一个 —— 压缩完只剩一份，静默丢数据。
+      // 这里重名时自动加序号，保证每个源文件都有条目。
+      const base = path.basename(p);
+      let entryName = base;
+      const stem = path.basename(base, path.extname(base));
+      const ext = path.extname(base);
+      for (let i = 1; used.has(entryName.toLowerCase()); i++) entryName = `${stem}(${i})${ext}`;
+      used.add(entryName.toLowerCase());
+      zip.addLocalFile(p, '', entryName);
+    }
   }
+  if (!zip.getEntries().length) throw new Error('没有可压缩的文件');
   zip.writeZip(outZip);
   return { outZip, size: (await fsp.stat(outZip)).size };
 });
@@ -1038,6 +1290,9 @@ handle('zip:extract', async (e, zipPath, outDir) => {
     name: en.entryName,
     isDir: en.isDirectory,
     size: en.header && typeof en.header.size === 'number' ? en.header.size : 0,
+    // 压缩大小用于压缩比判定：zip bomb 的特征就是一个极小的压缩体
+    // 声称解压出极大内容（adm-zip 会按声明 size 一次性 Buffer.alloc）
+    compressedSize: en.header && typeof en.header.compressedSize === 'number' ? en.header.compressedSize : 0,
     isSymlink: false,   // AdmZip 未暴露 Unix 模式，ZIP 符号链接由下方前缀判定兜底
     isHardLink: false
   }));
@@ -1045,20 +1300,67 @@ handle('zip:extract', async (e, zipPath, outDir) => {
   if (!verdict.ok) throw new Error('压缩包预检未通过');
 
   await fsp.mkdir(outDir, { recursive: true });
-  // 不再用 overwrite=true：逐个条目解析绝对路径（再过一道 escape 断言）后写入
-  for (const en of zip.getEntries()) {
-    const name = archiveGuard.normalizeName(en.entryName);
-    if (!name || name === '.' || name === './') continue;
-    const target = archiveGuard.resolveTarget(outDir, name);
-    if (en.isDirectory) { await fsp.mkdir(target, { recursive: true }); continue; }
-    await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.writeFile(target, en.getData());
+  /* 两个必须同时成立的性质：
+     1) 同名不覆盖（用户原有文件不能被归档内容冲掉）
+     2) 目录条目与文件条目路由到同一父目录
+        若目录 sub/ 因冲突改名成 sub(1)/，而文件 sub/b.txt 仍写进原来的 sub/，
+        归档内容就混进了用户已有目录。
+    所以：目录条目一律复用（不编号），只有文件在冲突时加序号。
+     3) 中途失败要回滚，不能留半成品（与 seven:extract 行为一致） */
+  const dirSet = new Set();
+  const dirFor = async (rel) => {
+    const abs = pathGuard.resolveInside(outDir, rel);
+    if (!dirSet.has(abs)) { await fsp.mkdir(abs, { recursive: true }); dirSet.add(abs); }
+    return abs;
+  };
+  const writtenPaths = [];
+  try {
+    let written = 0;
+    for (const en of zip.getEntries()) {
+      const name = archiveGuard.normalizeName(en.entryName);
+      if (!name || name === '.' || name === './') continue;
+      if (en.isDirectory) { await dirFor(name); continue; }
+      const parentRel = path.dirname(name);
+      const parentAbs = parentRel && parentRel !== '.' ? await dirFor(parentRel) : path.resolve(outDir);
+      const target = await uniqueTarget(parentAbs, path.basename(name));
+      const data = en.getData();   // 可能抛 CRC 错，此刻尚未落盘
+      await fsp.writeFile(target, data);
+      writtenPaths.push(target);
+      written++;
+    }
+    return { outDir, entries: written };
+  } catch (err) {
+    for (const p of writtenPaths) { try { await fsp.rm(p, { force: true }); } catch (e) {} }
+    throw err;
   }
-  return { outDir, entries: verdict.entries.length };
 });
 
 /* ================= IPC: exec / process ================= */
+/* 危险系统命令的识别：exec:run 是通用命令通道，本身不设高危门禁（快捷启动等功能要用它），
+ * 但**关机/重启/休眠**这类不可逆操作必须走 system-power 门禁 ——
+ * 否则用户没开「系统电源操作」开关，也能通过「定时任务」工具里的
+ * `shutdown /s /t 60` 把机器关掉，等于门禁形同虚设。
+ *
+ * 注意 `shutdown /a`（取消已安排的关机）是**无害的恢复操作**，必须放行 ——
+ * 否则用户没法取消自己刚排的关机。 */
+const POWER_CMD_RE = /^\s*(shutdown(\s|$)|rundll32\.exe\s+powrprof|powershell.*SetSuspendState|Stop-Computer|Restart-Computer)/i;
+const POWER_CANCEL_RE = /^\s*shutdown\s+\/a(\s|$)/i;
+function isPowerCommand(cmd) {
+  const s = String(cmd || '');
+  if (POWER_CANCEL_RE.test(s)) return false;   // 取消关机不算危险操作
+  return POWER_CMD_RE.test(s);
+}
+function assertPowerAllowed(cmd) {
+  if (isPowerCommand(cmd) && !dangerousEnabled('system-power')) {
+    const e = new Error(dangerousDenied('system-power'));
+    e.code = 'CAP_DENIED';
+    throw e;
+  }
+}
 handle('exec:run', async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
+  // 关机/重启/休眠必须先在设置里开启「系统电源操作」
+  assertPowerAllowed(cmd);
+  if (args && args.length) assertPowerAllowed(args.join(' '));
   if (shellType === 'ps') return await ps(cmd, timeoutMs || 30000, cwd);
   if (shellType === 'cmd') {
     return await runCmd('cmd.exe', ['/c', cmd], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk' });
@@ -1066,6 +1368,9 @@ handle('exec:run', async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
   return await runCmd(cmd, args || [], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk' });
 });
 handle('exec:stream', (e, { command, args, cwd }) => {
+  // 流式通道同样要过电源门禁
+  assertPowerAllowed(command);
+  if (args && args.length) assertPowerAllowed(args.join(' '));
   const id = 'job' + (++jobSeq);
   const proc = spawn(command, args || [], { windowsHide: true, cwd });
   jobs.set(id, {
@@ -1116,8 +1421,41 @@ handle('proc:detail', async (e, pid) => {
   const j = JSON.parse(r.stdout);
   return { path: j.ExecutablePath || '', cmdline: j.CommandLine || '' };
 });
+/* 系统关键进程黑名单：结束它们会导致蓝屏 / 强制重启 / 会话崩溃。
+ * 按**进程名**判断（PID 每次启动都变，不可靠）。
+ *   lsass     -> 本地安全认证，杀掉立即蓝屏重启
+ *   csrss     -> 客户端/服务器运行时子系统，杀掉立即蓝屏
+ *   wininit / services / smss / winlogon -> 启动与会话管理，杀掉系统不可用
+ *   System / Registry / Memory Compression -> 内核线程，无法也不应结束 */
+const PROTECTED_PROC_NAMES = new Set([
+  'system', 'registry', 'smss', 'csrss', 'wininit', 'services', 'winlogon', 'lsass',
+  'lsaiso', 'fontdrvhost', 'dwm', 'memory compression', 'secure system', 'msmpeng',
+  'svchost', 'explorer'
+]);
+const PROTECTED_PROC_PID_MAX = 1000;   // 低 PID 区几乎全是系统进程，保守拦截
+
 handle('proc:kill', async (e, pid) => {
-  await runCmd('taskkill', ['/pid', String(pid), '/f'], { timeout: 10000 });
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) throw new Error('进程 ID 无效');
+  // 不能杀自己：主进程被杀会导致正在进行的录制/下载/写盘中断，
+  // flushStore 没机会执行，hehe-data.json 会停留在旧状态（最坏丢一次改动）。
+  if (n === process.pid) throw new Error('不能结束本程序自身的进程');
+  // 查进程名，命中系统关键进程直接拒绝。注意 taskkill 的 /f 对 lsass 这类
+  // 受保护进程会触发系统强制重启（蓝屏），是不可逆破坏。
+  try {
+    const r = await ps(`try{(Get-Process -Id ${n} -ErrorAction Stop).ProcessName}catch{''}`, 10000);
+    const pname = String(r.stdout || '').trim().toLowerCase();
+    if (pname && PROTECTED_PROC_NAMES.has(pname)) {
+      throw new Error(`拒绝结束系统关键进程：${pname}（ID ${n}）。结束它会导致系统蓝屏或强制重启。`);
+    }
+    if (n <= PROTECTED_PROC_PID_MAX) {
+      throw new Error(`拒绝结束 PID ${n}：低 PID 区（≤${PROTECTED_PROC_PID_MAX}）通常是系统进程，误杀会造成不可逆损坏。如确认无误请用任务管理器操作。`);
+    }
+  } catch (err) {
+    // 查不到进程名时放行（进程可能已退出），但低 PID 拦截仍然生效
+    if (/拒绝结束/.test(String(err.message))) throw err;
+  }
+  await runCmd('taskkill', ['/pid', String(n), '/f'], { timeout: 10000 });
   return true;
 });
 
@@ -1404,7 +1742,14 @@ handle('autostart:delete', async (e, item, permanent) => {
   return true;
 });
 handle('autostart:enable', async (e, item) => {
-  await runCmd('reg', ['add', item.key, '/v', item.name, '/t', item.type || 'REG_SZ', '/d', item.cmd, '/f'], { timeout: 10000 });
+  /* /t 必须带 REG_ 前缀！实测（Windows 11 + Node 24）：
+       reg add ... /t REG_SZ   -> 成功
+       reg add ... /t SZ       -> "无效语法" 失败
+     曾有人误以为 reg 只认 SZ，建议去掉前缀 —— 那会让「恢复启用」永远失败。
+     item.type 在 autostart:list 里就是按 'REG_' + m[2] 存的，这里直接用。 */
+  const rawType = String(item.type || 'REG_SZ').trim().toUpperCase();
+  const type = rawType.startsWith('REG_') ? rawType : 'REG_' + rawType;
+  await runCmd('reg', ['add', item.key, '/v', item.name, '/t', type, '/d', item.cmd, '/f'], { timeout: 10000 });
   const bak = storeGet('autostartBackup', []).filter(b => !(b.hive === item.hive && b.name === item.name));
   storeSet('autostartBackup', bak);
   return true;
@@ -1418,19 +1763,50 @@ handle('hosts:write', async (e, content) => {
   // 直接覆盖系统 hosts 有风险（写入中途失败会留下半截文件，影响全机 DNS）。
   // 先自动备份，再写临时文件后原子替换。
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
+  let backedUp = false;
   try {
     await fsp.mkdir(dir, { recursive: true });
-    const name = `hosts-${new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)}.bak`;
+    // 备份名精确到毫秒 + 随机后缀：只到秒的话，同一秒内连点两次保存会互相覆盖备份，
+    // 第一次那份（可能才是正确的）就没了。
+    const name = `hosts-${new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23)}-${crypto.randomBytes(2).toString('hex')}.bak`;
     await fsp.copyFile(HOSTS_PATH, path.join(dir, name));
-  } catch (err) { /* 备份失败不阻断，但下面仍是原子写入 */ }
+    backedUp = true;
+  } catch (err) {
+    // 备份失败必须中止：没有退路时覆盖 hosts，一旦写入出问题用户无法恢复原文件。
+    // 原实现是「备份失败不阻断」，等于拿用户的系统 hosts 赌一把。
+    throw new Error('备份当前 hosts 失败，已中止写入（避免无法恢复）：' + fmtErr(err));
+  }
   const tmp = HOSTS_PATH + '.hehe.tmp';
-  await fsp.writeFile(tmp, content, 'utf8');
+  try {
+    await fsp.writeFile(tmp, content, 'utf8');
+  } catch (err) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw new Error('写入临时文件失败，原 hosts 未被改动：' + fmtErr(err));
+  }
   try {
     await fsp.rename(tmp, HOSTS_PATH);
   } catch (err) {
-    // Windows 上目标存在时 rename 可能失败：退化为先删后改，并清理临时文件
-    await fsp.rm(tmp, { force: true }).catch(() => {});
-    await fsp.writeFile(HOSTS_PATH, content, 'utf8');
+    // Windows 上目标存在时 rename 会失败。退化为「删旧 + 改名」，
+    // 关键是不要退化成直接 writeFile(HOSTS_PATH)：那是 O_TRUNC 覆盖写，
+    // 中途失败会留下半截 hosts，影响全机 DNS。
+    await fsp.rm(HOSTS_PATH, { force: true }).catch(() => {});
+    try {
+      await fsp.rename(tmp, HOSTS_PATH);
+    } catch (err2) {
+      // 到这里 hosts 已被删、tmp 还在。**必须先用 tmp 把 hosts 补回来，再清理 tmp** ——
+      // 顺序反了（先 rm(tmp) 再 copyFile(tmp)）就等于把系统 hosts 彻底弄丢：
+      // 原文件已删、唯一副本也被删，只剩 userData 里的备份，全机 DNS 直接断。
+      let restored = false;
+      try {
+        await fsp.copyFile(tmp, HOSTS_PATH);
+        restored = true;
+      } catch (e3) {
+        // 连复制都失败：至少别删 tmp，让用户/运维还有机会手工恢复
+        throw new Error('替换 hosts 失败且无法恢复：' + fmtErr(err2) + '；临时文件已保留在 ' + tmp + '，备份在 ' + dir);
+      }
+      if (restored) await fsp.rm(tmp, { force: true }).catch(() => {});
+      throw new Error('替换 hosts 失败：' + fmtErr(err2) + '（原 hosts 已从临时文件恢复，已保留备份）');
+    }
   }
   try { await runCmd('ipconfig', ['/flushdns'], { timeout: 10000 }); } catch (err) {}
   return true;
@@ -1438,7 +1814,7 @@ handle('hosts:write', async (e, content) => {
 handle('hosts:backup', async () => {
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
   await fsp.mkdir(dir, { recursive: true });
-  const name = `hosts-${new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)}.bak`;
+  const name = `hosts-${new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23)}-${crypto.randomBytes(2).toString('hex')}.bak`;
   await fsp.copyFile(HOSTS_PATH, path.join(dir, name));
   return { name };
 });
@@ -1455,7 +1831,30 @@ handle('hosts:restore', async (e, backupPath) => {
     throw new Error('备份文件无效：只能还原本机生成的 hosts 备份');
   }
   if (!(await pathExists(abs))) throw new Error('备份文件不存在：' + path.basename(abs));
-  await fsp.copyFile(abs, HOSTS_PATH);
+
+  /* 还原前必须把**当前** hosts 也备份一份。
+     原来直接 copyFile(备份 -> hosts)：用户选错备份时，当前的 hosts 当场被冲掉，
+     而且没有任何副本可以退回 —— 等于「还原」变成了不可逆操作。
+     另外用临时文件 + rename 原子替换，避免写到一半留下半截 hosts。 */
+  const stamp = new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23) + '-' + crypto.randomBytes(2).toString('hex');
+  try {
+    await fsp.copyFile(HOSTS_PATH, path.join(dir, `hosts-prerestore-${stamp}.bak`));
+  } catch (err) {
+    throw new Error('备份当前 hosts 失败，已中止还原（避免无法退回）：' + fmtErr(err));
+  }
+  const tmp = HOSTS_PATH + '.hehe.restore.tmp';
+  try {
+    await fsp.copyFile(abs, tmp);
+    await fsp.rename(tmp, HOSTS_PATH);
+  } catch (err) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    // 与 hosts:write 同理：不能退化成直接覆盖写
+    try {
+      await fsp.copyFile(abs, HOSTS_PATH);
+    } catch (e2) {
+      throw new Error('还原 hosts 失败：' + fmtErr(err) + '（当前 hosts 的备份已保存在 hosts-backup 目录）');
+    }
+  }
   try { await runCmd('ipconfig', ['/flushdns'], { timeout: 10000 }); } catch (err) {}
   return true;
 });
@@ -2115,6 +2514,12 @@ handle('ffmpeg:frames', async (e, { input, outDir, mode, ss, every, count, width
 handle('ffmpeg:audio-cut', async (e, { input, out, ss, dur, fadeIn, fadeOut, gain, format }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  // 输出路径不允许等于输入路径（否则会把源文件覆盖成剪辑结果）
+  try {
+    if (path.resolve(String(out)) === path.resolve(String(input))) throw new Error('输出文件不能与源文件相同');
+    const bad = pathGuard.checkOverwritable(out);
+    if (bad) throw pathGuard.err(bad.code, bad.reason);
+  } catch (err) { throw err; }
   const ac = format === 'mp3' ? 'libmp3lame' : format === 'wav' ? 'pcm_s16le' : format === 'flac' ? 'flac' : 'aac';
   const args = ['-hide_banner', '-y'];
   if (ss) args.push('-ss', String(ss));
@@ -2174,12 +2579,28 @@ handle('office:convert', async (e, { files, target, outDir }) => {
   await fsp.mkdir(outDir, { recursive: true });
   if (soffice) {
     for (const f of files) {
+      // soffice 的输出名由它自己按「源基名.目标扩展名」决定，无法直接指定文件名。
+      // 如果直接 --outdir 到用户选的目录，而同名文件已存在，就会静默覆盖
+      // （「输出目录留空=源文件目录」时尤其常见：合同.docx 转 pdf 会盖掉已有的合同.pdf）。
+      // 做法：先转到任务专属临时目录，再用 uniqueTarget 挪到目标目录。
+      const stage = path.join(app.getPath('temp'), 'hehe-uniq-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
       try {
-        await runCmd(soffice, ['--headless', '--norestore', '--convert-to', target, '--outdir', outDir, f], { timeout: 180000 });
-        const out = path.join(outDir, path.basename(f).replace(/\.[^.]+$/, '') + '.' + target);
-        const exists = await pathExists(out);
-        results.push({ input: f, out: exists ? out : null, ok: exists, err: '' });
-      } catch (err) { results.push({ input: f, out: null, ok: false, err: fmtErr(err) }); }
+        await fsp.mkdir(stage, { recursive: true });
+        await runCmd(soffice, ['--headless', '--norestore', '--convert-to', target, '--outdir', stage, f], { timeout: 180000 });
+        const produced = path.join(stage, path.basename(f).replace(/\.[^.]+$/, '') + '.' + target);
+        if (!(await pathExists(produced))) {
+          results.push({ input: f, out: null, ok: false, err: '转换未产出文件（格式可能不支持）' });
+          continue;
+        }
+        const out = await uniqueTarget(outDir, path.basename(produced));
+        await fsp.mkdir(path.dirname(out), { recursive: true });
+        await fsp.rename(produced, out);
+        results.push({ input: f, out, ok: true, err: '' });
+      } catch (err) {
+        results.push({ input: f, out: null, ok: false, err: fmtErr(err) });
+      } finally {
+        await fsp.rm(stage, { recursive: true, force: true }).catch(() => {});
+      }
     }
     return { engine: 'LibreOffice', results };
   }
@@ -2191,7 +2612,12 @@ handle('office:convert', async (e, { files, target, outDir }) => {
     const isMsXls = ['.xls', '.xlsx', '.csv'].includes(ext);
     const isMsPpt = ['.ppt', '.pptx'].includes(ext);
     const base = path.basename(f).replace(/\.[^.]+$/, '');
-    const out = path.join(outDir, base + '.' + target);
+    // 输出名必须唯一：输出目录常常就是源文件目录（「留空=源文件目录」），
+    // 而 docx/pdf/rtf/txt 同基名共存很常见。直接写 base+target 会把
+    // 已有的同名异扩展文件静默覆盖（例：把合同.pdf 转 docx，覆盖掉原来的合同.docx）。
+    let out;
+    try { out = await uniqueTarget(outDir, base + '.' + target); }
+    catch (e) { results.push({ input: f, out: null, ok: false, err: '输出路径非法：' + fmtErr(e) }); continue; }
     try {
       let script = '';
       const inP = f.replace(/'/g, "''"), outP = out.replace(/'/g, "''");
@@ -2262,10 +2688,21 @@ handle('ctxmenu:list', async () => {
   return groups;
 });
 handle('ctxmenu:toggle', async (e, item, disable) => {
+  // keyPath 是「从 reg query 输出里正则解析出来的字符串」，再拼进 reg add/delete。
+  // 必须限制在 CTX_ROOTS 这些允许的根之下，否则解析出畸形路径就能写任意注册表位置。
+  const FULL_ROOTS = CTX_ROOTS.map(([k]) => k.replace(/^HKCR/i, 'HKEY_CLASSES_ROOT'));
+  const kp = String((item && item.keyPath) || '');
+  const upper = kp.toUpperCase();
+  const allowed = FULL_ROOTS.some(root => upper === root.toUpperCase() || upper.startsWith(root.toUpperCase() + '\\'));
+  if (!allowed) throw new Error('非法的注册表路径，已拒绝：' + kp);
+  // 只允许两级以内的子项（根\项名 或 根\项名\command），防止深层改写
+  const root = FULL_ROOTS.find(r => upper === r.toUpperCase() || upper.startsWith(r.toUpperCase() + '\\'));
+  const depth = kp.slice(root.length).split('\\').filter(Boolean).length;
+  if (depth > 2) throw new Error('注册表路径层级过深，已拒绝：' + kp);
   if (disable) {
-    await runCmd('reg', ['add', item.keyPath, '/v', 'LegacyDisable', '/t', 'REG_SZ', '/d', '', '/f'], { timeout: 10000 });
+    await runCmd('reg', ['add', kp, '/v', 'LegacyDisable', '/t', 'REG_SZ', '/d', '', '/f'], { timeout: 10000 });
   } else {
-    await runCmd('reg', ['delete', item.keyPath, '/v', 'LegacyDisable', '/f'], { timeout: 10000 });
+    await runCmd('reg', ['delete', kp, '/v', 'LegacyDisable', '/f'], { timeout: 10000 });
   }
   return true;
 });
@@ -2691,20 +3128,36 @@ handle('rec:stop', async (e, makeGif) => {
         degraded = `分段合并失败且无法保存任何分段：${err.message}`;
         throw err;
       }
+      // 分段目录会被保留（finally 里降级时不删），把路径告诉用户以便手工合并
+      degraded += `；剩余分段保留在 ${recSegDir}`;
     }
     let gifOut = null;
     if (makeGif) {
+      const gifTarget = recOut.replace(/\.mp4$/i, '.gif');
       try {
-        gifOut = recOut.replace(/\.mp4$/i, '.gif');
         const ffmpeg = findFfmpeg();
-        await runCmd(ffmpeg, ['-y', '-hide_banner', '-i', recOut, '-vf', 'fps=10,scale=480:-2:flags=lanczos', gifOut], { timeout: 300000 });
-      } catch (err) { gifOut = null; }
+        const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-i', recOut, '-vf', 'fps=10,scale=480:-2:flags=lanczos', gifTarget], { timeout: 300000 });
+        if (r.code !== 0) throw new Error('GIF 转码失败');
+        gifOut = gifTarget;
+      } catch (err) {
+        // 失败时 ffmpeg 会留下体积不足的残缺 .gif，必须删掉，
+        // 否则用户看到「录制完成」却发现目录里多了一个打不开的文件。
+        await fsp.rm(gifTarget, { force: true }).catch(() => {});
+        gifOut = null;
+      }
     }
     let size = 0;
     try { size = (await fsp.stat(recOut)).size; } catch (e) {}
     return { ok: true, size, outPath: recOut, gif: gifOut, degraded };
   } finally {
-    await fsp.rm(recSegDir, { recursive: true, force: true }).catch(() => {});
+    // 降级（拼接失败、只保住第一段）时**不删**分段目录：
+    // 用户可能想手工合并剩下的分段，无条件删掉等于把后半段录像永久销毁。
+    // 只有完整成功才清理。
+    if (!degraded) {
+      await fsp.rm(recSegDir, { recursive: true, force: true }).catch(() => {});
+    } else {
+      console.warn('[rec] 保留分段目录以便手工恢复：' + recSegDir);
+    }
     recOpts = null; recSegs = []; recSegDir = null;
   }
 });
@@ -2856,7 +3309,23 @@ async function runSeven(bin, args, opts = {}) {
   const { password, timeout = 600000 } = opts;
   const realArgs = args.slice();
   realArgs.push(password ? sevenPwdArg(password) : '-p');
-  return runCmd(bin, realArgs, { timeout });
+  try {
+    return await runCmd(bin, realArgs, { timeout });
+  } catch (err) {
+    /* 密码脱敏：execFile 失败时 err.message 是**完整命令行**，
+       里面有 -p<密码> 明文。这个 err 会被 handle() 包装成
+       {ok:false,error} 返回渲染层，渲染层再 toast 出去 ——
+       等于把用户密码弹在屏幕上（还会进日志）。
+       另外进程管理器里也能看到命令行，这点无法完全消除（7za 只支持 -p 传参），
+       但至少不能让它回显到 UI。 */
+    const msg = String((err && err.message) || err || '');
+    const clean = password
+      ? msg.split(String(password)).join('***').split(sevenPwdArg(password)).join('-p***')
+      : msg;
+    const e = new Error(clean || '7z 操作失败');
+    e.code = (err && err.code) || 'SEVEN_FAILED';
+    throw e;
+  }
 }
 
 /* 递归扫描一个目录，产出 archive-guard 需要的条目清单（相对名 + 是否目录 + 大小）。
@@ -2906,9 +3375,14 @@ handle('seven:extract', async (e, { archive, outDir, password }) => {
   /* 先解到任务专属临时目录，全部成功后再合并到 outDir。
      原实现直接 -o<outDir>：中途出错（缺卷、CRC 错、磁盘满）会在目标目录
      留下半截文件，用户无法分辨哪些是完整的。
-     这样失败时只需删掉自己的临时目录，目标目录一个字节都不会被污染。 */
-  const staging = path.join(app.getPath('temp'), 'hehe-7zx-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
+     这样失败时只需删掉自己的临时目录，目标目录一个字节都不会被污染。
+
+     重要：staging 必须与 outDir **同卷**。原先放在 %TEMP%（通常 C:），
+     而用户常把压缩包解到 D:/E: 盘，此时 fsp.rename 会抛 EXDEV（跨设备链接不允许），
+     等于「解压到非 C 盘」100% 失败。放在 outDir 下的隐藏目录即可同卷。 */
+  const staging = path.join(outDir, '.hehe-7zx-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
   await fsp.mkdir(staging, { recursive: true });
+  const movedTo = [];   // 已搬到 outDir 的目标路径，用于失败回滚
   try {
     const args = ['x', '-y', '-bd', '-o' + staging, archive];
     const r = await runSeven(bin, args, { password });
@@ -2919,17 +3393,35 @@ handle('seven:extract', async (e, { archive, outDir, password }) => {
     const verdict = archiveGuard.inspectEntries(scanned);
     if (!verdict.ok) throw new Error('解压内容预检未通过');
 
-    // 合并：逐个移动，同名不覆盖（自动编号），保留目录结构
+    /* 目录条目与文件条目必须路由到同一个父目录：
+       若目录 sub/ 因冲突改名为 sub(1)/，而文件 sub/b.txt 仍写进原来的 sub/，
+       归档内容就会混进用户已有目录（zip:extract 那边踩过同样的坑）。
+       所以：目录条目一律不改名（已存在就复用），只有文件冲突才编号。 */
+    const dirSet = new Set();
+    const dirFor = async (rel) => {
+      const abs = pathGuard.resolveInside(outDir, rel);
+      if (!dirSet.has(abs)) { await fsp.mkdir(abs, { recursive: true }); dirSet.add(abs); }
+      return abs;
+    };
     let moved = 0;
     for (const ent of verdict.entries) {
       const src = archiveGuard.resolveTarget(staging, ent.name);
-      const dst = await uniqueTarget(outDir, ent.name);
-      if (ent.isDir) { await fsp.mkdir(dst, { recursive: true }); continue; }
-      await fsp.mkdir(path.dirname(dst), { recursive: true });
+      if (ent.isDir) { await dirFor(ent.name); continue; }
+      const parentRel = path.dirname(ent.name);
+      const parentAbs = parentRel && parentRel !== '.' ? await dirFor(parentRel) : path.resolve(outDir);
+      // 只有文件需要唯一化；目录层已确定，文件落进对应目录
+      const dst = await uniqueTarget(parentAbs, path.basename(ent.name));
       await fsp.rename(src, dst);
+      movedTo.push(dst);
       moved++;
     }
     return { outDir, entries: moved };
+  } catch (err) {
+    // 合并阶段失败：把已经搬出去的条目撤回去，让 outDir 不留半成品
+    for (const dst of movedTo.reverse()) {
+      try { await fsp.rm(dst, { force: true }); } catch (e) {}
+    }
+    throw err;
   } finally {
     try { await fsp.rm(staging, { recursive: true, force: true }); } catch (err) {}
   }
@@ -2998,10 +3490,29 @@ handle('svc:list', async () => {
     StartType: s.StartType
   }));
 });
+/* 关键服务黑名单：停掉它们会造成难以察觉的长期系统损坏
+ *   rpcss/dcomlaunch -> RPC 与 COM 基础，停掉大量程序立即失效
+ *   eventsystem/eventlog -> 事件日志，丢了就查不到故障记录
+ *   bits -> 后台传输，停掉 Windows Update / 商店更新全挂
+ *   windefend -> Defender，停掉等于裸奔
+ *   schedule -> 任务计划，所有计划任务失效
+ *   plugplay / power -> 设备即插即用与电源管理
+ *   cryptsvc -> 加密服务，证书/HTTPS 相关全线异常
+ *   wuauserv -> Windows Update
+ *   msiserver -> Windows Installer，装/卸软件会失败 */
+const PROTECTED_SVCS = new Set([
+  'rpcss', 'dcomlaunch', 'eventsystem', 'eventlog', 'bits', 'windefend',
+  'schedule', 'plugplay', 'power', 'cryptsvc', 'wuauserv', 'msiserver',
+  'lsm', 'samss', 'winmgmt', 'themes', 'audiosrv', 'dhcp', 'dnscache',
+  'lanmanworkstation', 'nsi'
+]);
 handle('svc:action', async (e, name, action) => {
   if (!['start', 'stop'].includes(action)) throw new Error('不支持的操作');
   // 启动服务是无害的恢复操作；停止服务会让依赖它的程序异常退出，才需要高危授权
   if (action === 'stop' && !dangerousEnabled('service-stop')) throw new Error(dangerousDenied('service-stop'));
+  if (action === 'stop' && PROTECTED_SVCS.has(String(name || '').toLowerCase())) {
+    throw new Error(`拒绝停止系统关键服务：${name}。停止它会导致系统功能异常（网络/DNS/更新/安全组件等），且难以察觉。`);
+  }
   const r = await runCmd('sc.exe', [action, name], { timeout: 30000, encoding: 'gbk' });
   if (r.code !== 0) throw new Error((r.stderr || r.stdout || '').split(/\r?\n/).filter(l => l.trim()).slice(-1).join(' ') || '操作失败（启动/停止服务通常需要管理员权限）');
   return true;
@@ -3224,9 +3735,21 @@ handle('update:apply', async (e, opts = {}) => {
     '  $deadline = [DateTime]::Now.AddSeconds(90)',
     '  while ((Get-Process -Id $targetPid -ErrorAction SilentlyContinue) -and ([DateTime]::Now -lt $deadline)) { Start-Sleep -Milliseconds 300 }',
     '  Start-Sleep -Milliseconds 600',
-    // 先备份旧版，再覆盖：备份失败就中止，避免没有退路
-    '  if (Test-Path -LiteralPath $target) { Copy-Item -LiteralPath $target -Destination $backup -Force }',
+    // 1) 备份旧版，但**不要覆盖上一份备份**：
+    //    原实现是 Copy-Item -Force 直接盖掉 .bak，用户连续升级两次后，
+    //    更早的那个版本就永久丢了（回滚只能回到上一个版本）。
+    //    改成带时间戳的多份备份：target.bak（最近一次）+ target.bak.<时间戳>（历史）
+    '  if (Test-Path -LiteralPath $target) {',
+    '    $stamp = [DateTime]::Now.ToString("yyyyMMdd-HHmmss")',
+    '    Copy-Item -LiteralPath $target -Destination ($backup + "." + $stamp) -Force',
+    '    Copy-Item -LiteralPath $target -Destination $backup -Force',
+    '  }',
+    // 2) 记录源文件大小，替换后校验：Copy-Item 中途失败会留下半个 exe，
+    //    而 target.exe 正是用户唯一的启动入口
+    '  $srcLen = (Get-Item -LiteralPath $newExe).Length',
     '  Copy-Item -LiteralPath $newExe -Destination $target -Force',
+    '  $dstLen = (Get-Item -LiteralPath $target).Length',
+    '  if ($dstLen -ne $srcLen) { throw ("替换后大小不符：" + $dstLen + " != " + $srcLen) }',
     '  Add-Content -LiteralPath $log -Value ("replaced: " + $target)',
     '} catch {',
     '  Add-Content -LiteralPath $log -Value ("failed: " + $_.Exception.Message)',
@@ -3235,10 +3758,17 @@ handle('update:apply', async (e, opts = {}) => {
     '  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue',
     '  exit 1',
     '}',
-    // 启动失败不应算作替换失败：文件已就位，用户手动双击即可
-    'try { Start-Process -FilePath $target } catch { Add-Content -LiteralPath $log -Value ("launch-failed: " + $_.Exception.Message) }',
+    // 3) 启动新版。启动失败时**保留下载包**：用户手里还得有新版可以手动重试，
+    //    原实现是无条件删除 newExe，等于把用户唯一的「新版文件」也弄没了。
+    '$launched = $false',
+    'try { Start-Process -FilePath $target; $launched = $true }',
+    'catch { Add-Content -LiteralPath $log -Value ("launch-failed: " + $_.Exception.Message) }',
+    'if (-not $launched) {',
+    '  Add-Content -LiteralPath $log -Value "kept-new-exe-for-retry"',
+    '} else {',
     // 新版成功拉起后删除下载包（避免每次升级都留一份 90MB+）
-    'try { if ($newExe -ne $target) { Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue } } catch {}',
+    '  try { if ($newExe -ne $target) { Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue } } catch {}',
+    '}',
     'Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue'
   ].join('\r\n');
   // 回滚脚本：任何时候双击即可退回升级前的版本
@@ -3461,7 +3991,9 @@ handle('notes:pdf', async (e, { title, html, outPath }) => {
       `${html}</body></html>`));
     await new Promise(r => setTimeout(r, 300));
     const buf = await bw.webContents.printToPDF({ printBackground: true, margins: { marginType: 'default' } });
-    fs.writeFileSync(outFile, buf);
+    // 用原子写：writeFileSync 是 O_TRUNC 覆盖，导出中途磁盘满/进程被杀
+    // 会把用户原有的那份 PDF 截断成半截甚至空文件。
+    await writeFileAtomic(outFile, buf);
     return { out: outFile, size: buf.length };
   } finally { bw.destroy(); }
 });
@@ -3493,12 +4025,25 @@ handle('clip:remove-images', async (e, files) => {
 });
 // 孤儿图片清扫：store 里已无引用的 clip-img 文件（崩溃/旧版本遗留）
 handle('clip:gc-images', async () => {
+  // 必须确认 clipHistory 是**真正的数组**。JSON 解析成功但缺这个字段
+  // （手工编辑、旧版本升级）时 storeGet 返回默认 []，used 为空 ->
+  // 目录里每一张图片都会被当成孤儿删光。
+  const hist = storeGet('clipHistory', null);
+  if (!Array.isArray(hist)) {
+    console.warn('[gc] clipHistory 缺失或类型异常，跳过清扫');
+    return { removed: 0, kept: 0, skipped: true };
+  }
   const dir = clipImgDir();
   let names = [];
   try { names = await fsp.readdir(dir); } catch (e) { return { removed: 0, kept: 0 }; }
   const used = new Set();
-  for (const it of (storeGet('clipHistory', []) || [])) {
+  for (const it of hist) {
     if (it && it.file && isClipImgPath(it.file)) used.add(path.resolve(it.file));
+  }
+  // 二次保险：历史里一条图片都没有时不清理（很可能是数据异常而非真的全空）
+  if (used.size === 0 && names.filter(n => /\.png$/i.test(n)).length > 0) {
+    console.warn('[gc] clipHistory 里没有任何图片引用，但目录里有文件，跳过清扫以防止误删');
+    return { removed: 0, kept: 0, skipped: true };
   }
   let removed = 0;
   for (const n of names) {
@@ -3516,8 +4061,10 @@ handle('clip:gc-images', async () => {
 // 资源管理器就回落到 Win10 经典菜单。这是社区验证过的唯一有效做法。
 // 早前写成 \InnoServerSetup —— 那个子键名不存在于任何已知做法，对 COM 激活毫无影响，
 // 于是写了个废键、UI 却报“已切换”，状态检测又只查父键是否存在，三处全是假阳性。
-// reg.exe 不认 HKCU\ 这类简写：直接传 HKCU\... 会报 "Invalid key name"，
-// 写成全称 HKEY_CURRENT_USER\... 才能正确读写（实测 Windows 11 上如此）。
+// reg.exe **支持** HKCU\ 简写（实测 add/query/delete 都正常），
+// 这里用全称只是为了输出可读、与 HKCR 那套解析保持一致。
+// 曾经误判成「reg 不认简写」—— 那是因为当时查的键正好不存在，
+// 把 "系统找不到指定的注册表项" 误读成了 "Invalid key name"。
 const WIN11_CTX_KEY = 'HKEY_CURRENT_USER\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}';
 const WIN11_CTX_HANDLER = WIN11_CTX_KEY + '\\InprocServer32';
 handle('ctxmenu:classic', async (e, on, restart) => {
@@ -3537,10 +4084,8 @@ handle('ctxmenu:classic', async (e, on, restart) => {
 // 真正的判据是 InprocServer32 存在且默认值为空——只看父键存在会把
 // 系统自带的那个 CLSID 也算成“经典模式”，永远显示已开启。
 //
-// 两个解码陷阱（都实测踩过）：
-//  1) reg.exe 不认 HKCU\ 简写，必须传 HKEY_CURRENT_USER\ 全称，否则报 "Invalid key name"
-//  2) reg.exe 按系统 ANSI 代码页输出，(默认) 会被当成 GBK；用 utf8 解码看不出问题（
-//     二进制那一行仍然长得像 REG_SZ），但 Windows 中文版下必须按 gbk 解才可靠
+// 解码注意：reg.exe 按系统 ANSI 代码页输出，中文环境下 (默认) 那一行必须按 gbk 解，
+// 用 utf8 解会得到乱码（但 REG_SZ 关键字仍可匹配，容易让人以为没问题）。
 async function ctxClassicState() {
   try {
     const r = await runCmd('reg', ['query', WIN11_CTX_HANDLER, '/ve'], { timeout: 8000, encoding: 'gbk' });
@@ -3581,16 +4126,25 @@ async function sweepClipImages() {
   // store 没读出来时 clipHistory 是空数组，used 为空 → 所有图片都被判成孤儿。
   // 这种情况下宁可一个都不删（留点垃圾可以接受，把用户剪贴板历史删光不行）。
   if (storeLoadFailed) { console.warn('[sweep] store 加载失败，跳过孤儿剪贴板图片清扫'); return 0; }
+  // JSON 解析成功但缺 clipHistory 字段（手工编辑/旧版本升级）时同样会删光，必须单独判断。
+  const hist = storeGet('clipHistory', null);
+  if (!Array.isArray(hist)) { console.warn('[sweep] clipHistory 缺失或类型异常，跳过清扫'); return 0; }
+  // 历史里一条图片引用都没有、而目录里确实有图片：几乎肯定是数据异常，不清理
+  const hasImgRef = hist.some(it => it && it.file);
   try {
     const dir = path.join(app.getPath('userData'), 'clip-img');
     const names = await fsp.readdir(dir);
+    const pngs = names.filter(n => /\.png$/i.test(n));
+    if (!hasImgRef && pngs.length > 0) {
+      console.warn('[sweep] clipHistory 里没有任何图片引用，但 clip-img 有', pngs.length, '个文件，跳过清扫');
+      return 0;
+    }
     const used = new Set();
-    for (const it of (storeGet('clipHistory', []) || [])) {
+    for (const it of hist) {
       if (it && it.file) used.add(path.resolve(it.file));
     }
     let removed = 0;
-    for (const n of names) {
-      if (!/\.png$/i.test(n)) continue;
+    for (const n of pngs) {
       const full = path.resolve(path.join(dir, n));
       if (used.has(full)) continue;
       try { await fsp.unlink(full); removed++; } catch (e) {}

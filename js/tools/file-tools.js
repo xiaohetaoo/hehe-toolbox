@@ -1,7 +1,7 @@
 /* 模块：文件处理 —— 批量重命名 / 批量改后缀 / 加密解密 / 分割合并 / 重复文件 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, confirmBox, dropzone, renderTable, fmtBytes, progressEl } = window.ui;
+  const { div, btn, toast, copyText, confirmBox, alertBox, dropzone, renderTable, fmtBytes, progressEl } = window.ui;
   const { invoke } = window.api;
   const MOD = 'file';
 
@@ -89,7 +89,8 @@
       const applyBtn = btn('执行重命名', 'btn-primary', async () => {
         if (!files.length) return toast('请先添加文件', 'warn');
         if (!(await confirmBox({ title: '执行重命名', message: `将对 ${files.length} 个文件执行重命名，确定继续？` }))) return;
-        let ok = 0, fail = 0;
+        let ok = 0;
+        const failures = [];
         prog.show();
         for (let i = 0; i < files.length; i++) {
           const target = newName(files[i], i);
@@ -97,10 +98,21 @@
           try {
             if (files[i] !== target) await invoke('fs:rename', files[i], target);
             ok++;
-          } catch (e) { fail++; console.error(e); }
+          } catch (e) { failures.push({ from: files[i], to: target, err: e.message }); }
         }
         prog.hide();
-        toast(`完成：成功 ${ok}，失败 ${fail}`, fail ? 'warn' : 'success');
+        // 失败原因必须可见（原来只进 console.error），否则用户只看到「失败 1」，
+        // 不知道是哪个文件、为什么，也无法判断批量操作后的半成功状态。
+        if (failures.length) {
+          await alertBox({
+            title: '部分文件未能重命名',
+            message: `成功 ${ok} 个，失败 ${failures.length} 个：\n\n` +
+              failures.slice(0, 15).map(f => `${f.from}\n  → ${f.to}\n  原因：${f.err}`).join('\n\n') +
+              (failures.length > 15 ? `\n\n…还有 ${failures.length - 15} 个未列出` : '')
+          }).catch(() => {});
+        } else {
+          toast(`完成：成功 ${ok} 个`, 'success');
+        }
         if (dirMode && dirInput.value) loadDirBtn.click(); else { files = []; buildPreview(); }
       });
 
@@ -137,13 +149,25 @@
         plan = [];
         const dir = dirInput.value.trim(), to = toIn.value.trim().replace(/^\./, '');
         if (!dir || !to) return toast('请填写目录与新后缀', 'warn');
+        // 新后缀必须是纯扩展名：允许含 . / : 等会让目标路径指向别的目录甚至别的盘
+        if (/[\\/:*?"<>|]/.test(to) || /\s/.test(to)) {
+          return toast('新后缀不能包含 \\ / : * ? " < > | 或空格', 'warn');
+        }
         const from = fromIn.value.trim().replace(/^\./, '').toLowerCase();
         async function walk(d) {
           const list = await invoke('fs:list', d);
           for (const item of list) {
             if (item.isDir) { if (recursive.checked) await walk(item.path); continue; }
-            const ext = item.name.includes('.') ? item.name.split('.').pop().toLowerCase() : '';
-            if (!from || ext === from) plan.push({ path: item.path, newPath: item.path.slice(0, item.path.length - ext.length) + to, size: item.size });
+            // 用 lastIndexOf 判断是否真有扩展名（"a.b.txt" 的扩展名是 txt；"README" 没有扩展名）
+            const dot = item.name.lastIndexOf('.');
+            const hasExt = dot > 0;
+            const ext = hasExt ? item.name.slice(dot + 1).toLowerCase() : '';
+            // 原来「无扩展名」时 ext=''，slice(0, len-0) 是整条路径，
+            // 结果把新后缀直接拼到文件名尾（README -> READMEmd），不是换扩展名。
+            // 现在：无扩展名的文件只有在「原后缀留空」时才处理，且是「追加」语义。
+            if (from && ext !== from) continue;
+            const base = hasExt ? item.path.slice(0, item.path.length - ext.length - 1) : item.path;
+            plan.push({ path: item.path, newPath: base + '.' + to, size: item.size, noExt: !hasExt });
           }
         }
         try { await walk(dir); } catch (e) { return toast(e.message, 'error'); }
@@ -160,11 +184,24 @@
       const applyBtn = btn('执行修改', 'btn-primary', async () => {
         if (!plan.length) return toast('请先扫描', 'warn');
         if (!(await confirmBox({ title: '批量改后缀', message: `将修改 ${plan.length} 个文件的扩展名，确定继续？` }))) return;
-        let ok = 0, fail = 0;
+        let ok = 0;
+        const failures = [];
         for (const p of plan) {
-          try { await invoke('fs:rename', p.path, p.newPath); ok++; } catch (e) { fail++; }
+          try { await invoke('fs:rename', p.path, p.newPath); ok++; }
+          catch (e) { failures.push({ from: p.path, to: p.newPath, err: e.message }); }
         }
-        toast(`完成：成功 ${ok}，失败 ${fail}`, fail ? 'warn' : 'success');
+        // 失败明细必须列出来：只报「失败 1」用户不知道是哪个文件、为什么失败，
+        // 而且批量操作半成功半失败的状态无从判断，后续手工整理极易出错。
+        if (failures.length) {
+          await alertBox({
+            title: '部分文件未能修改',
+            message: `成功 ${ok} 个，失败 ${failures.length} 个：\n\n` +
+              failures.slice(0, 15).map(f => `${f.from}\n  → ${f.to}\n  原因：${f.err}`).join('\n\n') +
+              (failures.length > 15 ? `\n\n…还有 ${failures.length - 15} 个未列出` : '')
+          }).catch(() => {});
+        } else {
+          toast(`完成：成功 ${ok} 个`, 'success');
+        }
         scanBtn.click();
       });
       page.appendChild(div('card', div('card-title', '目标目录'), div('form-row', dirInput, pickBtn),
@@ -331,20 +368,43 @@
         } catch (e) { status.textContent = '✗ ' + e.message; }
         finally { unsub(); }
       });
+      /* 按大小 / 按文件名 只是「疑似重复」，内容可能完全不同。
+         这两种模式下绝不能给出「保留第一个，删除其余」这种一键删除，
+         也不能把非首个文件默认勾选 —— 否则用户一路点下去就把
+         内容不同的文件永久删掉了。 */
+      const isWeakMode = () => modeSel.value === 'size' || modeSel.value === 'name';
       function renderGroups() {
         resultBox.innerHTML = '';
+        if (isWeakMode()) {
+          const warn = div('card');
+          warn.style.padding = '12px';
+          warn.style.border = '1px solid var(--warning)';
+          warn.style.background = 'color-mix(in srgb, var(--warning) 8%, transparent)';
+          warn.appendChild(div('', { style: { fontWeight: 600, marginBottom: '6px' } },
+            '⚠ 当前是「按' + (modeSel.value === 'size' ? '大小' : '文件名') + '」匹配，内容可能不一样'));
+          warn.appendChild(div('field-hint', null,
+            '同大小或同名的文件很可能是完全不同的内容。请逐个确认后再手动勾选要删除的文件；' +
+            '本模式下不会提供一键删除，也不会默认勾选任何文件。想准确定位重复文件请用「按内容（MD5）」。'));
+          resultBox.appendChild(warn);
+        }
         for (const [gi, g] of groups.entries()) {
           const card = div('card');
           card.style.padding = '14px';
           card.style.border = '1px solid var(--border)';
-          card.appendChild(div('form-row',
+          const head = div('form-row',
             h('span', { class: 'tag tag-blue' }, `组 ${gi + 1}`),
-            h('span', { class: 'field-hint' }, `${g.files.length} 个文件 · 浪费 ${fmtBytes(g.waste != null ? g.waste : g.size * (g.files.length - 1))}`),
-            h('span', { style: { marginLeft: 'auto' } }, btn('保留第一个，删除其余', 'btn-sm btn-danger-plain', () => deleteIn(g, 0)))));
+            h('span', { class: 'field-hint' }, `${g.files.length} 个文件 · 浪费 ${fmtBytes(g.waste != null ? g.waste : g.size * (g.files.length - 1))}`));
+          // 一键删只在「按内容」这种确定性匹配下提供
+          if (!isWeakMode()) {
+            head.appendChild(h('span', { style: { marginLeft: 'auto' } },
+              btn('保留第一个，删除其余', 'btn-sm btn-danger-plain', () => deleteIn(g, 0))));
+          }
+          card.appendChild(head);
           const checks = [];
           g.files.forEach((f, fi) => {
             const cb = h('input', { type: 'checkbox', class: 'checkbox' });
-            cb.checked = fi > 0;
+            // 弱匹配模式下不默认勾选（用户必须自己确认）
+            cb.checked = isWeakMode() ? false : fi > 0;
             checks.push(cb);
             card.appendChild(div('form-row', cb,
               h('span', { class: 'mono', style: { flex: '1', fontSize: '12px', userSelect: 'text', wordBreak: 'break-all' } }, f),
@@ -354,9 +414,13 @@
             const selected = g.files.filter((_, i) => checks[i].checked);
             if (!selected.length) return toast('未勾选任何文件', 'warn');
             if (selected.length === g.files.length) return toast('至少保留一个文件', 'warn');
-            if (!(await confirmBox({ title: '删除重复文件', message: `将永久删除 ${selected.length} 个文件（不进回收站），确定？`, danger: true, okText: '删除' }))) return;
-            for (const f of selected) { try { await invoke('fs:delete', f); } catch (e) { toast(e.message, 'error'); } }
-            toast('已删除', 'success');
+            const extra = isWeakMode()
+              ? '\n\n注意：当前是「按' + (modeSel.value === 'size' ? '大小' : '文件名') + '」匹配，这些文件的内容可能并不相同，删除后无法恢复。'
+              : '';
+            if (!(await confirmBox({ title: '删除重复文件', message: `将永久删除 ${selected.length} 个文件（不进回收站），确定？${extra}`, danger: true, okText: '删除' }))) return;
+            let ok = 0, failN = 0;
+            for (const f of selected) { try { await invoke('fs:delete', f); ok++; } catch (e) { failN++; toast(e.message, 'error'); } }
+            toast(failN ? `已删除 ${ok} 个，失败 ${failN} 个` : `已删除 ${ok} 个`, failN ? 'warn' : 'success');
             scanBtn.click();
           })));
           resultBox.appendChild(card);
@@ -365,8 +429,9 @@
       async function deleteIn(g, keepIdx) {
         const del = g.files.filter((_, i) => i !== keepIdx);
         if (!(await confirmBox({ title: '删除重复文件', message: `保留第一个，永久删除其余 ${del.length} 个文件，确定？`, danger: true, okText: '删除' }))) return;
-        for (const f of del) { try { await invoke('fs:delete', f); } catch (e) { toast(e.message, 'error'); } }
-        toast('已删除', 'success');
+        let ok = 0, failN = 0;
+        for (const f of del) { try { await invoke('fs:delete', f); ok++; } catch (e) { failN++; toast(e.message, 'error'); } }
+        toast(failN ? `已删除 ${ok} 个，失败 ${failN} 个` : `已删除 ${ok} 个`, failN ? 'warn' : 'success');
         scanBtn.click();
       }
       page.appendChild(div('card', div('card-title', '扫描设置'),
