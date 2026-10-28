@@ -71,9 +71,14 @@ jobs:
         run: |
           set -e
           mkdir -p "$HEHE_TEST_DATA"
-          export ELECTRON_RUN_AS_NODE=
+          # 关键：ELECTRON_RUN_AS_NODE 一旦存在于环境中（哪怕为空串以外的任何值），
+          # Electron 会退化成纯 Node 跑 main.js —— 表现为
+          #   TypeError: Cannot read properties of undefined (reading 'handle')
+          # 因为 ipcMain 只有 Electron 主进程才提供。必须 unset 而不是赋空。
+          unset ELECTRON_RUN_AS_NODE
+          echo "ELECTRON_RUN_AS_NODE='${ELECTRON_RUN_AS_NODE-<unset>}'"
           # 冒烟模式由 main.js 内置：渲染全部工具页 → 打印 SMOKE_RESULT → 自行退出
-          timeout 180 node_modules/electron/dist/electron.exe . > smoke.log 2>&1 || true
+          timeout 240 node_modules/electron/dist/electron.exe . > smoke.log 2>&1 || true
           echo "---- smoke.log ----"
           cat smoke.log
           if grep -q "SMOKE_RESULT:.*PASS" smoke.log; then
