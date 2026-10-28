@@ -189,8 +189,12 @@
           if (verdict.ok) {
             // 达标：改成正式名
             const dst = await invoke('fs:unique-path', tmpDir + '/' + base + '.' + outExt);
-            try { await invoke('fs:rename', cand, dst); } catch (e) { /* 跨卷等情况 rename 可能失败，保留候选名 */ }
-            return { ok: true, out: dst, srcSize: srcBytes, outSize: bytes, rounds: round + 1 };
+            // rename 可能因跨卷/占用失败，此时文件还在候选名上——
+            // 必须如实返回实际路径，否则界面给出一个不存在的输出文件
+            let finalPath = dst;
+            try { await invoke('fs:rename', cand, dst); }
+            catch (e) { finalPath = cand; }
+            return { ok: true, out: finalPath, srcSize: srcBytes, outSize: bytes, rounds: round + 1 };
           }
           try { await invoke('fs:delete', cand); } catch (e) {}
           setRow(rowIdx, { pct: ((round + 1) / 8) * 99 });

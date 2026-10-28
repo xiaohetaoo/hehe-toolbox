@@ -354,7 +354,9 @@
         curName = null; titleIn.value = ''; ta.value = ''; renderMd();
         refreshList();
       }
-      searchIn.addEventListener('input', () => refreshList());
+      // 每次击键都把全部笔记 fs:read-text 一遍：笔记一多，输入直接卡死。
+      // 防抖到停止输入 250ms 后再读。
+      searchIn.addEventListener('input', window.ui.debounce(() => refreshList(), 250));
       const saveTimer = setInterval(() => { if (curName && ta.value) save().catch(() => {}); }, 30000);
       window.App.onCleanup(() => clearInterval(saveTimer));
       panes.appendChild(ta); panes.appendChild(preview);

@@ -53,14 +53,16 @@
       try { window.hehe.on('aux:accent', apply); } catch (e) {}
     }
   })();
-</script>
   // canvas 不能直接用 CSS 变量，取计算后的主色
+  // 注意：必须待在本脚本块内。放在结束标签之后会被 HTML 解析器当正文文本，
+  // 页面上直接显示源码，且函数根本没定义——render() 一进“已有选区”分支就抛
+  // ReferenceError，选区遮罩/手柄/标注全都被跳过，用户框选时毫无反馈。
   function accentPrimary() {
     try {
       return getComputedStyle(document.documentElement).getPropertyValue('--aux-primary').trim() || '#165DFF';
     } catch (e) { return '#165DFF'; }
   }
-
+</script>
 </head>
 <body>
   <div id="stage"><canvas id="c"></canvas></div>

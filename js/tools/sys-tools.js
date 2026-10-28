@@ -521,7 +521,14 @@
         try { const s = await invoke('ctxmenu:classic-status'); statusLine.textContent = s.on ? '当前：经典菜单（Win10 样式）' : '当前：Win11 新版菜单'; }
         catch (e) { statusLine.textContent = '状态检测失败'; }
       }
-      const apply = (on) => invoke('ctxmenu:classic', on, false).then(() => { toast(on ? '已切换为经典菜单' : '已恢复 Win11 菜单', 'success'); refresh(); }).catch((e) => toast(e.message, 'error'));
+      // 以主进程回写的真实注册表状态为准：不再无条件弹「已切换」，
+      // 写失败或被系统拒绝时如实报错，避免又一次假阳性。
+      const apply = (on) => invoke('ctxmenu:classic', on, false).then((r) => {
+        const nowOn = !!(r && r.on);
+        if (nowOn === !!on) toast(on ? '已切换为经典菜单' : '已恢复 Win11 菜单', 'success');
+        else toast(on ? '切换失败：注册表未写入，请检查权限' : '恢复失败：注册表项未能清除，请检查权限', 'error');
+        refresh();
+      }).catch((e) => toast(e.message, 'error'));
       page.appendChild(div('card', div('card-title', '右键菜单样式'), statusLine,
         div('form-row',
           btn('切换为经典菜单', 'btn-primary', async () => {
@@ -530,8 +537,9 @@
             // 成功/失败必须是互斥的：原来 catch 里弹了错误后又无条件弹「已切换并重启」，
             // 用户会同时看到红色"需要管理员权限"和绿色"已切换"，无法判断到底改没改。
             try {
-              await invoke('ctxmenu:classic', true, true);
-              toast('已切换并重启资源管理器', 'success');
+              const r = await invoke('ctxmenu:classic', true, true);
+              if (r && r.on) toast('已切换并重启资源管理器', 'success');
+              else toast('切换失败：注册表未写入，请检查权限', 'error');
             } catch (e) {
               toast('切换失败：' + e.message, 'error');
             }

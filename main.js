@@ -41,9 +41,20 @@ let lastProcSnap = null;
 /* ---------------- data store ---------------- */
 const storeFile = () => path.join(app.getPath('userData'), 'hehe-data.json');
 let storeData = { settings: {}, favorites: [], recents: [], quicklaunch: [], commands: [], clipHistory: [], notes: [], autostartBackup: [] };
+// 记录 store 是否加载成功。损坏的 hehe-data.json 会让 loadStore 静默回退默认值，
+// 此时 clipHistory 是空的——若照常跑清扫，clip-img 里的所有图片都会被当孤儿删光。
+let storeLoadFailed = false;
 let saveTimer = null;
 function loadStore() {
-  try { storeData = Object.assign(storeData, JSON.parse(fs.readFileSync(storeFile(), 'utf8'))); } catch (e) { /* first run */ }
+  try {
+    storeData = Object.assign(storeData, JSON.parse(fs.readFileSync(storeFile(), 'utf8')));
+  } catch (e) {
+    // 首次运行（ENOENT）是正常的；解析失败才是真问题，必须标记出来
+    if (e && e.code !== 'ENOENT') {
+      storeLoadFailed = true;
+      console.error('[store] 读取失败，本次禁用依赖 store 的清扫：', e.message);
+    }
+  }
 }
 function saveStore() {
   clearTimeout(saveTimer);
@@ -547,7 +558,18 @@ handle('fs:list', async (e, p) => {
   return out;
 });
 handle('fs:mkdir', async (e, p) => { await fsp.mkdir(p, { recursive: true }); return true; });
-handle('fs:rename', async (e, from, to) => { await fsp.rename(from, to); return true; });
+// Unix 的 rename() 目标存在就覆盖，Windows 上 Node 也照这个语义走：
+// 批量改名/改后缀撞上已存在的同名文件时，会把别人的文件悄无声息地抹掉。
+// 这里默认拒绝覆盖（overwrite 需显式传 true），把“静默毁文件”变成可见的错误。
+handle('fs:rename', async (e, from, to, overwrite) => {
+  if (!from || !to) throw new Error('缺少重命名路径');
+  if (path.resolve(from) === path.resolve(to)) return true;
+  if (!overwrite && fs.existsSync(to)) {
+    throw new Error('目标文件已存在，为避免覆盖已拒绝：' + to);
+  }
+  await fsp.rename(from, to);
+  return true;
+});
 handle('fs:delete', async (e, p, recursive) => { await fsp.rm(p, { recursive: !!recursive, force: true }); return true; });
 handle('fs:open-path', async (e, p) => { const err = await shell.openPath(p); if (err) throw new Error(err); return true; });
 handle('fs:show-item', (e, p) => { shell.showItemInFolder(p); return true; });
@@ -2512,6 +2534,8 @@ handle('search:quick', (e, { root, q, limit }) => {
 
 /* ================= IPC: 屏幕录制（ffmpeg gdigrab，区域/声音/暂停分段/GIF） ================= */
 let recProc = null, recOut = null, recSegs = [], recSegDir = null, recOpts = null;
+// 分段数量（拼接降级提示用）
+function fmtDur(segs) { return (segs || []).length + ' 段'; }
 // 解析 ffmpeg -list_devices 输出。兼容三种格式：
 //   4.x : "名称" (audio)  /  [dshow] "名称" (audio) 后的旧式行 "名称" [Audio]
 //   6.x+: 不再输出 "DirectShow audio devices" 小节标题，逐行 "名称" (video)/(audio)
@@ -2641,6 +2665,9 @@ handle('rec:resume', async () => {
 handle('rec:stop', async (e, makeGif) => {
   await recStopSeg();
   if (!recSegs.length) return { ok: true, size: 0, outPath: recOut };
+  // 拼接失败时的降级标记：必须如实告诉用户只拿到了第一段，
+  // 否则“暂停过的录制”会静默丢掉后半段，用户还以为完整。
+  let degraded = null;
   // 用 try/finally 保证临时分段目录一定被清理（原先清理写在末尾，中途抛错就泄漏）
   try {
     try {
@@ -2655,7 +2682,15 @@ handle('rec:stop', async (e, makeGif) => {
         if (r.code !== 0) throw new Error('分段拼接失败：' + (r.stderr || '').split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
       }
     } catch (err) {
-      try { if (recSegs[0]) await fsp.copyFile(recSegs[0], recOut); } catch (e2) {}
+      // 兜底只能保住第一段，必须把这件事说出来
+      try {
+        if (recSegs[0]) await fsp.copyFile(recSegs[0], recOut);
+        degraded = `分段合并失败（${err.message}），已保存第一段共 ${fmtDur(recSegs)}；其余 ${recSegs.length - 1} 段未能合并`;
+        console.warn('[rec] ' + degraded);
+      } catch (e2) {
+        degraded = `分段合并失败且无法保存任何分段：${err.message}`;
+        throw err;
+      }
     }
     let gifOut = null;
     if (makeGif) {
@@ -2667,7 +2702,7 @@ handle('rec:stop', async (e, makeGif) => {
     }
     let size = 0;
     try { size = (await fsp.stat(recOut)).size; } catch (e) {}
-    return { ok: true, size, outPath: recOut, gif: gifOut };
+    return { ok: true, size, outPath: recOut, gif: gifOut, degraded };
   } finally {
     await fsp.rm(recSegDir, { recursive: true, force: true }).catch(() => {});
     recOpts = null; recSegs = []; recSegDir = null;
@@ -3214,7 +3249,10 @@ handle('update:apply', async (e, opts = {}) => {
     '$log = Join-Path $env:TEMP ("hehe-rollback-" + [DateTime]::Now.ToString("yyyyMMdd-HHmmss") + ".log")',
     'try {',
     '  if (-not (Test-Path -LiteralPath $backup)) { throw "备份文件不存在：$backup" }',
-    '  Get-Process -Name "核核工具箱" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue',
+    // 停进程必须按 exe 的完整路径匹配：便携版进程名是 hehe-toolbox-Portable-x.y.z
+    // （即 exe 文件名），写死 "核核工具箱" 永远匹配不上 → 旧 exe 被占用 → Copy-Item 失败
+    // → 回滚中止。便携版恰是主要分发形态，等于回滚脚本对绝大多数用户都不可用。
+    '  Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $target } | Stop-Process -Force -ErrorAction SilentlyContinue',
     '  Start-Sleep -Milliseconds 800',
     '  Copy-Item -LiteralPath $backup -Destination $target -Force',
     '  Add-Content -LiteralPath $log -Value ("rolled-back: " + $target)',
@@ -3232,13 +3270,28 @@ handle('update:apply', async (e, opts = {}) => {
   setTimeout(() => { try { isQuitting = true; app.exit(0); } catch (err) { app.quit(); } }, 1000);
   return { ok: true, target, newExe, backup, rollbackScript, script };
 });
-// 升级后清理 update 下载目录里旧的安装包（只保留当前正在用的那份之外的全部）
+// 清理 update 下载目录里「已经应用过」的旧安装包。
+// 关键：刚下载、还没安装的新包绝不能删——它正是接下来 update:apply 要用的文件。
+// 原实现把该目录下所有 hehe-toolbox-Portable-*.exe 一律删光，于是“下载完切走再回关于页”
+// 就把 90MB+ 白下了一遍，而且没有任何提示。
+// 判据：文件名里的版本号 <= 当前运行版本，说明那份包要么是当前版本、要么早已被取代，
+// 留着纯属占地方；只有版本号 > 当前版本、且没被 update:apply 记录为已应用的，才保留。
+function updatePendingGet() { return updateCacheGet() || {}; }
 handle('update:cleanup', async () => {
   const dir = path.join(app.getPath('userData'), 'update');
-  let removed = 0, bytes = 0;
+  const current = app.getVersion();
+  const pendingName = updatePendingGet().pendingName || null; // 正在等待安装的那份
+  let removed = 0, bytes = 0, kept = 0;
   try {
     for (const n of await fsp.readdir(dir)) {
       if (!/^hehe-toolbox-Portable-.*\.exe$/i.test(n)) continue;
+      const vm = n.match(/hehe-toolbox-Portable-(.+?)\.exe$/i);
+      const ver = vm ? vm[1] : '';
+      // 待安装的包一律保留，哪怕它版本号看起来不新
+      if (pendingName && n === pendingName) { kept++; continue; }
+      // 版本号解析不出来就保守保留，不做“猜着删”
+      if (!/^\d+\.\d+\.\d+/.test(ver)) { kept++; continue; }
+      if (cmpVer(ver, current) > 0) { kept++; continue; }
       const full = path.join(dir, n);
       try {
         const st = await fsp.stat(full);
@@ -3247,7 +3300,12 @@ handle('update:cleanup', async () => {
       } catch (e) {}
     }
   } catch (e) { /* 目录不存在 */ }
-  return { removed, bytes };
+  return { removed, bytes, kept };
+});
+// 记下“已下载、等待安装”的那份包名，供 update:cleanup 豁免
+handle('update:mark-pending', (e, name) => {
+  updateCacheSet({ pendingName: name ? String(name) : null });
+  return true;
 });
 function cmpVer(a, b) {
   const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
@@ -3266,13 +3324,18 @@ function schedFire(s) {
       (async () => {
         try {
           const tmp = app.getPath('temp');
-          let removed = 0, bytes = 0;
+          const now = Date.now();
+          // 与启动清扫的 24 小时保留策略保持一致：刚写出来的分段目录可能正在录制，
+          // 一律端掉会把 hehe-rec-* 连锅端（录制进程还在写，删了直接丢整段录像）。
+          const KEEP_MS = 24 * 3600 * 1000;
+          let removed = 0, bytes = 0, skipped = 0;
           const entries = await fsp.readdir(tmp).catch(() => []);
           for (const n of entries) {
             if (!isOwnTempName(n)) continue; // 只清本应用自己的产物
             const full = path.join(tmp, n);
             try {
               const st = await fsp.stat(full);
+              if (now - st.mtimeMs <= KEEP_MS) { skipped++; continue; } // 最近的保留
               if (st.isDirectory()) {
                 const r = await dirSizeFast(full);
                 await fsp.rm(full, { recursive: true, force: true });
@@ -3284,7 +3347,7 @@ function schedFire(s) {
               removed++;
             } catch (e) {}
           }
-          send('sched:fire', { id: s.id, type: s.type, message: `自动清理完成，释放 ${Math.round(bytes / 1048576)} MB（${removed} 个本应用临时文件）` });
+          send('sched:fire', { id: s.id, type: s.type, message: `自动清理完成，释放 ${Math.round(bytes / 1048576)} MB（${removed} 个本应用临时文件${skipped ? '，' + skipped + ' 个 24 小时内的保留' : ''}）` });
         } catch (err) { send('sched:fire', { id: s.id, type: s.type, message: '自动清理失败：' + err.message }); }
       })();
     } else {
@@ -3297,7 +3360,12 @@ function armSchedule(s, isRefire) {
   const t = schedTimers.get(s.id);
   if (t) { clearTimeout(t.timeout); if (t.interval) clearInterval(t.interval); }
   if (s.type === 'loop') {
-    const ms = Math.max(60000, (s.everyMin || 30) * 60000);
+    const mins = Number(s.everyMin);
+    // 兜底：历史数据可能带着 NaN/0（旧版本、手改 hehe-data.json），
+    // NaN 会让 setInterval 退化成 ~1ms 一次
+    const ms = Number.isFinite(mins) && mins >= SCHED_MIN_EVERY_MIN
+      ? Math.min(mins, SCHED_MAX_EVERY_MIN) * 60000
+      : 30 * 60000;
     schedTimers.set(s.id, { interval: setInterval(() => schedFire(s), ms) });
     if (!isRefire) schedFire(s); // 立即触发一次作为确认提示
   } else {
@@ -3314,12 +3382,37 @@ function armAllSchedules() {
   for (const s of list) armSchedule(s, false);
 }
 handle('sched:list', () => storeGet('settings.schedules', []));
+// 周期任务参数校验：渲染层有过滤不代表 IPC 层安全。
+// everyMin 传 NaN 时 Math.max(60000, NaN) 得 NaN，setInterval(fn, NaN) 退化为约 1ms 一次，
+// 会把主进程变成提醒风暴（还连带不断写 store）。这里统一收口成合法值或直接拒绝。
+const SCHED_TYPES = ['loop', 'daily', 'clean'];
+const SCHED_MIN_EVERY_MIN = 1, SCHED_MAX_EVERY_MIN = 7 * 24 * 60;
+function normSchedule(s) {
+  if (!s || typeof s !== 'object') throw new Error('任务参数无效');
+  if (!SCHED_TYPES.includes(s.type)) throw new Error('任务类型无效：' + s.type);
+  const out = { type: s.type, message: String(s.message || '').slice(0, 500) };
+  if (s.type === 'loop') {
+    const n = Number(s.everyMin);
+    if (!Number.isFinite(n)) throw new Error('循环间隔必须是数字（分钟）');
+    const mins = Math.floor(n);
+    if (mins < SCHED_MIN_EVERY_MIN) throw new Error(`循环间隔不能小于 ${SCHED_MIN_EVERY_MIN} 分钟`);
+    out.everyMin = Math.min(mins, SCHED_MAX_EVERY_MIN);
+  } else if (s.type === 'daily') {
+    const m = String(s.hhmm || '').match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) throw new Error('时间格式应为 HH:MM');
+    const hh = +m[1], mm = +m[2];
+    if (hh > 23 || mm > 59) throw new Error('时间超出范围：' + s.hhmm);
+    out.hhmm = String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  }
+  return out;
+}
 handle('sched:add', (e, s) => {
-  s.id = 'sc' + Date.now();
+  const clean = normSchedule(s);
+  clean.id = 'sc' + Date.now();
   const list = storeGet('settings.schedules', []);
-  list.push(s);
+  list.push(clean);
   storeSet('settings.schedules', list);
-  armSchedule(s, false);
+  armSchedule(clean, false);
   return list;
 });
 handle('sched:remove', (e, id) => {
@@ -3418,20 +3511,48 @@ handle('clip:gc-images', async () => {
 });
 
 /* ================= IPC: Win11 经典右键菜单切换 ================= */
-const WIN11_CTX_KEY = 'HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}';
+// Win11 的右键菜单由 CLSID {86ca1aa0-34aa-4e8b-a509-50c905bae2a2} 这个 COM 处理器负责。
+// 在 HKCU 里为它建一个空的 InprocServer32 子键（默认值留空），COM 激活时找不到实现，
+// 资源管理器就回落到 Win10 经典菜单。这是社区验证过的唯一有效做法。
+// 早前写成 \InnoServerSetup —— 那个子键名不存在于任何已知做法，对 COM 激活毫无影响，
+// 于是写了个废键、UI 却报“已切换”，状态检测又只查父键是否存在，三处全是假阳性。
+// reg.exe 不认 HKCU\ 这类简写：直接传 HKCU\... 会报 "Invalid key name"，
+// 写成全称 HKEY_CURRENT_USER\... 才能正确读写（实测 Windows 11 上如此）。
+const WIN11_CTX_KEY = 'HKEY_CURRENT_USER\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}';
+const WIN11_CTX_HANDLER = WIN11_CTX_KEY + '\\InprocServer32';
 handle('ctxmenu:classic', async (e, on, restart) => {
-  if (on) await runCmd('reg', ['add', WIN11_CTX_KEY + '\\InnoServerSetup', '/f'], { timeout: 10000 });
-  else await runCmd('reg', ['delete', WIN11_CTX_KEY, '/f'], { timeout: 10000 }).catch(() => {});
+  if (on) {
+    // /ve /d "" /f：建 InprocServer32 并把默认值显式置为空字符串（不置空则可能继承旧值）
+    await runCmd('reg', ['add', WIN11_CTX_HANDLER, '/ve', '/t', 'REG_SZ', '/d', '', '/f'], { timeout: 10000 });
+  } else {
+    // 只删我们建的处理器子键，保留系统原始的 CLSID 键
+    await runCmd('reg', ['delete', WIN11_CTX_HANDLER, '/f'], { timeout: 10000 }).catch(() => {});
+  }
   if (restart) {
     spawn('taskkill', ['/f', '/im', 'explorer.exe'], { windowsHide: true });
     setTimeout(() => { try { spawn('explorer.exe', [], { windowsHide: true, detached: true }); } catch (e) {} }, 800);
   }
-  return true;
+  return { on: await ctxClassicState() };
 });
-handle('ctxmenu:classic-status', async () => {
-  try { const r = await runCmd('reg', ['query', WIN11_CTX_KEY], { timeout: 8000 }); return { on: r.code === 0 }; }
-  catch (e) { return { on: false }; }
-});
+// 真正的判据是 InprocServer32 存在且默认值为空——只看父键存在会把
+// 系统自带的那个 CLSID 也算成“经典模式”，永远显示已开启。
+//
+// 两个解码陷阱（都实测踩过）：
+//  1) reg.exe 不认 HKCU\ 简写，必须传 HKEY_CURRENT_USER\ 全称，否则报 "Invalid key name"
+//  2) reg.exe 按系统 ANSI 代码页输出，(默认) 会被当成 GBK；用 utf8 解码看不出问题（
+//     二进制那一行仍然长得像 REG_SZ），但 Windows 中文版下必须按 gbk 解才可靠
+async function ctxClassicState() {
+  try {
+    const r = await runCmd('reg', ['query', WIN11_CTX_HANDLER, '/ve'], { timeout: 8000, encoding: 'gbk' });
+    if (r.code !== 0) return false;
+    // 输出形如：    (默认)    REG_SZ    <值>
+    // 值为空时该行末尾没有内容，视为“已禁用 COM 处理器” = 经典菜单
+    const line = String(r.stdout || '').split(/\r?\n/).find(l => /REG_SZ/i.test(l));
+    if (!line) return false;
+    return line.replace(/.*REG_SZ\s*/i, '').trim() === '';
+  } catch (e) { return false; }
+}
+handle('ctxmenu:classic-status', async () => ({ on: await ctxClassicState() }));
 
 /* ================= 启动清扫（临时文件 / 孤儿录制目录 / 孤儿剪贴板图片） ================= */
 // 截图临时 PNG 与录制分段是「写一次就丢」的产物；崩溃或强杀会留下残骸。
@@ -3457,6 +3578,9 @@ async function sweepTempFiles(maxAgeMs = 24 * 3600 * 1000) {
 }
 async function sweepClipImages() {
   // 依赖 store 已加载：删掉 clipHistory 里已无引用的图片文件
+  // store 没读出来时 clipHistory 是空数组，used 为空 → 所有图片都被判成孤儿。
+  // 这种情况下宁可一个都不删（留点垃圾可以接受，把用户剪贴板历史删光不行）。
+  if (storeLoadFailed) { console.warn('[sweep] store 加载失败，跳过孤儿剪贴板图片清扫'); return 0; }
   try {
     const dir = path.join(app.getPath('userData'), 'clip-img');
     const names = await fsp.readdir(dir);

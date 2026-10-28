@@ -161,13 +161,29 @@
         history = await invoke('store:get', 'clipHistory', []);
         render();
       }
+      // 单条文本上限：200 条 × 每条约 100MB 的复制内容能把 hehe-data.json 撑到 GB 级，
+      // 而 store 是整文件 JSON.stringify + 同步写盘，卡死的不只是剪贴板功能。
+      // 超出部分只保留开头用于检索，并在界面上标注“已截断，复制的是完整原文”？
+      // 不——截断后复制会给用户错误内容，所以超长条目干脆不入库，只提示一次。
+      const CLIP_TEXT_LIMIT = 256 * 1024; // 256KB ≈ 25 万汉字
+      let limitWarned = false;
+      function admitText(text) {
+        if (text.length <= CLIP_TEXT_LIMIT) return text;
+        if (!limitWarned) {
+          limitWarned = true;
+          try { toast(`单条文本超过 ${Math.round(CLIP_TEXT_LIMIT / 1024)}KB，已跳过记录（避免历史库撑爆）`, 'warn', 4000); } catch (e) {}
+        }
+        return null;
+      }
       async function poll() {
         if (!watching) return;
         try {
           const text = await invoke('clip:read-text');
           if (text && text !== lastClip) {
             lastClip = text;
-            history.unshift({ type: 'text', content: text, time: Date.now() });
+            const okText = admitText(text);
+            if (okText === null) { timer = setTimeout(poll, 1200); return; }
+            history.unshift({ type: 'text', content: okText, time: Date.now() });
             history = history.slice(0, 200);
             await invoke('store:set', 'clipHistory', history);
             render();

@@ -457,7 +457,7 @@
   function renderHome(page) {
     const hero = div('home-hero');
     hero.appendChild(h('h1', null, '核核工具箱'));
-    hero.appendChild(h('p', null, '92 个工具，本地运行，不联网也能用'));
+    hero.appendChild(h('p', null, (R.all ? R.all.length : 0) + ' 个工具，本地运行，不联网也能用'));
     const hs = div('home-search');
     const inp = h('input', { placeholder: '搜索全部工具，回车直达…' });
     const heroIcon = icon('search', 'icon');
@@ -837,9 +837,9 @@
     card.appendChild(updActions);
     page.appendChild(card);
 
-    // 升级后清理残留下载包（每次升级都会留一份 90MB+，进本页时顺手清掉）
+    // 清理「已经应用过」的旧安装包（刚下载、还没装的新包会被主进程按版本号豁免）
     invoke('update:cleanup').then((r) => {
-      if (r && r.removed) console.log('[update] 清理旧安装包', r.removed, '个', (r.bytes / 1048576).toFixed(1) + 'MB');
+      if (r && r.removed) console.log('[update] 清理旧安装包', r.removed, '个', (r.bytes / 1048576).toFixed(1) + 'MB', '保留', r.kept || 0, '个');
     }).catch(() => {});
 
     async function checkUpdate(ev) {
@@ -848,6 +848,7 @@
       if (trigger) trigger.disabled = true;
       updLine.textContent = '正在检查更新…';
       updActions.innerHTML = '';
+      let unsub = null;
       try {
         const r = await invoke('update:check', { force: true });
         if (r.throttled) { updLine.textContent = `检查太频繁，${r.retryAfter} 秒后可再试（当前最新 v${r.latest}）`; return; }
@@ -855,12 +856,22 @@
         updLine.textContent = `发现新版本 v${r.latest}（当前 v${r.current}），正在下载…`;
         if (!r.assetUrl) { updLine.textContent = `发现新版本 v${r.latest}，请到 GitHub Releases 下载：${r.htmlUrl}`; return; }
         const out = info.userData + '/update/' + r.assetName;
-        const unsub = on('job:stream', (d) => {
+        // job:stream 是全局通道：TTS/ffmpeg/卸载等任务也会广播 {done:true} 或 {pct}。
+        // 不比对 id 就会把别人的退出事件当成下载失败（显示“✗ 下载失败：undefined”），
+        // 进度数字也会被别的任务污染。先拿到 dl.id 再比对，拿到之前只缓冲不显示。
+        let dlId = null;
+        const pendingEvents = [];
+        unsub = on('job:stream', (d) => {
+          if (!dlId) { pendingEvents.push(d); return; }
+          handleStream(d);
+        });
+        function handleStream(d) {
+          if (!d || d.id !== dlId) return;
           try {
             const j = JSON.parse(d.data);
             if (j.pct != null) updLine.textContent = `下载新版本 v${r.latest}：${(j.pct || 0).toFixed(0)}%（${(j.mb || 0).toFixed(1)}MB）`;
             if (!j.done) return;
-            unsub();
+            if (unsub) { unsub(); unsub = null; }
             if (!j.ok) { updLine.textContent = '✗ 下载失败：' + (j.error || ''); return; }
             updLine.textContent = `✓ v${r.latest} 已下载完成：${out}`;
             toast('新版本已下载', 'success');
@@ -877,11 +888,26 @@
             }));
             updActions.appendChild(btn('打开所在目录', 'btn-sm btn-secondary', () => invoke('fs:show-item', out).catch(() => {})));
           } catch (e) {}
-        });
+        }
+        // 先把这份包登记为“待安装”，update:cleanup 见到它就不会删
+        await invoke('update:mark-pending', r.assetName).catch(() => {});
         const dl = await invoke('net:download', { url: r.assetUrl, out });
-        if (!dl || !dl.id) { unsub(); updLine.textContent = '✗ 下载启动失败'; }
+        if (!dl || !dl.id) {
+          if (unsub) { unsub(); unsub = null; }
+          updLine.textContent = '✗ 下载启动失败';
+          return;
+        }
+        dlId = dl.id;
+        // 补发在拿到 id 之前就到达的事件（下载极快时 done 会比返回值更早到）
+        const buffered = pendingEvents.splice(0);
+        for (const d of buffered) handleStream(d);
       } catch (e) { updLine.textContent = '✗ ' + e.message; }
-      finally { if (trigger) trigger.disabled = false; }
+      finally {
+        if (trigger) trigger.disabled = false;
+        // 失败路径也要退订，否则监听器会一直挂在这个页面上
+        if (!dlId || updLine.textContent.startsWith('✗')) { if (unsub) { unsub(); unsub = null; } }
+      }
+      window.App.onCleanup(() => { if (unsub) { unsub(); unsub = null; } });
     }
   }
 

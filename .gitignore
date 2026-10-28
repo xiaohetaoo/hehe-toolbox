@@ -10,5 +10,8 @@ _seg*
 /main.js
 /preload.js
 *.asar
+# 打包校验时解压出来的临时目录（DSH 监视器偶尔会锁住里面的 asar 删不掉）
+.verify-unpacked/
+.tmp-smoke*/
 .DS_Store
 Thumbs.db

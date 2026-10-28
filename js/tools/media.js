@@ -1088,12 +1088,44 @@
         camPreview.srcObject = null;
         camPreview.style.display = 'none';
       }
-      async function startPreview(deviceId) {
-        await stopPreview();
-        if (!deviceId) { camPreviewHint.textContent = '选择摄像头后在此预览'; return; }
+      // dshow 设备名（ffmpeg 用）与 getUserMedia 的 deviceId 是两套体系：
+      // deviceId 是浏览器侧的 GUID，拿 dshow 名当 deviceId 约束永远不会命中，
+      // ideal 语义下静默回落到系统默认摄像头 —— 预览和录制可能不是同一个设备。
+      // 正确做法：enumerateDevices() 拿 label，按名称匹配出真正的 deviceId。
+      async function resolveDeviceId(dshowName) {
+        if (!dshowName || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return null;
         try {
-          // label 精确匹配 dshow 设备名；getUserMedia 的 label 与 ffmpeg 的 dshow 名称同源
-          previewStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { ideal: deviceId } }, audio: false });
+          // 未授权前 enumerateDevices 的 label 是空的，先申请一次权限把 label 解锁
+          const needPerm = async () => {
+            const list = await navigator.mediaDevices.enumerateDevices();
+            return list.some(d => d.kind === 'videoinput' && !d.label);
+          };
+          if (await needPerm()) {
+            try {
+              const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+              tmp.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+            } catch (e) { /* 无权限就用不了预览，但录制不受影响 */ }
+          }
+          const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+          // 1) 完全相等 2) 忽略大小写相等 3) 双向包含（浏览器 label 常带 " (VID_xxx)" 后缀）
+          const norm = s => String(s || '').toLowerCase().replace(/^\s*📷\s*/, '').trim();
+          const want = norm(dshowName);
+          let hit = cams.find(d => norm(d.label) === want);
+          if (!hit) hit = cams.find(d => norm(d.label).includes(want) || want.includes(norm(d.label)));
+          return hit ? hit.deviceId : null;
+        } catch (e) { return null; }
+      }
+      async function startPreview(dshowName) {
+        await stopPreview();
+        if (!dshowName) { camPreviewHint.textContent = '选择摄像头后在此预览'; return; }
+        try {
+          const realId = await resolveDeviceId(dshowName);
+          if (!realId) {
+            // 不静默回落到默认摄像头：那会预览一个跟录制不同的设备，比不预览更误导
+            camPreviewHint.textContent = '预览不可用：浏览器未匹配到该摄像头（名称不一致），录制不受影响';
+            return;
+          }
+          previewStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: realId } }, audio: false });
           camPreview.srcObject = previewStream;
           camPreview.style.display = 'block';
           camPreviewHint.textContent = '预览中（录制时叠加到画面角落）';
