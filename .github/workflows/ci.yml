@@ -13,11 +13,29 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Electron 45 的依赖要求 Node >= 22.12（33 是 Node 20）。
+          # 用 20 会一堆 EBADENGINE，且 @electron/get 行为不可靠。
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      # electron 45 的 package.json **没有 postinstall 钩子**（33 有），
+      # 所以 npm ci 之后 node_modules/electron/dist/ 是空的、path.txt 也不存在。
+      # 打包和冒烟都要用到里面的 electron.exe，必须显式补跑一次下载。
+      - name: Ensure electron binary is downloaded
+        shell: bash
+        run: |
+          set -e
+          if [ -f node_modules/electron/dist/electron.exe ]; then
+            echo "electron binary already present"
+          else
+            echo "electron binary missing, running install.js"
+            node node_modules/electron/install.js
+          fi
+          test -f node_modules/electron/dist/electron.exe
+          echo "electron.exe OK"
 
       - name: Syntax check all sources
         shell: bash
