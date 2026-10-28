@@ -8,10 +8,12 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node scripts/test-lib.js && node scripts/test-archive-guard.js && node scripts/test-target-size.js && node scripts/test-zip-extract.js && node scripts/test-update-cleanup.js && node scripts/test-regressions.js",
+    "test": "node scripts/test-lib.js && node scripts/test-archive-guard.js && node scripts/test-target-size.js && node scripts/test-zip-extract.js && node scripts/test-update-cleanup.js && node scripts/test-version.js && node scripts/test-regressions.js",
     "dist": "electron-builder --win portable && node scripts/pack-zip.js",
     "dist:installer": "electron-builder --win nsis",
-    "dist:retry": "bash scripts/build-portable.sh D:/zcode/hehe/dist 3"
+    "dist:retry": "bash scripts/build-portable.sh D:/zcode/hehe/dist 3",
+    "version:check": "node scripts/version.js",
+    "version:bump": "node scripts/version.js --next"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",

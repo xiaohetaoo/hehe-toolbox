@@ -25,13 +25,61 @@ jobs:
         shell: bash
         run: |
           set -e
-          for f in main.js preload.js js/*.js js/tools/*.js; do node --check "$f"; done
+          for f in main.js preload.js lib/*.js js/*.js js/tools/*.js scripts/*.js; do node --check "$f"; done
           echo "syntax OK"
+
+      # 版本号规则：每段只能是 0–9，满 10 进位（0.0.14 是错的，应写 0.1.4）。
+      # 放在构建之前，避免打出一个版本号不合规的包。
+      - name: Verify version format
+        run: npm run version:check
+
+      # tag 必须与 package.json 版本一致，否则发布出去的文件名和 tag 对不上，
+      # 用户按 tag 找包会 404（历史上踩过）。
+      - name: Tag matches package.json version
+        shell: bash
+        run: |
+          set -e
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/v}"
+            PKG=$(node -p "require('./package.json').version")
+            echo "tag=$TAG package=$PKG"
+            if [[ "$TAG" != "$PKG" ]]; then
+              echo "::error::tag v$TAG 与 package.json 的 $PKG 不一致"
+              exit 1
+            fi
+          else
+            echo "非 tag 触发，跳过一致性检查"
+          fi
+
+      - name: Run tests
+        run: npm test
 
       - name: Build portable exe + zip
         run: npm run dist
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 产物必须先存在再交给上传步骤：之前 upload 步骤报错时，
+      # 由于 release 已创建，界面显示「Assets 2」但其实只挂上了源码包，很难察觉。
+      - name: Verify artifacts exist
+        shell: bash
+        run: |
+          set -e
+          VER=$(node -p "require('./package.json').version")
+          node -e "
+            const fs=require('fs');
+            const ver=process.argv[1];
+            const want=['dist/hehe-toolbox-Portable-'+ver+'.exe','dist/hehe-toolbox-'+ver+'-win-x64.zip'];
+            let bad=false;
+            for(const f of want){
+              if(!fs.existsSync(f)){ console.error('::error::构建产物缺失：'+f); bad=true; continue; }
+              const st=fs.statSync(f);
+              if(st.size < 10*1024*1024){ console.error('::error::产物异常小('+st.size+'B)：'+f); bad=true; continue; }
+              if(/[^\x00-\x7F]/.test(f)){ console.error('::error::产物名含非 ASCII 字符：'+f); bad=true; continue; }
+              console.log('OK '+f+' ('+st.size+' bytes)');
+            }
+            process.exit(bad?1:0);
+          " "$VER"
 
       - name: Create draft release with assets
         uses: softprops/action-gh-release@v2
