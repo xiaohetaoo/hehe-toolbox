@@ -328,7 +328,8 @@
         modeBox,
         div('form-row', h('span', { class: 'form-label' }, '比例'), tierSel, ' ',
           h('span', { class: 'form-label' }, '大小'), mbIn, h('span', { class: 'field-hint' }, 'MB')),
-        div('field-hint', '「按比例」= 每个文件各自按原体积的比例计算上限；「指定大小」= 每个文件都不超过该 MB。两者都是单文件上限，不是整批总和。'));
+        div('field-hint', '「按比例」= 每个文件各自按原体积的比例计算上限；「指定大小」= 每个文件都不超过该 MB。两者都是单文件上限，不是整批总和。'),
+        div('field-hint', '音视频采用两遍编码：先完整分析一遍画面复杂度，再按目标码率精确分配，因此体积更贴近上限（同体积下画质更好）。代价是分析阶段要额外过一遍文件，大文件会稍久。'));
       const outCard = div('card', div('card-title', '输出位置'), div('form-row', outDirIn, pickOut));
       const runCard = div('card', div('card-title', '执行'), div('form-row', startBtn, ' ', cancelBtn, prog.el), status, listBox);
       page.appendChild(targetCard);

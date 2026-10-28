@@ -32,7 +32,10 @@ let pass = 0, fail = 0;
 const chk = (c, m) => { console.log((c ? 'PASS  ' : 'FAIL  ') + m); if (!c) fail++; else pass++; };
 
 const pkg = JSON.parse(read('package.json') || '{}');
-chk(pkg.version === '0.1.5', '包内版本 = 0.1.5（实际 ' + pkg.version + '）');
+/* 版本号从源码 package.json 动态取，不再硬编码 —— 硬编码会让每次发版这个
+   校验必然 FAIL，久而久之就被当成"本来就失败"而忽略掉，校验形同虚设。 */
+const wantVer = require(path.join(__dirname, '..', 'package.json')).version;
+chk(pkg.version === wantVer, '包内版本 = ' + wantVer + '（实际 ' + pkg.version + '）');
 
 const main = read('main.js') || '';
 chk(!!main, 'main.js 可读');

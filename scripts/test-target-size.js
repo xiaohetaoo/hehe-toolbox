@@ -116,5 +116,56 @@ c('字节格式化', () => {
   assert.ok(/MB/.test(t.fmtBytes(5 * 1024 * 1024)));
 });
 
+/* ---------- 两遍法参数构造 ---------- */
+const has = (a, ...keys) => keys.every(k => a.includes(k));
+const pairs = (a) => { const o = {}; for (let i = 0; i < a.length - 1; i++) if (String(a[i]).startsWith('-') && !String(a[i + 1]).startsWith('-')) o[a[i]] = a[i + 1]; return o; };
+
+c('pass 1 只分析：输出到 null，且带 -pass 1', () => {
+  const a = t.buildPass1Args({ input: 'C:/in.mp4', videoKbps: 800, passlogFile: 'C:/t/x264pass' });
+  assert.ok(has(a, '-pass', '1'), '-pass 1 缺失: ' + a.join(' '));
+  assert.ok(has(a, '-f', 'null'), 'pass 1 应丢弃画面');
+  const p = pairs(a);
+  assert.strictEqual(p['-passlogfile'], 'C:/t/x264pass', 'stats 路径不对');
+  assert.strictEqual(a[a.length - 1], '-', '输出目标应为 -');
+});
+
+c('pass 1 用 -an 跳过音轨（音频不进 stats，省一遍解码）', () => {
+  const a = t.buildPass1Args({ input: 'x.mp4', videoKbps: 800, passlogFile: 'p' });
+  assert.ok(a.includes('-an'), 'pass 1 应 -an');
+});
+
+c('pass 2 带 -pass 2 且读同一 passlogfile', () => {
+  const a = t.buildPass2Args({ input: 'C:/in.mp4', output: 'C:/out.mp4', videoKbps: 800, audioKbps: 128, hasAudio: true, passlogFile: 'C:/t/x264pass' });
+  assert.ok(has(a, '-pass', '2'), '-pass 2 缺失');
+  assert.strictEqual(pairs(a)['-passlogfile'], 'C:/t/x264pass', '必须与 pass 1 同一 stats');
+  assert.ok(a.includes('C:/out.mp4'), '应输出到目标文件');
+  assert.strictEqual(pairs(a)['-b:a'], '128k', '音频码率不对');
+});
+
+c('pass 2 不带 maxrate/bufsize（两遍法已是精确码率控制）', () => {
+  const a = t.buildPass2Args({ input: 'i', output: 'o', videoKbps: 800, audioKbps: 128, hasAudio: true, passlogFile: 'p' });
+  assert.ok(!a.includes('-maxrate'), '两遍法不应再叠 maxrate');
+  assert.ok(!a.includes('-bufsize'), '两遍法不应再叠 bufsize');
+});
+
+c('无音轨时 pass 2 输出 -an', () => {
+  const a = t.buildPass2Args({ input: 'i', output: 'o', videoKbps: 800, audioKbps: 0, hasAudio: false, passlogFile: 'p' });
+  assert.ok(a.includes('-an'));
+  assert.ok(!a.includes('-c:a'), '无音轨不该编码音频');
+});
+
+c('单遍兜底保留 maxrate/bufsize 且无 -pass', () => {
+  const a = t.buildSinglePassArgs({ input: 'i', output: 'o', videoKbps: 1000, audioKbps: 128, hasAudio: true });
+  assert.ok(!a.includes('-pass'), '兜底不该有 -pass');
+  assert.strictEqual(pairs(a)['-maxrate'], '1500k');
+  assert.strictEqual(pairs(a)['-bufsize'], '2000k');
+});
+
+c('码率按整数 k 传递（不允许小数进入命令行）', () => {
+  const a = t.buildPass2Args({ input: 'i', output: 'o', videoKbps: 812.7, audioKbps: 96.4, hasAudio: true, passlogFile: 'p' });
+  assert.strictEqual(pairs(a)['-b:v'], '813k');
+  assert.strictEqual(pairs(a)['-b:a'], '96k');
+});
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);

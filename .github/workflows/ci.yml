@@ -39,3 +39,28 @@ jobs:
 
       - name: Pure-function regression tests
         run: npm test
+
+      # 冒烟测试：真的把 Electron 跑起来，确认 93 个工具页全部能渲染。
+      # 这是唯一能抓住「IPC handler 重复注册导致应用启动即卡死」这类
+      # node --check 与单元测试都看不见的故障的手段（第五轮真踩过）。
+      # Windows runner 有交互式桌面会话，无需 xvfb。
+      - name: Smoke test (boot app, render all tool pages)
+        shell: bash
+        env:
+          HEHE_SMOKE: '1'
+          HEHE_NOSPLASH: '1'
+          HEHE_TEST_DATA: ${{ runner.temp }}\hehe-smoke-data
+        run: |
+          set -e
+          mkdir -p "$HEHE_TEST_DATA"
+          export ELECTRON_RUN_AS_NODE=
+          # 冒烟模式由 main.js 内置：渲染全部工具页 → 打印 SMOKE_RESULT → 自行退出
+          timeout 180 node_modules/electron/dist/electron.exe . > smoke.log 2>&1 || true
+          echo "---- smoke.log ----"
+          cat smoke.log
+          if grep -q "SMOKE_RESULT:.*PASS" smoke.log; then
+            echo "smoke PASS"
+          else
+            echo "::error::冒烟测试未通过（未出现 SMOKE_RESULT ... PASS）"
+            exit 1
+          fi
