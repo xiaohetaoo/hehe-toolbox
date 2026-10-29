@@ -17,3 +17,9 @@ _seg*
 Thumbs.db
 # 审查时的临时探测脚本目录
 .tmp-audit/
+# e2e 测试会临时解出的应用目录 / 校验产物（防止误提交几百 MB）
+dl-verify/
+.ciunpack/
+.e2e-*/
+# 本地打包暂存（build-portable.sh 默认放工作区外，但写错参数时可能落到这里）
+.hehe-build-stage/
