@@ -116,8 +116,18 @@
         } catch (e) {
           // 原来没兜底：exec 失败时按钮永久 disabled、状态停在「进行中」，只能切页恢复
           running = false; startBtn.disabled = false; stopBtn.disabled = true;
-          status.textContent = '✗ ' + e.message;
-          toast(e.message, 'error');
+          /* 【修 bug】这里原先写 `status.textContent = ...`，但 Ping 页面的 render
+           * 作用域里根本没有 status 变量（只有 term / startBtn / stopBtn / statsEl）。
+           * 非严格模式下解析成 window.status，赋值静默失效；严格模式下直接抛
+           * `status is not defined` —— 而且抛在 catch 里，真正的失败原因被这个次级
+           * 报错掩盖。改成写进终端区（term），与其它输出位置保持一致。 */
+          try {
+            const line = document.createElement('div');
+            line.className = 'field-err';
+            line.textContent = '✗ ' + (e && e.message ? e.message : String(e));
+            term.appendChild(line);
+          } catch (e2) {}
+          toast((e && e.message) || String(e), 'error');
           return;
         }
         if (unsubStream) try { unsubStream(); } catch (e) {}
@@ -184,7 +194,20 @@
         if (!host) return;
         term.innerHTML = ''; startBtn.disabled = true;
         const args = noDns.checked ? ['-d', '-h', '30', host] : ['-h', '30', host];
-        jobId = await invoke('exec:stream', { command: 'tracert', args });
+        /* 【补兜底】原来是裸 `jobId = await invoke('exec:stream', ...)`：
+         * 启动失败时抛在 await 处，而 `startBtn.disabled = true` 已经在上一行生效，
+         * 结果「开始追踪」按钮永久变灰，只能切页面才恢复。 */
+        try {
+          jobId = await invoke('exec:stream', { command: 'tracert', args });
+        } catch (e) {
+          startBtn.disabled = false;
+          try {
+            const errLine = h('div', { class: 'field-err' }, '✗ ' + ((e && e.message) || String(e)));
+            term.appendChild(errLine);
+          } catch (e2) {}
+          toast((e && e.message) || String(e), 'error');
+          return;
+        }
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
         unsubStream = on('job:stream', (d) => {

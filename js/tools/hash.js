@@ -46,14 +46,20 @@
           if (d.kind === 'hash' && d.id === p) progress.firstChild.style.width = (d.done / d.total * 100) + '%';
         });
         const algos = ['md5', 'sha1', 'sha256', 'sha512'];
-        for (const algo of algos) {
-          try {
-            const r = await window.api.invoke('fs:hash-file', p, algo);
+        /* 【一次读盘】原来对同一个文件连续调用 4 次 fs:hash-file，
+         * 每次主进程都要完整读一遍盘 —— 校验 1GB 文件要读 4GB。
+         * 改用 fs:hash-file-multi 一次流式读取同时算 4 个摘要，IO 降到 1/4。 */
+        try {
+          const r = await window.api.invoke('fs:hash-file-multi', p, algos);
+          for (const algo of algos) {
+            const hex = r.hex[algo];
             const line = div('form-row', h('span', { class: 'form-label', style: { minWidth: '70px', textTransform: 'uppercase' } }, algo),
-              h('span', { class: 'mono', style: { flex: '1', userSelect: 'text', wordBreak: 'break-all', fontSize: '12px' } }, r.hex),
-              btn('复制', 'btn-sm btn-text', () => copyText(r.hex)));
+              h('span', { class: 'mono', style: { flex: '1', userSelect: 'text', wordBreak: 'break-all', fontSize: '12px' } }, hex),
+              btn('复制', 'btn-sm btn-text', () => copyText(hex)));
             row.appendChild(line);
-          } catch (e) { row.appendChild(div('field-err', algo + ' 失败: ' + e.message)); }
+          }
+        } catch (e) {
+          row.appendChild(div('field-err', '计算失败: ' + ((e && e.message) || String(e))));
         }
         progress.remove();
         unsub();

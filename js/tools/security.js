@@ -42,9 +42,24 @@
         const n = Math.min(50, Math.max(1, parseInt(countIn.value) || 5));
         out.innerHTML = '';
         for (let i = 0; i < n; i++) {
-          const arr = new Uint32Array(len);
-          crypto.getRandomValues(arr);
-          const pwd = [...arr].map(x => chars[x % chars.length]).join('');
+          /* 【消除取模偏差】x % chars.length 会让靠前的字符出现概率略高：
+           * 2^32 不能被字符集长度整除时，余数小的那几个字符多出一次机会。
+           * 虽然差异很小，但这是「安全与密码」模块，不该有已知偏差。
+           * 用拒绝采样：只接受落在「可整除区间」内的随机数，否则重新取。
+           * 字符集常见长度（62/87 等），被拒概率 < 1/10^7，性能无影响。 */
+          const cLen = chars.length;
+          const limit = Math.floor(0x100000000 / cLen) * cLen; // 可整除的上界
+          const out = [];
+          while (out.length < len) {
+            const arr = new Uint32Array(len - out.length);
+            crypto.getRandomValues(arr);
+            for (const x of arr) {
+              if (x < limit) out.push(chars[x % cLen]);
+              else { /* 落在偏差区，丢弃重取 */ }
+              if (out.length >= len) break;
+            }
+          }
+          const pwd = out.join('');
           const strength = scorePwd(pwd);
           out.appendChild(div('form-row',
             h('span', { class: 'mono', style: { flex: '1', fontSize: '14px', userSelect: 'text' } }, pwd),

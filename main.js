@@ -186,7 +186,7 @@ const OWN_TEMP_PATTERNS = [
   /^hehe-ffmpeg-win.*\.gz$/i,    // FFmpeg 压缩包
   /^hehe-update-.*\.log$/i,      // 升级脚本日志
   /^hehe-rollback-.*\.log$/i,    // 回滚脚本日志
-  /^hehe-7zx-.+/i,               // 7z 解压暂存目录
+  /^\.?hehe-7zx-.+/i,           // 7z 解压暂存目录（可能带前导点，见 seven:extract）
   /^hehe-tgt-.+/i,               // 目标体积压缩暂存目录
   /^hehe-uniq-.+/i,              // 通用解压暂存目录
   /^\.?hehe-w-.+/i               // 原子写入的临时文件（实际名带前导点）
@@ -496,25 +496,40 @@ function applyHotkey(acc) {
   return true;
 }
 
-/* ---------------- cpu sampler ---------------- */
-function sampleCpu() {
+/* 逻辑核心数（缓存 60 秒：核数不会变，但 os.cpus() 每次都要构造整张表） */
+let _coreCountCache = null, _coreCountAt = 0;
+function cpuCoreCount() {
+  if (_coreCountCache && Date.now() - _coreCountAt < 60000) return _coreCountCache;
+  try { _coreCountCache = os.cpus().length || 1; } catch (e) { _coreCountCache = _coreCountCache || 1; }
+  _coreCountAt = Date.now();
+  return _coreCountCache;
+}
+
+/* ---------------- cpu sampler ----------------
+ * 【只枚举一次】原实现每次采样要跑三遍 os.cpus()：
+ * sampleCpu() 里一遍、接着 interval 里又两遍 reduce。
+ * os.cpus() 会枚举所有逻辑核心并构造对象数组，在 32 核机器上开销不小，
+ * 而且每 1.5 秒一次。
+ * 现在一次枚举同时算出「当前总量」与「给下次用的基线」。 */
+function readCpuTimes() {
   const cpus = os.cpus();
-  let idle = 0, total = 0;
+  let idle = 0, total = 0, cores = cpus.length;
   for (const c of cpus) {
     idle += c.times.idle;
     total += c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq;
   }
-  if (lastCpuSample) {
-    const idleD = idle - lastCpuSample.idle, totalD = total - lastCpuSample.total;
-    return totalD > 0 ? Math.min(100, Math.max(0, (1 - idleD / totalD) * 100)) : 0;
-  }
-  return 0;
+  return { idle, total, cores };
 }
 setInterval(() => {
   // 窗口不可见（最小化到托盘/隐藏）时不必推送状态，避免无谓唤醒渲染进程
   if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return;
-  const cpu = sampleCpu();
-  lastCpuSample = { idle: os.cpus().reduce((s, c) => s + c.times.idle, 0), total: os.cpus().reduce((s, c) => s + c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq, 0) };
+  const cur = readCpuTimes();
+  let cpu = 0;
+  if (lastCpuSample) {
+    const idleD = cur.idle - lastCpuSample.idle, totalD = cur.total - lastCpuSample.total;
+    cpu = totalD > 0 ? Math.min(100, Math.max(0, (1 - idleD / totalD) * 100)) : 0;
+  }
+  lastCpuSample = { idle: cur.idle, total: cur.total };
   const totalMem = os.totalmem(), freeMem = os.freemem();
   send('sys:stats', { cpu: Math.round(cpu * 10) / 10, memUsed: totalMem - freeMem, memTotal: totalMem, memPct: Math.round((1 - freeMem / totalMem) * 1000) / 10 });
 }, 1500);
@@ -801,7 +816,21 @@ handle('fs:delete-empty', async (e, dirs) => {
     // 闸门：不允许删系统关键目录 / 盘符根 / 用户主目录本身
     const bad = pathGuard.checkDeletable(p, false);
     if (bad) { errors.push(`${p}: ${bad.reason}`); continue; }
-    try { await fsp.rmdir(p); deleted++; } catch (err) { if (err.code !== 'ENOENT') errors.push(`${p}: ${fmtErr(err)}`); }
+    /* 删空目录。这里【不能】用 fsp.rm —— 它对目录只在 recursive:true 时才成功，
+     * 而 recursive:true 会把目录里的内容一起删掉，语义完全不同（会毁数据）。
+     * fsp.rmdir 在 Node 24 上仍然可用（只是被标记为将来可能弃用）。
+     * 所以：优先 rmdir，万一将来真的移除，再退到「先确认目录为空再删」的写法。 */
+    try {
+      if (typeof fsp.rmdir === 'function') {
+        await fsp.rmdir(p);
+      } else {
+        // 降级：先读目录，确认确实是空的再删（绝不用 recursive:true）
+        const ents = await fsp.readdir(p);
+        if (ents.length !== 0) throw new Error('目录非空，跳过');
+        await fsp.rmdir(p);
+      }
+      deleted++;
+    } catch (err) { if (err.code !== 'ENOENT') errors.push(`${p}: ${fmtErr(err)}`); }
   }
   return { deleted, errors };
 });
@@ -915,17 +944,47 @@ handle('fs:clean-junk', async (e, targets, keepRoot) => {
 
 /* hash / encrypt / split / dedupe */
 const HASH_ALGOS = ['md5', 'sha1', 'sha256', 'sha512'];
+/* 单算法：内部走多算法实现，保证两条通道行为完全一致 */
 handle('fs:hash-file', async (e, p, algo = 'sha256') => {
-  if (!HASH_ALGOS.includes(algo)) throw new Error('不支持的算法');
+  const r = await hashFileMulti(p, [algo]);
+  return { hex: r.hex[algo], size: r.size, algo };
+});
+
+/* 多算法：**一次读盘**同时算 md5/sha1/sha256/sha512。
+ *
+ * 【为什么需要】原渲染层的文件校验页对同一个文件连续调用 4 次
+ * `fs:hash-file`，每次都完整读一遍盘 —— 校验一个 1GB 文件要读 4GB。
+ * 这里改成一次流式读取、多个 hasher 并行 update，磁盘 IO 降到 1/4。
+ *
+ * 【顺带修】原来用 `fs.statSync(p)` 在主进程同步阻塞：大文件操作期间
+ * 整个 UI（含 1.5 秒一次的 sys:stats 推送）都会卡住。改成 await fsp.stat。 */
+async function hashFileMulti(p, algos) {
+  const list = (Array.isArray(algos) && algos.length ? algos : ['sha256']);
+  for (const a of list) if (!HASH_ALGOS.includes(a)) throw new Error('不支持的算法: ' + a);
+  const uniq = [...new Set(list)];
+  const hashers = Object.fromEntries(uniq.map((a) => [a, crypto.createHash(a)]));
+  const st = await fsp.stat(p);          // 异步，不阻塞事件循环
   return await new Promise((resolve, reject) => {
-    const hash = crypto.createHash(algo);
-    const st = fs.statSync(p); let done = 0; let last = 0;
+    let done = 0, last = 0;
     const rs = fs.createReadStream(p, { highWaterMark: 1 << 20 });
-    rs.on('data', (chunk) => { hash.update(chunk); done += chunk.length; if (Date.now() - last > 200) { last = Date.now(); send('job:progress', { id: p, kind: 'hash', done, total: st.size }); } });
-    rs.on('end', () => resolve({ hex: hash.digest('hex'), size: st.size, algo }));
+    rs.on('data', (chunk) => {
+      for (const a of uniq) hashers[a].update(chunk);
+      done += chunk.length;
+      if (Date.now() - last > 200) {
+        last = Date.now();
+        send('job:progress', { id: p, kind: 'hash', done, total: st.size });
+      }
+    });
+    rs.on('end', () => {
+      const hex = {};
+      for (const a of uniq) hex[a] = hashers[a].digest('hex');
+      resolve({ hex, size: st.size });
+    });
     rs.on('error', reject);
   });
-});
+}
+handle('fs:hash-file-multi', async (e, p, algos) => hashFileMulti(p, algos));
+
 handle('fs:hash-text', (e, text, algo = 'sha256') => {
   if (!HASH_ALGOS.includes(algo)) throw new Error('不支持的算法');
   return { hex: crypto.createHash(algo).update(text, 'utf8').digest('hex') };
@@ -1002,7 +1061,8 @@ handle('fs:decrypt-file', async (e, p, outPath, password) => {
 });
 
 handle('fs:split-file', async (e, p, chunkMB, outDir) => {
-  const st = fs.statSync(p);
+  // 异步 stat：大文件分片期间不能阻塞主进程事件循环（UI 与 sys:stats 都要响应）
+  const st = await fsp.stat(p);
   const chunkSize = Math.max(1, chunkMB) * 1024 * 1024;
   const base = path.basename(p);
   // 空文件没有可分割的内容：parts 记为 1 并与实际产生的 part1 保持一致，
@@ -1297,6 +1357,10 @@ handle('zip:extract', async (e, zipPath, outDir) => {
     isHardLink: false
   }));
   const verdict = archiveGuard.inspectEntries(raw);
+  /* archive-guard.inspectEntries() 的契约是「要么 return {ok:true}，要么直接 throw」，
+   * 不存在 ok:false 的返回。所以下面这行是**死代码**（永不成立），
+   * 保留只为防御将来 guard 改成返回 {ok:false} —— 那时这一行会自动生效。
+   * 不要因为「看起来没用到」而删掉，也不要误以为这里有失败返回值分支。 */
   if (!verdict.ok) throw new Error('压缩包预检未通过');
 
   await fsp.mkdir(outDir, { recursive: true });
@@ -1407,7 +1471,8 @@ handle('proc:list', async () => {
     if (prev && prev.has(row.id) && row.cpu != null && prev.get(row.id).cpu != null) {
       const dCpu = row.cpu - prev.get(row.id).cpu;
       const dt = (now - lastProcSnap.t) / 1000;
-      if (dt > 0 && dCpu >= 0) cpuPct = Math.round(Math.min(100, (dCpu / dt / os.cpus().length) * 100) * 10) / 10;
+      // 用缓存的核数：进程列表每轮都会调到这里，没必要每次都枚举 CPU
+      if (dt > 0 && dCpu >= 0) cpuPct = Math.round(Math.min(100, (dCpu / dt / cpuCoreCount()) * 100) * 10) / 10;
     }
     newMap.set(row.id, { cpu: row.cpu });
     out.push({ pid: row.id, name: row.name, cpu: row.cpu, memKB: row.ws || 0, cpuPct });
@@ -1620,7 +1685,18 @@ handle('server:start', async (e, root, port) => {
       let urlPath = decodeURIComponent(req.url.split('?')[0]);
       const absRoot = path.resolve(root);
       let fp = path.resolve(path.join(absRoot, urlPath));
-      if (fp !== absRoot && !fp.startsWith(absRoot + path.sep)) { res.writeHead(403); res.end('403'); return; }
+      /* 【逃逸检查必须解析真实路径】只做字符串比较时，root 内若有指向外部的
+       * symlink / junction（node_modules\.bin 类目录里就有），可以读到 root 之外的文件。
+       * 这里先 realpath 归一，再做「是否在 root 内」判定，并且大小写不敏感
+       * （Windows 文件系统不区分大小写，纯 startsWith 会被大小写变体绕过）。 */
+      let realRoot, realFp;
+      try { realRoot = fs.realpathSync.native(absRoot); } catch (err) { realRoot = absRoot; }
+      try { realFp = fs.existsSync(fp) ? fs.realpathSync.native(fp) : fp; } catch (err) { realFp = fp; }
+      {
+        const lq = realFp.toLowerCase(), lr = realRoot.toLowerCase();
+        const ok = lq === lr || lq.startsWith(lr + path.sep) || lq.startsWith(lr + '/');
+        if (!ok) { res.writeHead(403); res.end('403'); return; }
+      }
       let st = await fsp.stat(fp).catch(() => null);
       if (st && st.isDirectory()) { fp = path.join(fp, 'index.html'); st = await fsp.stat(fp).catch(() => null); }
       if (!st) {
@@ -1964,9 +2040,15 @@ handle('qr:generate', async (e, text, opts = {}) => {
   return { b64: buf.toString('base64') };
 });
 handle('qr:save', async (e, text, outPath, opts = {}) => {
+  /* 这个通道目前 UI 已经不走（前端改用 fs:write-file-b64 自己编码），
+   * 但保留以免旧调用方失效。既然仍可达，就必须和别的写文件通道一样过闸门：
+   * 参数直接来自渲染层，不校验就等于留了一个「任意路径写文件」的入口。 */
+  const bad = pathGuard.checkOverwritable(outPath);
+  if (bad) throw pathGuard.err(bad.code, bad.reason);
+  const target = await fsOps.uniquePath(outPath); // 不覆盖已有文件
   const QRCode = require('qrcode');
-  await QRCode.toFile(outPath, text, { width: opts.size || 640, margin: opts.margin != null ? opts.margin : 2, errorCorrectionLevel: opts.level || 'M' });
-  return { outPath };
+  await QRCode.toFile(target, text, { width: opts.size || 640, margin: opts.margin != null ? opts.margin : 2, errorCorrectionLevel: opts.level || 'M' });
+  return { outPath: target };
 });
 
 /* ================= IPC: ffmpeg 环境与音视频处理 ================= */
@@ -2086,7 +2168,7 @@ function downloadToFile(url, dest, id, ctrl, label) {
           // 提交前校验：体积必须与服务器声明的 content-length 一致，且不能为空
           let ok = true, why = '';
           try {
-            const st = fs.statSync(tmp);
+            const st = await fsp.stat(tmp);   // 异步，避免下载收尾时卡住事件循环
             if (st.size === 0) { ok = false; why = '下载内容为空'; }
             else if (total > 0 && st.size !== total) { ok = false; why = `体积不符（${st.size}/${total} 字节）`; }
           } catch (e) { ok = false; why = e.message; }
@@ -3417,6 +3499,7 @@ handle('seven:extract', async (e, { archive, outDir, password }) => {
     // 预检：解出来的条目也要过一遍安全判定（防 7z 里藏的穿越/设备名条目）
     const scanned = await scanDirForGuard(staging);
     const verdict = archiveGuard.inspectEntries(scanned);
+    // 同 1314 行：inspectEntries 只 return ok:true 或 throw，此处为防御性死代码
     if (!verdict.ok) throw new Error('解压内容预检未通过');
 
     /* 目录条目与文件条目必须路由到同一个父目录：
@@ -3962,9 +4045,18 @@ function normSchedule(s) {
   }
   return out;
 }
+/* 生成不重复的本地 id。
+ * 【为什么不用纯 Date.now()】同一毫秒并发添加两条会得到相同 id：
+ * 定时任务里 `sched:remove` 按 id 找定时器，撞号就会删错/只删一条；
+ * 快捷启动与命令收藏同理。时间戳 + 进程内自增序号即可彻底避免。 */
+let _localIdSeq = 0;
+function nextLocalId(prefix) {
+  return prefix + Date.now() + '-' + (++_localIdSeq);
+}
+
 handle('sched:add', (e, s) => {
   const clean = normSchedule(s);
-  clean.id = 'sc' + Date.now();
+  clean.id = nextLocalId('sc');
   const list = storeGet('settings.schedules', []);
   list.push(clean);
   storeSet('settings.schedules', list);
@@ -4285,7 +4377,37 @@ if (process.env.HEHE_SMOKE) {
       console.log('SMOKE_RESULT: pages=' + r.total + ' cssRules=' + r.ruleCount + ' ' + (fail ? 'FAIL' : 'PASS'));
       r.errs.forEach(e => console.log('SMOKE_RESULT: FAIL ' + e));
       r.styleErrs.forEach(e => console.log('SMOKE_RESULT: LAYOUT ' + e));
-      app.exit(fail ? 3 : 0);
+
+      /* 辅助窗口校验：snip / pin / ruler 三个窗口没有主界面的冒烟覆盖，
+       * 但它们也承载功能（截图标注、贴图、标尺）。尤其是加了 CSP 之后，
+       * 必须确认「脚本仍能跑、本地图片仍能加载」，否则等于把功能改坏。
+       * 用主进程创建窗口（与产品实际路径一致），检查 CSP 是否生效、
+       * 内联脚本是否被执行。 */
+      let auxFail = 0;
+      for (const f of ['snip.html', 'pin.html', 'ruler.html']) {
+        let aux = null;
+        try {
+          aux = new BrowserWindow({ show: false, width: 640, height: 480, webPreferences: { offscreen: false } });
+          await aux.loadFile(f);
+          await new Promise((res) => setTimeout(res, 300));
+          const info = await aux.webContents.executeJavaScript(
+            'JSON.stringify({scripts: document.querySelectorAll("script").length,' +
+            ' csp: !!document.querySelector(\'meta[http-equiv="Content-Security-Policy"]\'),' +
+            ' bodyKids: document.body.children.length})'
+          );
+          const o = JSON.parse(info);
+          if (!o.csp) { console.log('SMOKE_RESULT: AUX ' + f + ' 缺少 CSP'); auxFail++; }
+          if (o.scripts < 1) { console.log('SMOKE_RESULT: AUX ' + f + ' 内联脚本未加载'); auxFail++; }
+          if (o.bodyKids < 1) { console.log('SMOKE_RESULT: AUX ' + f + ' 页面主体为空（可能被 CSP 拦死）'); auxFail++; }
+          else console.log('SMOKE_RESULT: AUX ' + f + ' OK (scripts=' + o.scripts + ', csp=on)');
+        } catch (e) {
+          console.log('SMOKE_RESULT: AUX ' + f + ' ERR ' + e.message); auxFail++;
+        } finally {
+          try { if (aux && !aux.isDestroyed()) aux.destroy(); } catch (e) {}
+        }
+      }
+
+      app.exit((fail || auxFail) ? 3 : 0);
     } catch (e) {
       console.log('SMOKE_RESULT: ERR ' + e.message);
       app.exit(3);

@@ -404,6 +404,10 @@
       const saveTimer = setInterval(() => { if (curName && ta.value) save().catch(() => {}); }, 30000);
       window.App.onCleanup(() => clearInterval(saveTimer));
       panes.appendChild(ta); panes.appendChild(preview);
+      /* 【补声明】下面第 409 行与 refreshList 里都在用 status，但本作用域从未
+       * 声明过它 —— 会去读 window.status（字符串），赋值静默失效；
+       * 严格模式下则抛 `status is not defined`。这里补上真正的元素。 */
+      const status = h('span', { class: 'field-hint' }, '');
       page.appendChild(div('card', div('card-title', '笔记'),
         div('form-row', btn('＋ 新建', 'btn-sm btn-primary', createNew), btn('💾 保存', 'btn-sm btn-secondary', save),
           btn('📄 导出 PDF', 'btn-sm btn-secondary', exportPdf), btn('删除', 'btn-sm btn-text', removeCur), status),

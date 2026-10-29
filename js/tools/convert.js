@@ -203,28 +203,21 @@
         ['sin', 'sin('], ['cos', 'cos('], ['tan', 'tan('], ['asin', 'asin('], ['log', 'log10('], ['ln', 'ln('],
         ['sqrt', 'sqrt('], ['abs', 'abs('], ['π', 'pi'], ['e', 'e'], ['^', '^'], ['(', '('], [')', ')']
       ];
+      /* 求值交给 lib/expr-eval.js（递归下降解析器，不执行任何代码）。
+       * 原实现是 Function('return (...)')()，为此整站 CSP 必须开 unsafe-eval；
+       * 现在可以彻底关掉。lib 通过 preload 的 evalExpr 暴露（contextIsolation 限制）。 */
       function evaluate(expr) {
-        let e = expr
-          .replace(/×/g, '*').replace(/÷/g, '/').replace(/，/g, ',')
-          .replace(/\bpi\b/gi, 'Math.PI').replace(/\be\b/g, 'Math.E')
-          .replace(/\b(sin|cos|tan|asin|acos|atan)\(/g, 'Math.$1(')
-          .replace(/\blog10\(/g, 'Math.log10(').replace(/\blog\(/g, 'Math.log10(')
-          .replace(/\bln\(/g, 'Math.log(')
-          .replace(/\bsqrt\(/g, 'Math.sqrt(').replace(/\babs\(/g, 'Math.abs(')
-          .replace(/\bceil\(/g, 'Math.ceil(').replace(/\bfloor\(/g, 'Math.floor(')
-          .replace(/\bround\(/g, 'Math.round(')
-          .replace(/\^/g, '**')
-          .replace(/(\d+(?:\.\d+)?)%/g, '($1/100)');
-        // 处理嵌套^: 简化处理 — 使用循环替换
-        while (/\^\s*\(/.test(e)) e = e.replace(/\^\s*\(/g, '**(');
-        e = e.replace(/\^/g, '**');
-        // 阻止访问全局对象/危险函数（字符白名单无法区分标识符）
-        if (/\b(document|location|window|globalThis|self|top|parent|alert|eval|Function|fetch|XMLHttpRequest|localStorage|sessionStorage|indexedDB|import|constructor|process|require|navigator|cookieStore)\b/i.test(e)) throw new Error('包含不允许的调用');
-        // 安全检查
-        if (!/^[-+*/%().,\d\sMathepowinaclsqrtbfgediupwinxomrPIE_,*]*$/i.test(e)) throw new Error('包含不允许的字符');
-        const val = Function('"use strict"; return (' + e + ')')();
-        if (typeof val !== 'number' || isNaN(val)) throw new Error('无法计算');
-        return val;
+        const raw = String(expr || '').trim();
+        if (!raw) throw new Error('表达式为空');
+        if (window.api && window.api.evalExpr) {
+          const r = window.api.evalExpr(raw);
+          if (!r.ok) throw new Error(r.error || '无法计算');
+          return r.value;
+        }
+        /* 极端兜底（浏览器演示模式且 preload 不可用）：用同一套规则的简化实现，
+         * 仍然不碰 eval —— 只支持数字与四则，宁可报错也不执行代码。 */
+        if (!/^[-+*/%^().\d\s]+$/.test(raw)) throw new Error('不支持该表达式（演示模式）');
+        throw new Error('演示模式暂不支持复杂表达式');
       }
       function fmt(v) {
         if (!isFinite(v)) return v > 0 ? '∞' : '-∞';

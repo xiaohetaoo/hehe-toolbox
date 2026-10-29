@@ -86,5 +86,11 @@
     return file.name; // 浏览器模式只有文件名
   }
 
-  window.api = { invoke, on, isDesktop, getPathForFile, errText };
+  /* isDev：开发态为 true（打包版默认 false），供「只在开发态挂测试钩子」使用。
+   * 浏览器演示模式也算 dev（方便本地调试）。 */
+  const isDev = native ? !!native.isDev : true;
+  /* evalExpr：安全表达式求值（同步调用 preload 桥，不经 IPC）。
+   * 浏览器演示模式返回 null，由调用方给出降级提示。 */
+  const evalExpr = native && native.evalExpr ? native.evalExpr : null;
+  window.api = { invoke, on, isDesktop, isDev, getPathForFile, errText, evalExpr };
 })();

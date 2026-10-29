@@ -322,7 +322,16 @@
           if (!mgFile) return toast('请选择分片', 'warn');
           mgProg.show(); mgStatus.textContent = '';
           // 只认「合并」自己的进度事件：hash/split/加密共用 job:progress，不过滤会被别的任务串扰
-          const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'merge') mgProg.set(d.total ? d.done / d.total * 100 : 0); });
+          /* 只认本次合并的进度：主进程发的 merge 事件里 id 是 finalOut 路径。
+           * 原来只判 kind 不判 id —— 同时跑两次合并（或别的合并残留）会互相串。
+           * 这里在拿到结果前无法预知 finalOut，故先用「第一个 merge 事件的 id」锁定。 */
+          let mergeId = null;
+          const unsub = window.api.on('job:progress', (d) => {
+            if (d.kind !== 'merge' || !d.id) return;
+            if (!mergeId) mergeId = d.id;
+            else if (d.id !== mergeId) return;
+            mgProg.set(d.total ? d.done / d.total * 100 : 0);
+          });
           try {
             const r = await invoke('fs:merge-parts', mgFile);
             mgStatus.innerHTML = `<span class="status-ok">✓ 合并完成</span>：${escapeHtml(r.outPath)}（${fmtBytes(r.size)}，${r.parts} 片）`;
@@ -722,7 +731,21 @@
             }
           } catch (e) {}
         });
-        const r = await invoke('content:search', { root, q, useRegex: regexChk.checked, ci: ciChk.checked, exts: extIn.value.trim(), limit: 1000 });
+        /* 【补兜底】原来是裸 `await invoke('content:search', ...)`：
+         * 失败时抛在这里，而 startBtn.disabled = true 已在前面生效，
+         * 「搜索」按钮永久变灰；同时上面刚注册的 job:stream 监听器也没人取消
+         * （unsub 只在成功路径里被调用），造成监听器泄漏。 */
+        let r;
+        try {
+          r = await invoke('content:search', { root, q, useRegex: regexChk.checked, ci: ciChk.checked, exts: extIn.value.trim(), limit: 1000 });
+        } catch (e) {
+          try { if (unsub) { unsub(); unsub = null; } } catch (e2) {}
+          startBtn.disabled = false; stopBtn.disabled = true;
+          jobId = null;
+          status.textContent = '✗ ' + ((e && e.message) || String(e));
+          toast((e && e.message) || String(e), 'error');
+          return;
+        }
         jobId = r.id;
         if (pageDead && jobId) invoke('job:kill', jobId).catch(() => {});
       }

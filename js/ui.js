@@ -342,8 +342,17 @@
     return t.firstChild || t;
   }
 
+  /* 生成不重复的本地 id。
+   * 【为什么不用纯 Date.now()】同一毫秒内连续添加两条会得到相同 id：
+   * 快捷启动「删除」按 id 查找，撞号就会删错项；命令收藏同理。
+   * 时间戳 + 进程内自增序号即可彻底避免（无需引入 uuid 依赖）。 */
+  let _idSeq = 0;
+  function nextId(prefix) {
+    return String(prefix || '') + Date.now() + '-' + (++_idSeq);
+  }
+
   window.h = h; // 全局 DOM 构建函数，供所有工具直接使用
   // 全局兜底：工具文件即使遗漏解构也能直接使用这些助手
-  Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox });
-  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder };
+  Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId });
+  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId };
 })();

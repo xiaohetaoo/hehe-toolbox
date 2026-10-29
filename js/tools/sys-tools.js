@@ -28,7 +28,9 @@
           ]));
           body.appendChild(sectionCard('💻 内存', [
             ['总容量', fmtBytes(info.memTotal)], ['可用', fmtBytes(info.memFree)],
-            ['已用', fmtBytes(info.memTotal - info.memFree) + `（${((1 - info.memFree / info.memTotal) * 100).toFixed(0)}%）`]
+            ['已用', fmtBytes(info.memTotal - info.memFree) +
+              // memTotal 为 0/缺失时（虚拟机、WMI 异常返回）不能显示 NaN%
+              (info.memTotal > 0 ? `（${((1 - info.memFree / info.memTotal) * 100).toFixed(0)}%）` : '')]
           ]));
           body.appendChild(sectionCard('🎮 显卡', info.gpu.map(g => [g.Name, `驱动 ${g.DriverVersion || '-'}`])));
           body.appendChild(sectionCard('💾 硬盘', info.disks.map(d => [d.Model, d.Size ? fmtBytes(Number(d.Size)) + `（${d.InterfaceType || ''}）` : '-'])));

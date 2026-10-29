@@ -2,7 +2,7 @@
 
 > Windows 桌面效率工具箱 · 93 个工具 · 全部本地运行
 
-![tech](https://img.shields.io/badge/Electron-45-165DFF)
+![tech](https://img.shields.io/badge/Electron-43-165DFF)
 
 ## 快速开始
 

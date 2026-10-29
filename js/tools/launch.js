@@ -1,7 +1,7 @@
 /* 模块：快捷启动 —— 快捷启动栏 / 命令收藏 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, confirmBox, promptBox, renderTable, fmtDate } = window.ui;
+  const { div, btn, toast, confirmBox, promptBox, renderTable, fmtDate, nextId } = window.ui;
   const { invoke, isDesktop } = window.api;
   const MOD = 'launch';
 
@@ -81,7 +81,7 @@
         const name = await promptBox({ title: '命名', label: '显示名称：', value: String(target).split(/[\\/]/).pop().replace(/\.\w+$/, '') || '快捷项' });
         if (!name) return;
         const items = await invoke('store:get', 'quicklaunch', []);
-        items.push({ id: 'ql' + Date.now(), name, target, type });
+        items.push({ id: nextId('ql'), name, target, type });
         await invoke('store:set', 'quicklaunch', items);
         toast('已添加', 'success');
         load();
@@ -162,7 +162,7 @@
           const md = window.ui.modal({ title: '选择执行环境', body: (b) => b.appendChild(div('form-row', b1, b2)), foot: [] });
         });
         const items = await invoke('store:get', 'commands', []);
-        items.push({ id: 'cmd' + Date.now(), name, cmd, shell });
+        items.push({ id: nextId('cmd'), name, cmd, shell });
         await invoke('store:set', 'commands', items);
         toast('已收藏', 'success');
         load();

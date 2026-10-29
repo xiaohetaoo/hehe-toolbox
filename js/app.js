@@ -390,7 +390,13 @@
   }
   /* 页面级清理：切换页面时清理上一个工具页注册的定时器/监听，防止资源泄漏 */
   let pageCleanupFns = [];
-  function onCleanup(fn) { pageCleanupFns.push(fn); }
+  /* 注册页面卸载清理函数。
+   * 【幂等保护】同一个函数重复注册会被去重：某些流程（如「检查更新」失败后重试）
+   * 可能在同一次页面生命周期里多次调用，不去重就会重复执行清理。 */
+  function onCleanup(fn) {
+    if (typeof fn !== 'function') return;
+    if (pageCleanupFns.indexOf(fn) === -1) pageCleanupFns.push(fn);
+  }
   function runPageCleanup() {
     pageCleanupFns.forEach(f => { try { f(); } catch (e) { console.warn('cleanup', e); } });
     pageCleanupFns = [];

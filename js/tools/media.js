@@ -394,10 +394,21 @@
             }
             let val;
             if (type === 2) {
+              /* ASCII 标签：count 是字节数（含结尾  ）。
+               * 【修正】原来是 `j < len - 1` 只跳过**最后**一个字节，
+               * 若实际字符串后面有多个  （很多相机会补零对齐），
+               * 会把多余的空字节也读进来，显示成乱码。
+               * 正确做法是读到第一个   为止。
+               * 偏移也要区分：count <= 4 时值内联在条目里（绝对偏移 e+8），
+               * 否则第 4 字段是相对 TIFF 头(base) 的偏移。 */
               const len = num;
-              let s = '';
               const valOff = num <= 4 ? e + 8 : base + g32(e + 8);
-              for (let j = 0; j < len - 1 && j < 64; j++) s += String.fromCharCode(dv.getUint8(valOff + j));
+              let s = '';
+              for (let j = 0; j < len && j < 64; j++) {
+                const code = dv.getUint8(valOff + j);
+                if (code === 0) break;            // 遇结束符就停
+                s += String.fromCharCode(code);
+              }
               val = s;
             } else if (type === 3) val = g16(e + 8);
             else if (type === 4) val = g32(e + 8);
@@ -430,7 +441,13 @@
           if (marker === 0xDA) break;
           offset += 2 + size;
         }
-        return btoa(String.fromCharCode(...b));
+        // 【分块转换】不能写 String.fromCharCode(...b) —— 展开运算符会把整个
+        // Uint8Array 作为实参压入调用栈，实测 1,000,000 字节即抛
+        // RangeError: Maximum call stack size exceeded。
+        // 一张不带 EXIF 的普通大图（>1MB）会直接崩溃。
+        let bin2 = '';
+        for (let i = 0; i < b.length; i += 0x8000) bin2 += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+        return btoa(bin2);
       }
       page.appendChild(div('card', div('card-title', '照片'), dz, result));
     }
@@ -978,8 +995,9 @@
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
         div('form-row', startBtn, ' ', prog.el, status)));
       page.appendChild(div('card', div('card-title', '压缩结果'), listBox));
-      // 测试钩子（无头 E2E 用；正常使用无副作用）
-      (window.__heheTest = window.__heheTest || {}).imgCompress = {
+      // 测试钩子：**只在开发态挂载**（打包版默认不挂，避免留下可注入的调试后门）。
+      // 打包态跑 E2E 时用环境变量 HEHE_TEST_HOOKS=1 临时开启。
+      if (window.api.isDev) (window.__heheTest = window.__heheTest || {}).imgCompress = {
         setPaths: (arr) => { paths.length = 0; paths.push(...arr); },
         setOpts: (o) => {
           if (o.mode) { modeSel.value = o.mode; modeSel.dispatchEvent(new Event('change')); }
@@ -1136,8 +1154,8 @@
         div('form-row', h('label', { class: 'field-hint' }, stripChk, ' 清除元数据（减少体积）')),
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
         div('form-row', startBtn, ' ', cancelBtn, status)));
-      // 测试钩子（无头 E2E 用；正常使用无副作用）
-      (window.__heheTest = window.__heheTest || {}).videoPress = {
+      // 测试钩子：只在开发态挂载（同上）
+      if (window.api.isDev) (window.__heheTest = window.__heheTest || {}).videoPress = {
         setFiles: (arr) => { files.length = 0; files.push(...arr); refreshList(); },
         setOpts: (o) => {
           if (o.preset) { presetSel.value = o.preset; presetSel.dispatchEvent(new Event('change')); }

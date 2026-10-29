@@ -324,7 +324,14 @@
         try {
           const q = encodeURIComponent(ta.value.slice(0, 4500));
           const pair = `${fromSel.value}|${toSel.value}`;
-          const resp = await fetch(`https://api.mymemory.translated.net/get?q=${q}&langpair=${pair}`);
+          /* 加超时：网络半通时 fetch 会一直挂着，界面永远停在「翻译中…」。
+           * 8 秒足够正常响应，超时就明确报错让用户重试。 */
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 8000);
+          let resp;
+          try {
+            resp = await fetch(`https://api.mymemory.translated.net/get?q=${q}&langpair=${pair}`, { signal: ctrl.signal });
+          } finally { clearTimeout(timer); }
           const j = await resp.json();
           if (j.responseData && j.responseData.translatedText) {
             out.value = j.responseData.translatedText.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
