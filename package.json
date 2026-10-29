@@ -78,7 +78,8 @@
     },
     "portable": {
       "artifactName": "hehe-toolbox-Portable-${version}.exe",
-      "splashImage": "assets/splash.bmp"
+      "splashImage": "assets/splash.bmp",
+      "unpackDirName": "hehe-unpack"
     },
     "nsis": {
       "artifactName": "hehe-toolbox-Setup-${version}.exe",
