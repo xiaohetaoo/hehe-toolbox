@@ -30,7 +30,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
-    "electron": "^45.1.0",
+    "electron": "^43.8.4",
     "electron-builder": "^26.18.0"
   },
   "build": {
