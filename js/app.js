@@ -255,6 +255,9 @@
       openTool('screenshot-ocr');
     });
     on('app:open-tool', (id) => { if (R.get(id)) openTool(id); });
+    /* 用户重复双击了图标：主实例已经把窗口提到前面，这里再说明一句，
+       否则用户只会看到窗口「突然冒出来」，不明白刚才那次点击为什么没开新窗口。 */
+    on('app:already-running', () => toast('核核工具箱已经在运行，已切换到当前窗口', 'info', 2500));
     on('sched:fire', (s) => {
       try { new Notification('核核工具箱 · 定时任务', { body: s.message || '任务触发' }); } catch (e) {}
       toast('⏰ ' + (s.message || '周期任务触发'), 'info', 6000);

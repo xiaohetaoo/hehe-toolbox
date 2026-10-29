@@ -4182,8 +4182,37 @@ async function sweepClipImages() {
 // 测试隔离：HEHE_TEST_DATA 指定独立的 userData 目录（不影响正式数据与单实例锁）
 if (process.env.HEHE_TEST_DATA) app.setPath('userData', process.env.HEHE_TEST_DATA);
 const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) { app.quit(); } else {
-  app.on('second-instance', showMainWindow);
+/* 拿不到锁 = 已经有一个实例在跑（用户重复点了图标 / 双击了多次）。
+ *
+ * 【踩过的坑】原来这里直接 `app.quit()` 静默退出，用户看到的现象就是
+ * 「双击了没反应、打不开了」—— 应用其实一直在后台好好跑着，只是新进程悄悄退了。
+ *
+ * 【为什么不在这个分支弹对话框】实测：拿不到锁时 **app.whenReady() 不会 resolve**
+ * （没有窗口、没有挂起句柄，进程直接自然退出，退出码 0）。
+ * 所以 dialog.showMessageBoxSync / whenReady().then(...) 全都执行不到，
+ * 加了等于没加。已验证：加框前后行为完全一样，都是一瞬间静默退出。
+ *
+ * 【正确做法】反馈交给**主实例**做 —— 它有窗口、有渲染层，能真正把界面亮出来：
+ *   主实例收到 second-instance → 还原/显示窗口 → 再给一条 toast 说明。
+ * 第二个进程只负责把事件转发出去然后退出，这是 Electron 的标准模式。
+ */
+if (!gotLock) {
+  app.quit();
+} else {
+  /* 第二个实例被拉起时，主实例收到这个事件：把窗口提到前面 + 说明原因。
+   * 注意 whenReady() 之前也可能收到（启动瞬间又被双击一次），此时还没有 win，
+   * showMainWindow → createWindow，而 createWindow 依赖 app ready。
+   * 所以套一层 ready 判断，没就绪就等就绪后再显示，避免抛异常。 */
+  const onSecondInstance = () => {
+    if (app.isReady()) {
+      showMainWindow();
+      // 窗口已经可见时再给一条 toast：用户双击图标至少能看到"有反应"
+      send('app:already-running', {});
+    } else {
+      app.whenReady().then(() => { showMainWindow(); send('app:already-running', {}); }).catch(() => {});
+    }
+  };
+  app.on('second-instance', onSecondInstance);
   app.whenReady().then(() => {
     bootMark('app-ready');
     loadStore();
