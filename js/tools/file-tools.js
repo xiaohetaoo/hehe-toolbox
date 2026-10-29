@@ -613,6 +613,10 @@
         engTag.textContent = '快速扫描中'; engTag.className = 'tag tag-orange';
         let rowCount = 0;
         quickUnsub = window.api.on('job:stream', (d) => {
+          // 【必须按 id 过滤】全局搜索的快扫任务 id 形如 qs<数字>。
+          // 不过滤的话，别的标签页（哈希、下载、压缩…）每次发进度都会打到本页，
+          // 把统计行刷成 "已扫描 undefined 项" 甚至误判 done 而提前结束扫描。
+          if (!/^qs\d+$/.test(String(d.id || ''))) return;
           try {
             const j = JSON.parse(d.data);
             if (j.rows && j.rows.length) { rowCount += j.rows.length; renderRows(j.rows, true); statsLine.textContent = `已找到 ${rowCount} 条（扫描中…）`; }
@@ -705,6 +709,9 @@
         startBtn.disabled = true; stopBtn.disabled = false;
         let n = 0;
         unsub = window.api.on('job:stream', (d) => {
+          // 【必须按 id 过滤】内容搜索任务 id 形如 cs<数字>。原因同快扫：
+          // 不过滤会被其他任务的进度事件污染，导致命中数错乱、提前判定 done。
+          if (!/^cs\d+$/.test(String(d.id || ''))) return;
           try {
             const j = JSON.parse(d.data);
             if (j.rows) { n += j.rows.length; appendRows(j.rows); }

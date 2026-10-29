@@ -26,6 +26,9 @@ const archiveGuard = require('./lib/archive-guard'); // 解压安全预检（路
 const targetSize = require('./lib/target-size');     // 目标体积压缩的多轮逼近算法
 const errorInfo = require('./lib/errors');           // 结构化错误（稳定错误码 + 建议操作）
 const pathGuard = require('./lib/path-guard');       // 破坏性操作的路径安全网（删/写/覆盖）
+const powerGate = require('./lib/power-gate');       // 电源命令识别 + 门禁判定（与测试共享同一实现）
+const jobId = require('./lib/job-id');               // 后台任务 id 前缀登记（供测试校验归属规则）
+const fsOps = require('./lib/fs-ops');               // 唯一名/临时名等文件命名纯逻辑
 bootMark('deps-loaded');
 
 const isMac = process.platform === 'darwin';
@@ -691,12 +694,9 @@ handle('shell:open-url', async (e, url) => {
   await shell.openExternal(u.toString());
   return true;
 });
-handle('fs:unique-path', async (e, p) => {
-  if (!fs.existsSync(p)) return p;
-  const dir = path.dirname(p), ext = path.extname(p), base = path.basename(p, ext);
-  for (let i = 1; i < 1000; i++) { const np = path.join(dir, `${base}(${i})${ext}`); if (!fs.existsSync(np)) return np; }
-  return path.join(dir, `${base}-${Date.now()}${ext}`);
-});
+/* 唯一名生成：实现已抽到 lib/fs-ops.js（与 test-round2-fixes 共享同一份，
+ * 避免测试复刻逻辑导致「改了主实现、测试照旧全绿」的假绿）。 */
+handle('fs:unique-path', async (e, p) => fsOps.uniquePath(p));
 
 /* recursive walk with cancel + progress */
 async function walkDir(root, opts, onItem) {
@@ -1131,7 +1131,7 @@ handle('fs:merge-parts', async (e, pickedPath, outPath) => {
   // 先写到临时名，全部合并成功后再改名到 finalOut。
   // 否则中途遇到缺失/损坏的分片，最终文件名下会留下一个「看起来正常」的半截文件，
   // 用户拿去用才发现内容不全（探测脚本 t8 复现过：4000 字节的残留文件）。
-  const partTmp = finalOut + '.merging-' + Date.now();
+  const partTmp = fsOps.tempPathFor(finalOut, 'merging');
   try {
     let mergedBytes = 0;
     await new Promise((resolve, reject) => {
@@ -1342,17 +1342,18 @@ handle('zip:extract', async (e, zipPath, outDir) => {
  * `shutdown /s /t 60` 把机器关掉，等于门禁形同虚设。
  *
  * 注意 `shutdown /a`（取消已安排的关机）是**无害的恢复操作**，必须放行 ——
- * 否则用户没法取消自己刚排的关机。 */
-const POWER_CMD_RE = /^\s*(shutdown(\s|$)|rundll32\.exe\s+powrprof|powershell.*SetSuspendState|Stop-Computer|Restart-Computer)/i;
-const POWER_CANCEL_RE = /^\s*shutdown\s+\/a(\s|$)/i;
+ * 否则用户没法取消自己刚排的关机。
+ *
+ * 【实现已抽到 lib/power-gate.js】原因：这段判定原来只存在于本文件，
+ * 单元测试为了测它把同样的正则抄了一份，导致 main.js 改动后测试仍全绿（假绿）。
+ * 现在 main.js 与 test-powergate.js 都 require 同一个实现，改一处两边同步。 */
 function isPowerCommand(cmd) {
-  const s = String(cmd || '');
-  if (POWER_CANCEL_RE.test(s)) return false;   // 取消关机不算危险操作
-  return POWER_CMD_RE.test(s);
+  return powerGate.isPowerCommand(cmd);
 }
 function assertPowerAllowed(cmd) {
-  if (isPowerCommand(cmd) && !dangerousEnabled('system-power')) {
-    const e = new Error(dangerousDenied('system-power'));
+  const denyMsg = powerGate.checkPowerGate(cmd, dangerousEnabled('system-power'));
+  if (denyMsg) {
+    const e = new Error(denyMsg);
     e.code = 'CAP_DENIED';
     throw e;
   }

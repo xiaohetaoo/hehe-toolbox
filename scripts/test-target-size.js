@@ -69,7 +69,33 @@ c('图片质量逐轮下降且不低于 0.45', () => {
 c('质量到底后开始降尺寸', () => {
   assert.strictEqual(t.planImageQuality(3).scale, 1, '前几轮不缩放');
   assert.ok(t.planImageQuality(6).scale < 1, '后期应缩放');
-  assert.ok(t.planImageQuality(6).scale >= 0.6, '缩放不应过激');
+});
+
+/* 回归：8 轮参数必须每轮都在变。
+ * 旧实现第 6 轮起 scale 固定 0.6，第 7、8 轮与第 6 轮完全相同 = 白跑两轮，
+ * 而且 0.6 倍对「压到 15%」这种激进目标根本不够。 */
+c('8 轮参数每轮都在变化（没有白跑的轮次）', () => {
+  const plans = [];
+  for (let r = 0; r < t.MAX_ROUNDS; r++) plans.push(t.planImageQuality(r));
+  for (let i = 1; i < plans.length; i++) {
+    const same = plans[i].quality === plans[i - 1].quality && plans[i].scale === plans[i - 1].scale;
+    assert.ok(!same, `第 ${i + 1} 轮与第 ${i} 轮参数完全相同（白跑）`);
+  }
+});
+
+c('末期缩放足够小，能应对激进目标', () => {
+  const last = t.planImageQuality(t.MAX_ROUNDS - 1);
+  assert.ok(last.scale <= 0.55, '末轮 scale 应 ≤ 0.55，实际 ' + last.scale);
+  assert.ok(last.scale >= 0.15, '但也不该小于 0.15（画质不可用）');
+});
+
+c('缩放单调不增', () => {
+  let prev = 1;
+  for (let r = 0; r < t.MAX_ROUNDS; r++) {
+    const s = t.planImageQuality(r).scale;
+    assert.ok(s <= prev, `第 ${r} 轮 scale 反而变大了: ${prev} → ${s}`);
+    prev = s;
+  }
 });
 
 /* ---------- evaluateRound ---------- */

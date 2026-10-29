@@ -741,7 +741,25 @@
         const confirmMsg = { shutdown: '关机', restart: '重启', sleep: '睡眠', lock: '锁屏' }[m];
         if (m === 'shutdown' || m === 'restart') {
           if (!(await confirmBox({ title: '定时' + confirmMsg, message: `${mins} 分钟后执行「${confirmMsg}」，确定？（期间可在此取消）`, okText: '确定' }))) return;
-          try { await invoke('exec:run', { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd' }); } catch (e) { return toast(e.message, 'error'); }
+          try {
+            await invoke('exec:run', { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd' });
+          } catch (e) {
+            /* 被高危门禁拦住时只弹一句 toast 是不够的 —— 用户根本不知道
+             * 「系统电源操作」这个开关在哪，只会以为是坏了。
+             * 这里直接给出可点的引导，一键跳到设置页对应分区。 */
+            const msg = window.api.errText ? window.api.errText(e) : (e && e.message) || String(e);
+            const denied = (e && e.code === 'CAP_DENIED') || /高危功能|已默认关闭/.test(msg);
+            if (denied) {
+              const go = await confirmBox({
+                title: '需要先开启「系统电源操作」',
+                message: msg + '\n\n是否现在前往设置页开启？开启后即可使用定时关机 / 重启。',
+                okText: '去设置开启'
+              });
+              if (go && window.App.openSettings) window.App.openSettings('danger');
+              return;
+            }
+            return toast(msg, 'error');
+          }
           arm(confirmMsg, mins * 60, () => {});
           status.textContent = `系统将在 ${mins} 分钟后${confirmMsg}（shutdown 计划，可点击取消）`;
         } else {

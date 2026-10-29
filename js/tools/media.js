@@ -257,15 +257,40 @@
       async function stitch() {
         if (imgs.length < 2) return toast('至少需要两张图片', 'warn');
         const isV = direction === 'v';
-        let size = imgs.reduce((s, it) => isV ? Math.max(s, it.img.naturalWidth) : s + it.img.naturalHeight, 0);
-        const canvas = document.createElement('canvas');
+
+        /* 【画布上限】Chrome 的单边上限约 32767px，总面积上限约 2.68 亿像素
+         * （16384×16384 这个量级）。超限时 drawImage/toDataURL **不会报错**，
+         * 而是静默产出空白图 —— 用户以为拼接成功，打开一看是白板。
+         * 所以这里先算总量，超限就明确拒绝并给出该怎么做（而不是静默失败）。 */
+        const MAX_SIDE = 32767;
+        const MAX_AREA = 268435456;
+
+        let cw, ch;
         if (isV) {
-          canvas.width = Math.max(...imgs.map(i => i.img.naturalWidth));
-          canvas.height = imgs.reduce((s, i) => s + i.img.naturalHeight, 0);
+          cw = Math.max(...imgs.map(i => i.img.naturalWidth));
+          ch = imgs.reduce((s, i) => s + i.img.naturalHeight, 0);
         } else {
-          canvas.width = imgs.reduce((s, i) => s + i.img.naturalWidth, 0);
-          canvas.height = Math.max(...imgs.map(i => i.img.naturalHeight));
+          cw = imgs.reduce((s, i) => s + i.img.naturalWidth, 0);
+          ch = Math.max(...imgs.map(i => i.img.naturalHeight));
         }
+
+        if (cw > MAX_SIDE || ch > MAX_SIDE || cw * ch > MAX_AREA) {
+          const areaMB = ((cw * ch) / 1e6).toFixed(1);
+          window.ui.alertBox(
+            `拼接后的画布 ${cw}×${ch}（${areaMB} 百万像素）超出浏览器上限。\n\n` +
+            `上限：单边 ${MAX_SIDE}px，总面积约 ${(MAX_AREA / 1e6).toFixed(0)} 百万像素。\n\n` +
+            `可以这样做：\n` +
+            `• 先分批拼接：每 5~10 张拼成一张，再把结果继续拼\n` +
+            `• 或者先用「图片批量处理」把每张缩小一半再拼\n` +
+            `• 竖向拼接时，检查是否有某张图特别高（它决定整体高度）`,
+            '无法拼接：画布超出上限'
+          );
+          return;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = cw;
+        canvas.height = ch;
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
         let x = 0, y = 0;
@@ -457,6 +482,10 @@
         let unsub = null;
         try {
           unsub = on('job:stream', (d) => {
+            // 【必须按 id 过滤】ffmpeg 下载任务 id 形如 dl<数字>（文件下载器是 dl2）。
+            // 不过滤的话，任何后台任务的 pct 都会被画进 FFmpeg 下载进度条 ——
+            // 用户看着进度条走到 100% 却发现没装上。
+            if (!/^dl\d+$/.test(String(d.id || ''))) return;
             try {
               const j = JSON.parse(d.data);
               if (j.stage === 'extract') { status.textContent = '下载完成，正在解压…'; return; }
@@ -613,8 +642,16 @@
         runJobId = null;
         const outDir = outDirIn.value.trim() || files[0].replace(/[\\/][^\\/]*$/, '');
         // job id 从流事件里取：invoke 要等全部转码结束才返回，那时已经来不及取消了
+        // 【必须按前缀认领】原来写的是 `if (!runJobId && d.id) runJobId = d.id`，
+        // 会抓任意任务的第一个 id —— 别的标签页在跑哈希/下载时，
+        // 本页拿到的 runJobId 其实是人家的任务，点「取消」杀错对象。
+        // 本任务 id 形如 avc<数字>，只认这个前缀；认领之后只认那一个 id。
         const unsub = on('job:stream', (d) => {
-          if (!runJobId && d.id) runJobId = d.id;
+          const jid = String(d.id || '');
+          if (!runJobId) {
+            if (!/^avc\d+$/.test(jid)) return;
+            runJobId = jid;
+          } else if (jid !== runJobId) return;
           try {
             const j = JSON.parse(d.data);
             const row = listBox.querySelector(`[data-i="${j.i}"]`);
@@ -819,6 +856,15 @@
       }
       function encodeTarget(img, mime, targetKB) {
         const target = Math.max(5, targetKB) * 1024;
+
+        /* PNG 是无损格式：canvas.toDataURL('image/png', q) 的 quality 参数**会被忽略**，
+         * 所有 q 值产出的字节数完全相同。原来的二分调质量对 PNG 完全无效，
+         * 结果就是「无论怎么调都超目标，一路降到底」。
+         * 所以 PNG 走**尺寸逼近**：按体积与像素数的平方关系估算缩放比，再微调几轮。 */
+        if (mime === 'image/png') {
+          return encodeTargetBySize(img, mime, target);
+        }
+
         let dimScale = 1;
         for (let round = 0; round < 4; round++) {
           let lo = 5, hi = 95, best = null, bestSize = Infinity;
@@ -833,6 +879,37 @@
           if (round === 3) return drawTo(img, mime, 0.05, dimScale);
           dimScale *= 0.7;
         }
+      }
+
+      /* 按尺寸逼近体积：体积近似正比于像素数（无损格式下尤其成立）。
+       * 先算理论缩放，再二分微调，最多 6 轮。 */
+      function encodeTargetBySize(img, mime, target) {
+        const w0 = img.naturalWidth || img.width;
+        const h0 = img.naturalHeight || img.height;
+        let scale = 1;
+        let best = null, bestSize = Infinity;
+
+        for (let round = 0; round < 6; round++) {
+          const w = Math.max(1, Math.round(w0 * scale));
+          const h = Math.max(1, Math.round(h0 * scale));
+          const du = drawTo(img, mime, 1, scale);
+          const size = dataUrlBytes(du);
+          if (size <= target) {
+            // 达标：记录当前结果，然后尝试**放大**一点以更贴近上限（画质更好）
+            if (size > bestSize || best === null) { best = du; bestSize = size; }
+            scale *= 1.15;
+            if (scale > 1) scale = 1;
+            else if (best && bestSize >= target * 0.95) break;
+          } else {
+            // 超了：按体积比反推缩放（面积∝体积）
+            const ratio = Math.sqrt(target / size);
+            scale = Math.max(0.05, scale * Math.max(0.5, Math.min(1.1, ratio * 0.95)));
+          }
+          if (w < 8 || h < 8) break;
+        }
+        if (best) return best;
+        // 实在压不下去：给一个明显降尺寸的结果，界面会显示实际体积
+        return drawTo(img, mime, 1, 0.05);
       }
       async function run() {
         if (!paths.length) return toast('请先选择图片', 'warn');
@@ -994,8 +1071,14 @@
         runJobId = null;
         const outDir = outDirIn.value.trim() || (files[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-pressed');
         // job id 从流事件里取：invoke 要等全部压制结束才返回，那时已经来不及取消了
+        // 【必须按前缀认领】本任务 id 形如 prs<数字>。原因同 av-convert：
+        // 不校验归属会抓到别的标签页的任务 id，点「取消」杀错任务。
         const unsub = on('job:stream', (d) => {
-          if (!runJobId && d.id) runJobId = d.id;
+          const jid = String(d.id || '');
+          if (!runJobId) {
+            if (!/^prs\d+$/.test(jid)) return;
+            runJobId = jid;
+          } else if (jid !== runJobId) return;
           try {
             const j = JSON.parse(d.data);
             const row = listBox.querySelector(`[data-i="${j.i}"]`);

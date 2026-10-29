@@ -210,7 +210,7 @@
 
         running = true; canceled = false;
         startBtn.disabled = true; cancelBtn.disabled = false;
-        dz.el.classList.add('busy');
+        dz.classList.add('busy');
         prog.show(); status.textContent = '准备中…';
 
         // 分组：图片走渲染层逐轮编码；音视频整体交给主进程
@@ -316,7 +316,7 @@
         } finally {
           running = false;
           startBtn.disabled = false; cancelBtn.disabled = true;
-          dz.el.classList.remove('busy');
+          dz.classList.remove('busy');
           runJobId = null;
           setTimeout(() => prog.hide(), 800);
         }

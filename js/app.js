@@ -918,7 +918,16 @@
   function setStatus(text) { statusText.textContent = text; }
 
   /* ============ 启动 ============ */
-  window.App = { openTool, showView, toggleFavorite, setStatus, state, refresh, onCleanup };
+  window.App = {
+    openTool, showView, toggleFavorite, setStatus, state, refresh, onCleanup,
+    /* 跳到设置页的指定分区（如 'danger' 高危功能）。
+     * 供其他工具在「被高危门禁拦住」时给出可点的引导，
+     * 而不只是弹一句 toast 让用户自己去猜开关在哪。 */
+    openSettings(section) {
+      if (typeof section === 'string' && section) settingsSection = section;
+      showView({ type: 'settings' });
+    }
+  };
   document.addEventListener('DOMContentLoaded', async () => {
     buildShell();
     applyTheme();

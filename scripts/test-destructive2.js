@@ -33,10 +33,16 @@ t('P0 exec:stream 同样受电源门禁约束', () => {
   assert.ok(fn.includes('assertPowerAllowed'), 'exec:stream 没走电源门禁');
 });
 t('P0 电源命令识别覆盖 shutdown/重启/休眠', () => {
-  const fn = main.match(/const POWER_CMD_RE = [^\n]*/)[0];
-  for (const k of ['shutdown', 'SetSuspendState', 'Stop-Computer', 'Restart-Computer']) {
-    assert.ok(fn.toLowerCase().includes(k.toLowerCase()), '未识别 ' + k);
+  /* 实现已抽到 lib/power-gate.js（main.js require 它）。
+   * 直接测**真实现**，而不是在 main.js 里搜正则字符串 ——
+   * 搜字符串的写法在实现搬家后会直接崩（这条测试就是这么挂的），
+   * 而且即使搜到也证明不了行为正确。 */
+  const gate = require('../lib/power-gate');
+  for (const c of ['shutdown /s', 'shutdown /r', 'Stop-Computer', 'Restart-Computer',
+                   'rundll32.exe powrprof.dll,SetSuspendState 0,1,0']) {
+    assert.ok(gate.isPowerCommand(c), '未识别: ' + c);
   }
+  assert.ok(main.includes("require('./lib/power-gate')"), 'main.js 应引用共享实现');
 });
 
 /* ---------- P0-2：proc:kill 系统进程保护 ---------- */

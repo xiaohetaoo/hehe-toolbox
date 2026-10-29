@@ -17,15 +17,14 @@ const ROOT = path.resolve(__dirname, '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'snipe2e-'));
 const imgPath = path.join(tmp, 'bg.png');
 
-/* 造一张纯白背景图 */
-const pyPath = path.join(tmp, 'gen.py');
-fs.writeFileSync(pyPath, [
-  'from PIL import Image',
-  'Image.new("RGB", (400, 300), (255, 255, 255)).save(r"' + imgPath + '")',
-  'print("ok")'
-].join('\n'), 'utf8');
-execFileSync('C:/Users/67153/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/python.exe',
-  [pyPath], { stdio: 'ignore' });
+/* 造一张纯白背景图 —— 用 e2e-helpers 的纯 Node PNG 生成，
+ * 原来这里硬编码了 python 路径（换机器即挂），且依赖 PIL。 */
+const { makeWhiteImage } = require('./e2e-helpers');
+const genResult = makeWhiteImage(imgPath, 400, 300);
+if (!genResult.ok) {
+  console.log('SKIP 无法生成测试图片（' + genResult.method + '）');
+  process.exit(0);
+}
 
 /* 页内探测脚本：一整段，最后返回纯数据对象 */
 const PROBE = `
@@ -93,9 +92,18 @@ fs.writeFileSync(scriptPath, runner, 'utf8');
 const env = Object.assign({}, process.env);
 delete env.ELECTRON_RUN_AS_NODE;
 env.HEHE_TEST_DATA = path.join(tmp, 'ud');
+
+/* 没有 Electron 二进制就 SKIP（不是失败）—— 这样能安全接入 npm test。
+ * 之前这个测试没进 npm test，正是因为它必须能在缺依赖时优雅退出。 */
+const ELECTRON_EXE = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
+if (!fs.existsSync(ELECTRON_EXE)) {
+  console.log('SKIP 未找到 electron.exe（先 npm install + install.js）');
+  process.exit(0);
+}
+
 let raw = '';
 try {
-  raw = execFileSync(path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe'),
+  raw = execFileSync(ELECTRON_EXE,
     [scriptPath], { env, encoding: 'utf8', timeout: 120000 });
 } catch (e) { raw = String(e.stdout || '') + String(e.stderr || ''); }
 
