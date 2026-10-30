@@ -27,7 +27,10 @@ const targetSize = require('./lib/target-size');     // 目标体积压缩的多
 const errorInfo = require('./lib/errors');           // 结构化错误（稳定错误码 + 建议操作）
 const pathGuard = require('./lib/path-guard');       // 破坏性操作的路径安全网（删/写/覆盖）
 const powerGate = require('./lib/power-gate');       // 电源命令识别 + 门禁判定（与测试共享同一实现）
-const jobId = require('./lib/job-id');               // 后台任务 id 前缀登记（供测试校验归属规则）
+/* lib/job-id 只在**渲染层一侧**用（js/job-prefixes.js 与它对齐）。
+ * 主进程从来不读这张表：事件过滤是渲染层 claimJobId 做的。
+ * 这里原先有一行未使用的 require，已删除 —— 留着会让「主进程也参与过滤」
+ * 看起来像真的，实际两份数据源靠测试脚本手工对齐，容易长期漂移。 */
 const fsOps = require('./lib/fs-ops');               // 唯一名/临时名等文件命名纯逻辑
 bootMark('deps-loaded');
 
@@ -549,7 +552,6 @@ setInterval(() => {
 handle('win:minimize', () => { win && win.minimize(); });
 handle('win:maximize', () => { if (!win) return; win.isMaximized() ? win.unmaximize() : win.maximize(); });
 handle('win:close', () => { win && win.close(); });
-handle('win:is-maximized', () => win ? win.isMaximized() : false);
 handle('app:get-info', () => ({
   appVersion: app.getVersion(),
   electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome,
@@ -561,9 +563,9 @@ handle('app:get-info', () => ({
 }));
 handle('store:get', (e, key, def) => storeGet(key, def));
 handle('store:set', (e, key, val) => storeSet(key, val));
-handle('store:remove', (e, key) => { storeSet(key, undefined); return true; });
+/* store:remove 已移除：全项目没有任何调用方（渲染层只删收藏/历史时用的是
+ * store:set 置空）。js/api.js 的浏览器模拟分支曾保留它，也一并删掉。 */
 handle('app:set-theme', (e, mode) => { nativeTheme.themeSource = mode; return nativeTheme.shouldUseDarkColors; });
-handle('app:open-devtools', () => { win && win.webContents.toggleDevTools(); });
 handle('app:set-autostart', (e, enable) => {
   if (isWin || isMac) app.setLoginItemSettings({ openAtLogin: !!enable });
   return app.getLoginItemSettings().openAtLogin;
@@ -584,10 +586,8 @@ handle('dialog:save', async (e, opts = {}) => {
   const r = await dialog.showSaveDialog(win, { title: opts.title, defaultPath: opts.defaultPath, filters: opts.filters });
   return r.canceled ? null : r.filePath;
 });
-handle('dialog:message', async (e, opts) => {
-  const r = await dialog.showMessageBox(win, Object.assign({ type: 'info', buttons: ['确定'], title: '核核工具箱', noLink: true }, opts));
-  return r.response;
-});
+/* dialog:message 已移除：全项目无调用方（需要确认时用渲染层的 confirmBox，
+ * 需要系统原生提示时走 dialog:save / dialog:open 那条线）。 */
 
 /* ================= IPC: fs ================= */
 const TEXT_LIMIT = 8 * 1024 * 1024, BIN_LIMIT = 64 * 1024 * 1024;
@@ -670,6 +670,32 @@ handle('fs:read-file-b64', async (e, p) => {
 });
 handle('fs:write-file-b64', async (e, p, b64) => { await writeFileAtomic(p, Buffer.from(b64, 'base64')); return true; });
 handle('fs:stat', async (e, p) => { const st = await fsp.stat(p); return { size: st.size, mtime: st.mtimeMs, isDir: st.isDirectory() }; });
+/* 批量取体积/类型：文件列表一次拖入 500 个文件时，逐个 fs:stat 就是 500 次
+ * IPC 往返，主进程排队处理，列表体积长时间停在「…」。
+ * 这里一次传一批（渲染层按 50 个一批分片），并发受限地 stat，
+ * 单个路径失败只让那一项返回 null，不打断整批。
+ * 【为什么限并发】500 个路径全开 Promise 会瞬间打满文件句柄；
+ * 8 路足够快，也不会挤掉主进程里别的 IO。 */
+handle('fs:stat-multi', async (e, paths) => {
+  const list = Array.isArray(paths) ? paths : [];
+  const CONCURRENCY = 8;
+  const out = new Array(list.length).fill(null);
+  let idx = 0;
+  async function worker() {
+    while (true) {
+      const i = idx++;
+      if (i >= list.length) return;
+      try {
+        const st = await fsp.stat(list[i]);
+        out[i] = { size: st.size, mtime: st.mtimeMs, isDir: st.isDirectory() };
+      } catch (err) {
+        out[i] = null; // 不存在/无权限：只影响这一项
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length || 1) }, worker));
+  return out;
+});
 handle('fs:exists', async (e, p) => { try { await fsp.access(p); return true; } catch (err) { return false; } });
 handle('fs:list', async (e, p) => {
   const names = await fsp.readdir(p, { withFileTypes: true });
@@ -839,10 +865,15 @@ handle('fs:delete-empty', async (e, dirs) => {
     // 闸门：不允许删系统关键目录 / 盘符根 / 用户主目录本身
     const bad = pathGuard.checkDeletable(p, false);
     if (bad) { errors.push(`${p}: ${bad.reason}`); continue; }
-    /* 删空目录。这里【不能】用 fsp.rm —— 它对目录只在 recursive:true 时才成功，
-     * 而 recursive:true 会把目录里的内容一起删掉，语义完全不同（会毁数据）。
-     * fsp.rmdir 在 Node 24 上仍然可用（只是被标记为将来可能弃用）。
-     * 所以：优先 rmdir，万一将来真的移除，再退到「先确认目录为空再删」的写法。 */
+    /* 删空目录。这里【不能】用 recursive:true 的 fsp.rm ——
+     * 它会把目录里的内容一起删掉，语义完全不同（会毁数据）。
+     * 实测（Node 24.19）：`await fsp.rm(dir, { recursive: false })` 对**目录**
+     * 直接抛 ERR_FS_EISDIR（"Path is a directory"），并不会删掉目录；
+     * 能删目录的只有 fsp.rmdir 或 recursive:true。
+     * 所以要保住「只删空目录」的语义，rmdir 仍是唯一正确选择
+     * （它在 Node 24 上只是被标记为将来可能弃用，并未移除）。
+     * 降级分支原先又调了一次 rmdir —— 那等于是说「rmdir 没了就用 rmdir」，
+     * 根本走不通；改成「先读目录确认确实为空，再尝试删除」的真实路径。 */
     try {
       if (typeof fsp.rmdir === 'function') {
         await fsp.rmdir(p);
@@ -850,7 +881,7 @@ handle('fs:delete-empty', async (e, dirs) => {
         // 降级：先读目录，确认确实是空的再删（绝不用 recursive:true）
         const ents = await fsp.readdir(p);
         if (ents.length !== 0) throw new Error('目录非空，跳过');
-        await fsp.rmdir(p);
+        await fsp.rm(p); // recursive 默认为 false，只删这个空目录
       }
       deleted++;
     } catch (err) { if (err.code !== 'ENOENT') errors.push(`${p}: ${fmtErr(err)}`); }
@@ -967,12 +998,8 @@ handle('fs:clean-junk', async (e, targets, keepRoot) => {
 
 /* hash / encrypt / split / dedupe */
 const HASH_ALGOS = ['md5', 'sha1', 'sha256', 'sha512'];
-/* 单算法：内部走多算法实现，保证两条通道行为完全一致 */
-handle('fs:hash-file', async (e, p, algo = 'sha256') => {
-  const r = await hashFileMulti(p, [algo]);
-  return { hex: r.hex[algo], size: r.size, algo };
-});
-
+/* 单算法通道 fs:hash-file 已移除：渲染层早就改用 -multi 版本一次读盘算多个
+ * 摘要（校验 1GB 文件要读 4GB 的老问题），全项目没有调用方了。 */
 /* 多算法：**一次读盘**同时算 md5/sha1/sha256/sha512。
  *
  * 【为什么需要】原渲染层的文件校验页对同一个文件连续调用 4 次
@@ -1008,10 +1035,7 @@ async function hashFileMulti(p, algos) {
 }
 handle('fs:hash-file-multi', async (e, p, algos) => hashFileMulti(p, algos));
 
-handle('fs:hash-text', (e, text, algo = 'sha256') => {
-  if (!HASH_ALGOS.includes(algo)) throw new Error('不支持的算法');
-  return { hex: crypto.createHash(algo).update(text, 'utf8').digest('hex') };
-});
+/* 单算法通道 fs:hash-text 已移除，理由同上：文本页走 -multi 版本。 */
 // 一次算多个算法：文本页每次输入都要出 3 个摘要，逐个 invoke 会有 3 次 IPC 往返
 handle('fs:hash-text-multi', (e, text, algos = ['md5', 'sha1', 'sha256']) => {
   const out = {};
@@ -1476,7 +1500,10 @@ handle('exec:stream', (e, { command, args, cwd }) => {
 handle('job:kill', (e, id) => { const j = jobs.get(id); if (j) j.cancel(); return true; });
 // 取消最近一次启动的可取消任务（扫描/测速等，renderer 拿不到 job id 时使用）
 let latestCancelable = null;
-handle('job:cancel-latest', () => { if (latestCancelable) { latestCancelable(); return true; } return false; });
+/* job:cancel-latest 已移除：全项目没有调用方 —— 渲染层的取消按钮一律走
+ * job:kill <id>（带归属校验，不会误杀别人的任务）。
+ * latestCancelable 本身保留：各长任务仍在装它，将来若要加「一键取消全部」
+ * 可以直接读这个变量，不必再开一条无人使用的通道。 */
 
 /* process list with cpu% (PS based) */
 handle('proc:list', async () => {
@@ -1743,7 +1770,8 @@ handle('server:stop', () => {
   if (s) { s.close(); serverMap.delete('s'); }
   return true;
 });
-handle('server:status', () => serverMap.has('s'));
+/* server:status 已移除：全项目无调用方（临时 HTTP 服务的启停由
+ * server:start / server:stop 的返回值直接告知，不必再轮询状态）。 */
 
 /* ================= IPC: system ================= */
 let hwCache = null, hwCacheAt = 0;
@@ -1981,7 +2009,8 @@ handle('app:set-accent', (e, id) => {
   broadcastAccent(accent);
   return accent;
 });
-handle('app:get-accent', () => currentAccent);
+/* app:get-accent 已移除：渲染层自己知道当前强调色（它是自己 set 的），
+ * 辅助窗口通过 loadFile 的 query 参数拿到，不需要回头问主进程。 */
 
 /* screen ruler floating window */
 let rulerWin = null;
@@ -2062,17 +2091,10 @@ handle('qr:generate', async (e, text, opts = {}) => {
   });
   return { b64: buf.toString('base64') };
 });
-handle('qr:save', async (e, text, outPath, opts = {}) => {
-  /* 这个通道目前 UI 已经不走（前端改用 fs:write-file-b64 自己编码），
-   * 但保留以免旧调用方失效。既然仍可达，就必须和别的写文件通道一样过闸门：
-   * 参数直接来自渲染层，不校验就等于留了一个「任意路径写文件」的入口。 */
-  const bad = pathGuard.checkOverwritable(outPath);
-  if (bad) throw pathGuard.err(bad.code, bad.reason);
-  const target = await fsOps.uniquePath(outPath); // 不覆盖已有文件
-  const QRCode = require('qrcode');
-  await QRCode.toFile(target, text, { width: opts.size || 640, margin: opts.margin != null ? opts.margin : 2, errorCorrectionLevel: opts.level || 'M' });
-  return { outPath: target };
-});
+/* qr:save 已移除：全项目无调用方，前端早已改用 fs:write-file-b64 自己落盘。
+ * 这条通道曾经是「参数直接来自渲染层、却没有覆盖保护」的任意路径写文件入口，
+ * 后来又补了闸门；但既无人调用，最干净的做法是删掉，
+ * 少一个入口就少一处将来被人重新接上去的风险。 */
 
 /* ================= IPC: ffmpeg 环境与音视频处理 ================= */
 function binDir() { return path.join(app.getPath('userData'), 'bin'); }
@@ -3151,10 +3173,8 @@ handle('rec:audio-devices', async () => {
   const d = await listDshowDevices();
   return { devices: d.audio, audio: d.audio, video: d.video };
 });
-handle('rec:video-devices', async () => {
-  const d = await listDshowDevices();
-  return { devices: d.video };
-});
+/* rec:video-devices 已移除：录音页的下拉框由 rec:audio-devices 一次拿全
+ * （它同时返回 audio 与 video），不必再开一条只取摄像头的通道。 */
 // 画中画位置 → overlay 表达式（摄像头尺寸自适应，边距 16px）
 function pipPosition(pos) {
   const pad = 16;
@@ -3195,6 +3215,14 @@ handle('rec:start', async (e, { outPath, fps, rect, audio, camera, camPos, camSc
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   if (recProc && recProc.exitCode === null) throw new Error('已有录制进行中');
+  /* 录制是唯一没走覆盖闸门的写盘通道：以前 recOut 直接等于渲染层给的 outPath，
+   * 目标已存在就被 copyFile / ffmpeg -y 静默盖掉，界面上还只显示「录制完成」。
+   * 与其它通道保持一致：先过系统关键目录闸门，已存在则直接拒绝，
+   * 让用户换个路径——录屏是用户亲手指定的输出，覆盖掉一段旧录像没有道理。 */
+  if (typeof outPath !== 'string' || !outPath.trim()) throw new Error('录制输出路径无效');
+  const recBad = pathGuard.checkOverwritable(outPath);
+  if (recBad) throw pathGuard.err(recBad.code, recBad.reason);
+  if (fs.existsSync(outPath)) throw new Error('目标文件已存在，为避免覆盖已拒绝：' + outPath);
   recOut = outPath;
   // yuv420p 要求偶数尺寸/偏移，框选结果向下取偶
   if (rect && typeof rect === 'object') {
@@ -3376,7 +3404,8 @@ async function createPinWindow(srcPath) {
   await bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath, accent: currentAccent } });
   return { id: bw.id, w: size.width, h: size.height };
 }
-handle('win:pin-image', (e, srcPath) => createPinWindow(srcPath));
+/* win:pin-image 通道已移除：截图「贴图」与「贴剪贴板图片」都直接调
+ * createPinWindow()，没有渲染层调用方。函数本身保留，它是这两条路径的实现。 */
 handle('win:pin-move', (e, id, x, y) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.setPosition(Math.round(x), Math.round(y)); return true; });
 handle('win:pin-resize', (e, id, w, h) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.setSize(Math.max(80, Math.round(w)), Math.max(60, Math.round(h))); return true; });
 handle('win:pin-close', (e, id) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.close(); return true; });
@@ -3847,9 +3876,17 @@ handle('update:check', async (e, opts = {}) => {
     const j = await r.json();
     const latest = (j.tag_name || '').replace(/^v/, '');
     const asset = (j.assets || []).find(a => /^hehe-toolbox-Portable-.*\.exe$/.test(a.name));
+    /* GitHub 现在会给每个 Release 资产带上 digest 字段（形如 "sha256:<hex>"）。
+     * 拿它做下载后完整性校验：体积相同但内容被替换（中间人、CDN 缓存污染、
+     * 上传时截断）都能被发现。拿不到时 assetSha256 为 null，
+     * 应用阶段会退回「只比体积」并在日志里注明，不阻断流程。 */
+    const rawDigest = (asset && asset.digest) || '';
+    const mDigest = /^sha256:([0-9a-f]{64})$/.exec(rawDigest);
+    const assetSha256 = mDigest ? mDigest[1] : null;
     const payload = {
       current, latest, hasUpdate: cmpVer(latest, current) > 0, engine: 'github',
-      notes: (j.body || '').slice(0, 4000), assetUrl: asset ? asset.browser_download_url : null, assetName: asset ? asset.name : null, htmlUrl: j.html_url || ''
+      notes: (j.body || '').slice(0, 4000), assetUrl: asset ? asset.browser_download_url : null, assetName: asset ? asset.name : null,
+      assetSize: asset ? asset.size : null, assetSha256, htmlUrl: j.html_url || ''
     };
     updateCacheSet({ etag: r.headers.get('etag') || null, checkedAt: Date.now(), payload });
     return payload;
@@ -3868,6 +3905,28 @@ function psSingleQuote(s) { return "'" + String(s).replace(/'/g, "''") + "'"; }
 handle('update:apply', async (e, opts = {}) => {
   const newExe = opts && opts.newExe;
   if (!newExe || !fs.existsSync(newExe)) throw new Error('新版文件不存在，请先完成下载');
+  /* 完整性校验：update:check 从 Release 资产里取到的 sha256 记在这里。
+   * 下载包来自 GitHub HTTPS，风险不高，但「只比体积」挡不住内容被替换
+   * （体积相同即可蒙混）。拿不到 digest 时退回体积校验并在日志里注明，
+   * 不阻断升级 —— 老版本 Release 没有 digest 字段，不能因此让用户升不了级。 */
+  const expectSha = typeof opts.expectSha256 === 'string' ? opts.expectSha256.toLowerCase() : null;
+  if (expectSha) {
+    if (!/^[0-9a-f]{64}$/.test(expectSha)) throw new Error('更新校验值格式无效，拒绝替换');
+    const actual = await new Promise((resolve, reject) => {
+      const h = crypto.createHash('sha256');
+      const rs = fs.createReadStream(newExe);
+      rs.on('data', (c) => h.update(c));
+      rs.on('end', () => resolve(h.digest('hex')));
+      rs.on('error', reject);
+    });
+    if (actual !== expectSha) {
+      throw new Error('新版文件校验失败（SHA-256 不符），已拒绝替换。\n期望：' + expectSha + '\n实际：' + actual +
+        '\n请删除该下载包后重新检查更新。');
+    }
+    console.log('[update] SHA-256 校验通过：' + actual.slice(0, 16) + '…');
+  } else {
+    console.warn('[update] 本次更新没有可用的 SHA-256（Release 未提供 digest），仅做体积校验 —— 已知取舍');
+  }
   // 便携版启动时 electron-builder 注入 PORTABLE_EXECUTABLE_FILE 指向原始 exe
   const target = process.env.PORTABLE_EXECUTABLE_FILE || (opts && opts.target) || app.getPath('exe');
   if (!/\.exe$/i.test(target)) throw new Error('目标不是可执行文件，无法自动替换：' + target);
@@ -4189,36 +4248,9 @@ handle('clip:remove-images', async (e, files) => {
   return { removed, failed };
 });
 // 孤儿图片清扫：store 里已无引用的 clip-img 文件（崩溃/旧版本遗留）
-handle('clip:gc-images', async () => {
-  // 必须确认 clipHistory 是**真正的数组**。JSON 解析成功但缺这个字段
-  // （手工编辑、旧版本升级）时 storeGet 返回默认 []，used 为空 ->
-  // 目录里每一张图片都会被当成孤儿删光。
-  const hist = storeGet('clipHistory', null);
-  if (!Array.isArray(hist)) {
-    console.warn('[gc] clipHistory 缺失或类型异常，跳过清扫');
-    return { removed: 0, kept: 0, skipped: true };
-  }
-  const dir = clipImgDir();
-  let names = [];
-  try { names = await fsp.readdir(dir); } catch (e) { return { removed: 0, kept: 0 }; }
-  const used = new Set();
-  for (const it of hist) {
-    if (it && it.file && isClipImgPath(it.file)) used.add(path.resolve(it.file));
-  }
-  // 二次保险：历史里一条图片都没有时不清理（很可能是数据异常而非真的全空）
-  if (used.size === 0 && names.filter(n => /\.png$/i.test(n)).length > 0) {
-    console.warn('[gc] clipHistory 里没有任何图片引用，但目录里有文件，跳过清扫以防止误删');
-    return { removed: 0, kept: 0, skipped: true };
-  }
-  let removed = 0;
-  for (const n of names) {
-    if (!/\.png$/i.test(n)) continue;
-    const full = path.resolve(path.join(dir, n));
-    if (used.has(full)) continue;
-    try { await fsp.unlink(full); removed++; } catch (err) {}
-  }
-  return { removed, kept: used.size };
-});
+/* clip:gc-images 通道已移除：全项目无调用方 —— 孤图清扫在启动时由
+ * sweepClipImages()（lifecycle 里调用）执行，那条路径有同样的两道保护，
+ * 没必要再对外保留一个「删剪贴板图片」的可达入口。 */
 
 /* ================= IPC: Win11 经典右键菜单切换 ================= */
 // Win11 的右键菜单由 CLSID {86ca1aa0-34aa-4e8b-a509-50c905bae2a2} 这个 COM 处理器负责。

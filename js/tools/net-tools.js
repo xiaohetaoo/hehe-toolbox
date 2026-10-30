@@ -367,7 +367,6 @@
           }));
         } catch (e) { status.textContent = '✗ ' + e.message; }
       }
-      preset.addEventListener('change', () => { rangeIn.value = preset.value; });
       page.appendChild(div('card', div('card-title', '扫描目标'),
         div('form-row', h('span', { class: 'form-label' }, '主机'), hostIn, ' ', preset),
         div('form-row', h('span', { class: 'form-label' }, '范围'), rangeIn, btn('开始扫描', 'btn-primary', scan)), status));

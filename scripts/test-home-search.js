@@ -258,7 +258,12 @@ if (R.fatal) {
   chk(by.highlight && by.highlight.markCount > 0,
       '命中词被高亮标出（' + (by.highlight && by.highlight.markCount) + ' 处）');
 
-  chk(by['arrow-down-1'] && by['arrow-down-1'].hlIndex === 0, '↓ 第一次高亮第 1 行');
+  /* 这条断言不只是「↓ 能用」，它还挡着一个真实踩过的坑：
+   * 把高亮从 mousemove 改成 mouseenter 之后，列表刚渲染时如果光标恰好停在
+   * 某一行，浏览器会**补发一次 mouseenter**，高亮被预置到那一行，
+   * 用户按 ↓ 就从没选过的行开始跳（曾经偶发失败、跑的轮次不同结果不同）。
+   * 修法是只在「指针确实动过」之后才让鼠标决定高亮。 */
+  chk(by['arrow-down-1'] && by['arrow-down-1'].hlIndex === 0, '↓ 第一次高亮第 1 行（不被残留 mouseenter 抢占）');
   chk(by['arrow-down-2'] && by['arrow-down-2'].moved, '↓ 第二次高亮下移一行');
   chk(by['arrow-up'] && by['arrow-up'].back, '↑ 回到上一行');
 

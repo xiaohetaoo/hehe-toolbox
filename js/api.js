@@ -11,21 +11,20 @@
     } catch (e) { return def; }
   }
   function lsSet(key, val) { try { localStorage.setItem('hehe-store:' + key, JSON.stringify(val)); } catch (e) {} }
-  // 不能写成 lsSet(key, undefined)：localStorage 会把 undefined 存成字符串 "undefined"，
-  // 键依然存在，之后每次 lsGet 都 JSON.parse 抛错再走 catch —— 键永久泄漏且有日志噪音。
-  function lsRemove(key) { try { localStorage.removeItem('hehe-store:' + key); } catch (e) {} }
+  /* 原来还有个 lsRemove（配 store:remove 用）。那条通道确认无调用方、
+   * 已从主进程移除，模拟分支的函数也一起删掉，不留死代码。 */
 
   function browserFallback(ch, args) {
     switch (ch) {
       case 'store:get': return lsGet(args[0], args[1]);
       case 'store:set': lsSet(args[0], args[1]); return true;
-      case 'store:remove': lsRemove(args[0]); return true;
+      /* store:remove / win:is-maximized / server:status 三条模拟分支已删除：
+       * 主进程侧对应的通道都确认无调用方并已移除，模拟分支留着只会让
+       * 「哪些通道真实存在」这件事出现两份互相矛盾的清单。 */
       case 'app:get-info':
         return { appVersion: '1.0.0', electron: '-', node: '-', chrome: navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || '-', platform: 'browser', userData: '(浏览器演示模式)', exePath: '-', hostname: 'demo', username: 'demo' };
       case 'app:get-autostart': return false;
       case 'app:set-hotkey': return true;
-      case 'win:is-maximized': return false;
-      case 'server:status': return false;
       default:
         throw new Error('浏览器演示模式不支持该功能，请运行桌面版（npm start）');
     }

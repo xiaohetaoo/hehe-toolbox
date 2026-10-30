@@ -58,7 +58,15 @@
   /* ---------- Toast ---------- */
   let toastBox = null;
   function toast(msg, type = 'info', ms = 2000) {
-    if (!toastBox) { toastBox = div('toast-container'); document.body.appendChild(toastBox); }
+    /* 容器可能已经不在文档里：切换界面语言时 applyLangLabels() 会
+     * `document.body.innerHTML = ''` 整壳重建，而 toastBox 缓存在这里。
+     * 重建后旧容器成了游离节点，之后 appendChild 进去界面上什么都看不到，
+     * 控制台也不报错 —— 这正是「切语言后所有提示消失」的原因。
+     * 所以每次用之前都要确认它仍然挂在文档上，不在就重挂一份。 */
+    if (!toastBox || !toastBox.isConnected) {
+      toastBox = div('toast-container');
+      document.body.appendChild(toastBox);
+    }
     const iconName = type === 'success' ? 'check' : type === 'error' ? 'x' : type === 'warn' ? 'alert' : 'info';
     const t = div(`toast toast-${type}`, icon(iconName), h('span', null, msg));
     toastBox.appendChild(t);
@@ -66,6 +74,13 @@
   }
 
   /* ---------- 弹窗 ---------- */
+  /* 记录当前打开的遮罩层。
+   * 切换界面语言会整壳重建（document.body.innerHTML = ''），
+   * 那时如果正有确认弹窗开着，它的 promise 会永远悬着——
+   * 调用方的 await 卡死，后续代码一行都不执行，且没有任何报错。
+   * 所以重建前要主动把它们按「取消」收场。 */
+  let openOverlays = new Set();
+
   function modal({ title, body, foot, danger, width, onClose }) {
     const mask = div('modal-mask');
     const m = div('modal');
@@ -73,7 +88,16 @@
     const bodyEl = div('modal-body');
     if (typeof body === 'function') body(bodyEl, m); else if (body) bodyEl.appendChild(body);
     const head = div('modal-head', h('span', null, title), div('modal-close', icon('x')));
-    const close = () => { mask.remove(); onClose && onClose(); };
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      openOverlays.delete(entry);
+      mask.remove();
+      onClose && onClose();
+    };
+    const entry = { close };
+    openOverlays.add(entry);
     head.querySelector('.modal-close').addEventListener('click', close);
     mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
     m.appendChild(head); m.appendChild(bodyEl);
@@ -296,17 +320,45 @@
       }
     }
 
+    /* 体积查询改成「先登记、后批量」：
+     * 原来每个非虚拟条目都单独 invoke('fs:stat')，500 个文件就是 500 次 IPC 往返，
+     * 主进程排队处理，列表体积要等很久才逐个冒出来。
+     * 现在 fillSize 只把 (item, sizeEl) 记进待查队列，等这一帧的行都建好后
+     * 由 flushSizes() 按 50 个一批发 fs:stat-multi，一次拿回整批大小。 */
+    let pendingSizes = [];
+    const SIZE_BATCH = 50;
+
     function fillSize(item, sizeEl) {
       // 虚拟条目（剪贴板图片等没有磁盘路径）：不 stat，直接显示来源
       if (item.virtual) { sizeEl.textContent = item.sizeLabel || '剪贴板'; return; }
-      // 异步补体积：目录与不存在的路径都按「—」收场，绝不抛异常打断列表渲染
-      invoke('fs:stat', item.path).then((st) => {
-        item.size = st.size;
-        item.isDir = !!st.isDir;
-        if (!items.includes(item)) return; // 期间被删掉了
-        sizeEl.textContent = st.isDir ? '文件夹' : fmtBytes(st.size);
-        renderHead();
-      }).catch(() => { sizeEl.textContent = '—'; });
+      // 已知体积（例如上次已经查到过）就直接用，不再问主进程
+      if (item.size !== undefined && item.size !== null) {
+        sizeEl.textContent = item.isDir ? '文件夹' : fmtBytes(item.size);
+        return;
+      }
+      pendingSizes.push({ item, sizeEl });
+    }
+
+    async function flushSizes() {
+      if (!pendingSizes.length) return;
+      const queue = pendingSizes;
+      pendingSizes = [];
+      for (let off = 0; off < queue.length; off += SIZE_BATCH) {
+        const slice = queue.slice(off, off + SIZE_BATCH);
+        const paths = slice.map((q) => q.item.path);
+        let stats;
+        try { stats = await invoke('fs:stat-multi', paths); }
+        catch (e) { stats = null; }
+        slice.forEach((q, k) => {
+          const st = stats && stats[k];
+          if (!st) { q.sizeEl.textContent = '—'; return; } // 不存在/无权限
+          q.item.size = st.size;
+          q.item.isDir = !!st.isDir;
+          if (!items.includes(q.item)) return; // 期间被删掉了
+          q.sizeEl.textContent = st.isDir ? '文件夹' : fmtBytes(st.size);
+        });
+        renderHead(); // 每批更新一次合计，不必每项都刷
+      }
     }
 
     function makeRow(item, i) {
@@ -339,10 +391,13 @@
 
     function refresh() {
       body.innerHTML = '';
+      pendingSizes = [];
       items.forEach((it, i) => body.appendChild(makeRow(it, i)));
       emptyEl.style.display = items.length ? 'none' : '';
       el.classList.toggle('has-items', !!items.length);
       renderHead();
+      // 行都建好后再统一补体积，避免每行一次 IPC
+      flushSizes();
     }
 
     function notify() { refresh(); if (onChange) onChange(items.slice()); }
@@ -645,8 +700,20 @@
     return String(prefix || '') + Date.now() + '-' + (++_idSeq);
   }
 
+  /* 整壳重建（切换界面语言）前调用：
+   * 1) 把还开着的弹窗按「取消」收场，避免它们的 promise 永远悬着；
+   * 2) 丢弃 toast 容器引用，下次 toast() 会挂到新 body 上。
+   * 幂等，重建前后都能安全调用。 */
+  function resetShellForRebuild() {
+    for (const entry of [...openOverlays]) {
+      try { entry.close(); } catch (e) { console.warn('modal close', e); }
+    }
+    openOverlays = new Set();
+    toastBox = null;
+  }
+
   window.h = h; // 全局 DOM 构建函数，供所有工具直接使用
   // 全局兜底：工具文件即使遗漏解构也能直接使用这些助手
   Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId });
-  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId };
+  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild };
 })();

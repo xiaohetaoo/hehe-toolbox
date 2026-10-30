@@ -93,15 +93,8 @@ t('P0 runSeven 额外做一次密码脱敏', () => {
 });
 
 /* ---------- P1-1：clipHistory 缺失时不删光图片 ---------- */
-t('P1 clip:gc-images 校验 clipHistory 是数组', () => {
-  const fn = body(main, 'clip:gc-images');
-  assert.ok(fn.includes('Array.isArray(hist)'), '没有类型校验');
-  assert.ok(fn.includes('skipped: true'), '没有跳过标记');
-});
-t('P1 clip:gc-images 无图片引用时整体跳过', () => {
-  const fn = body(main, 'clip:gc-images');
-  assert.ok(fn.includes('没有任何图片引用'), '没有二次保险');
-});
+/* clip:gc-images 通道已删除（全项目无调用方）。真正会执行的是启动时的
+ * sweepClipImages()，下面这条针对它，两道保护都在。 */
 t('P1 sweepClipImages 同样校验 clipHistory', () => {
   const fn = main.match(/async function sweepClipImages\(\)[\s\S]*?\n\}/)[0];
   assert.ok(fn.includes('Array.isArray(hist)'), '没有类型校验');

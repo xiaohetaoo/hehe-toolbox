@@ -71,7 +71,10 @@ chk(!!nsisName && /^[\x20-\x7E]+$/.test(nsisName), 'nsis.artifactName 为 ASCII�
 
 /* ---- 不重复注册 ---- */
 const handles = main.match(/^handle\('/gm) || [];
-chk(handles.length >= 150, 'IPC 通道数正常（' + handles.length + '）');
+/* 下限不是业务常量，而是「防批量误删」的护栏：
+ * 本轮按审计删掉 12 个确认无调用方的通道（161 → 149）。
+ * 以后再加删通道时同步调整这个下限，别让它变成假绿/假红的来源。 */
+chk(handles.length >= 140, 'IPC 通道数正常（' + handles.length + '）');
 const names = (main.match(/^handle\('([^']+)'/gm) || []).map(s => s.replace(/^handle\('/, '').replace(/'$/, ''));
 chk(new Set(names).size === names.length, '没有重复注册的 IPC 通道（' + names.length + ' 个）');
 

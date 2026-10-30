@@ -18,16 +18,22 @@ function t(name, fn) {
 /* ---------- P0：snip.html 标注渲染 ----------
  * accentPrimary 曾落在 </script> 之后，被 HTML 解析器当正文：
  * 页面上显示源码，函数未定义，render() 一进“已有选区”分支就 ReferenceError。
- * 断言必须按“函数是否真的落在某个 script 块内”判定，而不是查字符串是否存在。 */
-t('P0 snip.html: accentPrimary 定义在 script 块内', () => {
+ * 后来内联脚本被抽到 js/auxwin/snip-1.js 与 snip-2.js（CSP 收紧），断言随之改为：
+ * 脚本必须**通过 src 正确引用**、函数必须落在被引用的外部文件里。
+ * 意图不变——还是「这段 JS 必须真的被浏览器当作脚本执行，而不是页面正文」。
+ * 注意 accentPrimary 在第二个块（snip-2.js）：第一个块在 <body> 前，
+ * 第二个块在 <canvas> 之后，不能合并（合并会让渲染逻辑在 DOM 就绪前执行）。 */
+const SNIP_JS = 'js/auxwin/snip-2.js';   // 渲染逻辑块（依赖 DOM 已就绪）
+const SNIP_THEME_JS = 'js/auxwin/snip-1.js'; // 配色初始化块（在 <body> 前执行）
+
+t('P0 snip.html: accentPrimary 定义在配色脚本里', () => {
   const h = read('snip.html');
-  const blocks = [];
-  const re = /<script>([\s\S]*?)<\/script>/g;
-  let m;
-  while ((m = re.exec(h))) blocks.push([m.index, m.index + m[0].length]);
-  const fnPos = h.indexOf('function accentPrimary(');
+  const js = read(SNIP_THEME_JS);
+  // HTML 必须通过 src 引用这个脚本（否则脚本根本不会执行）
+  assert.ok(new RegExp('<script\\s+src="[^"]*js/auxwin/snip-1\\.js"').test(h), 'snip.html 没有引用 ' + SNIP_THEME_JS);
+  const fnPos = js.indexOf('function accentPrimary(');
   assert.ok(fnPos > 0, '没找到 accentPrimary 定义');
-  assert.ok(blocks.some(([s, e]) => fnPos >= s && fnPos < e), 'accentPrimary 不在任何 script 块内');
+  assert.ok(fnPos < js.length, 'accentPrimary 位置异常');
 });
 t('P0 snip.html: 结束标签之后没有游离的 JS 代码', () => {
   const h = read('snip.html');
@@ -35,13 +41,13 @@ t('P0 snip.html: 结束标签之后没有游离的 JS 代码', () => {
 });
 t('P0 snip.html: script 标签成对', () => {
   const h = read('snip.html');
-  const open = (h.match(/<script>/g) || []).length;
+  const open = (h.match(/<script[\s>]/g) || []).length;
   const close = (h.match(/<\/script>/g) || []).length;
-  assert.strictEqual(open, close, `<script>${open} 个 vs </script>${close} 个`);
+  assert.strictEqual(open, close, `<script ${open} 个 vs </script>${close} 个`);
 });
 t('P0 snip.html: render 覆盖选区/手柄/标注三条绘制', () => {
-  const h = read('snip.html');
-  const body = (h.match(/function render\(\)([\s\S]*?)\n    \}/) || [, ''])[1];
+  const js = read(SNIP_JS);
+  const body = (js.match(/function render\(\)([\s\S]*?)\n    \}/) || [, ''])[1];
   assert.ok(body.includes('accentPrimary()'), 'render 里没有调用 accentPrimary');
   assert.ok(body.includes('fillRect') && body.includes('strokeRect'), 'render 缺少压暗/边框绘制');
   assert.ok(body.includes('for (const s of shapes)'), 'render 没有遍历 shapes 绘制标注');

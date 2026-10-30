@@ -34,12 +34,18 @@ const chk = (c, m) => { console.log((c ? 'PASS  ' : 'FAIL  ') + m); if (!c) fail
 const snip = read('snip.html');
 chk(!!snip, 'snip.html 可读');
 if (snip) {
-  const blocks = [];
-  const re = /<script>([\s\S]*?)<\/script>/g;
-  let m;
-  while ((m = re.exec(snip))) blocks.push([m.index, m.index + m[0].length]);
-  const fnPos = snip.indexOf('function accentPrimary(');
-  chk(blocks.some(([s, e]) => fnPos >= s && fnPos < e), '打包后 accentPrimary 位于 script 块内');
+  /* 内联脚本已抽到 js/auxwin/snip-1.js 与 snip-2.js（CSP 收紧）。
+   * 两个块必须**都在原位置**引用：第一个在 <body> 前（配色初始化），
+   * 第二个在 <canvas> 之后（渲染逻辑，依赖 DOM 已就绪）。
+   * 合并成一个文件会让后者在 DOM 未就绪时执行，直接 TypeError 白屏。 */
+  chk(/<script\s+src="[^"]*js\/auxwin\/snip-1\.js"/.test(snip), '打包后 snip.html 引用了 js/auxwin/snip-1.js');
+  chk(/<script\s+src="[^"]*js\/auxwin\/snip-2\.js"/.test(snip), '打包后 snip.html 引用了 js/auxwin/snip-2.js');
+  const snipJs = read('js/auxwin/snip-2.js');
+  chk(!!snipJs, '打包后 js/auxwin/snip-2.js 存在');
+  // accentPrimary 在配色块（snip-1.js），渲染块（snip-2.js）调用它
+  const snipTheme = read('js/auxwin/snip-1.js');
+  chk(!!snipTheme && snipTheme.includes('function accentPrimary('), '打包后 accentPrimary 定义在配色脚本里');
+  chk(!!snipJs && snipJs.includes('accentPrimary()'), '打包后渲染脚本调用了 accentPrimary');
   chk(!/<\/script>\s*\n\s*(function|const|let|var)/.test(snip), '打包后没有游离 JS');
 }
 

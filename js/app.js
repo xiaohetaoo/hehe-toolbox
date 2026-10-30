@@ -53,6 +53,12 @@
   ];
   let currentAccent = 'polar';
   let themeListeners = [];
+  /* buildShell 注册的 document 级监听的退订函数（见 applyLangLabels） */
+  let shellCleanup = null;
+  /* matchMedia 的 change 监听只挂一次。
+   * applyTheme 会在每次整壳重建（切语言）后重新调用，无守卫就会累积：
+   * 切三次语言就有三份监听，每份都会去 store:get 一次。 */
+  let schemeListenerBound = false;
   function applyTheme() {
     invoke('store:get', 'settings.theme', 'system').then(mode => {
       setThemeAttr(mode);
@@ -60,10 +66,13 @@
     invoke('store:get', 'settings.accent', 'polar').then(accent => {
       setAccent(accent || 'polar');
     });
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', async () => {
-      const mode = await invoke('store:get', 'settings.theme', 'system');
-      if (mode === 'system') setThemeAttr('system');
-    });
+    if (!schemeListenerBound) {
+      schemeListenerBound = true;
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', async () => {
+        const mode = await invoke('store:get', 'settings.theme', 'system');
+        if (mode === 'system') setThemeAttr('system');
+      });
+    }
     // 主进程 nativeTheme 变化时同步（settings.theme-changed 携带 shouldUseDarkColors）
     themeListeners.push(on('settings.theme-changed', (isDark) => {
       invoke('store:get', 'settings.theme', 'system').then(m => {
@@ -347,13 +356,22 @@
         if (target) target.click();
       } else if (e.key === 'Escape') hideSearch();
     });
-    document.addEventListener('click', (e) => { if (!searchDrop.contains(e.target) && e.target !== searchInput) searchDrop.classList.remove('show'); });
-    document.addEventListener('keydown', (e) => {
+    const onDocClick = (e) => { if (!searchDrop.contains(e.target) && e.target !== searchInput) searchDrop.classList.remove('show'); };
+    const onDocKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         focusSearch();
       }
-    });
+    };
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('keydown', onDocKey);
+    /* 这两个是 document 级监听，整壳重建时旧的不退掉就会累积：
+     * 切一次语言多一份 Ctrl+K 处理、多一份点空白关闭搜索。
+     * 把退订函数交给 applyLangLabels，重建前统一调用。 */
+    shellCleanup = () => {
+      document.removeEventListener('click', onDocClick);
+      document.removeEventListener('keydown', onDocKey);
+    };
   }
 
   /* ============ 路由与渲染 ============ */
@@ -556,11 +574,21 @@
 
     let hlIndex = -1;
     let current = [];
+    /* 见 setHl 的注释：列表刚渲染时浏览器可能补发一次 mouseenter，
+     * 那不是用户在移动鼠标。只有真的观察到 mousemove 之后，
+     * 才认为后续的 mouseenter 是用户的意图。 */
+    let pointerMoved = false;
+    const markPointerMoved = () => { pointerMoved = true; };
+    window.addEventListener('mousemove', markPointerMoved, { once: true, passive: true });
 
     function renderResults() {
       const q = inp.value;
       results.innerHTML = '';
       hlIndex = -1;
+      /* 列表重建：之前的 mouseenter 记录已经失效。
+       * 重新开始计「指针是否动过」，这样新列表不会带着旧列表的鼠标状态。 */
+      pointerMoved = false;
+      window.addEventListener('mousemove', markPointerMoved, { once: true, passive: true });
       current = q.trim() ? R.search(q) : [];
       if (!q.trim()) {
         results.classList.remove('show');
@@ -586,11 +614,26 @@
         const row = searchResultRow(t, q);
         row.classList.add('hs-row');
         row.addEventListener('click', () => openTool(t.id));
-        row.addEventListener('mousemove', () => setHl(i));
+        /* 用 mouseenter 而不是 mousemove：mousemove 是像素级触发，
+         * 每移动一像素就执行一次 querySelectorAll + scrollIntoView，
+         * 结果多时会明显卡顿，还可能把列表抖得来回滚。
+         * mouseenter 只在真正进入新行时触发一次。
+         *
+         * 但 mouseenter 有个坑：列表刚渲染出来时，如果光标恰好停在某一行上，
+         * 浏览器也会派发一次 mouseenter（不是用户移动造成的）。那会把高亮
+         * 预置到光标所在行，用户随后按 ↓ 就从他没选过的行开始跳。
+         * 所以只在「指针确实动过」之后才让鼠标决定高亮。 */
+        row.addEventListener('mouseenter', () => { if (pointerMoved) setHl(i, true); });
         results.appendChild(row);
       });
     }
-    function setHl(i) {
+    function setHl(i, fromMouse) {
+      /* 鼠标进入某行时，如果已经有用键盘选中的行，就不要抢焦点：
+       * 用户用 ↓ 选到第 5 行、鼠标恰好划过第 1 行，高亮会跳回去，
+       * 再按 ↓ 又从第 1 行开始 —— 键盘与鼠标互相打架。
+       * 索引没变也不必重做（省掉 querySelectorAll + scrollIntoView）。 */
+      if (fromMouse && hlIndex >= 0) return;
+      if (i === hlIndex && results.querySelectorAll('.hs-row.hl').length === 1) return;
       const rows = [...results.querySelectorAll('.hs-row')];
       hlIndex = i;
       rows.forEach((el, k) => el.classList.toggle('hl', k === i));
@@ -705,11 +748,10 @@
   // 高危工具未启用时的占位卡
   function dangerLockedCard(toolId, toolName) {
     const card = div('card danger-locked');
-    card.appendChild(div('danger-locked-title', icon('lock'), '该工具属于高危功能，默认未启用'));
+    card.appendChild(div('danger-locked-title', icon('lock'), T('settings.notice.wholeToolLocked')));
     card.appendChild(div('danger-locked-text',
-      '「' + toolName + '」涉及的破坏性操作可能造成数据丢失或系统状态中断，因此默认关闭。' +
-      '请在「设置 → 高危功能」中按需开启，开启后本工具才会可用。'));
-    card.appendChild(div('form-row', btn('前往设置 → 高危功能', 'btn-danger', () => showView({ type: 'settings' }))));
+      T('settings.notice.wholeToolLockedText', { name: toolName })));
+    card.appendChild(div('form-row', btn(T('settings.notice.goDanger'), 'btn-danger', () => showView({ type: 'settings' }))));
     return card;
   }
   /* 只有「删文件」这一项高危能力的工具（记事本、剪贴板历史）：
@@ -721,11 +763,10 @@
     card.style.border = '1px solid var(--warning)';
     card.style.background = 'color-mix(in srgb, var(--warning) 8%, transparent)';
     card.appendChild(div('', { style: { fontWeight: 600, marginBottom: '4px' } },
-      '⚠ 删除功能默认关闭，其余功能可正常使用'));
+      T('settings.notice.deleteOnly')));
     card.appendChild(div('field-hint',
-      '本工具的「删除」属于高危操作，需在「设置 → 高危功能」中开启后才会生效；' +
-      '浏览、编辑、复制等操作不受影响。'));
-    card.appendChild(div('form-row', btn('前往设置 → 高危功能', 'btn-sm btn-secondary', () => showView({ type: 'settings' }))));
+      T('settings.notice.deleteOnlyText')));
+    card.appendChild(div('form-row', btn(T('settings.notice.goDanger'), 'btn-sm btn-secondary', () => showView({ type: 'settings' }))));
     return card;
   }
 
@@ -785,14 +826,13 @@
       const v = langSel.value;
       try { await invoke('store:set', 'settings.lang', v); } catch (e) {}
       applyLang(v);
-      toast(v === 'en' ? 'Language switched to English' : '界面语言已切换为简体中文', 'success', 1600);
-      /* applyLangLabels() 会整壳重建（含整个设置页），
-         所以这里**不能**再调 drawBody() —— drawBody 是 renderSettings 内部的
-         局部函数，在 drawGeneral 作用域里根本不存在，调用它会抛
-         ReferenceError（异常在 async 事件回调里，会被吞成一条控制台报错）。
-         重建后再指定回到「通用」分区，保证用户停在原来的位置。 */
+      /* toast 必须在 applyLangLabels() **之后**发：
+       * 重建会换掉整个 body，先发的那条会挂在已被丢弃的容器上，用户看不到。
+       * 文案按「切到哪个语言」来定，而不是按切换后的 lang —— 用户需要读懂
+       * 「刚刚发生了什么」，用他原来的语言更自然。 */
       settingsSection = 'general';
       applyLangLabels();
+      toast(T('settings.langSwitched.' + (v === 'en' ? 'en' : 'zh')), 'success', 1600);
     });
     langRow.appendChild(div('set-control', langSel));
     if (token !== undefined && token !== drawToken) return;
@@ -801,7 +841,7 @@
     const row1 = div('set-row', div('', div('set-label', T('settings.autostart')), div('set-desc', T('settings.autostartDesc'))));
     try {
       const enabled = await invoke('app:get-autostart');
-      const sw = switchEl(enabled, async (v) => { try { await invoke('app:set-autostart', v); toast(v ? (lang === 'en' ? 'Launch at startup enabled' : '已开启开机自启') : (lang === 'en' ? 'Launch at startup disabled' : '已关闭开机自启'), 'success'); } catch (e) { toast(e.message, 'error'); sw.set(!v); } });
+      const sw = switchEl(enabled, async (v) => { try { await invoke('app:set-autostart', v); toast(v ? T('settings.autostartOn') : T('settings.autostartOff'), 'success'); } catch (e) { toast(e.message, 'error'); sw.set(!v); } });
       row1.appendChild(div('set-control', sw));
     } catch (e) { row1.appendChild(div('set-control', h('span', { class: 'field-hint' }, T('settings.browserNA')))); }
 
@@ -831,16 +871,16 @@
   }
   function drawAppearance(body) {
     /* ---- 第一块：明暗模式 ---- */
-    const row = div('set-row', div('', div('set-label', '明暗模式'), div('set-desc', '选择界面的明暗，与下面的配色主题自由组合')));
+    const row = div('set-row', div('', div('set-label', T('settings.mode')), div('set-desc', T('settings.appearanceDesc'))));
     body.appendChild(row);
 
     /* Win11 风格主题卡片：迷你预览 + 点击即切换。
        预览色值全部走 CSS 变量（见下方 MODE_VARS），不再写死十六进制。 */
     const grid = div('theme-cards');
     const MODES = [
-      { id: 'light', name: '浅色' },
-      { id: 'dark', name: '深色' },
-      { id: 'system', name: '跟随系统' }
+      { id: 'light', name: T('settings.mode.light') },
+      { id: 'dark', name: T('settings.mode.dark') },
+      { id: 'system', name: T('settings.mode.system') }
     ];
     let currentMode = null;
     const cards = [];
@@ -896,7 +936,7 @@
     for (const m of MODES) {
       const card = div('theme-card');
       card.appendChild(preview(m));
-      card.appendChild(div('tc-name2', MN(m) + (m.id === 'system' ? '（自动切换）' : '')));
+      card.appendChild(div('tc-name2', MN(m) + (m.id === 'system' ? T('settings.mode.auto') : '')));
       card.addEventListener('click', async (e) => {
         const rect = card.getBoundingClientRect();
         await changeTheme(m.id, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
@@ -912,7 +952,7 @@
     row.appendChild(grid);
 
     /* ---- 第二块：配色主题 ---- */
-    const row2 = div('set-row', div('', div('set-label', '配色主题'), div('set-desc', '选择界面的主色调，与明暗模式自由组合')));
+    const row2 = div('set-row', div('', div('set-label', T('settings.accent')), div('set-desc', T('settings.accentDesc'))));
     body.appendChild(row2);
 
     const accentGrid = div('accent-grid');
@@ -937,7 +977,7 @@
         } catch (e) { /* browser mode */ }
         setAccent(a.id);
         refreshAccent();
-        toast('已切换到「' + a.name + '」', 'success', 1200);
+        toast(T('settings.accentOk', { name: a.name }), 'success', 1200);
       });
       accentSwatches.push({ el: card, id: a.id });
       accentGrid.appendChild(card);
@@ -950,16 +990,14 @@
   /* 高危功能：默认全部关闭，逐项开启。开启任一项都会二次确认。 */
   async function drawDanger(body, token) {
     const banner = div('danger-banner');
-    banner.appendChild(div('danger-banner-title', icon('alert'), '高危功能默认关闭'));
-    banner.appendChild(div('danger-banner-text',
-      '下列功能可能造成数据丢失或系统状态中断，默认不可用。开启后，界面上对应的工具会显示为红色卡片。' +
-      '每项单独开启，随时可以关回去。'));
+    banner.appendChild(div('danger-banner-title', icon('alert'), T('danger.disabled')));
+    banner.appendChild(div('danger-banner-text', T('danger.text')));
     body.appendChild(banner);
 
     let info;
     try { info = await invoke('dangerous:list'); }
     catch (e) {
-      body.appendChild(div('field-err', '✗ 无法读取高危功能配置：' + e.message));
+      body.appendChild(div('field-err', T('danger.readFail', { err: e.message })));
       return;
     }
     if (token !== undefined && token !== drawToken) return;
@@ -974,43 +1012,42 @@
         // 开启高危能力必须二次确认，且要复述具体是哪个能力
         if (v) {
           const ok = await confirmBox({
-            title: '开启高危功能',
-            message: `确定开启「${c.name}」？\n\n${c.desc}\n\n开启后该能力会立即可用，相关工具卡片会变成红色。`,
-            danger: true, okText: '确认开启'
+            title: T('danger.enableTitle'),
+            message: T('danger.enableMsg', { name: c.name, desc: c.desc }),
+            danger: true, okText: T('danger.enableOk')
           });
           if (!ok) { sw.set(false); return; }
         }
         try {
           await invoke('dangerous:set', c.id, v);
           await refresh(); // 重新读取高危状态并重绘，工具卡片的红/灰随之更新
-          toast(v ? `已开启「${c.name}」` : `已关闭「${c.name}」`, v ? 'warn' : 'success');
+          toast(v ? T('danger.enabled', { name: c.name }) : T('danger.disabledToast', { name: c.name }), v ? 'warn' : 'success');
         } catch (e) { sw.set(!v); toast(e.message, 'error'); }
       });
       row.appendChild(div('set-control', sw));
       body.appendChild(row);
     }
 
-    const tip = div('field-hint', { style: { marginTop: '14px' } },
-      '提示：关闭某项能力后，相关工具会重新变为不可用，但已经产生的数据不会自动恢复。');
+    const tip = div('field-hint', { style: { marginTop: '14px' } }, T('danger.tip'));
     body.appendChild(tip);
   }
   async function drawData(body, token) {
-    let userData = '(浏览器演示模式)';
+    let userData = T('settings.browserMode');
     if (isDesktop) { try { userData = (await invoke('app:get-info')).userData; } catch (e) {} }
     if (token !== undefined && token !== drawToken) return;
-    body.appendChild(div('set-row', div('', div('set-label', '数据目录'), div('set-desc', '配置、收藏、剪贴板历史等全部保存在本机，不上传云端'), div('set-desc mono', userData)), div('set-control', btn('打开目录', 'btn-sm btn-secondary', async () => {
-      if (!isDesktop) return toast('浏览器模式不可用', 'warn');
+    body.appendChild(div('set-row', div('', div('set-label', T('data.dir')), div('set-desc', T('data.dirDesc')), div('set-desc mono', userData)), div('set-control', btn(T('data.openDir'), 'btn-sm btn-secondary', async () => {
+      if (!isDesktop) return toast(T('settings.browserNA'), 'warn');
       try { await invoke('fs:open-path', userData); } catch (e) { toast(e.message, 'error'); }
     }))));
-    body.appendChild(div('set-row', div('', div('set-label', '清除使用记录'), div('set-desc', '清空最近使用与剪贴板历史（不影响收藏）')), div('set-control', btn('清除', 'btn-sm btn-danger-plain', async () => {
-      if (!(await confirmBox({ title: '清除使用记录', message: '将清空最近使用记录与剪贴板历史，确定继续？', danger: true, okText: '清除' }))) return;
+    body.appendChild(div('set-row', div('', div('set-label', T('data.clear')), div('set-desc', T('data.clearDesc'))), div('set-control', btn(T('data.clearBtn'), 'btn-sm btn-danger-plain', async () => {
+      if (!(await confirmBox({ title: T('data.clear'), message: T('data.clearConfirm'), danger: true, okText: T('data.clearBtn') }))) return;
       await invoke('store:set', 'recents', []);
       await invoke('store:set', 'clipHistory', []);
       state.recents = [];
-      toast('已清除', 'success');
+      toast(T('data.clearOk'), 'success');
       render();
     }))));
-    body.appendChild(div('set-row', div('', div('set-label', '隐私承诺'), div('set-desc', '核核工具箱不收集任何操作日志与个人信息；联网功能仅在主动触发时执行；所有本地数据仅存于用户电脑'))));
+    body.appendChild(div('set-row', div('', div('set-label', T('data.privacy')), div('set-desc', T('data.privacyDesc')))));
   }
 
   /* ============ 关于（设置页的一个分区，不再是独立页面） ============
@@ -1022,21 +1059,31 @@
     let info;
     try { info = await invoke('app:get-info'); }
     catch (e) {
-      body.appendChild(div('field-hint', '读取版本信息失败：' + (e && e.message || e)));
+      body.appendChild(div('field-hint', T('settings.readInfoFail', { err: (e && e.message || e) })));
       return;
     }
     if (token !== undefined && token !== drawToken) return;
 
+    /* 本次「检查更新」的退订函数，存在这个页面的闭包里。
+     * 之前是每次点击都 window.App.onCleanup(() => unsub…)，而 onCleanup 按
+     * 函数引用去重，每次都是新闭包 → 去重必然失效，连点五次就积五个。
+     * 改成页面级只登记一个清理：它读的是这段闭包里最新的 updUnsub。 */
+    let updUnsub = null;
+    const cleanupUpdate = () => {
+      if (updUnsub) { try { updUnsub(); } catch (e) {} updUnsub = null; }
+    };
+    window.App.onCleanup(cleanupUpdate);
+
     const updLine = h('div', { class: 'field-hint', style: { padding: '8px 4px 0' } }, '');
     const updActions = div('', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '8px 4px 0' } });
-    const checkBtn = btn('检查更新', 'btn-sm btn-secondary', checkUpdate);
+    const checkBtn = btn(T('about.checkUpdate'), 'btn-sm btn-secondary', checkUpdate);
 
     // 顶部品牌行：图标 + 名称 + 版本号，右侧放「检查更新」
     const head = div('about-head');
     head.appendChild(h('img', { src: 'assets/icon.png', alt: '' }));
     head.appendChild(div('',
-      div('about-name', '核核工具箱'),
-      div('set-desc', 'HeHe Toolbox v' + info.appVersion)));
+      div('about-name', T('about.brand')),
+      div('set-desc', (lang === 'en' ? 'HeHe Toolbox' : 'HeHe Toolbox') + ' v' + info.appVersion)));
     // 第二个参数必须是类名字符串：div(cls, ...children) 只认字符串类名，
     // 传 { class: 'x' } 这种对象会被 h() 静默丢掉（h 只处理 {style} 对象），
     // 按钮就贴不到右边了。
@@ -1044,9 +1091,9 @@
     body.appendChild(head);
 
     body.appendChild(window.ui.kvGrid([
-      ['运行环境', `Electron ${info.electron} · Chromium ${info.chrome}`],
-      ['当前用户', info.username + '@' + info.hostname],
-      ['数据目录', info.userData]
+      [T('about.os'), `Electron ${info.electron} · Chromium ${info.chrome}`],
+      [T('about.userShort'), info.username + '@' + info.hostname],
+      [T('data.dir'), info.userData]
     ]));
     body.appendChild(updLine);
     body.appendChild(updActions);
@@ -1060,15 +1107,18 @@
       const trigger = ev && (ev.currentTarget || ev.target);
       if (trigger && trigger.disabled) return;
       if (trigger) trigger.disabled = true;
-      updLine.textContent = '正在检查更新…';
+      updLine.textContent = T('update.checking');
       updActions.innerHTML = '';
+      /* 上一次点击可能还挂着订阅（下载未完成时离开页面），先退掉再开新的，
+       * 否则连点几次就有几份 job:stream 监听同时更新同一个 updLine。 */
+      if (updUnsub) { try { updUnsub(); } catch (e) {} updUnsub = null; }
       let unsub = null;
       try {
         const r = await invoke('update:check', { force: true });
-        if (r.throttled) { updLine.textContent = `检查太频繁，${r.retryAfter} 秒后可再试（当前最新 v${r.latest}）`; return; }
-        if (!r.hasUpdate) { updLine.textContent = `✓ 已是最新版本（v${r.current}）`; return; }
-        updLine.textContent = `发现新版本 v${r.latest}（当前 v${r.current}），正在下载…`;
-        if (!r.assetUrl) { updLine.textContent = `发现新版本 v${r.latest}，请到 GitHub Releases 下载：${r.htmlUrl}`; return; }
+        if (r.throttled) { updLine.textContent = T('update.throttled', { s: r.retryAfter, v: r.latest }); return; }
+        if (!r.hasUpdate) { updLine.textContent = T('update.latest', { v: r.current }); return; }
+        updLine.textContent = T('update.found', { latest: r.latest, current: r.current });
+        if (!r.assetUrl) { updLine.textContent = T('update.manual', { latest: r.latest, url: r.htmlUrl }); return; }
         const out = info.userData + '/update/' + r.assetName;
         // job:stream 是全局通道：TTS/ffmpeg/卸载等任务也会广播 {done:true} 或 {pct}。
         // 不比对 id 就会把别人的退出事件当成下载失败（显示“✗ 下载失败：undefined”），
@@ -1083,24 +1133,21 @@
           if (!d || d.id !== dlId) return;
           try {
             const j = JSON.parse(d.data);
-            if (j.pct != null) updLine.textContent = `下载新版本 v${r.latest}：${(j.pct || 0).toFixed(0)}%（${(j.mb || 0).toFixed(1)}MB）`;
+            if (j.pct != null) updLine.textContent = T('update.downloading', { latest: r.latest, pct: (j.pct || 0).toFixed(0), mb: (j.mb || 0).toFixed(1) });
             if (!j.done) return;
             if (unsub) { unsub(); unsub = null; }
-            if (!j.ok) { updLine.textContent = '✗ 下载失败：' + (j.error || ''); return; }
-            updLine.textContent = `✓ v${r.latest} 已下载完成：${out}`;
-            toast('新版本已下载', 'success');
-            updActions.appendChild(btn('🚀 重启并替换', 'btn-sm btn-primary', async () => {
-              if (!(await confirmBox({ title: '重启并替换', message: `将退出当前版本，用 v${r.latest} 覆盖程序文件并自动重启。
-
-旧版本会自动备份为 .bak，若新版无法启动可运行「回滚」脚本退回。
-配置文件与数据不受影响。`, okText: '重启并替换' }))) return;
+            if (!j.ok) { updLine.textContent = T('update.downloadFail', { err: (j.error || '') }); return; }
+            updLine.textContent = T('update.downloaded', { v: r.latest, path: out });
+            toast(T('update.readyToast'), 'success');
+            updActions.appendChild(btn('🚀 ' + T('update.confirmOk'), 'btn-sm btn-primary', async () => {
+              if (!(await confirmBox({ title: T('update.confirmTitle'), message: T('update.confirmMsg', { v: r.latest }), okText: T('update.confirmOk') }))) return;
               try {
-                const ap = await invoke('update:apply', { newExe: out });
-                updLine.textContent = '正在退出并替换，稍候会自动重启…';
-                if (ap && ap.rollbackScript) updActions.appendChild(div('field-hint', '回滚脚本：' + ap.rollbackScript));
-              } catch (e) { updLine.textContent = '✗ 替换失败：' + e.message; }
+                const ap = await invoke('update:apply', { newExe: out, expectSha256: r.assetSha256 || null });
+                updLine.textContent = T('update.applying');
+                if (ap && ap.rollbackScript) updActions.appendChild(div('field-hint', T('update.rollbackScript', { path: ap.rollbackScript })));
+              } catch (e) { updLine.textContent = T('update.applyFail', { err: e.message }); }
             }));
-            updActions.appendChild(btn('打开所在目录', 'btn-sm btn-secondary', () => invoke('fs:show-item', out).catch(() => {})));
+            updActions.appendChild(btn(T('update.openDir'), 'btn-sm btn-secondary', () => invoke('fs:show-item', out).catch(() => {})));
           } catch (e) {}
         }
         // 先把这份包登记为“待安装”，update:cleanup 见到它就不会删
@@ -1108,20 +1155,20 @@
         const dl = await invoke('net:download', { url: r.assetUrl, out });
         if (!dl || !dl.id) {
           if (unsub) { unsub(); unsub = null; }
-          updLine.textContent = '✗ 下载启动失败';
+          updLine.textContent = T('update.startFail');
           return;
         }
         dlId = dl.id;
         // 补发在拿到 id 之前就到达的事件（下载极快时 done 会比返回值更早到）
         const buffered = pendingEvents.splice(0);
         for (const d of buffered) handleStream(d);
-      } catch (e) { updLine.textContent = '✗ ' + e.message; }
+      } catch (e) { updLine.textContent = T('update.applyFail', { err: e.message }); }
       finally {
         if (trigger) trigger.disabled = false;
         // 失败路径也要退订，否则监听器会一直挂在这个页面上
         if (!dlId || updLine.textContent.startsWith('✗')) { if (unsub) { unsub(); unsub = null; } }
+        updUnsub = unsub;
       }
-      window.App.onCleanup(() => { if (unsub) { unsub(); unsub = null; } });
     }
   }
 
@@ -1144,6 +1191,16 @@
     // 重建外壳：保留当前视图与标签页状态
     const keepView = state.view;
     const keepTabs = state.tabs.slice();
+    // 整壳重建前先收口：把开着的弹窗按「取消」结束（否则它们的 promise
+    // 会永远悬着），并丢弃 toast 容器引用让它挂到新 body 上。
+    try { if (window.ui && window.ui.resetShellForRebuild) window.ui.resetShellForRebuild(); } catch (e) {}
+    // themeListeners 里存的是「取消订阅」函数，重建前先全都退掉，
+    // 否则每切一次语言就多一份 settings.theme-changed 监听。
+    themeListeners.forEach((unsub) => { try { unsub && unsub(); } catch (e) {} });
+    themeListeners = [];
+    // buildShell 里挂的 document 级监听必须退掉，否则 Ctrl+K、
+    // 点空白关闭搜索每切换一次语言就多一份。
+    if (typeof shellCleanup === 'function') { try { shellCleanup(); } catch (e) {} shellCleanup = null; }
     document.body.innerHTML = '';
     buildShell();
     applyTheme();
