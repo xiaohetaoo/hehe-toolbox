@@ -704,6 +704,14 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .set-desc { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .set-control { margin-left: auto; }
 
+/* 关于分区（原独立「关于」页并入设置后） */
+.about-head { display: flex; align-items: center; gap: 14px; padding-bottom: 16px; margin-bottom: 4px; border-bottom: 1px solid var(--border-light); }
+.about-head img { width: 52px; height: 52px; border-radius: 11px; flex: none; }
+.about-head .about-name { font-weight: 600; font-size: 17px; color: var(--text-1); }
+.about-head .about-head-btn { margin-left: auto; }
+/* kvGrid 自带 auto-fill 网格，塞进设置面板后需要下边距与分隔线 */
+.settings-body .about-head ~ div { margin-bottom: 6px; }
+
 /* 高危功能分区（设置页） */
 .danger-banner {
   background: var(--danger-light); border: 1px solid var(--danger-line);

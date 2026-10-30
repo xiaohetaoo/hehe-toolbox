@@ -4374,9 +4374,11 @@ if (process.env.HEHE_SMOKE) {
         for (const t of window.Registry.all) {
           try { window.App.openTool(t.id); await tick(); } catch (e) { errs.push(t.id + ': ' + e.message); }
         }
-        for (const v of ['home', 'fav', 'settings', 'about']) {
+        for (const v of ['home', 'fav', 'settings']) {
           try { window.App.showView({ type: v }); await tick(); } catch (e) { errs.push('view:' + v + ': ' + e.message); }
         }
+        // 兼容路由：'about' 已并入设置的「关于」分区，仍应能正常渲染而不是白屏
+        try { window.App.showView({ type: 'about' }); await tick(); } catch (e) { errs.push('view:about: ' + e.message); }
         // 布局校验：页面不抛异常 ≠ 布局没崩。
         // 之前出现过 CSS 出问题时「页面渲染成功但排版全乱」（元素失去 block/flex），
         // 只查异常完全测不出来，所以这里补上关键布局属性的断言。

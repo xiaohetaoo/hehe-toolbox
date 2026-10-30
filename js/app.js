@@ -209,8 +209,8 @@
     favItem.dataset.nav = 'fav';
     const setCItem = div('nav-item', icon('settings', 'icon-lg'), h('span', null, '设置'));
     setCItem.dataset.nav = 'settings';
-    const aboutItem = div('nav-item', icon('info', 'icon-lg'), h('span', null, '关于'));
-    aboutItem.dataset.nav = 'about';
+    // 「关于」不再是侧栏一级入口：它只是版本号、运行环境、检查更新这几行信息，
+    // 单开一页占一个导航位不划算，合并进设置的「关于」分区即可。
     const collapseBtn = div('collapse-btn', icon('chev-left'), h('span', null, '收起'));
     collapseBtn.addEventListener('click', () => {
       state.collapsed = !state.collapsed;
@@ -218,7 +218,7 @@
       collapseBtn.innerHTML = ''; collapseBtn.appendChild(icon(state.collapsed ? 'chev-right' : 'chev-left'));
       if (!state.collapsed) collapseBtn.appendChild(h('span', null, '收起'));
     });
-    bottom.appendChild(favItem); bottom.appendChild(setCItem); bottom.appendChild(aboutItem); bottom.appendChild(collapseBtn);
+    bottom.appendChild(favItem); bottom.appendChild(setCItem); bottom.appendChild(collapseBtn);
     sidebarEl.appendChild(bottom);
 
     sidebarEl.addEventListener('click', (e) => {
@@ -228,7 +228,6 @@
       if (nav === 'home') showView({ type: 'home' });
       else if (nav === 'fav') showView({ type: 'fav' });
       else if (nav === 'settings') showView({ type: 'settings' });
-      else if (nav === 'about') showView({ type: 'about' });
       else if (nav.startsWith('module:')) showView({ type: 'module', moduleId: nav.slice(7) });
     });
 
@@ -392,7 +391,9 @@
     if (v.type === 'home') sel = 'home';
     else if (v.type === 'fav') sel = 'fav';
     else if (v.type === 'settings') sel = 'settings';
-    else if (v.type === 'about') sel = 'about';
+    // 「关于」并进了设置页，导航高亮跟着落到「设置」上，
+    // 否则用户从收藏/工具页跳进来会看到没有任何一项高亮。
+    else if (v.type === 'about') sel = 'settings';
     else if (v.type === 'module') sel = 'module:' + v.moduleId;
     else if (v.type === 'tool') { const t = R.get(v.toolId); sel = t ? 'module:' + t.module : 'home'; }
     const el = sidebarEl.querySelector(`[data-nav="${sel}"]`);
@@ -415,7 +416,8 @@
     }
     else if (v.type === 'fav') add('我的收藏', 'bc-current');
     else if (v.type === 'settings') add('设置', 'bc-current');
-    else if (v.type === 'about') add('关于', 'bc-current');
+    // 兼容旧的路由值：'about' 已并入设置，面包屑跟着显示「设置 / 关于」
+    else if (v.type === 'about') { add('设置', '', () => showView({ type: 'settings' })); add('关于', 'bc-current'); }
     else if (v.type !== 'home') add('', 'bc-current');
   }
   function renderTabs() {
@@ -463,19 +465,9 @@
       else if (v.type === 'module') renderModulePage(page, v.moduleId);
       else if (v.type === 'tool') renderToolPage(page, v.toolId);
       else if (v.type === 'settings') renderSettings(page);
-      else if (v.type === 'about') {
-        // renderAbout 是 async 且首行就 await IPC：原来既不 await 也不 catch，
-        // rejection 会逃逸成 unhandled rejection，而 try/catch 只能接同步异常，
-        // 结果是「关于」页永久空白、下面的兜底卡也不生效。这里显式接住。
-        const p = renderAbout(page);
-        if (p && typeof p.catch === 'function') {
-          p.catch((e) => {
-            console.error('关于页渲染失败', e);
-            page.innerHTML = '';
-            page.appendChild(div('tool-header', div('th-icon', iconLg('alert')), div('', h('h2', null, '页面加载失败'), h('div', { class: 'th-desc' }, String(e && e.message || e)))));
-          });
-        }
-      }
+      // 旧的 'about' 路由仍可用（托盘/外部调起可能还带着它），统一转到设置的关于分区，
+      // 保证任何时候都只有一个「关于」界面存在。
+      else if (v.type === 'about') { settingsSection = 'about'; renderSettings(page); }
     } catch (e) {
       // 兜底：任一页面渲染异常都不能让内容区白屏，至少给出可读错误和返回入口
       console.error('页面渲染失败', v, e);
@@ -740,7 +732,8 @@
       { id: 'general', name: '通用', icon: 'settings' },
       { id: 'appearance', name: '外观', icon: 'sun' },
       { id: 'danger', name: '高危功能', icon: 'alert' },
-      { id: 'data', name: '数据与隐私', icon: 'shield' }
+      { id: 'data', name: '数据与隐私', icon: 'shield' },
+      { id: 'about', name: '关于', icon: 'info' }
     ];
     let current = sections.some(s => s.id === settingsSection) ? settingsSection : 'general';
     function drawBody() {
@@ -750,6 +743,7 @@
       if (current === 'general') drawGeneral(body, token);
       else if (current === 'appearance') drawAppearance(body, token);
       else if (current === 'danger') drawDanger(body, token);
+      else if (current === 'about') drawAbout(body, token);
       else drawData(body, token);
     }
     for (const s of sections) {
@@ -978,29 +972,43 @@
     body.appendChild(div('set-row', div('', div('set-label', '隐私承诺'), div('set-desc', '核核工具箱不收集任何操作日志与个人信息；联网功能仅在主动触发时执行；所有本地数据仅存于用户电脑'))));
   }
 
-  /* ============ 关于页（唯一的版本/更新入口） ============ */
-  async function renderAbout(page) {
-    const info = await invoke('app:get-info');
-    page.appendChild(div('tool-header', div('th-icon', iconLg('info')), div('', h('h2', null, '关于'), h('div', { class: 'th-desc' }, '版本信息与更新'))));
+  /* ============ 关于（设置页的一个分区，不再是独立页面） ============
+     原来「关于」是侧栏一级入口、独占一整页，但内容只有版本号、运行环境三行
+     和「检查更新」，一页装这点东西太薄，还多占一个导航位。
+     现在作为设置的第五个分区，复用同一套 set-row 排版。
+     注意：它仍然是**唯一的版本/更新入口**，别处不要再放检查更新。 */
+  async function drawAbout(body, token) {
+    let info;
+    try { info = await invoke('app:get-info'); }
+    catch (e) {
+      body.appendChild(div('field-hint', '读取版本信息失败：' + (e && e.message || e)));
+      return;
+    }
+    if (token !== undefined && token !== drawToken) return;
 
     const updLine = h('div', { class: 'field-hint', style: { padding: '8px 4px 0' } }, '');
     const updActions = div('', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '8px 4px 0' } });
     const checkBtn = btn('检查更新', 'btn-sm btn-secondary', checkUpdate);
 
-    const card = div('card');
-    const head = div('', { style: { display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '16px' } });
-    head.appendChild(h('img', { src: 'assets/icon.png', style: { width: '56px', height: '56px', borderRadius: '12px' } }));
-    head.appendChild(div('', h('div', { style: { fontWeight: 600, fontSize: '18px' } }, '核核工具箱'), h('div', { class: 'set-desc' }, 'HeHe Toolbox v' + info.appVersion)));
-    head.appendChild(div('', { style: { marginLeft: 'auto' } }, checkBtn));
-    card.appendChild(head);
-    card.appendChild(window.ui.kvGrid([
+    // 顶部品牌行：图标 + 名称 + 版本号，右侧放「检查更新」
+    const head = div('about-head');
+    head.appendChild(h('img', { src: 'assets/icon.png', alt: '' }));
+    head.appendChild(div('',
+      div('about-name', '核核工具箱'),
+      div('set-desc', 'HeHe Toolbox v' + info.appVersion)));
+    // 第二个参数必须是类名字符串：div(cls, ...children) 只认字符串类名，
+    // 传 { class: 'x' } 这种对象会被 h() 静默丢掉（h 只处理 {style} 对象），
+    // 按钮就贴不到右边了。
+    head.appendChild(div('about-head-btn', checkBtn));
+    body.appendChild(head);
+
+    body.appendChild(window.ui.kvGrid([
       ['运行环境', `Electron ${info.electron} · Chromium ${info.chrome}`],
       ['当前用户', info.username + '@' + info.hostname],
       ['数据目录', info.userData]
     ]));
-    card.appendChild(updLine);
-    card.appendChild(updActions);
-    page.appendChild(card);
+    body.appendChild(updLine);
+    body.appendChild(updActions);
 
     // 清理「已经应用过」的旧安装包（刚下载、还没装的新包会被主进程按版本号豁免）
     invoke('update:cleanup').then((r) => {
