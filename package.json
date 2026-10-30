@@ -31,7 +31,8 @@
   },
   "devDependencies": {
     "electron": "^43.8.4",
-    "electron-builder": "^26.18.0"
+    "electron-builder": "^26.18.0",
+    "@electron/asar": "3.4.1"
   },
   "build": {
     "appId": "com.hehe.toolbox",

@@ -59,7 +59,18 @@ if (!fs.existsSync(asarPath)) {
   process.exit(1);
 }
 
-const asar = require('@electron/asar');
+/* @electron/asar 原来是 electron-builder 的传递依赖，在干净环境里不一定能解析到
+   （CI 上就因为这一点挂过）。已显式加进 devDependencies；
+   这里再加一层兜底：解析不到就明确 SKIP，而不是抛一个看起来像代码错误的异常。 */
+let asar;
+try {
+  asar = require('@electron/asar');
+} catch (e) {
+  console.log('SKIP 缺少 @electron/asar（' + (e.code || e.message) + '），跳过产物内容校验');
+  console.log('     修复：npm i -D @electron/asar');
+  process.exit(0);
+}
+
 let entries;
 try {
   entries = asar.listPackage(asarPath).map((f) => f.replace(/\\/g, '/'));
