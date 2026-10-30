@@ -43,9 +43,19 @@
     @keyframes pop { from { opacity: 0; transform: scale(0.975); } to { opacity: 1; transform: none; } }
     .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
     .brand img { width: 40px; height: 40px; border-radius: 10px; }
+    /* 图标极轻微呼吸：只做 scale 1 → 1.035，1.6s 一轮。
+       这段窗口只存在约 0.7 秒，幅度大了就是抽搐，小了才像「活着」。
+       transform 单独一层，不会引起布局抖动。 */
+    .brand img { animation: breathe 1.6s ease-in-out infinite; }
+    @keyframes breathe {
+      0%, 100% { transform: scale(1); }
+      50%      { transform: scale(1.035); }
+    }
     .name { font-size: 16px; font-weight: 600; letter-spacing: 0.4px; }
     .ver { font-size: 11px; color: var(--sub); margin-top: 3px; }
-    .bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+    /* 轨道高度必须显式给：内部的 i 已改成 absolute（脱离文档流），
+       否则 .bar 会被内容撑成 0 高，扫光层跟着变成 1px 不可见。 */
+    .bar { height: 6px; min-height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; position: relative; }
     .bar > i {
       display: block; height: 100%; width: 0;
       border-radius: 3px;
@@ -53,9 +63,34 @@
         color-mix(in srgb, var(--primary) 62%, var(--card)),
         var(--primary));
       transition: width 0.18s ease-out;
+      position: absolute; left: 0; top: 0; z-index: 1;
+    }
+    /* 扫光层：独立元素，铺满整条轨道，在填充段之上掠过。
+       不用 ::after 是因为 .bar 上的 overflow:hidden 会把伪元素一起裁掉，
+       而且 .bar > i 宽度在 8% 时几乎没空间给高光走。
+       这就成了标准的「不确定态」指示器 —— 解压阶段本来就报不出真实进度，
+       与其显示一个跳动的假百分比，不如让用户看到「它在持续工作」。 */
+    .bar .sweep {
+      position: absolute; inset: 0; z-index: 2; border-radius: 3px;
+      background: linear-gradient(100deg,
+        transparent 30%,
+        rgba(255, 255, 255, 0.85) 50%,
+        transparent 70%);
+      background-size: 220% 100%;
+      animation: sweep 1.1s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes sweep {
+      from { background-position: 160% 0; }
+      to   { background-position: -60% 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .bar .sweep { animation: none; opacity: 0; }
+      .brand img { animation: none; }
+      .card { animation: none; }
     }
     .row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 12px; }
-    #label { font-size: 12px; color: var(--sub); }
+    #label { font-size: 12px; color: var(--sub); transition: opacity 0.15s; }
     #pct { font-size: 12px; color: var(--primary); font-variant-numeric: tabular-nums; }
   </style>
 </head>
@@ -68,7 +103,7 @@
         <div class="ver" id="ver"></div>
       </div>
     </div>
-    <div class="bar"><i id="fill"></i></div>
+    <div class="bar"><i id="fill"></i><span class="sweep"></span></div>
     <div class="row">
       <span id="label">正在启动…</span>
       <span id="pct">0%</span>

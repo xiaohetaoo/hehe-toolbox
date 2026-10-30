@@ -32,10 +32,11 @@ icon = Image.open("assets/icon.png").convert("RGBA").resize((40, 40), Image.LANC
 img.paste(icon, (30, 32), icon)
 
 d.text((82, 36), "核核工具箱", font=f(17, True), fill=TEXT)
-# 解压阶段（NSIS BgImage 显示的这张静态图）实测约 14 秒。
-# 原文案写「正在解压运行环境…」不带时长，用户盯着不动的画面会以为程序卡死。
-# 如实写出 10–20 秒，并说明之后每次仍要解压一次，避免误判。
-d.text((82, 64), "正在解压运行环境，约需 10–20 秒…", font=f(11), fill=SUB)
+# 解压阶段（NSIS BgImage 显示的这张静态图）。
+# 实测：解压约 6 秒，双击到主界面约 9 秒（机型不同波动 ±3 秒）。
+# 原来写「解压约需几秒」差了 3~4 倍，后来改成「10–20 秒」又报得偏大 ——
+# 报小了用户以为卡死，报大了用户以为程序坏，所以按实测区间写。
+d.text((82, 64), "正在解压运行环境，约需 10 秒…", font=f(11), fill=SUB)
 
 # 进度条：BgImage 只显示静态图，画不出走动的进度，
 # 所以画成「已走了一段」的中间态，避免被误读成 0% 卡住。
@@ -44,8 +45,8 @@ d.rounded_rectangle([30, bar_y, W - 30, bar_y + bar_h], radius=3, fill=TRACK)
 d.rounded_rectangle([30, bar_y, W - 30, bar_y + bar_h], radius=3, fill=(236, 240, 250))
 d.rounded_rectangle([30, bar_y, int(W * 0.55), bar_y + bar_h], radius=3, fill=(120, 165, 255))
 
-d.text((30, 126), "这一步每次启动都要做一次", font=f(10), fill=SUB)
-d.text((30, 146), "想秒开请用 zip 免安装版", font=f(10), fill=SUB)
+d.text((30, 126), "请稍候，不要重复点击图标", font=f(10), fill=SUB)
+d.text((30, 146), "重复点击会让两个实例互相覆盖解压目录，反而更慢", font=f(9), fill=SUB)
 
 img.save("assets/splash.bmp", "BMP")
 print("saved", os.path.getsize("assets/splash.bmp"), "bytes", img.size)

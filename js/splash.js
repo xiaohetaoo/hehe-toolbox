@@ -36,11 +36,18 @@
     window.hehe.on('splash:step', function (d) {
       if (!d) return;
       if (typeof d.pct === 'number') target = Math.max(target, Math.min(99, d.pct));
-      if (d.label) label.textContent = d.label;
+      if (d.label && d.label !== label.textContent) {
+        /* 阶段文字换掉时做一次极短的交替淡入：
+           直接替换会让这 0.7 秒里唯一有信息量的东西"跳"一下，看起来像故障。
+           用 opacity 过渡而不是换元素，避免触发重排。 */
+        label.style.opacity = '0.25';
+        setTimeout(function () { label.textContent = d.label; label.style.opacity = '1'; }, 90);
+      }
     });
     window.hehe.on('splash:done', function () {
       done = true; cur = 100; target = 100; paint();
       label.textContent = '准备就绪';
+      label.style.opacity = '1';
       document.body.classList.add('out'); // 淡出，主进程随后关闭本窗口
     });
   }

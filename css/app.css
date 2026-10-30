@@ -358,6 +358,19 @@ body {
 /* 内容区 */
 .content { flex: 1; overflow-y: auto; padding: 16px 24px 20px; }
 .page { animation: fadeIn 0.2s ease; max-width: 1200px; margin: 0 auto; }
+/* 首帧入场：整个进程只播一次（见 app.js 的 firstPaintDone）。
+   之所以与上面的 fadeIn 分开：切页面的 fadeIn 每次都放、要极短；
+   而这里的入场只在「应用刚打开」时出现，可以稍慢一点、带一点位移，
+   让启动窗撤走后的第一帧有「装进来了」的实感，而不是硬切。
+   两个动画叠在同一元素上会互相覆盖，所以首帧这次用 page-enter 独占 animation。 */
+.page.page-enter { animation: pageEnter 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@keyframes pageEnter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page, .page.page-enter { animation: none; }
+}
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 /* 状态栏 */

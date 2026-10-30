@@ -459,11 +459,17 @@
     pageCleanupFns.forEach(f => { try { f(); } catch (e) { console.warn('cleanup', e); } });
     pageCleanupFns = [];
   }
+  /* 首帧入场：只在**整个进程的第一次**渲染时播放一次。
+     每次切页面都重放会显得多余（用户点了下菜单，内容自己又淡入一遍），
+     所以用模块级标记而不是列在 class 上就完事。 */
+  let firstPaintDone = false;
   function renderContent() {
     runPageCleanup();
     contentEl.innerHTML = '';
     contentEl.scrollTop = 0;
     const page = div('page');
+    if (!firstPaintDone) page.classList.add('page-enter');
+    firstPaintDone = true;
     const v = state.view;
     try {
       if (v.type === 'home') renderHome(page);
