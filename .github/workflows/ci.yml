@@ -76,6 +76,11 @@ jobs:
             if [ $RC -ne 0 ]; then
               FAILED="$C (exit $RC)"
               echo "::::: STEP FAILED: $C"
+              # 失败脚本的**完整**输出，不只是末尾 8 行。
+              # 上一轮只看 tail 没法定位原因，还得重新跑一遍加诊断。
+              echo "::::: FULL OUTPUT BEGIN"
+              echo "$OUT"
+              echo "::::: FULL OUTPUT END"
               break
             fi
           done < /tmp/steps.txt
