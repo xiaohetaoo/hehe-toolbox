@@ -32,15 +32,20 @@ icon = Image.open("assets/icon.png").convert("RGBA").resize((40, 40), Image.LANC
 img.paste(icon, (30, 32), icon)
 
 d.text((82, 36), "核核工具箱", font=f(17, True), fill=TEXT)
-d.text((82, 64), "正在解压运行环境…", font=f(11), fill=SUB)
+# 解压阶段（NSIS BgImage 显示的这张静态图）实测约 14 秒。
+# 原文案写「正在解压运行环境…」不带时长，用户盯着不动的画面会以为程序卡死。
+# 如实写出 10–20 秒，并说明之后每次仍要解压一次，避免误判。
+d.text((82, 64), "正在解压运行环境，约需 10–20 秒…", font=f(11), fill=SUB)
 
-# 进度条：解压阶段进度未知，画成一段流动的中间态（真实百分比由应用内启动窗接管）
+# 进度条：BgImage 只显示静态图，画不出走动的进度，
+# 所以画成「已走了一段」的中间态，避免被误读成 0% 卡住。
 bar_y, bar_h = 104, 6
 d.rounded_rectangle([30, bar_y, W - 30, bar_y + bar_h], radius=3, fill=TRACK)
 d.rounded_rectangle([30, bar_y, W - 30, bar_y + bar_h], radius=3, fill=(236, 240, 250))
 d.rounded_rectangle([30, bar_y, int(W * 0.55), bar_y + bar_h], radius=3, fill=(120, 165, 255))
 
-d.text((30, 126), "解压约需几秒；想更快请用 zip 免安装版", font=f(10), fill=SUB)
+d.text((30, 126), "这一步每次启动都要做一次", font=f(10), fill=SUB)
+d.text((30, 146), "想秒开请用 zip 免安装版", font=f(10), fill=SUB)
 
 img.save("assets/splash.bmp", "BMP")
 print("saved", os.path.getsize("assets/splash.bmp"), "bytes", img.size)

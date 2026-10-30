@@ -325,7 +325,11 @@ body {
 .sr-more { font-size: 12px; color: var(--text-3); padding: 8px 10px 4px; text-align: center; }
 /* 标题栏搜索在首页隐藏（首页有自己的大搜索框，两个框会让用户不知道往哪打） */
 .titlebar .search-wrap.hidden { display: none; }
-.tb-right { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
+/* margin-left:auto 让窗口按钮始终贴右边缘。
+   标题栏平时由 .search-wrap(flex:1) 把右侧推到边上，但首页会隐藏搜索框，
+   那时没有任何东西撑开中间的空隙，最小化/最大化/关闭会紧贴面包屑跑到左半边。
+   auto 外边距在有搜索框时也会正确地分配 0 —— flex:1 已经吃掉了剩余空间。 */
+.tb-right { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; margin-left: auto; }
 .tb-btn {
   width: 40px; height: 36px; display: flex; align-items: center; justify-content: center;
   border-radius: 8px; cursor: pointer; color: var(--text-2); border: none; background: transparent;

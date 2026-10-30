@@ -3,6 +3,11 @@
   const { div, icon, iconLg, toast, confirmBox, switchEl, fmtBytes, btn } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const R = window.Registry;
+  /* 取词：外壳文案统一走 i18n，工具正文保持中文。
+     用简写 T 是为了让下面几百处调用不至于被 `window.i18n.t(...)` 撑得太长。 */
+  const T = (k, v) => (window.i18n ? window.i18n.t(k, v) : k);
+  const MN = (m) => (R.modName ? R.modName(m) : (m && m.name) || '');
+  let lang = 'zh';
 
   const state = {
     favorites: [], recents: [],
@@ -130,7 +135,7 @@
     const starBtn = document.querySelector('.tool-header .th-star');
     if (starBtn && state.view.type === 'tool' && state.view.toolId === toolId) {
       const on = state.favorites.includes(toolId);
-      starBtn.replaceChildren(icon('star'), on ? '已收藏' : '收藏');
+      starBtn.replaceChildren(icon('star'), on ? T('tool.favorited') : T('tool.favorite'));
     }
     if (state.view.type === 'fav') render(); // 收藏页需刷新列表
     else renderNav();
@@ -164,7 +169,7 @@
     main.appendChild(icon(t.icon));
     main.appendChild(h('span', { class: 'sr-name', html: highlightHit(t.name, q) }));
     if (isDangerTool(t.id)) main.appendChild(h('span', { class: 'sr-danger' }, isDangerEnabled(t.id) ? '高危' : '未启用'));
-    main.appendChild(h('span', { class: 'sr-module' }, mod ? mod.name : ''));
+    main.appendChild(h('span', { class: 'sr-module' }, mod ? MN(mod) : ''));
     row.appendChild(main);
     row.appendChild(h('span', { class: 'sr-desc', title: t.desc || '' }, t.desc || ''));
     return row;
@@ -188,35 +193,36 @@
     sidebarEl = div('sidebar');
     const logo = div('logo');
     logo.appendChild(h('img', { src: 'assets/icon.png', alt: '' }));
-    logo.appendChild(h('span', { class: 'logo-name' }, '核核工具箱'));
+    logo.appendChild(h('span', { class: 'logo-name' }, T('app.name')));
     sidebarEl.appendChild(logo);
 
     const navScroll = div('nav-scroll');
-    const navHome = div('nav-item', icon('home', 'icon-lg'), h('span', null, '首页'));
+    const navHome = div('nav-item', icon('home', 'icon-lg'), h('span', null, T('nav.home')));
     navHome.dataset.nav = 'home';
     navScroll.appendChild(navHome);
-    navScroll.appendChild(div('nav-section-title', '功能模块'));
+    navScroll.appendChild(div('nav-section-title', T('nav.modules')));
     for (const m of R.MODULES) {
-      const item = div('nav-item', icon(m.icon, 'icon-lg'), h('span', null, m.name));
+      const nm = MN(m);
+      const item = div('nav-item', icon(m.icon, 'icon-lg'), h('span', null, nm));
       item.dataset.nav = 'module:' + m.id;
-      item.title = m.name;
+      item.title = nm;
       navScroll.appendChild(item);
     }
     sidebarEl.appendChild(navScroll);
 
     const bottom = div('nav-bottom');
-    const favItem = div('nav-item', icon('star', 'icon-lg'), h('span', null, '我的收藏'));
+    const favItem = div('nav-item', icon('star', 'icon-lg'), h('span', null, T('nav.favorites')));
     favItem.dataset.nav = 'fav';
-    const setCItem = div('nav-item', icon('settings', 'icon-lg'), h('span', null, '设置'));
+    const setCItem = div('nav-item', icon('settings', 'icon-lg'), h('span', null, T('nav.settings')));
     setCItem.dataset.nav = 'settings';
     // 「关于」不再是侧栏一级入口：它只是版本号、运行环境、检查更新这几行信息，
     // 单开一页占一个导航位不划算，合并进设置的「关于」分区即可。
-    const collapseBtn = div('collapse-btn', icon('chev-left'), h('span', null, '收起'));
+    const collapseBtn = div('collapse-btn', icon('chev-left'), h('span', null, T('nav.collapse')));
     collapseBtn.addEventListener('click', () => {
       state.collapsed = !state.collapsed;
       sidebarEl.classList.toggle('collapsed', state.collapsed);
       collapseBtn.innerHTML = ''; collapseBtn.appendChild(icon(state.collapsed ? 'chev-right' : 'chev-left'));
-      if (!state.collapsed) collapseBtn.appendChild(h('span', null, '收起'));
+      if (!state.collapsed) collapseBtn.appendChild(h('span', null, T('nav.collapse')));
     });
     bottom.appendChild(favItem); bottom.appendChild(setCItem); bottom.appendChild(collapseBtn);
     sidebarEl.appendChild(bottom);
@@ -238,11 +244,11 @@
     const searchWrap = div('search-wrap');
     searchWrapEl = searchWrap;
     searchWrap.appendChild(Object.assign(div('', icon('search', 'icon')), { className: 'search-icon' }));
-    searchInput = h('input', { class: 'search-input', placeholder: '搜索工具，Ctrl+K 快速聚焦…' });
+    searchInput = h('input', { class: 'search-input', placeholder: T('search.titlebar') });
     searchDrop = div('search-dropdown');
     searchWrap.appendChild(searchInput); searchWrap.appendChild(searchDrop);
     const tbRight = div('tb-right');
-    const themeBtn = h('button', { class: 'tb-btn', title: '切换深浅色' });
+    const themeBtn = h('button', { class: 'tb-btn', title: T('common.theme') });
     themeIconEl = h('span', { style: { display: 'inline-flex' } });
     themeIconEl.appendChild(icon('moon', 'icon-lg'));
     themeBtn.appendChild(themeIconEl);
@@ -250,11 +256,11 @@
       const cur = document.documentElement.dataset.theme;
       await changeTheme(cur === 'dark' ? 'light' : 'dark', { x: e.clientX, y: e.clientY });
     });
-    const minBtn = h('button', { class: 'tb-btn', title: '最小化' }, icon('minus', 'icon-lg'));
+    const minBtn = h('button', { class: 'tb-btn', title: T('common.minimize') }, icon('minus', 'icon-lg'));
     minBtn.addEventListener('click', () => invoke('win:minimize').catch(() => {}));
-    maxBtn = h('button', { class: 'tb-btn', title: '最大化' }, icon('square', 'icon-lg'));
+    maxBtn = h('button', { class: 'tb-btn', title: T('common.maximize') }, icon('square', 'icon-lg'));
     maxBtn.addEventListener('click', () => invoke('win:maximize').catch(() => {}));
-    const closeBtn = h('button', { class: 'tb-btn close', title: '关闭' }, icon('x', 'icon-lg'));
+    const closeBtn = h('button', { class: 'tb-btn close', title: T('common.close') }, icon('x', 'icon-lg'));
     closeBtn.addEventListener('click', () => invoke('win:close').catch(() => {}));
     tbRight.appendChild(themeBtn); tbRight.appendChild(minBtn); tbRight.appendChild(maxBtn); tbRight.appendChild(closeBtn);
 
@@ -266,10 +272,10 @@
     contentEl = div('content');
 
     const statusbar = div('statusbar');
-    statusText = h('span', null, isDesktop ? '就绪' : '浏览器演示模式（部分功能不可用）');
+    statusText = h('span', null, isDesktop ? T('status.ready') : T('status.browser'));
     const sbRight = div('sb-right');
     cpuEl = h('span', { class: 'sb-val' }, 'CPU --%');
-    memEl = h('span', { class: 'sb-val' }, '内存 --%');
+    memEl = h('span', { class: 'sb-val' }, (lang === 'en' ? 'MEM ' : '内存 ') + '--%');
     sbRight.appendChild(cpuEl); sbRight.appendChild(memEl);
     statusbar.appendChild(statusText); statusbar.appendChild(sbRight);
 
@@ -283,7 +289,7 @@
     on('sys:stats', (s) => {
       const cpu = s.cpu, mem = s.memPct;
       cpuEl.textContent = `CPU ${cpu.toFixed(0)}%`;
-      memEl.textContent = `内存 ${mem.toFixed(0)}%`;
+      memEl.textContent = (lang === 'en' ? 'MEM ' : '内存 ') + mem.toFixed(0) + '%';
       cpuEl.className = 'sb-val ' + (cpu >= 90 ? 'bad' : cpu >= 70 ? 'warn' : 'ok');
       memEl.className = 'sb-val ' + (mem >= 90 ? 'bad' : mem >= 80 ? 'warn' : 'ok');
     });
@@ -321,7 +327,7 @@
         searchDrop.appendChild(item);
       });
       if (results.length > shown.length) {
-        searchDrop.appendChild(div('sr-more', `另有 ${results.length - shown.length} 个结果，在首页搜索中查看`));
+        searchDrop.appendChild(div('sr-more', T('search.more', { n: results.length - shown.length })));
       }
       searchDrop.classList.add('show');
     }
@@ -401,23 +407,23 @@
   }
   function renderBreadcrumb() {
     breadcrumbEl.innerHTML = '';
-    const home = h('span', { style: { cursor: 'pointer' }, onclick: () => showView({ type: 'home' }) }, '首页');
+    const home = h('span', { style: { cursor: 'pointer' }, onclick: () => showView({ type: 'home' }) }, T('nav.home'));
     breadcrumbEl.appendChild(home);
     const v = state.view;
     const add = (text, cls, onclick) => {
       breadcrumbEl.appendChild(h('span', { class: 'bc-sep' }, '/'));
       breadcrumbEl.appendChild(h('span', { class: cls, style: onclick ? { cursor: 'pointer' } : null, onclick }, text));
     };
-    if (v.type === 'module') { const m = R.MODULES.find(x => x.id === v.moduleId); add(m ? m.name : '', 'bc-current'); }
+    if (v.type === 'module') { const m = R.MODULES.find(x => x.id === v.moduleId); add(m ? MN(m) : '', 'bc-current'); }
     else if (v.type === 'tool') {
       const t = R.get(v.toolId); const m = t && R.MODULES.find(x => x.id === t.module);
-      add(m ? m.name : '', '', () => m && showView({ type: 'module', moduleId: m.id }));
+      add(m ? MN(m) : '', '', () => m && showView({ type: 'module', moduleId: m.id }));
       add(t ? t.name : '', 'bc-current');
     }
-    else if (v.type === 'fav') add('我的收藏', 'bc-current');
-    else if (v.type === 'settings') add('设置', 'bc-current');
+    else if (v.type === 'fav') add(T('nav.favorites'), 'bc-current');
+    else if (v.type === 'settings') add(T('settings.title'), 'bc-current');
     // 兼容旧的路由值：'about' 已并入设置，面包屑跟着显示「设置 / 关于」
-    else if (v.type === 'about') { add('设置', '', () => showView({ type: 'settings' })); add('关于', 'bc-current'); }
+    else if (v.type === 'about') { add(T('settings.title'), '', () => showView({ type: 'settings' })); add(T('settings.about'), 'bc-current'); }
     else if (v.type !== 'home') add('', 'bc-current');
   }
   function renderTabs() {
@@ -472,8 +478,8 @@
       // 兜底：任一页面渲染异常都不能让内容区白屏，至少给出可读错误和返回入口
       console.error('页面渲染失败', v, e);
       page.innerHTML = '';
-      page.appendChild(div('tool-header', div('th-icon', iconLg('alert')), div('', h('h2', null, '页面加载失败'), h('div', { class: 'th-desc' }, String(e && e.message || e)))));
-      const back = btn('返回首页', 'btn-secondary', () => showView({ type: 'home' }));
+      page.appendChild(div('tool-header', div('th-icon', iconLg('alert')), div('', h('h2', null, T('tool.loadFail')), h('div', { class: 'th-desc' }, String(e && e.message || e)))));
+      const back = btn(T('tool.backHome'), 'btn-secondary', () => showView({ type: 'home' }));
       page.appendChild(div('card', div('', back)));
     }
     contentEl.appendChild(page);
@@ -515,8 +521,8 @@
      */
     const hero = div('home-hero');
     const heroTop = div('home-hero-top');
-    heroTop.appendChild(h('h1', null, '核核工具箱'));
-    heroTop.appendChild(h('p', null, (R.all ? R.all.length : 0) + ' 个工具，本地运行，不联网也能用'));
+    heroTop.appendChild(h('h1', null, T('app.name')));
+    heroTop.appendChild(h('p', null, T('app.tagline', { n: (R.all ? R.all.length : 0) })));
     hero.appendChild(heroTop);
 
     const hs = div('home-search');
@@ -524,10 +530,10 @@
     const inp = h('input', {
       class: 'hs-input',
       type: 'search',
-      placeholder: '搜索工具，如「pdf 合并」「图片压缩」「密码」…',
+      placeholder: T('search.placeholder'),
       autocomplete: 'off',
       spellcheck: 'false',
-      'aria-label': '搜索工具',
+      'aria-label': T('search.aria'),
       'aria-describedby': 'hs-hint'
     });
     hs.appendChild(h('span', { class: 'hs-icon' }, icon('search', 'icon-lg')));
@@ -562,13 +568,13 @@
         results.appendChild(div('hs-empty',
           h('span', { class: 'hs-empty-icon' }, iconLg('search')),
           div('',
-            div('hs-empty-title', '没有找到「' + q.trim() + '」相关的工具'),
-            div('hs-empty-tip', '换个说法试试，比如「压缩」「PDF」「密码」「截图」；也可以清空搜索浏览全部分类'))));
+            div('hs-empty-title', T('search.empty', { q: q.trim() })),
+            div('hs-empty-tip', T('search.emptyTip')))));
         return;
       }
       const head = div('hs-head',
-        h('span', null, current.length + ' 个结果'),
-        h('span', { class: 'hs-head-tip' }, '↑↓ 选择 · Enter 打开 · Esc 清空'));
+        h('span', null, T('search.results', { n: current.length })),
+        h('span', { class: 'hs-head-tip' }, T('search.hint')));
       results.appendChild(head);
       current.forEach((t, i) => {
         const row = searchResultRow(t, q);
@@ -611,7 +617,7 @@
     const recents = state.recents.map(id => R.get(id)).filter(Boolean);
     if (recents.length) {
       const card = div('card home-recent');
-      card.appendChild(div('card-title', icon('clock'), '最近使用'));
+      card.appendChild(div('card-title', icon('clock'), T('home.recent')));
       card.appendChild(div('recent-row', ...recents.map(t => {
         const chip = div('recent-chip', icon(t.icon), h('span', null, t.name));
         chip.addEventListener('click', () => openTool(t.id));
@@ -623,13 +629,13 @@
     // 分类卡片：保留，但改成紧凑条 —— 每行四列、只显示名称与数量，
     // 说明文字进 title，把纵向空间让给搜索。
     const sec = div('card');
-    sec.appendChild(div('card-title', icon('grid'), '按分类浏览'));
+    sec.appendChild(div('card-title', icon('grid'), T('home.categories')));
     sec.appendChild(div('home-cats', ...R.MODULES.map(m => {
       const count = R.byModule(m.id).length;
       const c = div('home-cat');
       c.title = m.desc || '';
       c.appendChild(h('span', { class: 'hc-icon' }, iconLg(m.icon)));
-      c.appendChild(h('span', { class: 'hc-name' }, m.name));
+      c.appendChild(h('span', { class: 'hc-name' }, MN(m)));
       c.appendChild(h('span', { class: 'hc-count' }, String(count)));
       c.addEventListener('click', () => showView({ type: 'module', moduleId: m.id }));
       return c;
@@ -640,25 +646,25 @@
     renderResults();
   }
   function renderFavPage(page) {
-    page.appendChild(div('tool-header', div('th-icon', iconLg('star')), div('', h('h2', null, '我的收藏'), h('div', { class: 'th-desc' }, '高频工具快速访问'), )));
+    page.appendChild(div('tool-header', div('th-icon', iconLg('star')), div('', h('h2', null, T('nav.favorites')), h('div', { class: 'th-desc' }, T('fav.desc')), )));
     const favs = state.favorites.map(id => R.get(id)).filter(Boolean);
     const card = div('card');
     if (favs.length) card.appendChild(div('tool-grid', ...favs.map(t => toolCard(t))));
-    else card.appendChild(div('empty-tip', '还没有收藏工具，在工具页面点击 ★ 收藏'));
+    else card.appendChild(div('empty-tip', T('fav.empty')));
     page.appendChild(card);
   }
   function renderModulePage(page, moduleId) {
     const m = R.MODULES.find(x => x.id === moduleId);
     if (!m) return;
     page.appendChild(div('tool-header', div('th-icon', iconLg(m.icon)),
-      div('', h('h2', null, m.name), h('div', { class: 'th-desc' }, m.desc))));
+      div('', h('h2', null, MN(m)), h('div', { class: 'th-desc' }, m.desc))));
     const card = div('card');
     card.appendChild(div('tool-grid', ...R.byModule(moduleId).map(t => toolCard(t))));
     page.appendChild(card);
   }
   function renderToolPage(page, toolId) {
     const t = R.get(toolId);
-    if (!t) { page.appendChild(div('empty-tip', '工具不存在')); return; }
+    if (!t) { page.appendChild(div('empty-tip', T('tool.notFound'))); return; }
     const head = div('tool-header');
     head.appendChild(div('th-icon', iconLg(t.icon)));
     const info = div('');
@@ -666,7 +672,7 @@
     info.appendChild(h('div', { class: 'th-desc' }, t.desc || ''));
     head.appendChild(info);
     const starred = state.favorites.includes(toolId);
-    const starBtn = btn(starred ? '已收藏' : '收藏', 'btn-secondary btn-sm th-star', () => toggleFavorite(toolId), 'star');
+    const starBtn = btn(starred ? T('tool.favorited') : T('tool.favorite'), 'btn-secondary btn-sm th-star', () => toggleFavorite(toolId), 'star');
     head.appendChild(starBtn);
     page.appendChild(head);
     // 高危工具未启用时的处理。
@@ -687,7 +693,7 @@
       t.render(page, { App: window.App, ui: window.ui, api: window.api });
     } catch (e) {
       console.error('工具渲染失败', toolId, e);
-      page.appendChild(window.ui.placeholder('alert', '工具加载失败', e.message));
+      page.appendChild(window.ui.placeholder('alert', T('tool.renderFail'), e.message));
     }
   }
   // 高危工具未启用时的占位卡
@@ -724,16 +730,16 @@
   // 用户刚点的开关所在面板直接被换掉（连点多项就得每次重新点回分区）。
   let settingsSection = 'general';
   function renderSettings(page) {
-    page.appendChild(div('tool-header', div('th-icon', iconLg('settings')), div('', h('h2', null, '设置'), h('div', { class: 'th-desc' }, '个性化你的核核工具箱'))));
+    page.appendChild(div('tool-header', div('th-icon', iconLg('settings')), div('', h('h2', null, T('settings.title')), h('div', { class: 'th-desc' }, T('settings.subtitle')))));
     const wrap = div('settings-wrap');
     const nav = div('settings-nav');
     const body = div('settings-body');
     const sections = [
-      { id: 'general', name: '通用', icon: 'settings' },
-      { id: 'appearance', name: '外观', icon: 'sun' },
-      { id: 'danger', name: '高危功能', icon: 'alert' },
-      { id: 'data', name: '数据与隐私', icon: 'shield' },
-      { id: 'about', name: '关于', icon: 'info' }
+      { id: 'general', name: T('settings.general'), icon: 'settings' },
+      { id: 'appearance', name: T('settings.appearance'), icon: 'sun' },
+      { id: 'danger', name: T('settings.danger'), icon: 'alert' },
+      { id: 'data', name: T('settings.data'), icon: 'shield' },
+      { id: 'about', name: T('settings.about'), icon: 'info' }
     ];
     let current = sections.some(s => s.id === settingsSection) ? settingsSection : 'general';
     function drawBody() {
@@ -757,30 +763,59 @@
     drawBody();
   }
   async function drawGeneral(body, token) {
-    const row1 = div('set-row', div('', div('set-label', '开机自动启动'), div('set-desc', '登录 Windows 后自动运行核核工具箱')));
+    /* ---- 语言选择放在最上面：它是「整个界面长什么样」的开关，
+         比开机自启、托盘这些具体行为更高一层，用户找它时预期在第一屏 ---- */
+    const langRow = div('set-row', div('',
+      div('set-label', T('settings.language')),
+      div('set-desc', T('settings.languageDesc'))));
+    const langSel = h('select', { class: 'select input-sm' },
+      h('option', { value: 'zh' }, '简体中文'),
+      h('option', { value: 'en' }, 'English'));
+    let curLang = 'zh';
+    try { curLang = (await invoke('store:get', 'settings.lang', null)) || (window.i18n ? window.i18n.detect() : 'zh'); }
+    catch (e) { curLang = 'zh'; }
+    langSel.value = window.i18n && window.i18n.normalize(curLang) ? curLang : 'zh';
+    langSel.addEventListener('change', async () => {
+      const v = langSel.value;
+      try { await invoke('store:set', 'settings.lang', v); } catch (e) {}
+      applyLang(v);
+      toast(v === 'en' ? 'Language switched to English' : '界面语言已切换为简体中文', 'success', 1600);
+      /* applyLangLabels() 会整壳重建（含整个设置页），
+         所以这里**不能**再调 drawBody() —— drawBody 是 renderSettings 内部的
+         局部函数，在 drawGeneral 作用域里根本不存在，调用它会抛
+         ReferenceError（异常在 async 事件回调里，会被吞成一条控制台报错）。
+         重建后再指定回到「通用」分区，保证用户停在原来的位置。 */
+      settingsSection = 'general';
+      applyLangLabels();
+    });
+    langRow.appendChild(div('set-control', langSel));
+    if (token !== undefined && token !== drawToken) return;
+    body.appendChild(langRow);
+
+    const row1 = div('set-row', div('', div('set-label', T('settings.autostart')), div('set-desc', T('settings.autostartDesc'))));
     try {
       const enabled = await invoke('app:get-autostart');
-      const sw = switchEl(enabled, async (v) => { try { await invoke('app:set-autostart', v); toast(v ? '已开启开机自启' : '已关闭开机自启', 'success'); } catch (e) { toast(e.message, 'error'); sw.set(!v); } });
+      const sw = switchEl(enabled, async (v) => { try { await invoke('app:set-autostart', v); toast(v ? (lang === 'en' ? 'Launch at startup enabled' : '已开启开机自启') : (lang === 'en' ? 'Launch at startup disabled' : '已关闭开机自启'), 'success'); } catch (e) { toast(e.message, 'error'); sw.set(!v); } });
       row1.appendChild(div('set-control', sw));
-    } catch (e) { row1.appendChild(div('set-control', h('span', { class: 'field-hint' }, '浏览器模式不可用'))); }
+    } catch (e) { row1.appendChild(div('set-control', h('span', { class: 'field-hint' }, T('settings.browserNA')))); }
 
     // 后两项的 await 也要各自兜底：任一 IPC 拒绝都会让整个「通用」面板空白，
     // 而且是以 unhandled rejection 形式静默失败。失败时降级成一行提示即可。
     let closeToTray = true;
     try { closeToTray = await invoke('store:get', 'settings.closeToTray', true); } catch (e) { console.error('读取托盘设置失败', e); }
-    const row2 = div('set-row', div('', div('set-label', '关闭时最小化到托盘'), div('set-desc', '点击关闭按钮时隐藏窗口而不是退出')));
+    const row2 = div('set-row', div('', div('set-label', T('settings.tray')), div('set-desc', T('settings.trayDesc'))));
     row2.appendChild(div('set-control', switchEl(closeToTray, (v) => invoke('store:set', 'settings.closeToTray', v).catch((e) => toast(e.message, 'error')))));
 
-    const row3 = div('set-row', div('', div('set-label', '全局唤起热键'), div('set-desc', '任意界面一键调出主窗口')));
+    const row3 = div('set-row', div('', div('set-label', T('settings.hotkey')), div('set-desc', T('settings.hotkeyDesc'))));
     let hotkey = 'Alt+Shift+H';
     try { hotkey = await invoke('store:get', 'settings.hotkey', 'Alt+Shift+H'); } catch (e) { console.error('读取热键设置失败', e); }
     const hkInput = h('input', { class: 'input input-sm', value: hotkey, style: { width: '140px', textAlign: 'center' } });
-    const hkBtn = btn('应用', 'btn-sm btn-primary', async () => {
+    const hkBtn = btn(T('settings.apply'), 'btn-sm btn-primary', async () => {
       const v = hkInput.value.trim();
       try {
         const ok = await invoke('app:set-hotkey', v);
-        if (ok) { await invoke('store:set', 'settings.hotkey', v); toast('热键已生效', 'success'); }
-        else toast('热键注册失败，可能被其他程序占用', 'error');
+        if (ok) { await invoke('store:set', 'settings.hotkey', v); toast(T('settings.hotkeyOk'), 'success'); }
+        else toast(T('settings.hotkeyFail'), 'error');
       } catch (e) { toast(e.message, 'error'); }
     });
     row3.appendChild(div('set-control', hkInput, ' ', hkBtn));
@@ -855,7 +890,7 @@
     for (const m of MODES) {
       const card = div('theme-card');
       card.appendChild(preview(m));
-      card.appendChild(div('tc-name2', m.name + (m.id === 'system' ? '（自动切换）' : '')));
+      card.appendChild(div('tc-name2', MN(m) + (m.id === 'system' ? '（自动切换）' : '')));
       card.addEventListener('click', async (e) => {
         const rect = card.getBoundingClientRect();
         await changeTheme(m.id, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
@@ -1087,9 +1122,34 @@
   /* ============ 状态 ============ */
   function setStatus(text) { statusText.textContent = text; }
 
+  /* ============ 界面语言 ============
+   * 语言只影响外壳（导航/首页/设置/状态栏等）。工具页正文保持中文，
+   * 这一点在设置页有明确说明，不让用户以为「切了英文但工具还是中文」是 bug。
+   *
+   * 切换后必须整壳重建：导航项、搜索框 placeholder、状态栏、面包屑
+   * 都是在 buildShell / render 时一次性写入 DOM 的，不重建就会有旧语言残留。
+   * rebuild 而不是局部改，是因为这类文案有几十处，遗漏一两处很难看出来。
+   */
+  function applyLang(v) {
+    lang = (window.i18n && window.i18n.setLang(v)) || 'zh';
+    return lang;
+  }
+  function applyLangLabels() {
+    // 重建外壳：保留当前视图与标签页状态
+    const keepView = state.view;
+    const keepTabs = state.tabs.slice();
+    document.body.innerHTML = '';
+    buildShell();
+    applyTheme();
+    state.view = keepView;
+    state.tabs = keepTabs;
+    render();
+  }
+
   /* ============ 启动 ============ */
   window.App = {
     openTool, showView, toggleFavorite, setStatus, state, refresh, onCleanup,
+    applyLang,
     /* 跳到设置页的指定分区（如 'danger' 高危功能）。
      * 供其他工具在「被高危门禁拦住」时给出可点的引导，
      * 而不只是弹一句 toast 让用户自己去猜开关在哪。 */
@@ -1099,6 +1159,10 @@
     }
   };
   document.addEventListener('DOMContentLoaded', async () => {
+    // 语言要在 buildShell 之前定好，否则第一帧会用默认中文再整壳重绘，闪一下。
+    let savedLang = null;
+    try { savedLang = await invoke('store:get', 'settings.lang', null); } catch (e) {}
+    applyLang(savedLang || (window.i18n ? window.i18n.detect() : 'zh'));
     buildShell();
     applyTheme();
     await loadUserData();

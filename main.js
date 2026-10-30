@@ -390,23 +390,34 @@ function createSplash() {
   }
 }
 
-// 主窗显示：先让启动窗淡出，再显示主窗，避免中间出现一帧空白
+// 主窗显示：先让主窗在启动窗**下面**画好，再让启动窗淡出。
+/* 【为什么不能「先淡出、等 260ms、再显示主窗」】
+ * 原来这里发 splash:done 之后 setTimeout(reveal, 260)，而 reveal 里才 win.show()。
+ * 于是那 260ms 里启动窗正在淡出，主窗却还没显示 —— 用户看到的就是
+ * 「弹窗没了，中间空一下，主界面才冒出来」。实测用户明确反馈了这个空档。
+ *
+ * 正确顺序是反过来的：
+ * 1) 先 win.show()：主窗渲染层在 ready-to-show 时就已经画好了，
+ *    它在启动窗下面，不会打断淡出观感；
+ * 2) 再发 splash:done 让启动窗淡出（启动窗是 alwaysOnTop，仍盖在上面）；
+ * 3) 淡出结束销毁启动窗 —— 此时它底下已经是完整的主界面。
+ * 这样启动窗消失的那一帧，主界面必然已经就位，不存在空白。
+ */
 function showWindowAfterSplash() {
   if (mainShown) return;
   mainShown = true;
-  const reveal = () => {
-    if (!win || win.isDestroyed()) return;
-    try { win.show(); } catch (e) {}
-    bootMark('window-shown');
-    destroySplash();
-  };
-  // 启动窗根本没显示过（启动太快）→ 直接显示主窗，不做任何淡出等待
-  if (!splashVisible || !splashWin || splashWin.isDestroyed()) { reveal(); return; }
+  if (!win || win.isDestroyed()) { destroySplash(); return; }
+
+  try { win.show(); } catch (e) {}
+  bootMark('window-shown');
+
+  // 启动窗根本没显示过（启动太快）→ 没有淡出动画要等，直接销毁
+  if (!splashVisible || !splashWin || splashWin.isDestroyed()) { destroySplash(); return; }
+
   splashSend('splash:done', {});
-  // CSS transition 要到下一帧才开始计时，0.18s 的淡出实际完成时间更晚；
-  // 原来用 180ms 会在动画还差最后一点时 destroy()，视觉上是一次硬消失。
-  // 留出启动窗隐藏的 await 时间，取 260ms 与 transition 时长匹配。
-  setTimeout(reveal, 260);
+  // splash.html 的淡出是 0.18s（transition），等它彻底透明再销毁；
+  // 主窗此时已经在下面画好，所以这一帧切换是无缝的。
+  setTimeout(destroySplash, 200);
 }
 
 function createWindow() {
@@ -4444,6 +4455,20 @@ if (process.env.HEHE_SMOKE) {
           if (!window.Registry.ORDER[m.id]) orderMismatch.push(m.id + ': 没有 ORDER 分组');
         }
         orderMismatch.forEach(x => styleErrs.push('卡片顺序 ' + x));
+        // 标题栏窗口按钮必须贴右边缘（各视图都要）。
+        // 首页会隐藏 .search-wrap，原来靠它的 flex:1 撑开右侧；一旦它消失，
+        // 最小化/最大化/关闭就紧贴面包屑跑到左半边。这类「只在一个视图下坏」
+        // 的布局问题必须逐视图断言，只看首页或只看工具页都会漏。
+        for (const view of [{ type: 'home' }, { type: 'module', moduleId: 'file' }, { type: 'settings' }]) {
+          window.App.showView(view);
+          await tick();
+          const tb = document.querySelector('.tb-right');
+          if (!tb) { styleErrs.push('标题栏按钮容器缺失 @' + view.type); continue; }
+          const r = tb.getBoundingClientRect();
+          const gap = window.innerWidth - r.right;
+          if (gap > 24) styleErrs.push('标题栏按钮未贴右 @' + view.type + '：距右边缘 ' + Math.round(gap) + 'px');
+          if (r.width === 0) styleErrs.push('标题栏按钮不可见 @' + view.type);
+        }
         window.App.showView({ type: 'settings' });
         await tick();
         expect('.settings-wrap', 'display', 'flex', '设置布局');
