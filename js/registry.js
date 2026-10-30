@@ -24,7 +24,128 @@
     if (tools.find(t => t.id === tool.id)) { console.warn('重复工具 id:', tool.id); return; }
     tools.push(tool);
   }
-  const byModule = (mid) => tools.filter(t => t.module === mid);
+  /* ============ 卡片展示顺序 ============
+   * 排列遵守两条原则，它们常常冲突，这里用「先分组、组内再排序」来折中：
+   *
+   * 1) 常用的在前。打开工具箱的绝大多数场景是「临时用一下某个功能」，
+   *    最高频的那几个应该第一行就能点到，而不是滚一遍列表去找。
+   * 2) 相似的工具挨着。压缩/解压、端口三件套、PDF 系列这类，
+   *    用户通常是「先找到一个，再看旁边还有什么」，相邻能少来回扫视。
+   *
+   * 分组之间按「该组最常用那个的常用度」排，组内按常用度排。
+   * 所以同一组里冷门的会排在热门组之后——这是刻意的取舍：
+   * 「同一件事的几个做法放在一起」比「所有工具严格按热度排」更好用。
+   *
+   * 这张表是唯一事实来源。增删工具时忘了登记**不会**导致卡片消失：
+   * 未登记的 id 会按注册顺序追加到末尾，并被打包冒烟与
+   * scripts/test-tool-order.js 报出来（否则新工具会永远沉在列表最底下没人发现）。
+   */
+  const ORDER = {
+    system: [
+      // 进程与资源：最常开，替代任务管理器
+      'process-manager', 'monitor', 'hw-info',
+      // 空间与清理：三件套
+      'disk-analyze', 'junk-clean', 'empty-dir-clean',
+      // 系统操作：断电类动作
+      'quick-ops', 'scheduler', 'services-power',
+      // 右键菜单：两个同类
+      'ctxmenu-manage', 'win-classic-menu',
+      // 剩下的单项
+      'autostart', 'window-manager'
+    ],
+    file: [
+      // 压缩、搜索、改名：这三类是全盘操作里最高频的
+      'zip-tool', 'archive-7z',
+      'global-search', 'content-search',
+      'batch-rename', 'batch-ext',
+      // 查重与校验：判断「这是不是同一个文件」
+      'dedupe', 'hash-tool',
+      // 大文件与敏感文件
+      'file-split', 'file-crypt'
+    ],
+    text: [
+      // 编码五连：日常最常打交道的五种
+      'base64', 'url-codec', 'unicode-convert', 'html-entity', 'hex-ascii',
+      // 数值与时间：开发者高频
+      'radix', 'timestamp',
+      // 文本处理三连
+      'text-stats', 'text-batch', 'case-convert',
+      // 语言与表格
+      'zh-convert', 'csv-json',
+      // 长驻型工具
+      'local-notes', 'tts'
+    ],
+    net: [
+      // 网络体检：先看状态，再测通不通
+      'net-info', 'ping-test', 'tracert',
+      // 端口三连：占用 → 连通 → 扫描
+      'port-occupy', 'port-test', 'port-scan',
+      // 传输
+      'downloader', 'speedtest',
+      // 配置类
+      'hosts-edit', 'wifi-password'
+    ],
+    dev: [
+      // 开发调试最常打的两样
+      'json-format', 'regex-test',
+      // 计算：表达式 → 单位
+      'calculator', 'unit-convert',
+      // 请求与本地服务
+      'http-client', 'static-server',
+      // 颜色：换算 → 取样
+      'color-convert', 'color-picker',
+      // 屏幕与码
+      'coords-picker', 'qr-generate', 'qr-scan', 'random-gen'
+    ],
+    media: [
+      // 截图抓取：标注 + 录屏（最常用的两个动作）
+      'snip-tool', 'screen-rec',
+      // 图片瘦身：压缩 + 压到目标体积
+      'img-compress', 'target-size',
+      // 文字识别：单张 → 批量
+      'screenshot-ocr', 'batch-ocr',
+      // 批量处理与水印
+      'img-batch', 'img-watermark',
+      // 拼接、查重、参数查看
+      'img-stitch', 'img-dedup', 'exif-view',
+      // 音视频：转换 → 压制 → 截帧 → 音频剪辑 → 参数
+      'av-convert', 'video-press', 'video-frames', 'audio-cut', 'av-info',
+      // 引擎配置放最后：装一次就不再动
+      'ffmpeg-setup'
+    ],
+    office: [
+      // PDF 四连：合并拆分 → 转图 → 图转 → Office 互转
+      'pdf-tools', 'pdf2img', 'img2pdf', 'pdf-office-convert',
+      // 预览：文档 → Markdown
+      'doc-preview', 'markdown-preview',
+      // 对比与翻译
+      'diff-tool', 'translate'
+    ],
+    security: [
+      // 生成 → 检测，同一件事的两个角度
+      'password-gen', 'password-strength',
+      'clipboard-history'
+    ],
+    launch: ['quick-launch', 'command-collection'],
+    life: [
+      // 计时与待办同属「专注」
+      'pomodoro', 'notes',
+      'calendar-lunar', 'screen-ruler'
+    ]
+  };
+
+  /* 排序键：登记过的按表内位置，未登记的排到最后（保持注册顺序）。 */
+  function rank(mid, id) {
+    const list = ORDER[mid];
+    if (!list) return Number.MAX_SAFE_INTEGER - 1;
+    const i = list.indexOf(id);
+    return i === -1 ? Number.MAX_SAFE_INTEGER - 1 : i;
+  }
+  const byModule = (mid) => tools
+    .filter(t => t.module === mid)
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => (rank(mid, a.t.id) - rank(mid, b.t.id)) || (a.i - b.i))
+    .map(x => x.t);
   const get = (id) => tools.find(t => t.id === id);
   /* 搜索：首页的主入口，因此按「用户真的会怎么打字」来设计。
    *
@@ -76,5 +197,5 @@
       .map(s => s.tool);
   }
 
-  window.Registry = { MODULES, register, byModule, get, all: tools, search };
+  window.Registry = { MODULES, register, byModule, get, all: tools, search, ORDER };
 })();

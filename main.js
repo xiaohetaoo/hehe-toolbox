@@ -4426,6 +4426,24 @@ if (process.env.HEHE_SMOKE) {
         expect('.tool-grid', 'display', 'grid', '工具网格');
         const icon = document.querySelector('.tool-card .tc-icon');
         if (icon && getComputedStyle(icon).width !== '38px') styleErrs.push('卡片图标尺寸异常: ' + getComputedStyle(icon).width);
+        // 卡片顺序：模块页渲染出来的顺序必须与 Registry.ORDER 一致。
+        // ORDER 是手写的，写成「相邻同类」的意图如果被改坏，界面上看不出来 ——
+        // 卡片还是那些卡片，只是顺序乱了。这里逐模块比对渲染顺序与表内顺序。
+        const orderMismatch = [];
+        for (const m of window.Registry.MODULES) {
+          window.App.showView({ type: 'module', moduleId: m.id });
+          await tick();
+          const rendered = [...document.querySelectorAll('.tool-card .tc-name')].map(e => e.textContent.trim());
+          const want = window.Registry.byModule(m.id).map(t => t.name);
+          if (rendered.length !== want.length) {
+            orderMismatch.push(m.id + ': 卡片数 ' + rendered.length + ' ≠ ' + want.length);
+          } else if (rendered.join('|') !== want.join('|')) {
+            orderMismatch.push(m.id + ': 渲染顺序与 ORDER 不一致');
+          }
+          // 未登记的工具会排到末尾（靠 MAX_SAFE_INTEGER 兜底），这属于设计疏漏
+          if (!window.Registry.ORDER[m.id]) orderMismatch.push(m.id + ': 没有 ORDER 分组');
+        }
+        orderMismatch.forEach(x => styleErrs.push('卡片顺序 ' + x));
         window.App.showView({ type: 'settings' });
         await tick();
         expect('.settings-wrap', 'display', 'flex', '设置布局');
