@@ -1,0 +1,79 @@
+name: Normalize release titles
+
+# 只改 Release 标题，不重新构建、不重新上传。
+#
+# 用途：softprops/action-gh-release 的 name 输入实测会被忽略，
+# 发布后标题会变成去掉 v 前缀的 tag（v0.2.1 → "0.2.1"，v0.2.6 → "0.2.6"）。
+# v0.2.6 那次更糟：用 curl -d 改写时 Content-Type 是表单编码，
+# GitHub 返回 200 但标题不变，于是整个 Release workflow 判失败挂红，
+# 而包其实发布成功了——标题就一直错着。
+#
+# 手动跑这个 workflow 就能把历史遗留的标题一次性归并成「核核工具箱 vX.Y.Z」。
+# 脚本是幂等的：已经正确的不会发 PATCH，重复跑没有副作用。
+#
+# 也可以只修一个 tag：Actions 页面 Run workflow 时填输入框 tag=v0.2.6。
+
+# 触发方式：
+#   1) 改本文件或 scripts/fix-release-title.js 并推送到 main —— 自动归并全部标题；
+#   2) Actions 页面 Run workflow，可选填 tag 只修一个。
+# 脚本幂等：已正确的不会发 PATCH，重复触发没有副作用。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-release-title.yml'
+      - 'scripts/fix-release-title.js'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '只修这一个 tag（留空则归并全部 Release）'
+        required: false
+        default: ''
+
+jobs:
+  normalize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalize
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -e
+          if [ -n "$INPUT_TAG" ]; then
+            echo "只修 $INPUT_TAG"
+            node scripts/fix-release-title.js "$INPUT_TAG"
+          else
+            echo "归并全部 Release 标题"
+            node scripts/fix-release-title.js --all
+          fi
+
+      # 把最终结果打出来，便于在公开的 Actions 页面确认（日志需登录，
+      # 所以这里额外写一行 summary）
+      - name: Report
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100" \
+            | node -e "
+              let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+                const j=JSON.parse(s);
+                console.log('| tag | title | assets |');
+                console.log('| --- | --- | --- |');
+                (j||[]).forEach(r=>console.log('| '+r.tag_name+' | '+JSON.stringify(r.name)+' | '+r.assets.length+' |'));
+              })" | tee /tmp/report.md
+          {
+            echo '### Release 标题现状'
+            cat /tmp/report.md
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -99,12 +99,16 @@ async function apiCall(repo, token, method, urlPath, body) {
 }
 
 async function main() {
-  const tag = resolveTag();
+  const argvAll = process.argv.slice(2).includes('--all');
   const token = resolveToken();
   const repo = resolveRepo();
 
-  if (!tag) fail('没有指定 tag（位置参数 / TAG 环境变量 / .github/release-title-target 都为空）');
   if (!token) fail('缺少 GH_TOKEN / GITHUB_TOKEN');
+
+  if (argvAll) return await normalizeAll(repo, token);
+
+  const tag = resolveTag();
+  if (!tag) fail('没有指定 tag（位置参数 / TAG 环境变量 / .github/release-title-target 都为空）');
   if (!/^v?\d+\.\d+\.\d+$/.test(tag)) fail(`tag 格式可疑：'${tag}'`);
 
   const want = WANT_PREFIX + (tag.startsWith('v') ? tag : 'v' + tag);
@@ -149,6 +153,59 @@ async function main() {
 
   fail(`标题未统一，实际 '${got}'，期望 '${want}'`);
 }
+
+/* --all：把仓库里所有 Release 的标题都归并成「核核工具箱 vX.Y.Z」。
+ * 用途：历史上漏改的标题（v0.2.6 就是），补一次即可。
+ * 幂等的条目不会发 PATCH，重复跑没有副作用。 */
+async function normalizeAll(repo, token) {
+  log(`repo=${repo} 模式=--all（归并全部 Release 标题）`);
+  const failed = [];
+  let checked = 0, fixed = 0;
+
+  for (let page = 1; page <= 10; page++) {
+    const list = await apiCall(repo, token, 'GET', `/releases?per_page=100&page=${page}`);
+    if (!list.ok) fail(`列出 Release 失败：HTTP ${list.status} ${list.text.slice(0, 300)}`);
+    const items = Array.isArray(list.json) ? list.json : [];
+    if (items.length === 0) break;
+
+    for (const rel of items) {
+      checked++;
+      const tag = rel.tag_name || '';
+      if (!/^v\d+\.\d+\.\d+$/.test(tag)) {
+        log(`- ${tag}: 非 vX.Y.Z 形式的 tag，跳过`);
+        continue;
+      }
+      const want = WANT_PREFIX + tag;
+      const got = rel.name || '';
+      if (got === want) {
+        log(`- ${tag}: 标题已正确`);
+        continue;
+      }
+      log(`- ${tag}: '${got}' -> '${want}'`);
+      const patched = await apiCall(repo, token, 'PATCH', `/releases/${rel.id}`, { name: want });
+      if (!patched.ok) {
+        log(`    改写失败：HTTP ${patched.status} ${patched.text.slice(0, 200)}`);
+        failed.push(tag);
+        continue;
+      }
+      const back = await apiCall(repo, token, 'GET', `/releases/${rel.id}`);
+      const now = (back.ok && back.json && back.json.name) || '';
+      if (now === want) {
+        log('    OK 回读确认');
+        fixed++;
+      } else {
+        log(`    回读仍不对：'${now}'`);
+        failed.push(tag);
+      }
+    }
+    if (items.length < 100) break;
+  }
+
+  log(`共检查 ${checked} 个 Release，修正 ${fixed} 个，失败 ${failed.length} 个`);
+  if (failed.length) fail(`以下 Release 标题仍未统一：${failed.join(', ')}`);
+  return 0;
+}
+
 main()
   .then((code) => { process.exitCode = code || 0; })
   .catch((e) => {

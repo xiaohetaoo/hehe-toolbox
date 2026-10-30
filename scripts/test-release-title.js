@@ -30,8 +30,10 @@ function t(name, fn) {
 
 /* 假 GitHub：记录每次请求；PATCH 只在 Content-Type 是 JSON 时真正改标题，
  * 否则模拟真实 GitHub 的行为——200 OK 但 name 保持不变。 */
-function startFakeGithub({ initialName, honorFormBody = false }) {
+function startFakeGithub({ initialName, honorFormBody = false, releases = null }) {
   const state = { name: initialName, requests: [], releaseId: 42 };
+  // --all 模式用的列表；默认给两个 Release，其中一个标题是错的
+  if (releases) state.releases = releases.map((r) => ({ ...r }));
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => { body += d; });
@@ -44,8 +46,20 @@ function startFakeGithub({ initialName, honorFormBody = false }) {
         res.end(JSON.stringify(obj));
       };
 
+      // 列表：/releases?per_page=100&page=1
+      if (req.method === 'GET' && /\/releases(\?|$)/.test(req.url) && state.releases) {
+        return send(200, state.releases);
+      }
+
       if (req.method === 'GET') {
         if (!req.url.includes('/releases/')) return send(404, { message: 'Not Found' });
+        // 单个：/releases/42 或 /releases/tags/vX
+        const byId = /\/releases\/(\d+)$/.exec(req.url);
+        if (byId && state.releases) {
+          const hit = state.releases.find((r) => String(r.id) === byId[1]);
+          if (hit) return send(200, hit);
+          return send(404, { message: 'Not Found' });
+        }
         return send(200, {
           id: state.releaseId, tag_name: TAG, name: state.name,
           draft: false, html_url: 'http://example.invalid/release',
@@ -53,13 +67,24 @@ function startFakeGithub({ initialName, honorFormBody = false }) {
       }
 
       if (req.method === 'PATCH' && /\/releases\/\d+$/.test(req.url)) {
+        const id = Number(/\/releases\/(\d+)$/.exec(req.url)[1]);
         const isJson = ct.includes('application/json');
+        let parsed = null;
         if (isJson || honorFormBody) {
-          let parsed = null;
           try { parsed = JSON.parse(body); } catch { parsed = null; }
-          if (parsed && typeof parsed.name === 'string') state.name = parsed.name;
         }
-        return send(200, { id: state.releaseId, tag_name: TAG, name: state.name });
+        if (parsed && typeof parsed.name === 'string') {
+          if (state.releases) {
+            const hit = state.releases.find((r) => r.id === id);
+            if (hit) hit.name = parsed.name;
+          }
+          if (id === state.releaseId) state.name = parsed.name;
+        }
+        if (state.releases) {
+          const hit = state.releases.find((r) => r.id === id);
+          if (hit) return send(200, hit);
+        }
+        return send(200, { id, tag_name: TAG, name: state.name });
       }
 
       send(404, { message: 'Not Found' });
@@ -72,9 +97,10 @@ function startFakeGithub({ initialName, honorFormBody = false }) {
   });
 }
 
-function runScript(env) {
+function runScript(env, args) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [SCRIPT, TAG], {
+    const argv = [SCRIPT, ...(args || [TAG])];
+    const child = spawn(process.execPath, argv, {
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -184,6 +210,42 @@ function runScript(env) {
     });
     t('缺 GITHUB_REPOSITORY 时非 0 退出', () => {
       assert.notStrictEqual(r2.code, 0);
+    });
+  }
+
+  /* ---- 用例 5：--all 模式把历史遗留的错误标题一次性归并 ---- */
+  {
+    const fake = await startFakeGithub({
+      initialName: '0.2.6',
+      releases: [
+        { id: 1, tag_name: 'v0.2.6', name: '0.2.6', assets: [{ name: 'a' }] },
+        { id: 2, tag_name: 'v0.2.1', name: '核核工具箱 v0.2.1', assets: [{ name: 'b' }] },
+        { id: 3, tag_name: 'nightly', name: 'nightly', assets: [] },
+      ],
+    });
+    const r = await runScript({
+      HEHE_GH_API_BASE: `http://127.0.0.1:${fake.port}`,
+      GITHUB_REPOSITORY: 'owner/repo',
+      GH_TOKEN: 'fake-token',
+    }, ['--all']);
+    fake.server.close();
+
+    t('--all 修正了错误标题', () => {
+      const r26 = fake.state.releases.find((x) => x.tag_name === 'v0.2.6');
+      assert.strictEqual(r26.name, '核核工具箱 v0.2.6');
+    });
+    t('--all 不动本来就对的标题（无多余 PATCH）', () => {
+      const patchesToV21 = fake.state.requests.filter(
+        (q) => q.method === 'PATCH' && /\/releases\/2$/.test(q.url));
+      assert.strictEqual(patchesToV21.length, 0, 'v0.2.1 已经正确，不该被改');
+    });
+    t('--all 跳过非 vX.Y.Z 形式的 tag', () => {
+      const patchesToNightly = fake.state.requests.filter(
+        (q) => q.method === 'PATCH' && /\/releases\/3$/.test(q.url));
+      assert.strictEqual(patchesToNightly.length, 0, 'nightly 不该被改');
+    });
+    t('--all 成功后退出码为 0', () => {
+      assert.strictEqual(r.code, 0, `退出码 ${r.code}\n${r.stdout}\n${r.stderr}`);
     });
   }
 
