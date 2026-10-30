@@ -97,10 +97,15 @@ jobs:
             process.exit(bad?1:0);
           " "$VER"
 
-      - name: Create draft release with assets
+      # 直接发布（不是草稿）：草稿需要凭据才能点「Publish」，
+      # 而本机 CI 之外没有 GitHub 凭据，草稿会一直停在那里、资产对用户不可见。
+      # 标题统一成「核核工具箱 vX.Y.Z」，与既有 6 个 Release 保持一致
+      # （原来会取 tag 注解的正文当标题，一长串说明挤在标题栏里）。
+      - name: Publish release with assets
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: false
+          name: 核核工具箱 ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             dist/hehe-toolbox-Portable-*.exe
