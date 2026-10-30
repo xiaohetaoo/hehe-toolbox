@@ -166,7 +166,14 @@ const ROOT = ${JSON.stringify(ROOT)};
 const PROBE = ${JSON.stringify(PROBE)};
 
 app.whenReady().then(async () => {
-  ipcMain.handle('store:get', (e, k, d) => ({ ok: true, data: d }));
+  /* 语言必须显式钉成中文：本测试全程用中文字串搜索（「pdf」「压缩」「办公」），
+     而应用启动时会按 navigator.language 猜语言。CI 的 windows-latest 是 en-US，
+     不钉死就会整界面变英文、搜索结果全空 —— 但这看起来像「搜索坏了」，
+     实际只是语言不同。本地是中文环境，所以一直没暴露。 */
+  ipcMain.handle('store:get', (e, k, d) => {
+    if (k === 'settings.lang') return { ok: true, data: 'zh' };
+    return { ok: true, data: d };
+  });
   ipcMain.handle('store:set', () => ({ ok: true, data: true }));
   ipcMain.handle('store:remove', () => ({ ok: true, data: true }));
   const w = new BrowserWindow({

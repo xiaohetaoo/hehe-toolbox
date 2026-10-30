@@ -94,7 +94,16 @@ const ROOT = ${JSON.stringify(ROOT)};
 const PROBE = ${JSON.stringify(PROBE)};
 
 app.whenReady().then(async () => {
-  ipcMain.handle('store:get', (e, k, d) => ({ ok: true, data: d }));
+  /* 语言必须显式钉成中文。
+     store:get 拿着返回默认值（这里是 null），应用启动时会走
+    i18n.detect() 按 navigator.language 猜 —— CI 是 windows-latest、
+    系统语言 en-US，于是整个界面变成英文，而本测试断言的都是中文字串
+    （「关于」「检查更新」「设置」），全部匹配不上直接失败。
+    本地是中文环境所以一直绿，这类「只在 CI 挂」的问题极难靠猜排查。 */
+  ipcMain.handle('store:get', (e, k, d) => {
+    if (k === 'settings.lang') return { ok: true, data: 'zh' };
+    return { ok: true, data: d };
+  });
   ipcMain.handle('store:set', () => ({ ok: true, data: true }));
   ipcMain.handle('dangerous:list', () => ({ ok: true, data: { enabled: [] } }));
   ipcMain.handle('dangerous:tool-caps', () => ({ ok: true, data: {} }));

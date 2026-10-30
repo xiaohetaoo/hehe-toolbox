@@ -23,6 +23,14 @@ dl-verify/
 .e2e-*/
 # 本地打包暂存（build-portable.sh 默认放工作区外，但写错参数时可能落到这里）
 .hehe-build-stage/
+# 查 CI 状态时 curl 下来的临时 JSON/HTML（曾经误提交过三次，加规则防再犯）
+cr*.json
+an*.json
+j2.json
+g.json
+r.json
+rel*.json
+ci*.html
 # 外部工具的记忆目录（非本项目产物）
 .workbuddy/
 .shots/

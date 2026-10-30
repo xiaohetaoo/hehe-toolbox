@@ -99,7 +99,11 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const ROOT = ${JSON.stringify(ROOT)};
 const PROBE = ${JSON.stringify(PROBE)};
-const store = {};
+/* 初始语言钉成中文：本测试的「中文基线」断言期望的是中文界面，
+   而应用启动时若 store 里没有 settings.lang 就会走 navigator.language 判断，
+   CI（windows-latest / en-US）会直接进英文，基线断言全挂。
+   这里预置 zh，让测试起点确定；后面的切换仍然真实读写这个 store。 */
+const store = { 'settings.lang': 'zh' };
 
 app.whenReady().then(async () => {
   ipcMain.handle('store:get', (e, k, d) => ({ ok: true, data: k in store ? store[k] : d }));
