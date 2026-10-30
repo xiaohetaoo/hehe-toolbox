@@ -99,8 +99,6 @@ jobs:
 
       # 直接发布（不是草稿）：草稿需要凭据才能点「Publish」，
       # 而本机 CI 之外没有 GitHub 凭据，草稿会一直停在那里、资产对用户不可见。
-      # 标题统一成「核核工具箱 vX.Y.Z」，与既有 6 个 Release 保持一致
-      # （原来会取 tag 注解的正文当标题，一长串说明挤在标题栏里）。
       - name: Publish release with assets
         uses: softprops/action-gh-release@v2
         with:
@@ -112,3 +110,38 @@ jobs:
             dist/hehe-toolbox-*-win-x64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 兜底：把 Release 标题钉死成「核核工具箱 vX.Y.Z」。
+      # 实测 v0.2.1 发布后 name 变成了 "0.2.1"（只是 tag 去掉前缀），
+      # action 的 name 输入没有按预期生效。这里不依赖 action 的行为，
+      # 发布完直接用 API 改写一次，保证与既有 6 个 Release 命名一致。
+      - name: Normalize release title
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          WANT="核核工具箱 $TAG"
+          REPO="${{ github.repository }}"
+          echo "want title: $WANT"
+          # 等 Release 就绪（action 刚创建，可能有短暂延迟）
+          for i in $(seq 1 10); do
+            GOT=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$REPO/releases/tags/$TAG" \
+              | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).name||'')}catch(e){console.log('')}})")
+            if [ "$GOT" = "$WANT" ]; then
+              echo "title already correct"
+              exit 0
+            fi
+            echo "attempt $i: current name = '$GOT'"
+            curl -sf -X PATCH -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/releases/tags/$TAG" \
+              -d "{\"name\":\"$WANT\"}" > /dev/null && echo "patched"
+            sleep 2
+          done
+          GOT=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO/releases/tags/$TAG" \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).name||'')}catch(e){console.log('')}})")
+          if [ "$GOT" = "$WANT" ]; then echo "OK title = $GOT"; else echo "::error::标题未统一，实际 '$GOT'，期望 '$WANT'"; exit 1; fi
