@@ -49,17 +49,24 @@
            * 字符集常见长度（62/87 等），被拒概率 < 1/10^7，性能无影响。 */
           const cLen = chars.length;
           const limit = Math.floor(0x100000000 / cLen) * cLen; // 可整除的上界
-          const out = [];
-          while (out.length < len) {
-            const arr = new Uint32Array(len - out.length);
+          /* 【变量名不能叫 out】
+           * 外层 `const out = div('')` 是结果容器；这里再声明 `const out = []`
+           * 会把它遮蔽掉，循环结束后 `out.appendChild(...)` 就变成
+           * 「对数组调 appendChild」→ TypeError。
+           * 后果很具体：点「生成」毫无反应、控制台只有一行报错，
+           * 密码一个都生成不出来 —— 这个工具从写下这段代码起就是坏的。
+           * 改名 buf，并在循环里直接往容器追加行。 */
+          const buf = [];
+          while (buf.length < len) {
+            const arr = new Uint32Array(len - buf.length);
             crypto.getRandomValues(arr);
             for (const x of arr) {
-              if (x < limit) out.push(chars[x % cLen]);
+              if (x < limit) buf.push(chars[x % cLen]);
               else { /* 落在偏差区，丢弃重取 */ }
-              if (out.length >= len) break;
+              if (buf.length >= len) break;
             }
           }
-          const pwd = out.join('');
+          const pwd = buf.join('');
           const strength = scorePwd(pwd);
           out.appendChild(div('form-row',
             h('span', { class: 'mono', style: { flex: '1', fontSize: '14px', userSelect: 'text' } }, pwd),

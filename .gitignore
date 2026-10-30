@@ -25,3 +25,5 @@ dl-verify/
 .hehe-build-stage/
 # 外部工具的记忆目录（非本项目产物）
 .workbuddy/
+.shots/
+.smoke-data/

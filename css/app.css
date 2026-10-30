@@ -290,14 +290,41 @@ body {
   background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: var(--shadow-modal); z-index: 100; padding: 6px; display: none;
 }
+/* 下拉比输入框宽：结果行里有「名称 + 模块 + 说明」三段，
+   沿用输入框的 440px 会把说明压成「Zİ…」这种只有省略号的东西，等于没有信息。
+   居中展开并留 40px 边距，窄窗口下不会顶出右边界。 */
+.titlebar .search-dropdown {
+  left: 50%; right: auto; width: 560px; margin-left: -280px;
+  max-width: calc(100vw - 40px);
+}
 .search-dropdown.show { display: block; animation: fadeIn 0.15s ease; }
 .search-result {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  min-width: 0;
 }
 .search-result:hover, .search-result.hl { background: var(--primary-light); }
+/* 左栏：图标 + 名称 + 标记，宽度自适应内容 */
+.search-result .sr-main { display: flex; align-items: center; gap: 8px; flex: none; min-width: 0; }
+/* 首页是「列表」形态，左栏定宽才能让说明文字从同一处起排，像一张表。
+   标题栏下拉只有 440px，定宽会把说明挤成「Zİ…」，那里改为自然宽度。 */
+.home-results .search-result .sr-main { min-width: 210px; }
 .search-result .sr-name { color: var(--text-1); font-size: 13px; }
-.search-result .sr-desc { color: var(--text-3); font-size: 12px; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
 .search-result .sr-module { color: var(--primary); font-size: 11px; flex: none; }
+/* 说明固定占剩余空间并从同一处起排：首页一屏十几行，右对齐会让中间空出一大段，
+   视觉上和名称断开，扫读时必须左右来回跳。 */
+.search-result .sr-desc {
+  color: var(--text-3); font-size: 12px; flex: 1; min-width: 0; margin-left: 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 命中词高亮：颜色只用主色，不加背景块 —— 一屏十几行全是色块会盖住排版 */
+.search-result .sr-hit { background: transparent; color: var(--primary); font-weight: 600; }
+.search-result .sr-danger {
+  font-size: 11px; flex: none; color: var(--danger);
+  border: 1px solid var(--danger-line); border-radius: 4px; padding: 0 5px;
+}
+.sr-more { font-size: 12px; color: var(--text-3); padding: 8px 10px 4px; text-align: center; }
+/* 标题栏搜索在首页隐藏（首页有自己的大搜索框，两个框会让用户不知道往哪打） */
+.titlebar .search-wrap.hidden { display: none; }
 .tb-right { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
 .tb-btn {
   width: 40px; height: 36px; display: flex; align-items: center; justify-content: center;
@@ -387,19 +414,68 @@ body {
 .tool-card .tc-lock { position: absolute; right: 10px; top: 10px; color: var(--danger); opacity: 0.85; }
 .tool-card.danger.closed .tc-lock { color: var(--text-3); opacity: 0.8; }
 
-/* 首页 */
+/* ---- 首页：搜索主导 ----
+   搜索框是这块区域唯一的主视觉；分类浏览降为次级、可被搜索结果整体替换。 */
 .home-hero { text-align: left; margin-bottom: 18px; }
-.home-hero h1 { font-size: 22px; font-weight: 600; color: var(--text-1); }
-.home-hero p { color: var(--text-3); margin-top: 4px; font-size: 13px; }
-.home-search { position: relative; max-width: 520px; margin-top: 16px; }
-.home-search input {
-  width: 100%; height: 42px; border-radius: 21px; border: 1px solid transparent;
-  background: var(--card-bg); padding: 0 16px 0 40px; font-size: 14px; outline: none; color: var(--text-1);
+.home-hero-top h1 { font-size: 22px; font-weight: 600; color: var(--text-1); }
+.home-hero-top p { color: var(--text-2); margin-top: 4px; font-size: 13px; }
+
+.home-search { position: relative; margin-top: 16px; }
+.home-search .hs-input {
+  width: 100%; height: 52px; border-radius: 12px; border: 1px solid var(--border);
+  background: var(--card-bg); padding: 0 84px 0 46px; font-size: 15px; outline: none;
+  color: var(--text-1); font-family: inherit;
   box-shadow: var(--shadow-card);
-  transition: box-shadow 0.2s, border-color 0.2s;
+  transition: border-color 0.18s, box-shadow 0.18s;
 }
-.home-search input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent); }
-.home-search .icon { position: absolute; left: 14px; top: 13px; color: var(--text-3); }
+.home-search .hs-input::placeholder { color: var(--text-3); }
+/* type=search 会给 Chrome 挂一个原生清除按钮，它用系统配色、深浅色主题下都不跟着变色，
+   而且和「Esc 清空」是两套行为。统一隐藏，清空只走 Esc。 */
+.home-search .hs-input::-webkit-search-cancel-button,
+.home-search .hs-input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; display: none; }
+.home-search .hs-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+.home-search .hs-icon { position: absolute; left: 16px; top: 16px; color: var(--text-3); pointer-events: none; display: flex; }
+.home-search .hs-kbd {
+  position: absolute; right: 14px; top: 15px; pointer-events: none;
+  font-size: 11px; color: var(--text-3); letter-spacing: 0.4px;
+  border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px; background: var(--page-bg);
+}
+
+/* 搜索结果列表 */
+.home-results { display: none; margin-top: 18px; }
+.home-results.show { display: block; animation: fadeIn 0.15s ease; }
+.hs-head {
+  display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-2);
+  margin-bottom: 8px; padding: 0 2px;
+}
+.hs-head-tip { margin-left: auto; color: var(--text-3); }
+.hs-row { padding: 10px 12px; border-radius: 8px; }
+.hs-row + .hs-row { margin-top: 2px; }
+.hs-row:hover, .hs-row.hl { background: var(--primary-light); }
+.hs-empty { display: flex; align-items: flex-start; gap: 12px; padding: 26px 4px 10px; }
+.hs-empty .hs-empty-icon { color: var(--text-3); display: flex; margin-top: 1px; }
+.hs-empty-title { font-size: 14px; color: var(--text-2); font-weight: 500; }
+.hs-empty-tip { font-size: 12px; color: var(--text-3); margin-top: 6px; line-height: 1.6; }
+
+/* 分类浏览区：搜索时整体让位 */
+.home-browse.hidden { display: none; }
+.home-recent { margin-bottom: 14px; }
+.home-cats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.home-cat {
+  display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid transparent; cursor: pointer; color: var(--text-2); font-size: 13px;
+  background: var(--page-bg); transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.home-cat:hover { border-color: var(--primary); color: var(--primary); background: var(--hover-fill); }
+.home-cat .hc-icon { display: flex; color: var(--text-3); transition: color 0.15s; }
+.home-cat:hover .hc-icon { color: var(--primary); }
+.home-cat .hc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.home-cat .hc-count { margin-left: auto; font-size: 11px; color: var(--text-3); flex: none; }
+.home-cat:hover .hc-count { color: var(--primary); }
+
 .recent-row { display: flex; gap: 10px; flex-wrap: wrap; padding-bottom: 4px; }
 .recent-chip {
   display: flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid transparent;
@@ -440,6 +516,8 @@ body {
 
 /* 表单 */
 .form-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+/* 「标签 + 控件」的组合单元：整体显示/隐藏用（否则只藏控件会让标签悬空） */
+.form-inline { display: inline-flex; align-items: center; gap: 6px; }
 .form-label { font-size: 13px; color: var(--text-2); min-width: 84px; flex: none; }
 .input, .select, textarea.input {
   border: 1px solid var(--border); border-radius: 5px; background: var(--input-bg); color: var(--text-1);
@@ -500,6 +578,35 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .dropzone .dz-icon { color: var(--primary); margin-bottom: 8px; }
 .dropzone .dz-main { font-size: 14px; color: var(--text-2); }
 .dropzone .dz-sub { font-size: 12px; margin-top: 4px; }
+/* 列表已有内容后拖拽区收紧成一条「继续添加」的横条，把纵向空间让给列表 */
+.dropzone.compact { padding: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; text-align: left; }
+.dropzone.compact .dz-icon { margin-bottom: 0; }
+.dropzone.compact .dz-main { font-size: 13px; }
+.dropzone.compact .dz-sub { display: none; }
+
+/* 待处理文件列表 */
+.file-list { margin-top: 10px; }
+.file-list .fl-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px 6px; }
+.file-list .fl-count { font-size: 12px; color: var(--text-3); }
+.file-list .fl-empty { font-size: 12px; color: var(--text-3); padding: 10px 2px; }
+.file-list .fl-body { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow: auto; }
+/* flex-wrap 是必需的：哈希页的摘要在行尾追加 .hash-result（flexBasis:100%），
+ * 没有 wrap 它就挤在同一行末尾，摘要被压成一条窄缝。 */
+.file-list .fl-row { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 8px; border-radius: 8px; background: var(--bg-2); transition: background 0.1s; flex-wrap: wrap; }
+.file-list .fl-row:hover { background: var(--hover-fill); }
+.file-list .fl-idx { flex: none; min-width: 22px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-3); }
+.file-list .fl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.file-list .fl-name { font-size: 12.5px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-list .fl-path { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-list .fl-size { flex: none; font-size: 11.5px; color: var(--text-3); min-width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
+.file-list .fl-del { flex: none; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); font-size: 16px; line-height: 1; cursor: pointer; padding: 0; }
+.file-list .fl-del:hover:not(:disabled) { background: rgba(245, 63, 63, 0.1); color: var(--danger); }
+.file-list .fl-del:disabled { cursor: not-allowed; opacity: 0.35; }
+.file-list.locked .fl-row { opacity: 0.75; }
+/* 行内缩略图（长截图拼接用）：固定尺寸，避免原图尺寸把行撑高 */
+.file-list .fl-thumb { flex: none; border-radius: 4px; object-fit: cover; }
+/* 哈希摘要块：独占一行显示 4 条摘要 */
+.file-list .hash-result { flex-basis: 100%; min-width: 0; margin-top: 2px; }
 
 /* 终端输出 */
 .term {
@@ -513,7 +620,10 @@ textarea.input { resize: vertical; line-height: 1.6; }
 
 /* 进度条 */
 .progress { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
-.progress .progress-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.2s ease; }
+/* 【必须给默认宽度 0】.progress-fill 是 div，不设 width 时在 flex 父级里会撑满，
+ * 于是「没有任何进度的行」显示成一条实心蓝条 —— 看起来像已经 100% 完成。
+ * 各工具都是靠 style.width 才把它推起来的，所以默认值只能是 0。 */
+.progress .progress-fill { height: 100%; width: 0; background: var(--primary); border-radius: 3px; transition: width 0.2s ease; }
 
 /* 开关 */
 .switch { position: relative; width: 40px; height: 20px; background: var(--border); border-radius: 10px; cursor: pointer; transition: background 0.2s; flex: none; }

@@ -1,7 +1,7 @@
 /* 模块：文件处理 —— 文件哈希校验 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, dropzone, fmtBytes, renderTable } = window.ui;
+  const { div, btn, toast, copyText, filePicker, fmtBytes, renderTable } = window.ui;
   const { on } = window.api;
 
   register({
@@ -21,29 +21,36 @@
       }
 
       /* 文件模式 */
-      let currentFile = null;
-      const fileInfo = div('field-hint', '');
-      const dz = dropzone({
+      /* 一个文件一行，摘要算完直接填进该行下方，不再另建结果区。
+       * 加入列表即自动计算；已算过的路径不重复算（删掉再拖回来会重算，符合直觉）。 */
+      const hashed = new Set();
+      const picker = filePicker({
         text: '拖入文件进行校验，或点击选择',
-        multiple: true,
-        onFiles: async (paths) => {
-          for (const p of paths) await hashFile(p);
+        emptyText: '还没有添加文件',
+        onChange: (items) => {
+          const present = new Set(items.map((x) => x.path));
+          // 移出列表的路径从「已算过」集合里摘掉，重新加入时才会重算
+          for (const k of [...hashed]) if (!present.has(k)) hashed.delete(k);
+          for (const it of items) {
+            if (hashed.has(it.path)) continue;
+            hashed.add(it.path);
+            hashFile(it.path);
+          }
         }
       });
-      const resultTable = div('');
       async function hashFile(p) {
-        const name = p.split(/[\\/]/).pop();
-        let size = 0;
-        try { size = (await window.api.invoke('fs:stat', p)).size; } catch (e) {}
-        const row = div('');
-        row.style.margin = '10px 0';
-        row.appendChild(div('', h('span', { style: { fontWeight: 500 } }, name), h('span', { class: 'field-hint', style: { marginLeft: '8px' } }, fmtBytes(size))));
+        const idx = picker.paths.indexOf(p);
+        const row = idx >= 0 ? picker.list.rowAt(idx) : null;
+        if (!row) return; // 还没算完就被移出列表
+        // 每行只保留一份摘要块：重复计算同一文件时先清掉旧的
+        const old = row.querySelector('.hash-result');
+        if (old) old.remove();
+        const box = h('div', { class: 'hash-result', style: { flexBasis: '100%', marginTop: '2px' } });
         const progress = div('progress', div('progress-fill'));
         progress.style.margin = '6px 0';
-        row.appendChild(progress);
-        resultTable.prepend(row);
+        box.appendChild(progress);
         const unsub = on('job:progress', (d) => {
-          if (d.kind === 'hash' && d.id === p) progress.firstChild.style.width = (d.done / d.total * 100) + '%';
+          if (d.kind === 'hash' && d.id === p && progress.firstChild) progress.firstChild.style.width = (d.done / d.total * 100) + '%';
         });
         const algos = ['md5', 'sha1', 'sha256', 'sha512'];
         /* 【一次读盘】原来对同一个文件连续调用 4 次 fs:hash-file，
@@ -56,15 +63,17 @@
             const line = div('form-row', h('span', { class: 'form-label', style: { minWidth: '70px', textTransform: 'uppercase' } }, algo),
               h('span', { class: 'mono', style: { flex: '1', userSelect: 'text', wordBreak: 'break-all', fontSize: '12px' } }, hex),
               btn('复制', 'btn-sm btn-text', () => copyText(hex)));
-            row.appendChild(line);
+            box.appendChild(line);
           }
         } catch (e) {
-          row.appendChild(div('field-err', '计算失败: ' + ((e && e.message) || String(e))));
+          box.appendChild(div('field-err', '计算失败: ' + ((e && e.message) || String(e))));
         }
         progress.remove();
+        // 摘要块追加到该文件行尾（列表行是 flex，用 flexBasis 让它独占下一行）
+        row.appendChild(box);
         unsub();
       }
-      const fileCard = div('card', div('card-title', '文件校验'), dz, fileInfo, resultTable);
+      const fileCard = div('card', div('card-title', '文件校验'), picker.el);
 
       /* 文本模式 */
       const ta = h('textarea', { class: 'pane-ta', placeholder: '输入文本…', style: { minHeight: '100px' } });

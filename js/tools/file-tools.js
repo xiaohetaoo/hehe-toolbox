@@ -1,7 +1,7 @@
 /* 模块：文件处理 —— 批量重命名 / 批量改后缀 / 加密解密 / 分割合并 / 重复文件 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, confirmBox, alertBox, dropzone, renderTable, fmtBytes, progressEl } = window.ui;
+  const { div, btn, toast, copyText, confirmBox, alertBox, filePicker, renderTable, fmtBytes, progressEl } = window.ui;
   const { invoke } = window.api;
   const MOD = 'file';
 
@@ -12,16 +12,30 @@
     keywords: ['重命名', '批量', 'rename', '正则'],
     render(page) {
       let files = [];
-      const dz = dropzone({ text: '选择或拖入要重命名的文件（可多选）', onFiles: async (paths) => { files = paths; dirMode = false; buildPreview(); } });
       let dirMode = false;
+      // 目录加载是「批量灌入」，要跳过 onChange 的 dirMode 重置
+      let selfLoad = false;
+      const picker = filePicker({
+        text: '选择或拖入要重命名的文件（可多选）',
+        onChange: (items) => {
+          files = items.map((x) => x.path);
+          if (!selfLoad) { dirMode = false; buildPreview(); }
+        }
+      });
       const dirInput = h('input', { class: 'input input-sm', placeholder: '或输入目录路径（重命名目录内所有文件）', style: { flex: '1' } });
       const loadDirBtn = btn('加载目录', 'btn-sm btn-secondary', async () => {
         const d = dirInput.value.trim();
         if (!d) return;
         try {
           const list = await invoke('fs:list', d);
-          files = list.filter(x => !x.isDir).map(x => x.path);
-          dirMode = true;
+          const found = list.filter(x => !x.isDir).map(x => x.path);
+          selfLoad = true;
+          try {
+            picker.clear();
+            picker.add(found);
+            files = picker.paths;
+            dirMode = true;
+          } finally { selfLoad = false; }
           buildPreview();
         } catch (e) { toast(e.message, 'error'); }
       });
@@ -113,10 +127,10 @@
         } else {
           toast(`完成：成功 ${ok} 个`, 'success');
         }
-        if (dirMode && dirInput.value) loadDirBtn.click(); else { files = []; buildPreview(); }
+        if (dirMode && dirInput.value) loadDirBtn.click(); else { picker.clear(); files = []; buildPreview(); }
       });
 
-      page.appendChild(div('card', div('card-title', '选择文件'), dz,
+      page.appendChild(div('card', div('card-title', '选择文件'), picker.el,
         div('form-row', dirInput, pickDirBtn, loadDirBtn)));
       page.appendChild(div('card', div('card-title', '重命名规则（可组合）'),
         div('form-row', h('span', { class: 'form-label' }, '序号'), prefixIn, h('span', { class: 'field-hint' }, '+ 序号'), startNum, suffixIn),
@@ -218,17 +232,21 @@
     desc: 'AES-256-CBC 本地加密，密码经 scrypt 派生，离线安全',
     keywords: ['加密', '解密', 'aes', '密码'],
     render(page) {
+      let running = false; // 防重入标志：处理中禁止重复点击
       let mode = 'encrypt';
       let filePath = null;
-      const dz = dropzone({
-        text: '选择或拖入要加密/解密的文件', multiple: false,
-        onFiles: (paths) => { filePath = paths[0]; fileLabel.textContent = filePath; }
+      const picker = filePicker({
+        text: '选择或拖入要加密/解密的文件',
+        single: true,
+        emptyText: '还没有选择文件',
+        onChange: (items) => { filePath = items.length ? items[0].path : null; }
       });
-      const fileLabel = div('field-hint', '未选择文件');
       const pwdIn = h('input', { type: 'password', class: 'input', placeholder: '设置密码（加密）或输入密码（解密）', style: { flex: '1' } });
       const status = h('div', { class: 'field-hint' }, '');
       const prog = progressEl(); prog.hide();
       async function run() {
+        if (running) return; // 防重入：两次加密会写坏同一个目标文件
+        running = true;
         if (!filePath) return toast('请先选择文件', 'warn');
         if (!pwdIn.value) return toast('请输入密码', 'warn');
         const outDefault = mode === 'encrypt' ? filePath + '.hehe' : filePath.replace(/\.hehe$/, '') + '.dec';
@@ -244,7 +262,7 @@
         } catch (e) {
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
-        } finally { prog.hide(); unsub(); }
+        } finally { prog.hide(); unsub(); running = false; }
       }
       const encBtn = btn('🔒 加密模式', 'btn-sm btn-primary', () => setMode('encrypt'));
       const decBtn = btn('🔓 解密模式', 'btn-sm btn-secondary', () => setMode('decrypt'));
@@ -258,7 +276,7 @@
         decBtn.className = 'btn btn-sm ' + (m === 'decrypt' ? 'btn-primary' : 'btn-secondary');
         mainBtn.textContent = m === 'encrypt' ? '开始加密' : '开始解密';
       }
-      page.appendChild(div('card', div('card-title', '选择文件', encBtn, ' ', decBtn), dz, fileLabel));
+      page.appendChild(div('card', div('card-title', '选择文件', encBtn, ' ', decBtn), picker.el));
       page.appendChild(div('card', div('card-title', '密码'),
         div('form-row', pwdIn, mainBtn),
         prog.el, status));
@@ -288,13 +306,17 @@
 
       /* split */
       let spFile = null;
-      const dz1 = dropzone({ text: '选择要分割的文件', multiple: false, onFiles: (paths) => { spFile = paths[0]; spLabel.textContent = spFile; } });
-      const spLabel = div('field-hint', '未选择文件');
+      const spPicker = filePicker({
+        text: '选择要分割的文件',
+        single: true,
+        emptyText: '还没有选择文件',
+        onChange: (items) => { spFile = items.length ? items[0].path : null; }
+      });
       const sizeIn = h('input', { class: 'input input-sm', type: 'number', value: '10', style: { width: '90px' } });
       const spProg = progressEl(); spProg.hide();
       const spStatus = div('field-hint', '');
       page.appendChild(div('card', div('card-title', '模式', tabBtn1, ' ', tabBtn2)));
-      sp.appendChild(div('card', div('card-title', '分割'), dz1, spLabel,
+      sp.appendChild(div('card', div('card-title', '分割'), spPicker.el,
         div('form-row', h('span', { class: 'form-label' }, '每片大小'), sizeIn, h('span', { class: 'field-hint' }, 'MB'),
           btn('开始分割', 'btn-primary', async () => {
             if (!spFile) return toast('请选择文件', 'warn');
@@ -312,12 +334,16 @@
       page.appendChild(sp);
 
       /* merge */
-      const dz2 = dropzone({ text: '选择任一分片（.part001）或清单文件（.manifest.hehe.json）', multiple: false, onFiles: (paths) => { mgFile = paths[0]; mgLabel.textContent = mgFile; } });
       let mgFile = null;
-      const mgLabel = div('field-hint', '未选择文件');
+      const mgPicker = filePicker({
+        text: '选择任一分片（.part001）或清单文件（.manifest.hehe.json）',
+        single: true,
+        emptyText: '还没有选择分片',
+        onChange: (items) => { mgFile = items.length ? items[0].path : null; }
+      });
       const mgProg = progressEl(); mgProg.hide();
       const mgStatus = div('field-hint', '');
-      mg.appendChild(div('card', div('card-title', '合并'), dz2, mgLabel,
+      mg.appendChild(div('card', div('card-title', '合并'), mgPicker.el,
         div('form-row', btn('开始合并', 'btn-primary', async () => {
           if (!mgFile) return toast('请选择分片', 'warn');
           mgProg.show(); mgStatus.textContent = '';
@@ -457,11 +483,15 @@
     desc: 'ZIP 压缩与解压（不支持密码与分卷；需要密码请用「7z 压缩包」工具）',
     keywords: ['压缩', '解压', 'zip'],
     render(page) {
-      const cPaths = [];
-      const dz1 = dropzone({ text: '选择或拖入要压缩的文件/文件夹', onFiles: (paths) => { cPaths.push(...paths); cLabel.textContent = `已选 ${cPaths.length} 项：` + cPaths.slice(0, 3).join('、') + (cPaths.length > 3 ? '…' : ''); } });
-      const cLabel = div('field-hint', '未选择');
+      const zipPicker = filePicker({
+        text: '选择或拖入要压缩的文件/文件夹',
+        emptyText: '还没有添加文件或文件夹',
+        // 允许把文件夹拖/选进来：压缩对象本来就可能是目录
+        pickProps: ['openFile', 'openDirectory', 'multiSelections']
+      });
       const zipName = h('input', { class: 'input input-sm', placeholder: '输出 zip 路径（留空自动命名）', style: { flex: '1' } });
       const cBtn = btn('压缩', 'btn-primary', async () => {
+        const cPaths = zipPicker.paths;
         if (!cPaths.length) return toast('请选择文件', 'warn');
         try {
           let out = zipName.value.trim();
@@ -476,17 +506,25 @@
           toast('压缩完成：' + fmtBytes(r.size), 'success');
         } catch (e) { toast(e.message, 'error'); }
       });
-      const dz2 = dropzone({ text: '选择或拖入 zip 文件解压', multiple: false, onFiles: async (paths) => {
-        const zip = paths[0];
-        const dir = zip.replace(/\.zip$/i, '') + '-extracted';
-        try {
-          await invoke('zip:extract', zip, dir);
-          toast('解压完成：' + dir, 'success');
-        } catch (e) { toast(e.message, 'error'); }
-      } });
-      page.appendChild(div('card', div('card-title', '压缩为 ZIP'), dz1, cLabel,
+      const zipUnPicker = filePicker({
+        text: '选择或拖入 zip 文件解压',
+        single: true,
+        emptyText: '还没有选择 zip',
+        filters: [{ name: 'ZIP', extensions: ['zip'] }],
+        onChange: async (items) => {
+          // 单文件槽位：选到就解压（保持原来的「拖进去立刻解压」交互）
+          if (!items.length) return;
+          const zip = items[0].path;
+          const dir = zip.replace(/\.zip$/i, '') + '-extracted';
+          try {
+            await invoke('zip:extract', zip, dir);
+            toast('解压完成：' + dir, 'success');
+          } catch (e) { toast(e.message, 'error'); }
+        }
+      });
+      page.appendChild(div('card', div('card-title', '压缩为 ZIP'), zipPicker.el,
         div('form-row', zipName, cBtn)));
-      page.appendChild(div('card', div('card-title', '解压 ZIP'), dz2, div('field-hint', '解压到同名文件夹')));
+      page.appendChild(div('card', div('card-title', '解压 ZIP'), zipUnPicker.el));
     }
   });
 
@@ -775,13 +813,16 @@
         engineLine.appendChild(h('span', { class: 'tag ' + (s.full ? 'tag-green' : 'tag-gray') }, s.full ? '系统 7-Zip ✓（含 rar 等全格式）' : '系统 7-Zip 未检测（装后可解 rar）'));
       }).catch(() => { engineLine.textContent = '引擎检测失败'; });
       /* 压缩 */
-      const cPaths = [];
-      const dz1 = dropzone({ text: '拖入或选择要压缩的文件/文件夹（可多选）', onFiles: (p) => { cPaths.push(...p); cLabel.textContent = `已选 ${cPaths.length} 项`; } });
-      const cLabel = div('field-hint', '未选择');
+      const sevenPicker = filePicker({
+        text: '拖入或选择要压缩的文件/文件夹（可多选）',
+        emptyText: '还没有添加文件或文件夹',
+        pickProps: ['openFile', 'openDirectory', 'multiSelections']
+      });
       const zipName = h('input', { class: 'input input-sm', placeholder: '输出 .7z 路径（留空自动命名）', style: { flex: '1' } });
       const pwdIn = h('input', { class: 'input input-sm', placeholder: '密码（留空不加密）', style: { width: '140px' } });
       const volIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '分卷MB', style: { width: '90px' }, title: '分卷大小（MB，留空不分卷）' });
       const cBtn = btn('📦 压缩', 'btn-primary', async () => {
+        const cPaths = sevenPicker.paths;
         if (!cPaths.length) return toast('请选择文件', 'warn');
         try {
           let out = zipName.value.trim();
@@ -790,14 +831,19 @@
             const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/')) : first.slice(0, first.lastIndexOf('\\'));
             out = await invoke('fs:unique-path', dir + '/archive.7z');
           } else out = await invoke('fs:unique-path', out.endsWith('.7z') ? out : out + '.7z');
-          const r = await invoke('seven:compress', { files: [...cPaths], out, password: pwdIn.value || '', volumeMB: volIn.value ? +volIn.value : 0 });
+          const r = await invoke('seven:compress', { files: cPaths, out, password: pwdIn.value || '', volumeMB: volIn.value ? +volIn.value : 0 });
           toast('压缩完成：' + fmtBytes(r.size), 'success');
         } catch (e) { toast(e.message, 'error'); }
       });
       /* 解压 */
       const exPath = { p: null };
-      const dz2 = dropzone({ text: '拖入或选择压缩包（.7z / .zip）', onFiles: (p) => { exPath.p = p[0]; exLabel.textContent = p[0]; } });
-      const exLabel = div('field-hint', '未选择');
+      const exPicker = filePicker({
+        text: '拖入或选择压缩包（.7z / .zip）',
+        single: true,
+        emptyText: '还没有选择压缩包',
+        filters: [{ name: '压缩包', extensions: ['7z', 'zip', 'tar', 'gz', 'rar'] }],
+        onChange: (items) => { exPath.p = items.length ? items[0].path : null; }
+      });
       const exPwd = h('input', { class: 'input input-sm', placeholder: '密码（如有）', style: { width: '140px' } });
       const exBtn = btn('📂 解压', 'btn-primary', async () => {
         if (!exPath.p) return toast('请选择压缩包', 'warn');
@@ -809,15 +855,23 @@
       });
       page.appendChild(div('card', div('card-title', '引擎'), engineLine,
         div('field-hint', '内置 7za 支持 7z/zip/tar/gz 等并支持密码与分卷；RAR 等更多格式需系统安装 7-Zip 完整版。')));
-      page.appendChild(div('card', div('card-title', '压缩为 7z'), dz1, cLabel,
+      page.appendChild(div('card', div('card-title', '压缩为 7z'), sevenPicker.el,
         div('form-row', zipName),
         div('form-row', pwdIn, h('span', { class: 'field-hint' }, ' '), volIn, cBtn)));
-      page.appendChild(div('card', div('card-title', '解压'), dz2, exLabel,
+      page.appendChild(div('card', div('card-title', '解压'), exPicker.el,
         div('form-row', exPwd, exBtn, h('span', { class: 'field-hint' }, '解压到压缩包旁的同名目录'))));
       /* 预览：不解压直接列出内容 */
       const pvPath = { p: null };
-      const dz3 = dropzone({ text: '拖入压缩包预览内容（不解压）', onFiles: (p) => { pvPath.p = p[0]; pvLabel.textContent = p[0]; listArchive(); } });
-      const pvLabel = h('span', { class: 'field-hint' }, '未选择');
+      const pvPicker = filePicker({
+        text: '拖入压缩包预览内容（不解压）',
+        single: true,
+        emptyText: '还没有选择压缩包',
+        filters: [{ name: '压缩包', extensions: ['7z', 'zip', 'tar', 'gz', 'rar'] }],
+        onChange: (items) => {
+          pvPath.p = items.length ? items[0].path : null;
+          if (pvPath.p) listArchive(); else pvBox.innerHTML = '';
+        }
+      });
       const pvPwd = h('input', { class: 'input input-sm', placeholder: '密码（如有）', style: { width: '130px' } });
       const pvBox = div('');
       async function listArchive() {
@@ -842,7 +896,7 @@
           pvBox.appendChild(div('field-err', '✗ ' + (e && e.message ? e.message : e)));
         }
       }
-      page.appendChild(div('card', div('card-title', '预览（不解压）'), dz3, pvLabel,
+      page.appendChild(div('card', div('card-title', '预览（不解压）'), pvPicker.el,
         div('form-row', pvPwd, btn('📋 列出内容', 'btn-sm btn-secondary', listArchive)), pvBox));
     }
   });

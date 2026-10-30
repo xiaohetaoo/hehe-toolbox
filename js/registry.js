@@ -26,22 +26,54 @@
   }
   const byModule = (mid) => tools.filter(t => t.module === mid);
   const get = (id) => tools.find(t => t.id === id);
+  /* 搜索：首页的主入口，因此按「用户真的会怎么打字」来设计。
+   *
+   * 旧实现在整串上做子串匹配，有三个硬伤：
+   * 1) 「pdf 合并」这种把两个词分开写的查询 → 0 结果。
+   *    名称里没有 "pdf 合并" 这个连续子串，关键词里也没有。
+   * 2) 搜模块名（「办公」「网络」）→ 0 结果。用户想的是「找办公类的工具」，
+   *    而模块名根本不在参与匹配的字段里。
+   * 3) 中文同义词散落在各工具的 keywords 里，缺一个就搜不到。
+   *
+   * 现在：按空白切词，每个词必须至少命中一个字段（AND 语义），分值累加；
+   * 整串连续命中名称再给一次加成，避免多词查询把精确结果挤下去。
+   * 同分时按名称定序，保证顺序稳定 —— 否则每次输入顺序都可能抖动，
+   * 键盘上下选的那一项会在手指底下换掉。
+   */
+  const norm = (s) => String(s == null ? '' : s).toLowerCase();
   function search(q) {
-    q = (q || '').trim().toLowerCase();
-    if (!q) return [];
+    const raw = norm(q).trim();
+    if (!raw) return [];
+    const tokens = raw.split(/\s+/).filter(Boolean);
     const scored = [];
     for (const t of tools) {
-      const name = t.name.toLowerCase();
-      const kws = (t.keywords || []).join(' ').toLowerCase();
-      let score = 0;
-      if (name === q) score = 100;
-      else if (name.startsWith(q)) score = 80;
-      else if (name.includes(q)) score = 60;
-      else if (kws.includes(q)) score = 40;
-      else if ((t.desc || '').toLowerCase().includes(q)) score = 20;
-      if (score) scored.push({ tool: t, score });
+      const name = norm(t.name);
+      const kwList = (t.keywords || []).map(norm);
+      const kws = kwList.join(' ');
+      const desc = norm(t.desc);
+      const modDef = MODULES.find(m => m.id === t.module);
+      const modName = norm(modDef ? modDef.name : '');
+      let total = 0;
+      let ok = true;
+      for (const tk of tokens) {
+        let s = 0;
+        if (name === tk) s = 100;
+        else if (name.startsWith(tk)) s = 80;
+        else if (kwList.includes(tk)) s = 70;   // 关键词整词命中，优先于名称中段
+        else if (name.includes(tk)) s = 60;
+        else if (kws.includes(tk)) s = 40;
+        else if (modName.includes(tk)) s = 30;  // 「办公」「网络」这类按模块找
+        else if (desc.includes(tk)) s = 20;
+        if (!s) { ok = false; break; }
+        total += s;
+      }
+      if (!ok) continue;
+      if (name.includes(raw)) total += 60;
+      scored.push({ tool: t, score: total });
     }
-    return scored.sort((a, b) => b.score - a.score).map(s => s.tool);
+    return scored
+      .sort((a, b) => b.score - a.score || norm(a.tool.name).localeCompare(norm(b.tool.name)))
+      .map(s => s.tool);
   }
 
   window.Registry = { MODULES, register, byModule, get, all: tools, search };

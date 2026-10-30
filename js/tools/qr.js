@@ -1,7 +1,7 @@
 /* 模块：开发调试 —— 二维码生成与识别 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, dropzone } = window.ui;
+  const { div, btn, toast, copyText, filePicker } = window.ui;
   const { invoke } = window.api;
   const MOD = 'dev';
 
@@ -69,6 +69,7 @@
           toast('未识别到二维码，请确保图片清晰完整', 'warn');
         }
       }
+      let selfUpdating = false;
       async function handleFile(path, blob) {
         preview.innerHTML = '';
         let img;
@@ -82,12 +83,19 @@
         preview.appendChild(img);
         img.addEventListener('load', () => decodeImage(img));
       }
-      const dz = dropzone({
+      const picker = filePicker({
         text: '拖入或选择二维码图片',
-        multiple: false,
-        onFiles: (paths, files) => {
-          if (files && files.length && !paths.length) handleFile(null, files[0]);
-          else handleFile(paths[0]);
+        single: true,
+        emptyText: '还没有选择图片',
+        filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif'] }],
+        onBlob: (file) => handleFile(null, file),
+        onChange: (items) => {
+          /* selfUpdating = 「这次列表变化是我自己登记的」（剪贴板图片）。
+           * 那一步已经自己设好 preview 了，若还往下走会执行 items.length 分支
+           * 把刚画好的预览清空 —— 粘贴完就白屏。 */
+          if (selfUpdating) return;
+          if (!items.length) { preview.innerHTML = ''; return; }
+          if (!items[0].virtual) handleFile(items[0].path).catch((e) => toast(e.message, 'error'));
         }
       });
       const pasteBtn = btn('📋 从剪贴板识别', 'btn-secondary', async () => {
@@ -98,9 +106,13 @@
           const img = h('img', { src: imgData, style: { maxWidth: '100%' } });
           preview.appendChild(img);
           img.addEventListener('load', () => decodeImage(img));
+          // 剪贴板来源也登记一行（虚拟条目：没有磁盘路径，只作展示）
+          selfUpdating = true;
+          try { picker.clear(); picker.list.add([{ path: '剪贴板图片', name: '剪贴板图片', virtual: true }]); }
+          finally { selfUpdating = false; }
         } catch (e) { toast(e.message, 'error'); }
       });
-      page.appendChild(div('card', div('card-title', '选择图片'), dz, pasteBtn, preview));
+      page.appendChild(div('card', div('card-title', '选择图片'), pasteBtn, picker.el, preview));
       page.appendChild(div('card', div('card-title', '识别结果'),
         result, div('form-row', btn('复制', 'btn-sm btn-secondary', () => result.value && copyText(result.value)),
           btn('打开链接', 'btn-sm btn-secondary', () => { if (/^https?:\/\//.test(result.value)) invoke('shell:open-url', result.value); }))));

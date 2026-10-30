@@ -13,6 +13,7 @@
     render(page) {
       let mode = 'pomodoro'; // pomodoro | countdown | stopwatch
       let total = 25 * 60, remain = 25 * 60, running = false, timer = null, startTs = 0;
+      let swElapsed = 0; // 秒表已累计秒数：暂停时冻结，开始时用它扣回锚点
       const display = h('div', { class: 'stat-num', style: { fontSize: '64px', textAlign: 'center', fontVariantNumeric: 'tabular-nums', position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)' } }, '25:00');
       const statusText = h('div', { style: { textAlign: 'center', color: 'var(--text-3)', marginBottom: '10px' } }, '专注模式 · 25 分钟');
       // 数字叠在圆环中央，作为一个整体呈现
@@ -86,15 +87,36 @@
       function start() {
         if (running) return;
         running = true;
-        startTs = Date.now() - (mode === 'stopwatch' ? 0 : (total - remain) * 1000);
+        /* 【秒表必须从暂停点续计】原来秒表分支写死 `- 0`，锚点被拉回当前时刻，
+         * 于是「暂停 → 再点开始」等于把已计时清零重来（番茄钟/倒计时因为
+         * 用 (total - remain) 重锚而没这个问题）。
+         * 这里给秒表另存一个已计秒数 swElapsed，暂停时冻结，开始时扣回去。 */
+        if (mode === 'stopwatch') {
+          startTs = Date.now() - swElapsed * 1000;
+        } else {
+          startTs = Date.now() - (total - remain) * 1000;
+        }
         timer = setInterval(tick, 200);
       }
-      function stop() { running = false; clearInterval(timer); }
-      window.App.onCleanup(() => stop());
+      function stop() {
+        // 暂停/切换前先把秒表的已计时冻结下来，供 start() 扣回
+        if (mode === 'stopwatch' && running) swElapsed = (Date.now() - startTs) / 1000;
+        running = false; clearInterval(timer);
+      }
+      /* 【切页处理】计时器跨页存续是常见预期，但整页销毁时 DOM 也没了，
+       * 计时器留着会变成「看不见还在跑」的幽灵任务。
+       * 折中做法：切页时停表，但**明确告知**用户已经停了，
+       * 而不是静默归零让人以为功能坏了。 */
+      window.App.onCleanup(() => {
+        if (!running) return;
+        stop();
+        toast('计时已暂停（离开页面会导致计时停止）', 'warn', 2600);
+      });
       function setMode(m) {
         stop();
         mode = m;
         phase = 'work';
+        swElapsed = 0; // 切模式/重置都要把秒表累计清零，否则「重置」后会从旧值接着走
         if (m === 'pomodoro') { total = (parseInt(workIn.value) || 25) * 60; statusText.textContent = `专注模式 · 第 ${pomodoros + 1} 个番茄`; display.style.fontSize = '64px'; }
         else if (m === 'countdown') { total = (parseInt(workIn.value) || 25) * 60; statusText.textContent = '倒计时模式'; display.style.fontSize = '64px'; }
         else { statusText.textContent = '正计时（秒表）'; display.style.fontSize = '48px'; }

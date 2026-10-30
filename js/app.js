@@ -140,8 +140,48 @@
     await invoke('store:set', 'recents', state.recents);
   }
 
+  /* ============ 工具检索 ============
+     首页与标题栏共用同一套「结果行」渲染，避免两处搜索长得不一样。
+     命中词要标出来：用户打了「合并」，结果里就得看见「合并」两个字在哪，
+     否则一屏十几行看过去分不清为什么这条被搜出来。 */
+  function escapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  function highlightHit(text, q) {
+    const safe = window.ui.escapeHtml(text == null ? '' : text);
+    const tokens = String(q || '').trim().split(/\s+/).filter(Boolean)
+      .map(t => escapeRe(window.ui.escapeHtml(t)));
+    if (!tokens.length) return safe;
+    // 长词优先，否则「合并」可能被更短的「合」抢先切碎，标红范围会变碎
+    tokens.sort((a, b) => b.length - a.length);
+    return safe.replace(new RegExp('(' + tokens.join('|') + ')', 'gi'), '<mark class="sr-hit">$1</mark>');
+  }
+  function searchResultRow(t, q) {
+    const mod = R.MODULES.find(m => m.id === t.module);
+    const row = div('search-result');
+    // 左栏（图标 + 名称 + 标记）与右栏（说明）分开：首页列表里十几个结果并排看，
+    // 说明文字右对齐会被推到大老远，中间空出一大段，视觉上跟名称断开。
+    // 拆成两栏后说明固定从同一 x 起排，像一张表，扫读快得多。
+    const main = div('sr-main');
+    main.appendChild(icon(t.icon));
+    main.appendChild(h('span', { class: 'sr-name', html: highlightHit(t.name, q) }));
+    if (isDangerTool(t.id)) main.appendChild(h('span', { class: 'sr-danger' }, isDangerEnabled(t.id) ? '高危' : '未启用'));
+    main.appendChild(h('span', { class: 'sr-module' }, mod ? mod.name : ''));
+    row.appendChild(main);
+    row.appendChild(h('span', { class: 'sr-desc', title: t.desc || '' }, t.desc || ''));
+    return row;
+  }
+  /* Ctrl+K 的去向：在首页就聚焦首页那个大搜索框，在别的页面聚焦标题栏的。
+     首页时标题栏搜索是隐藏的，不这么分流的话 Ctrl+K 会聚焦到一个 display:none 的输入框，
+     光标看不见、打字没反应，用户只会以为快捷键坏了。 */
+  function focusSearch() {
+    if (state.view.type === 'home') {
+      const inp = contentEl && contentEl.querySelector('.hs-input');
+      if (inp) { inp.focus(); inp.select(); return; }
+    }
+    if (searchInput) { searchInput.focus(); searchInput.select(); }
+  }
+
   /* ============ 布局 ============ */
-  let sidebarEl, contentEl, tabbarEl, breadcrumbEl, searchInput, searchDrop, statusText, cpuEl, memEl, maxBtn, themeIconEl;
+  let sidebarEl, contentEl, tabbarEl, breadcrumbEl, searchInput, searchDrop, searchWrapEl, statusText, cpuEl, memEl, maxBtn, themeIconEl;
 
   function buildShell() {
     /* 侧边栏 */
@@ -197,6 +237,7 @@
     const titlebar = div('titlebar');
     breadcrumbEl = div('breadcrumb');
     const searchWrap = div('search-wrap');
+    searchWrapEl = searchWrap;
     searchWrap.appendChild(Object.assign(div('', icon('search', 'icon')), { className: 'search-icon' }));
     searchInput = h('input', { class: 'search-input', placeholder: '搜索工具，Ctrl+K 快速聚焦…' });
     searchDrop = div('search-dropdown');
@@ -265,21 +306,23 @@
     on('snip:region', (rect) => { window.__recRegion = rect; });
     on('tray:err', (msg) => toast(msg, 'warn'));
 
-    /* 搜索 */
+    /* 标题栏搜索：结果行复用 searchResultRow()，与首页结果列表同一套渲染 */
     let hlIndex = -1;
     function doSearch() {
       const q = searchInput.value;
-      const results = R.search(q).slice(0, 12);
+      const results = R.search(q);
       searchDrop.innerHTML = '';
       hlIndex = -1;
       if (!q.trim() || !results.length) { searchDrop.classList.remove('show'); return; }
-      for (const t of results) {
-        const mod = R.MODULES.find(m => m.id === t.module);
-        const item = div('search-result', icon(t.icon), h('span', { class: 'sr-name' }, t.name),
-          h('span', { class: 'sr-module' }, mod ? mod.name : ''), h('span', { class: 'sr-desc' }, t.desc || ''));
+      const shown = results.slice(0, 10);
+      shown.forEach((t, i) => {
+        const item = searchResultRow(t, q);
         item.addEventListener('click', () => { openTool(t.id); hideSearch(); });
-        item.dataset.idx = searchDrop.children.length;
+        item.dataset.idx = i;
         searchDrop.appendChild(item);
+      });
+      if (results.length > shown.length) {
+        searchDrop.appendChild(div('sr-more', `另有 ${results.length - shown.length} 个结果，在首页搜索中查看`));
       }
       searchDrop.classList.add('show');
     }
@@ -301,7 +344,10 @@
     });
     document.addEventListener('click', (e) => { if (!searchDrop.contains(e.target) && e.target !== searchInput) searchDrop.classList.remove('show'); });
     document.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        focusSearch();
+      }
     });
   }
 
@@ -328,6 +374,10 @@
 
   function render() {
     renderNav(); renderBreadcrumb(); renderTabs(); renderContent();
+    // 首页已经有自己那个大搜索框了。标题栏再摆一个同样的输入框，
+    // 页面上就有两个搜索：用户会不知道该往哪个里打字，Ctrl+K 的焦点也会打架。
+    // 所以首页收起标题栏搜索，离开首页再显示。
+    if (searchWrapEl) searchWrapEl.classList.toggle('hidden', state.view.type === 'home');
   }
   // 刷新：先同步高危能力状态，再重绘，保证卡片红/灰与实际开关一致
   async function refresh() {
@@ -464,56 +514,138 @@
     return card;
   }
   function renderHome(page) {
+    /* 首页布局：搜索是主入口，模块卡片退居其后。
+     *
+     * 之前是「大标题 + 10 个分类卡片」，搜索框只在标题栏里占 440px。
+     * 但 93 个工具摊在 10 个分类下，用户记住模块归属的成本远高于直接打两个字，
+     * 实际路径是「搜索 → 直达」。所以把搜索提到视觉第一层，
+     * 分类卡片保留（浏览/发现仍然需要它），但降为次要区块。
+     */
     const hero = div('home-hero');
-    hero.appendChild(h('h1', null, '核核工具箱'));
-    hero.appendChild(h('p', null, (R.all ? R.all.length : 0) + ' 个工具，本地运行，不联网也能用'));
+    const heroTop = div('home-hero-top');
+    heroTop.appendChild(h('h1', null, '核核工具箱'));
+    heroTop.appendChild(h('p', null, (R.all ? R.all.length : 0) + ' 个工具，本地运行，不联网也能用'));
+    hero.appendChild(heroTop);
+
     const hs = div('home-search');
-    const inp = h('input', { placeholder: '搜索全部工具，回车直达…' });
-    const heroIcon = icon('search', 'icon');
-    heroIcon.style.cssText = 'position:absolute;left:12px;top:12px;color:var(--text-3)';
-    hs.appendChild(heroIcon);
-    hs.appendChild(inp);
-    inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        const r = R.search(inp.value)[0];
-        if (r) openTool(r.id); else toast('未找到相关工具', 'warn');
-      }
+    hs.setAttribute('role', 'search');
+    const inp = h('input', {
+      class: 'hs-input',
+      type: 'search',
+      placeholder: '搜索工具，如「pdf 合并」「图片压缩」「密码」…',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      'aria-label': '搜索工具',
+      'aria-describedby': 'hs-hint'
     });
-    inp.addEventListener('input', window.ui.debounce(() => {
-      const r = R.search(inp.value);
-      if (inp.value && r.length === 1) { openTool(r[0].id); inp.value = ''; }
-    }, 400));
+    hs.appendChild(h('span', { class: 'hs-icon' }, icon('search', 'icon-lg')));
+    hs.appendChild(inp);
+    hs.appendChild(h('span', { class: 'hs-kbd', id: 'hs-hint' }, 'Ctrl K'));
     hero.appendChild(hs);
+
+    // 搜索结果区：有输入时占据整页（分类卡片让位），无输入时隐藏
+    const results = div('home-results');
+    hero.appendChild(results);
     page.appendChild(hero);
 
-    // 最近使用：仅在有记录时显示（新用户不必看一张空卡片占位）
+    const browse = div('home-browse');
+
+    let hlIndex = -1;
+    let current = [];
+
+    function renderResults() {
+      const q = inp.value;
+      results.innerHTML = '';
+      hlIndex = -1;
+      current = q.trim() ? R.search(q) : [];
+      if (!q.trim()) {
+        results.classList.remove('show');
+        browse.classList.remove('hidden');
+        return;
+      }
+      results.classList.add('show');
+      browse.classList.add('hidden');
+
+      if (!current.length) {
+        results.appendChild(div('hs-empty',
+          h('span', { class: 'hs-empty-icon' }, iconLg('search')),
+          div('',
+            div('hs-empty-title', '没有找到「' + q.trim() + '」相关的工具'),
+            div('hs-empty-tip', '换个说法试试，比如「压缩」「PDF」「密码」「截图」；也可以清空搜索浏览全部分类'))));
+        return;
+      }
+      const head = div('hs-head',
+        h('span', null, current.length + ' 个结果'),
+        h('span', { class: 'hs-head-tip' }, '↑↓ 选择 · Enter 打开 · Esc 清空'));
+      results.appendChild(head);
+      current.forEach((t, i) => {
+        const row = searchResultRow(t, q);
+        row.classList.add('hs-row');
+        row.addEventListener('click', () => openTool(t.id));
+        row.addEventListener('mousemove', () => setHl(i));
+        results.appendChild(row);
+      });
+    }
+    function setHl(i) {
+      const rows = [...results.querySelectorAll('.hs-row')];
+      hlIndex = i;
+      rows.forEach((el, k) => el.classList.toggle('hl', k === i));
+      if (rows[i]) rows[i].scrollIntoView({ block: 'nearest' });
+    }
+    function clearSearch() {
+      inp.value = '';
+      renderResults();
+      inp.focus();
+    }
+
+    inp.addEventListener('input', window.ui.debounce(renderResults, 90));
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!current.length) return;
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        setHl((hlIndex + step + current.length) % current.length);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const t = current[hlIndex >= 0 ? hlIndex : 0];
+        if (t) openTool(t.id);
+      } else if (e.key === 'Escape') {
+        if (inp.value) { e.preventDefault(); clearSearch(); }
+        else inp.blur();
+      }
+    });
+
+    /* ---- 浏览区（无搜索时显示）：最近使用 + 分类 ---- */
     const recents = state.recents.map(id => R.get(id)).filter(Boolean);
     if (recents.length) {
-      const sec2 = div('card');
-      sec2.appendChild(div('card-title', icon('clock'), '最近使用'));
-      sec2.appendChild(div('recent-row', ...recents.map(t => {
+      const card = div('card home-recent');
+      card.appendChild(div('card-title', icon('clock'), '最近使用'));
+      card.appendChild(div('recent-row', ...recents.map(t => {
         const chip = div('recent-chip', icon(t.icon), h('span', null, t.name));
         chip.addEventListener('click', () => openTool(t.id));
         return chip;
       })));
-      page.appendChild(sec2);
+      browse.appendChild(card);
     }
 
-    // 分类卡片只留名称与数量；模块说明在进入该模块后由页头呈现，不在此重复
-    const sec3 = div('card');
-    sec3.appendChild(div('card-title', icon('grid'), '全部分类'));
-    sec3.appendChild(div('tool-grid cols-4', ...R.MODULES.map(m => {
+    // 分类卡片：保留，但改成紧凑条 —— 每行四列、只显示名称与数量，
+    // 说明文字进 title，把纵向空间让给搜索。
+    const sec = div('card');
+    sec.appendChild(div('card-title', icon('grid'), '按分类浏览'));
+    sec.appendChild(div('home-cats', ...R.MODULES.map(m => {
       const count = R.byModule(m.id).length;
-      const card = div('tool-card');
-      card.appendChild(div('tc-icon', iconLg(m.icon)));
-      const info = div('');
-      info.appendChild(div('tc-name', m.name));
-      info.appendChild(div('tc-desc', `${count} 个工具`));
-      card.appendChild(info);
-      card.addEventListener('click', () => showView({ type: 'module', moduleId: m.id }));
-      return card;
+      const c = div('home-cat');
+      c.title = m.desc || '';
+      c.appendChild(h('span', { class: 'hc-icon' }, iconLg(m.icon)));
+      c.appendChild(h('span', { class: 'hc-name' }, m.name));
+      c.appendChild(h('span', { class: 'hc-count' }, String(count)));
+      c.addEventListener('click', () => showView({ type: 'module', moduleId: m.id }));
+      return c;
     })));
-    page.appendChild(sec3);
+    browse.appendChild(sec);
+    page.appendChild(browse);
+
+    renderResults();
   }
   function renderFavPage(page) {
     page.appendChild(div('tool-header', div('th-icon', iconLg('star')), div('', h('h2', null, '我的收藏'), h('div', { class: 'th-desc' }, '高频工具快速访问'), )));
@@ -545,11 +677,19 @@
     const starBtn = btn(starred ? '已收藏' : '收藏', 'btn-secondary btn-sm th-star', () => toggleFavorite(toolId), 'star');
     head.appendChild(starBtn);
     page.appendChild(head);
-    // 高危工具未启用时不渲染功能本体，只给一张说明卡 + 去设置的入口。
-    // （主进程还有一道 IPC 门禁，这里是界面层的提示，两层都要有）
-    if (isDangerTool(toolId) && !isDangerEnabled(toolId)) {
+    // 高危工具未启用时的处理。
+    // 【不能整页锁死】local-notes / clipboard-history 只在「删除」时需要 file-delete，
+    // 记笔记、看剪贴板历史本身是无害的读操作。原来这里一律换成说明卡，
+    // 用户点进来看到「该工具默认未启用」，会直接以为功能坏了。
+    // 现在：只有「整个工具的所有能力都是高危」才锁页；否则照常渲染，
+    // 交由各操作自己在触发时弹门禁提示（IPC 层本来就有操作级门禁，双层覆盖）。
+    if (isDangerTool(toolId) && !isDangerEnabled(toolId) && requiresWholeToolLock(toolId)) {
       page.appendChild(dangerLockedCard(toolId, t.name));
       return;
+    }
+    // 部分高危：渲染功能本体，但在页面顶部放一条提示，说明哪些操作需要开启
+    if (isDangerTool(toolId) && !isDangerEnabled(toolId)) {
+      page.appendChild(dangerNoticeCard(t.id));
     }
     try {
       t.render(page, { App: window.App, ui: window.ui, api: window.api });
@@ -566,6 +706,22 @@
       '「' + toolName + '」涉及的破坏性操作可能造成数据丢失或系统状态中断，因此默认关闭。' +
       '请在「设置 → 高危功能」中按需开启，开启后本工具才会可用。'));
     card.appendChild(div('form-row', btn('前往设置 → 高危功能', 'btn-danger', () => showView({ type: 'settings' }))));
+    return card;
+  }
+  /* 只有「删文件」这一项高危能力的工具（记事本、剪贴板历史）：
+   * 浏览/编辑是安全的，锁整页会让用户以为功能坏了，所以只提示不封锁。 */
+  const DELETE_ONLY_TOOLS = new Set(['local-notes', 'clipboard-history']);
+  function requiresWholeToolLock(toolId) { return !DELETE_ONLY_TOOLS.has(toolId); }
+  function dangerNoticeCard(toolId) {
+    const card = div('card');
+    card.style.border = '1px solid var(--warning)';
+    card.style.background = 'color-mix(in srgb, var(--warning) 8%, transparent)';
+    card.appendChild(div('', { style: { fontWeight: 600, marginBottom: '4px' } },
+      '⚠ 删除功能默认关闭，其余功能可正常使用'));
+    card.appendChild(div('field-hint',
+      '本工具的「删除」属于高危操作，需在「设置 → 高危功能」中开启后才会生效；' +
+      '浏览、编辑、复制等操作不受影响。'));
+    card.appendChild(div('form-row', btn('前往设置 → 高危功能', 'btn-sm btn-secondary', () => showView({ type: 'settings' }))));
     return card;
   }
 

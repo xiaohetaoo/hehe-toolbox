@@ -1,7 +1,7 @@
 /* 模块：办公文档 —— PDF 处理 / 图片转PDF / PDF转图片 / 翻译 / 占位 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, dropzone, fmtBytes } = window.ui;
+  const { div, btn, toast, copyText, filePicker, fmtBytes } = window.ui;
   const { invoke } = window.api;
   const MOD = 'office';
 
@@ -11,17 +11,30 @@
     desc: 'PDF 合并、拆分、提取页面、旋转页面（pdf-lib 本地处理）',
     keywords: ['pdf', '合并', '拆分', '旋转'],
     render(page) {
-      const files = [];
-      const dz = dropzone({ text: '拖入一个或多个 PDF 文件', accept: 'pdf', onFiles: (p) => { files.push(...p); label.textContent = `已选 ${files.length} 个 PDF：` + files.map(f => f.split(/[\\/]/).pop()).join('、'); } });
-      const label = div('field-hint', '未选择');
+      /* 合并顺序 = 列表顺序，所以列表要能上下调序；删除/清空也归 picker */
+      const picker = filePicker({
+        text: '拖入一个或多个 PDF 文件',
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        filter: (x) => /pdf$/i.test(x),
+        onReject: (n) => toast(`已忽略 ${n} 个非 PDF 文件`, 'warn'),
+        rowEnd: (item, i, row) => {
+          // 顺序有意义：合并按列表顺序进行，图片按此顺序成页
+          const up = h('button', { class: 'btn btn-text btn-sm', title: '上移', onclick: (e) => { e.stopPropagation(); picker.move(i, -1); } }, '↑');
+          up.disabled = i === 0;
+          row.appendChild(up);
+          const down = h('button', { class: 'btn btn-text btn-sm', title: '下移', onclick: (e) => { e.stopPropagation(); picker.move(i, 1); } }, '↓');
+          down.disabled = i === picker.count - 1;
+          row.appendChild(down);
+        }
+      });
       const status = h('span', { class: 'field-hint' }, '');
 
       const mergeBtn = btn('🔗 合并为一个 PDF', 'btn-primary', async () => {
-        if (files.length < 2) return toast('合并至少需要 2 个 PDF', 'warn');
+        if (picker.count < 2) return toast('合并至少需要 2 个 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
           const out = await PDFDocument.create();
-          for (const f of files) {
+          for (const f of picker.paths) {
             const r = await invoke('fs:read-file-b64', f);
             const src = await PDFDocument.load(r.b64, { ignoreEncryption: true });
             const pages = await out.copyPages(src, src.getPageIndices());
@@ -37,10 +50,10 @@
 
       const pageIn = h('input', { class: 'input input-sm mono', placeholder: '页码范围，如 1-3,5', style: { width: '160px' } });
       const extractBtn = btn('📄 提取页面', 'btn-secondary', async () => {
-        if (!files.length) return toast('请先选择 PDF', 'warn');
+        if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
-          const r = await invoke('fs:read-file-b64', files[0]);
+          const r = await invoke('fs:read-file-b64', picker.paths[0]);
           const src = await PDFDocument.load(r.b64, { ignoreEncryption: true });
           const total = src.getPageCount();
           const parsed = parseRanges(pageIn.value, total);
@@ -59,17 +72,17 @@
 
       const splitEvery = h('input', { type: 'number', class: 'input input-sm', value: '1', min: '1', style: { width: '70px' } });
       const splitBtn = btn('✂ 拆分 PDF', 'btn-secondary', async () => {
-        if (!files.length) return toast('请先选择 PDF', 'warn');
+        if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
-          const r = await invoke('fs:read-file-b64', files[0]);
+          const r = await invoke('fs:read-file-b64', picker.paths[0]);
           const src = await PDFDocument.load(r.b64, { ignoreEncryption: true });
           const n = src.getPageCount();
           const per = Math.max(1, parseInt(splitEvery.value) || 1);
           // 输出目录带时间戳：固定目录名会让第二次拆分（哪怕换了一个 PDF）
           // 把上一次的 part-001.pdf 静默覆盖，甚至把两个不同文档的分页混进同一目录。
           const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-          const dir = files[0].replace(/\.pdf$/i, '') + '-split-' + stamp;
+          const dir = picker.paths[0].replace(/\.pdf$/i, '') + '-split-' + stamp;
           await invoke('fs:mkdir', dir);
           for (let i = 0; i < n; i += per) {
             const out = await PDFDocument.create();
@@ -86,15 +99,15 @@
 
       const rotSel = h('select', { class: 'select input-sm' }, h('option', { value: '90' }, '90°'), h('option', { value: '180' }, '180°'), h('option', { value: '270' }, '270°'));
       const rotBtn = btn('🔄 旋转全部页面', 'btn-secondary', async () => {
-        if (!files.length) return toast('请先选择 PDF', 'warn');
+        if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument, degrees } = window.PDFLib;
-          const r = await invoke('fs:read-file-b64', files[0]);
+          const r = await invoke('fs:read-file-b64', picker.paths[0]);
           const doc = await PDFDocument.load(r.b64, { ignoreEncryption: true });
           const angle = parseInt(rotSel.value);
           doc.getPages().forEach(pg => pg.setRotation(degrees((pg.getRotation().angle + angle) % 360)));
           const bytes = await doc.save();
-          const outPath = await invoke('dialog:save', { defaultPath: files[0].replace(/\.pdf$/i, '') + '-rotated.pdf' });
+          const outPath = await invoke('dialog:save', { defaultPath: picker.paths[0].replace(/\.pdf$/i, '') + '-rotated.pdf' });
           if (!outPath) return;
           await invoke('fs:write-file-b64', outPath, arrayB64(bytes));
           toast('旋转完成', 'success');
@@ -131,7 +144,7 @@
         for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
         return btoa(bin);
       }
-      page.appendChild(div('card', div('card-title', '选择 PDF'), dz, label));
+      page.appendChild(div('card', div('card-title', '选择 PDF'), picker.el));
       page.appendChild(div('card', div('card-title', '操作'),
         div('form-row', mergeBtn),
         div('form-row', h('span', { class: 'form-label' }, '提取'), pageIn, extractBtn),
@@ -147,15 +160,28 @@
     desc: '多张图片合并为一个 PDF 文档',
     keywords: ['图片', 'pdf', '转换'],
     render(page) {
-      const files = [];
-      const dz = dropzone({ text: '按顺序拖入图片（JPG/PNG）', onFiles: (p) => { files.push(...p); label.textContent = `已选 ${files.length} 张`; } });
-      const label = div('field-hint', '未选择');
+      /* 图片顺序 = PDF 页序，列表支持上下调序 */
+      const picker = filePicker({
+        text: '按顺序拖入图片（JPG/PNG）',
+        filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png'] }],
+        filter: (x) => /(jpg|jpeg|png)$/i.test(x),
+        onReject: (n) => toast(`已忽略 ${n} 个非 JPG/PNG 文件`, 'warn'),
+        rowEnd: (item, i, row) => {
+          // 顺序有意义：合并按列表顺序进行，图片按此顺序成页
+          const up = h('button', { class: 'btn btn-text btn-sm', title: '上移', onclick: (e) => { e.stopPropagation(); picker.move(i, -1); } }, '↑');
+          up.disabled = i === 0;
+          row.appendChild(up);
+          const down = h('button', { class: 'btn btn-text btn-sm', title: '下移', onclick: (e) => { e.stopPropagation(); picker.move(i, 1); } }, '↓');
+          down.disabled = i === picker.count - 1;
+          row.appendChild(down);
+        }
+      });
       const btn2 = btn('📄 转换为 PDF', 'btn-primary', async () => {
-        if (!files.length) return toast('请先选择图片', 'warn');
+        if (!picker.count) return toast('请先选择图片', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
           const doc = await PDFDocument.create();
-          for (const f of files) {
+          for (const f of picker.paths) {
             const ext = f.split('.').pop().toLowerCase();
             const r = await invoke('fs:read-file-b64', f);
             const bytes = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
@@ -172,7 +198,7 @@
           toast('已生成：' + outPath, 'success');
         } catch (e) { toast('转换失败：' + e.message, 'error'); }
       });
-      page.appendChild(div('card', div('card-title', '选择图片'), dz, label, div('form-row', btn2)));
+      page.appendChild(div('card', div('card-title', '选择图片'), picker.el, div('form-row', btn2)));
     }
   });
 
@@ -187,11 +213,14 @@
       const scaleIn = h('input', { type: 'number', class: 'input input-sm', value: '2', min: '1', max: '4', step: '0.5', style: { width: '80px' } });
       const list = div('');
       const status = h('span', { class: 'field-hint' }, '');
-      const dz = dropzone({
-        text: '选择 PDF 文件', multiple: false,
-        onFiles: async (p) => {
-          pdfPath = p[0];
-          info.textContent = pdfPath;
+      const picker = filePicker({
+        text: '选择 PDF 文件',
+        single: true,
+        emptyText: '还没有选择 PDF',
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        onChange: (items) => {
+          pdfPath = items.length ? items[0].path : null;
+          info.textContent = pdfPath || '未选择';
           list.innerHTML = '';
         }
       });
@@ -225,7 +254,7 @@
           toast('PDF 转图片完成', 'success');
         } catch (e) { status.textContent = '✗ ' + e.message; }
       }
-      page.appendChild(div('card', div('card-title', '选择 PDF'), dz, info,
+      page.appendChild(div('card', div('card-title', '选择 PDF'), picker.el, info,
         div('form-row', h('span', { class: 'form-label' }, '清晰度'), scaleIn, h('span', { class: 'field-hint' }, '倍渲染（2 = 约 192dpi）'),
           btn('🖼 开始转换', 'btn-primary', render), status)));
       page.appendChild(list);
@@ -239,8 +268,12 @@
     keywords: ['预览', 'preview', 'pdf', 'word', 'excel', '查看'],
     render(page) {
       let filePath = '';
-      const label = h('span', { class: 'field-hint' }, '未选择');
-      const dz = dropzone({ text: '拖入或选择文档（pdf / txt / md / doc(x) / xls(x) / ppt(x)）', onFiles: (p) => { filePath = p[0]; label.textContent = filePath; } });
+      const picker = filePicker({
+        text: '拖入或选择文档（pdf / txt / md / doc(x) / xls(x) / ppt(x)）',
+        single: true,
+        emptyText: '还没有选择文档',
+        onChange: (items) => { filePath = items.length ? items[0].path : ''; }
+      });
       const status = h('span', { class: 'field-hint' }, '');
       const view = div('doc-preview-box', { style: { maxHeight: '70vh', overflow: 'auto', padding: '8px', background: 'var(--bg-2)', borderRadius: '8px', marginTop: '8px' } });
       async function preview() {
@@ -300,7 +333,7 @@
         }
         status.textContent = `✓ ${(r.size / 1024).toFixed(1)} KB`;
       }
-      page.appendChild(div('card', div('card-title', '文档'), dz, label,
+      page.appendChild(div('card', div('card-title', '文档'), picker.el,
         div('form-row', btn('👁 预览', 'btn-primary', preview), status)));
       page.appendChild(div('card', div('card-title', '预览'), view));
     }
@@ -352,15 +385,12 @@
     desc: 'Office 文档与 PDF 互转（LibreOffice 优先，未装则用 Microsoft Office）',
     keywords: ['word', 'excel', 'pdf', '转换', 'office'],
     render(page) {
-      const files = [];
-      const dz = dropzone({
+      const OFFICE_RE = /(doc|docx|rtf|txt|xls|xlsx|csv|ppt|pptx|pdf)$/i;
+      const picker = filePicker({
         text: '拖入 Word / Excel / PPT / PDF 文件（可多选）',
-        onFiles: (p) => {
-          files.push(...p.filter(x => /\.(doc|docx|rtf|txt|xls|xlsx|csv|ppt|pptx|pdf)$/i.test(x)));
-          label.textContent = `已选 ${files.length} 个文件`;
-        }
+        filter: (x) => OFFICE_RE.test(x),
+        onReject: (n) => toast(`已忽略 ${n} 个不支持的文件`, 'warn')
       });
-      const label = div('field-hint', '未选择');
       const targetSel = h('select', { class: 'select input-sm' },
         h('option', { value: 'pdf' }, '转换为 PDF'),
         h('option', { value: 'docx' }, '转换为 DOCX（PDF→Word，需 Microsoft Word）'));
@@ -377,15 +407,18 @@
         else if (r.office) engineEl.innerHTML = '✓ 检测到 Microsoft Office 引擎（COM）';
         else engineEl.innerHTML = '<span class="status-warn">⚠ 未检测到 LibreOffice 或 Microsoft Office，请先安装其中之一</span>';
       }).catch(() => {});
+      let running = false; // 防重入标志：转换中禁止再次点击
       const startBtn = btn('🚀 开始转换', 'btn-primary', run);
       async function run() {
-        if (!files.length) return toast('请先选择文件', 'warn');
-        if (targetSel.value === 'docx' && files.some(f => !f.toLowerCase().endsWith('.pdf'))) return toast('转 DOCX 仅支持 PDF 来源（PDF→Word）', 'warn');
+        if (running) return; // 防重入：重复转换会并发占用 LibreOffice/Office COM
+        running = true;
+        if (!picker.count) { running = false; return toast('请先选择文件', 'warn'); }
+        if (targetSel.value === 'docx' && picker.paths.some(f => !f.toLowerCase().endsWith('.pdf'))) return toast('转 DOCX 仅支持 PDF 来源（PDF→Word）', 'warn');
         startBtn.disabled = true; status.textContent = '转换中…';
         listBox.innerHTML = '';
-        const outDir = outDirIn.value.trim() || files[0].replace(/[\\/][^\\/]*$/, '');
+        const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');
         try {
-          const r = await invoke('office:convert', { files: [...files], target: targetSel.value, outDir });
+          const r = await invoke('office:convert', { files: picker.paths, target: targetSel.value, outDir });
           status.textContent = `完成（引擎：${r.engine}）：成功 ${r.results.filter(x => x.ok).length} / ${r.results.length}`;
           for (const res of r.results) {
             const row = div('form-row',
@@ -399,9 +432,9 @@
         } catch (e) {
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
-        } finally { startBtn.disabled = false; }
+        } finally { startBtn.disabled = false; running = false; }
       }
-      page.appendChild(div('card', div('card-title', '选择文件'), dz, label, engineEl));
+      page.appendChild(div('card', div('card-title', '选择文件'), picker.el, engineEl));
       page.appendChild(div('card', div('card-title', '转换'),
         div('form-row', h('span', { class: 'form-label' }, '目标格式'), targetSel),
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),

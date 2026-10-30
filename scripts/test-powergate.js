@@ -49,7 +49,17 @@ const mustAllow = [
   'dir C:' + B,                                  // 结尾反斜杠
   'echo shutdown',                               // 只是文本里提到
   'type shutdown.txt',
-  'shutdownx /s',                                // 同名但不是它
+  'shutdownx /s',                                // 同名但不是它,
+
+  /* 文件名里含 shutdown 的日常操作：旧实现对整串做词根匹配，
+     而 . \ : 都不算边界，于是这些全被误拦成「高危功能已关闭」。 */
+  'del shutdown.log',
+  'ren shutdown.txt x.txt',
+  'copy shutdown.exe d:' + B,
+  'tasklist | findstr shutdown',
+  'move shutdown.log backup' + B,
+  'notepad shutdown.log',
+  'dir shutdown.log',
   '',
   null,
   undefined

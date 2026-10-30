@@ -13,7 +13,7 @@
  */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, dropzone, fmtBytes, progressEl } = window.ui;
+  const { div, btn, toast, filePicker, fmtBytes, progressEl } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const MOD = 'media';
 
@@ -47,18 +47,29 @@
       let running = false;
       let canceled = false;
 
-      const dz = dropzone({
+      const picker = filePicker({
         text: '拖入图片或音视频（可多选）',
-        onFiles: (p) => {
-          if (running) return toast('正在处理中，请先等待完成或点停止', 'warn');
-          const okList = p.filter(x => isImg(x) || isAv(x));
-          const skipped = p.length - okList.length;
-          files.push(...okList);
-          label.textContent = `已选 ${files.length} 个文件` + (skipped ? `（已忽略 ${skipped} 个不支持的类型）` : '');
-          refreshList();
+        filter: (x) => isImg(x) || isAv(x),
+        onReject: (n) => toast(`已忽略 ${n} 个不支持的类型（只收图片/音视频）`, 'warn'),
+        beforeRemove: () => {
+          if (running) { toast('正在处理中，请先等待完成或点停止', 'warn'); return false; }
+          return true;
+        },
+        onChange: (items) => { files = items.map((x) => x.path); },
+        rowEnd: (item, i, row) => {
+          // 类型（图片/音视频）放进状态标签的 title，不再单独占一列 —— 行内横向空间要留给文件名
+          const tag = h('span', {
+            class: 'tag tag-gray ts-tag', style: { width: '64px', justifyContent: 'center' },
+            title: isImg(item.path) ? '图片' : '音视频'
+          }, '等待中');
+          row.appendChild(tag);
+          const bar = div('progress', { style: { width: '110px', flex: 'none' } });
+          const fill = div('progress-fill'); fill.classList.add('ts-fill');
+          bar.appendChild(fill);
+          row.appendChild(bar);
+          row.appendChild(h('span', { class: 'field-err ts-err', style: { fontSize: '11px', maxWidth: '200px' } }, ''));
         }
       });
-      const label = div('field-hint', '未选择文件');
 
       /* ---- 目标体积：快捷档位 或 指定 MB ---- */
       const tierSel = h('select', { class: 'select' });
@@ -96,7 +107,6 @@
         } catch (e) { toast(e.message, 'error'); }
       });
 
-      const listBox = div('');
       const prog = progressEl(); prog.hide();
       const status = div('field-hint', '');
       const startBtn = btn('🚀 开始压缩', 'btn-primary', run);
@@ -108,31 +118,17 @@
 
       let runJobId = null;
 
+      /* 列表由 picker 渲染；这里只把后台事件映射回行上 */
       function refreshList() {
-        listBox.innerHTML = '';
-        files.forEach((f, i) => {
-          const row = div('form-row');
-          row.dataset.i = i;
-          const tag = h('span', { class: 'tag tag-gray', style: { width: '64px', justifyContent: 'center' } }, '等待中');
-          tag.classList.add('ts-tag');
-          row.appendChild(tag);
-          row.appendChild(h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, f.split(/[\\/]/).pop()));
-          row.appendChild(h('span', { class: 'field-hint' }, isImg(f) ? '图片' : '音视频'));
-          const bar = div('progress', { style: { width: '120px' } });
-          const fill = div('progress-fill'); fill.classList.add('ts-fill');
-          bar.appendChild(fill);
-          row.appendChild(bar);
-          row.appendChild(h('span', { class: 'field-err', style: { fontSize: '11px', maxWidth: '200px' } }, ''));
-          listBox.appendChild(row);
-        });
+        files = picker.paths;
       }
 
       function setRow(i, { tagText, tagClass, pct, rowText }) {
-        const row = listBox.querySelector(`[data-i="${i}"]`);
+        const row = picker.list.rowAt(i);
         if (!row) return;
         const tag = row.querySelector('.ts-tag');
         const fill = row.querySelector('.ts-fill');
-        const errEl = row.querySelector('.field-err');
+        const errEl = row.querySelector('.ts-err');
         if (tagText && tag) { tag.textContent = tagText; tag.className = 'tag ts-tag ' + (tagClass || 'tag-gray'); }
         if (pct != null && fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
         if (rowText && errEl) errEl.textContent = rowText;
@@ -210,8 +206,9 @@
 
         running = true; canceled = false;
         startBtn.disabled = true; cancelBtn.disabled = false;
-        dz.classList.add('busy');
+        picker.dz.classList.add('busy');
         prog.show(); status.textContent = '准备中…';
+        picker.setLocked(true);
 
         // 分组：图片走渲染层逐轮编码；音视频整体交给主进程
         const imgs = files.filter(isImg);
@@ -315,15 +312,15 @@
           else if (failures.length) window.ui.alertBox(failures.join('\n'), '部分文件未能压到目标体积');
         } finally {
           running = false;
-          startBtn.disabled = false; cancelBtn.disabled = true;
-          dz.classList.remove('busy');
+          startBtn.disabled = false; cancelBtn.disabled = true; picker.setLocked(false);
+          picker.dz.classList.remove('busy');
           runJobId = null;
           setTimeout(() => prog.hide(), 800);
         }
       }
 
       /* ---- 页面组装 ---- */
-      page.appendChild(div('card', div('card-title', '选择文件'), dz, label));
+      page.appendChild(div('card', div('card-title', '选择文件'), picker.el));
       const targetCard = div('card', div('card-title', '目标体积'),
         modeBox,
         div('form-row', h('span', { class: 'form-label' }, '比例'), tierSel, ' ',
@@ -331,7 +328,7 @@
         div('field-hint', '「按比例」= 每个文件各自按原体积的比例计算上限；「指定大小」= 每个文件都不超过该 MB。两者都是单文件上限，不是整批总和。'),
         div('field-hint', '音视频采用两遍编码：先完整分析一遍画面复杂度，再按目标码率精确分配，因此体积更贴近上限（同体积下画质更好）。代价是分析阶段要额外过一遍文件，大文件会稍久。'));
       const outCard = div('card', div('card-title', '输出位置'), div('form-row', outDirIn, pickOut));
-      const runCard = div('card', div('card-title', '执行'), div('form-row', startBtn, ' ', cancelBtn, prog.el), status, listBox);
+      const runCard = div('card', div('card-title', '执行'), div('form-row', startBtn, ' ', cancelBtn, prog.el), status);
       page.appendChild(targetCard);
       page.appendChild(outCard);
       page.appendChild(runCard);

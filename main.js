@@ -679,7 +679,19 @@ handle('fs:mkdir', async (e, p) => { await fsp.mkdir(p, { recursive: true }); re
 // 这里默认拒绝覆盖（overwrite 需显式传 true），把“静默毁文件”变成可见的错误。
 handle('fs:rename', async (e, from, to, overwrite) => {
   if (!from || !to) throw new Error('缺少重命名路径');
-  if (path.resolve(from) === path.resolve(to)) return true;
+  const rf = path.resolve(from), rt = path.resolve(to);
+  if (rf === rt) return true;
+  /* 【纯大小写改名必须放行】Windows 文件系统大小写不敏感：
+   * 磁盘上只有 FILE.TXT 时 fs.existsSync('file.txt') 同样返回 true，
+   * 于是「批量转小写/转大写」「.JPG → .jpg」这类改名会被下面那句
+   * 「目标文件已存在」全部拒绝 —— 报错指向一个并不存在的冲突。
+   * 判据：两个路径解析后除了大小写完全相同，即视为同一文件的重命名，
+   * 底层 rename 在 NTFS 上能正确改写大小写。
+   * 只放宽「忽略大小写后完全相同」的情形；FILE.TXT → OTHER.TXT 仍然拒绝。 */
+  if (rf.toLowerCase() === rt.toLowerCase()) {
+    await fsp.rename(from, to);
+    return true;
+  }
   if (!overwrite && fs.existsSync(to)) {
     throw new Error('目标文件已存在，为避免覆盖已拒绝：' + to);
   }
@@ -2172,7 +2184,23 @@ function downloadToFile(url, dest, id, ctrl, label) {
             if (st.size === 0) { ok = false; why = '下载内容为空'; }
             else if (total > 0 && st.size !== total) { ok = false; why = `体积不符（${st.size}/${total} 字节）`; }
           } catch (e) { ok = false; why = e.message; }
-          if (!ok) { cleanup(); reject(new Error('下载校验失败：' + why)); return; }
+          if (!ok) {
+            /* 【体积不符必须重试，不能直接 reject】
+             * 传输中途被截断（代理断流、连接被掐）会得到 got < total 的临时文件。
+             * 旧实现在这里直接 reject 退出整个循环 —— MAX_RETRY 那套重试对
+             * 「下载成功但长度不对」这个最常见的中断形态完全无效。
+             * 现在把它当作一次可重试的失败：保留已下载字节（Range 续传），
+             * 下一轮从断点继续。 */
+            attempt++;
+            if (attempt >= MAX_RETRY) {
+              cleanup();
+              reject(new Error('下载校验失败（已重试 ' + MAX_RETRY + ' 次）：' + why));
+              return;
+            }
+            send('job:stream', { id, data: JSON.stringify({ stage: 'retry', attempt, label, reason: why }) });
+            await new Promise(r2 => setTimeout(r2, 1500));
+            continue;
+          }
           await fsp.rename(tmp, dest); // 原子改名：不会出现"半个文件"
           resolve({ size: got });
           return;
@@ -3642,6 +3670,14 @@ handle('power:set', async (e, guid) => {
 
 /* ================= IPC: 通用文件下载（断点续传） ================= */
 handle('net:download', (e, { url, out }) => {
+  /* 【下载前必须查覆盖】downloadToFile 最后是 fsp.rename(tmp, dest)，
+   * 而 Windows 上 rename 目标已存在会直接覆盖 —— 用户手输的保存路径
+   * 一旦撞上已有文件，那个文件会被静默抹掉，界面上只显示「下载完成」。
+   * 这里用与其它写文件通道一致的 checkOverwritable 闸门：
+   * 命中关键目录或已存在同名文件时抛错，让用户换个路径。 */
+  const bad = pathGuard.checkOverwritable(out);
+  if (bad) throw pathGuard.err(bad.code, bad.reason, '请换一个保存路径');
+  if (fs.existsSync(out)) throw new Error('目标文件已存在，为避免覆盖已拒绝：' + out);
   const id = 'dl2' + (++jobSeq);
   const ctrl = new AbortController();
   jobs.set(id, { cancel: () => ctrl.abort() });
@@ -4355,6 +4391,33 @@ if (process.env.HEHE_SMOKE) {
         await tick();
         expect('.home-hero h1', 'display', 'block', '首页标题');
         expect('.home-hero p', 'display', 'block', '首页副标题');
+        // 首页现在是「搜索主导」：主入口是 .hs-input，分类是 .home-cat 紧凑条。
+        // .tool-card / .tool-grid 仍在模块页与收藏页使用，所以下面单独去模块页断言，
+        // 不能再在首页上找它们（首页已不渲染工具卡片网格）。
+        expect('.home-search .hs-input', 'display', 'inline-block', '首页搜索框');
+        expect('.home-cat', 'display', 'flex', '首页分类条');
+        expect('.home-cats', 'display', 'grid', '首页分类网格');
+        const catIcon = document.querySelector('.home-cat .hc-icon');
+        if (catIcon && !catIcon.querySelector('svg')) styleErrs.push('分类条图标缺失');
+        // 搜索交互：输入后结果区必须出现、分类区必须让位
+        const hsInp = document.querySelector('.hs-input');
+        if (hsInp) {
+          hsInp.value = '压缩';
+          hsInp.dispatchEvent(new Event('input', { bubbles: true }));
+          await new Promise(res => setTimeout(res, 260));
+          const resBox = document.querySelector('.home-results');
+          const browseBox = document.querySelector('.home-browse');
+          if (!resBox || !resBox.classList.contains('show')) styleErrs.push('首页搜索后结果区未出现');
+          if (browseBox && getComputedStyle(browseBox).display !== 'none') styleErrs.push('首页搜索后分类区未让位');
+          const rowCount = document.querySelectorAll('.home-results .hs-row').length;
+          if (rowCount === 0) styleErrs.push('搜索「压缩」无结果行');
+          hsInp.value = '';
+          hsInp.dispatchEvent(new Event('input', { bubbles: true }));
+          await new Promise(res => setTimeout(res, 260));
+        }
+        // 工具卡片网格改到模块页验证（首页已不再渲染它）
+        window.App.showView({ type: 'module', moduleId: 'file' });
+        await tick();
         expect('.tool-card', 'display', 'flex', '工具卡片');
         expect('.tool-card .tc-name', 'display', 'block', '卡片标题');
         expect('.tool-card .tc-desc', 'display', 'block', '卡片描述');
@@ -4438,7 +4501,14 @@ if (process.env.HEHE_SHOT) {
         const ids = process.env.HEHE_OPEN.split(',');
         let i = 0;
         const step = async () => {
-          if (i >= ids.length || !win || win.isDestroyed()) return;
+          if (!win || win.isDestroyed()) return;
+          // 拍完就退出：旧实现走完列表后进程继续挂着，一直占着单实例锁，
+          // 下一次截图模式启动会被判「已在运行」直接退出 —— 这正是 0 张截图事故的成因。
+          if (i >= ids.length) {
+            console.log('[shot] all done, exiting');
+            setTimeout(() => app.exit(0), 500);
+            return;
+          }
           const id = ids[i];
           try {
             if (id === 'theme-toggle') {

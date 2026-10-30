@@ -1,9 +1,14 @@
 /* 模块：多媒体处理 —— 图片批量处理 / 压缩 / 水印 / 拼接 / 占位 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, dropzone, fmtBytes, progressEl } = window.ui;
+  const { div, btn, toast, copyText, filePicker, fmtBytes, progressEl } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const MOD = 'media';
+
+  /* 图片类工具的通用筛选：拖进来的非图片直接挡掉，而不是收下后处理时报错 */
+  const IMG_EXT = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'];
+  const isImgPath = (p) => IMG_EXT.includes(String(p).split('.').pop().toLowerCase());
+  const IMG_FILTER = { name: '图片', extensions: IMG_EXT };
 
   function loadImg(path, blob) {
     return new Promise(async (resolve, reject) => {
@@ -50,9 +55,13 @@
     desc: '批量缩放、旋转、格式转换（JPG/PNG/WebP）、压缩',
     keywords: ['图片', '批量', '缩放', '转换', '压缩'],
     render(page) {
-      const paths = [];
-      const dz = dropzone({ text: '拖入或选择要处理的图片（可多选）', onFiles: (p) => { paths.push(...p); label.textContent = `已选 ${paths.length} 张图片`; } });
-      const label = div('field-hint', '未选择');
+      let running = false; // 防重入标志：处理中禁止重复点击
+      const picker = filePicker({
+        text: '拖入或选择要处理的图片（可多选）',
+        filters: [IMG_FILTER],
+        filter: isImgPath,
+        onReject: (n) => toast(`已忽略 ${n} 个非图片文件`, 'warn')
+      });
       const scaleIn = h('input', { type: 'number', class: 'input input-sm', value: '100', style: { width: '80px' } });
       const widthIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '宽', style: { width: '80px' } });
       const heightIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '高', style: { width: '80px' } });
@@ -68,16 +77,21 @@
       const status = h('span', { class: 'field-hint' }, '');
       const preview = div('');
       async function run() {
-        if (!paths.length) return toast('请先选择图片', 'warn');
+        if (running) return; // 防重入：双击「开始」会并发跑两遍
+        if (!picker.count) return toast('请先选择图片', 'warn');
+        running = true;
         prog.show();
+        picker.setLocked(true);
         let outDir = outDirIn.value.trim();
+        const paths = picker.paths.slice();
         if (!outDir) {
           const firstDir = paths[0].replace(/[\\/][^\\/]+$/, '');
           outDir = firstDir + '/hehe-processed';
-          try { await invoke('fs:mkdir', outDir); } catch (e) { prog.hide(); return toast('创建输出目录失败：' + e.message, 'error'); }
-        } else { try { await invoke('fs:mkdir', outDir); } catch (e) { prog.hide(); return toast('创建输出目录失败：' + e.message, 'error'); } }
+          try { await invoke('fs:mkdir', outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
+        } else { try { await invoke('fs:mkdir', outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); } }
         let ok = 0, fail = 0;
         preview.innerHTML = '';
+        try {
         for (let i = 0; i < paths.length; i++) {
           prog.set((i + 1) / paths.length * 100);
           const p = paths[i];
@@ -121,11 +135,15 @@
               h('span', { class: 'field-hint' }, `${fmtBytes(origSize)} → ${fmtBytes(newSize)}（${newSize <= origSize ? '-' : '+'}${Math.abs((1 - newSize / origSize) * 100).toFixed(0)}%）`)));
           } catch (e) { fail++; preview.appendChild(div('form-row', h('span', { class: 'tag tag-red' }, '✗'), h('span', { style: { fontSize: '12px' } }, p), h('span', { class: 'field-err' }, e.message))); }
         }
-        prog.hide();
         status.textContent = `完成：成功 ${ok}，失败 ${fail}，输出目录 ${outDir}`;
         toast(`处理完成（${ok} 成功 / ${fail} 失败）`, fail ? 'warn' : 'success');
+        } finally {
+          // 无论成功、失败还是抛异常，都必须解锁列表并复位按钮状态，
+          // 否则一次异常就让整个工具页永久不可用。
+          running = false; prog.hide(); picker.setLocked(false);
+        }
       }
-      page.appendChild(div('card', div('card-title', '选择图片'), dz, label));
+      page.appendChild(div('card', div('card-title', '选择图片'), picker.el));
       page.appendChild(div('card', div('card-title', '处理参数'),
         div('form-row', h('span', { class: 'form-label' }, '尺寸'), h('span', { class: 'field-hint' }, '缩放%'), scaleIn, ' 或 宽', widthIn, '×高', heightIn,
           h('span', { class: 'field-hint' }, '（等比：只填一个）')),
@@ -144,9 +162,13 @@
     desc: '批量添加文字水印，支持位置、透明度、字号设置',
     keywords: ['水印', '图片'],
     render(page) {
-      const paths = [];
-      const dz = dropzone({ text: '拖入或选择要加水印的图片', onFiles: (p) => { paths.push(...p); label.textContent = `已选 ${paths.length} 张`; } });
-      const label = div('field-hint', '未选择');
+      let running = false; // 防重入标志：处理中禁止重复点击
+      const picker = filePicker({
+        text: '拖入或选择要加水印的图片（可多选）',
+        filters: [IMG_FILTER],
+        filter: isImgPath,
+        onReject: (n) => toast(`已忽略 ${n} 个非图片文件`, 'warn')
+      });
       const textIn = h('input', { class: 'input input-sm', value: '@核核工具箱', style: { flex: '1' } });
       const posSel = h('select', { class: 'select input-sm' },
         ...[['br', '右下'], ['bl', '左下'], ['tr', '右上'], ['tl', '左上'], ['center', '正中']].map(([v, n]) => h('option', { value: v }, n)));
@@ -155,13 +177,18 @@
       const preview = div('');
       const prog = progressEl(); prog.hide();
       async function run() {
-        if (!paths.length) return toast('请先选择图片', 'warn');
+        if (running) return; // 防重入：双击「开始」会并发跑两遍
+        if (!picker.count) return toast('请先选择图片', 'warn');
         if (!textIn.value.trim()) return toast('请输入水印文字', 'warn');
+        running = true;
         prog.show();
+        picker.setLocked(true);
+        const paths = picker.paths.slice();
         const firstDir = paths[0].replace(/[\\/][^\\/]+$/, '');
         const outDir = firstDir + '/hehe-watermark';
-        try { await invoke('fs:mkdir', outDir); } catch (e) { prog.hide(); return toast('创建输出目录失败：' + e.message, 'error'); }
+        try { await invoke('fs:mkdir', outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
         let ok = 0;
+        try {
         for (let i = 0; i < paths.length; i++) {
           prog.set((i + 1) / paths.length * 100);
           try {
@@ -210,10 +237,13 @@
             }
           } catch (e) { console.error(e); }
         }
-        prog.hide();
         toast(`完成，成功 ${ok} 张，输出：${outDir}`, 'success');
+        } finally {
+          // 异常也必须解锁，否则一次失败就让本页永久不可用
+          running = false; prog.hide(); picker.setLocked(false);
+        }
       }
-      page.appendChild(div('card', div('card-title', '选择图片'), dz, label));
+      page.appendChild(div('card', div('card-title', '选择图片'), picker.el));
       page.appendChild(div('card', div('card-title', '水印设置'),
         div('form-row', h('span', { class: 'form-label' }, '文字'), textIn),
         div('form-row', h('span', { class: 'form-label' }, '位置'), posSel, ' 字号', sizeIn, ' 透明度%', opacityIn),
@@ -228,34 +258,56 @@
     desc: '多张截图纵向/横向拼接为一张长图',
     keywords: ['拼接', '长图', '截图'],
     render(page) {
-      let imgs = [];
-      const listEl = div('');
-      const canvasBox = div('');
-      let direction = 'v';
-      const dz = dropzone({
-        text: '按顺序拖入多张截图（文件名排序）',
-        onFiles: async (paths) => {
-          for (const p of paths) {
-            try { imgs.push({ path: p, img: await loadImg(p) }); } catch (e) { toast(p + ': ' + e.message, 'error'); }
+      const thumbs = new Map(); // path -> 缩略图 dataURL，供列表行显示
+      /* 用 let 而不是 const：onChange 里需要引用 picker 自身来调 sortBy，
+       * 而 filePicker 构造期间就会触发一次 onChange，
+       * const 声明在那一刻处于暂时性死区，直接引用会抛 ReferenceError。 */
+      let picker = null;
+      picker = filePicker({
+        text: '按顺序拖入多张截图（可多选）',
+        filters: [IMG_FILTER],
+        filter: isImgPath,
+        onReject: (n) => toast(`已忽略 ${n} 个非图片文件`, 'warn'),
+        onChange: (items) => {
+          /* 顺序即拼接顺序。新加入的按文件名自然序排好，之后用户可以手动上移/下移。
+           * 【必须用 sortBy】onChange 收到的是 items.slice() 拷贝，
+           * 直接 items.sort() 排的是这个拷贝，真实列表顺序纹丝不动 ——
+           * 注释写着「按文件名排好」，实际什么都没做（死代码）。 */
+          if (picker && items.length > 1) {
+            picker.sortBy((a, b) => a.path.localeCompare(b.path, 'zh', { numeric: true }));
           }
-          imgs.sort((a, b) => a.path.localeCompare(b.path, 'zh', { numeric: true }));
-          drawList();
+        },
+        rowStart: (item, i, row) => {
+          row.appendChild(h('img', {
+            class: 'fl-thumb',
+            src: thumbs.get(item.path) || '',
+            style: { width: '48px', height: '36px', objectFit: 'cover', borderRadius: '4px', background: 'var(--border-light)' }
+          }));
+          row.appendChild(h('span', { class: 'fl-name', style: { flex: '1' }, title: item.path }, item.name));
+          const up = h('button', {
+            class: 'btn btn-text btn-sm', title: '上移', onclick: (e) => { e.stopPropagation(); if (!picker.move(i, -1)) {} }
+          }, '↑');
+          up.disabled = i === 0;
+          row.appendChild(up);
+          const down = h('button', {
+            class: 'btn btn-text btn-sm', title: '下移', onclick: (e) => { e.stopPropagation(); picker.move(i, 1); }
+          }, '↓');
+          down.disabled = i === picker.count - 1;
+          row.appendChild(down);
+          // 缩略图是异步加载的：行已渲染完再回填，加载失败就不显示图（不打断列表）
+          if (!thumbs.has(item.path)) {
+            loadImg(item.path).then((img) => {
+              thumbs.set(item.path, img.src);
+              const box = row.querySelector('.fl-thumb');
+              if (box && box.isConnected) box.src = img.src;
+            }).catch(() => {});
+          }
         }
       });
-      function drawList() {
-        listEl.innerHTML = '';
-        listEl.appendChild(div('field-hint', `已添加 ${imgs.length} 张（顺序即拼接顺序）`));
-        imgs.forEach((it, i) => {
-          listEl.appendChild(div('form-row',
-            h('span', { class: 'tag tag-gray' }, String(i + 1)),
-            h('img', { src: it.img.src, style: { height: '36px', borderRadius: '4px' } }),
-            h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, it.path.split(/[\\/]/).pop()),
-            btn('上移', 'btn-sm btn-text', () => { if (i > 0) { [imgs[i - 1], imgs[i]] = [imgs[i], imgs[i - 1]]; drawList(); } }),
-            btn('移除', 'btn-sm btn-text', () => { imgs.splice(i, 1); drawList(); })));
-        });
-      }
+      const canvasBox = div('');
+      let direction = 'v';
       async function stitch() {
-        if (imgs.length < 2) return toast('至少需要两张图片', 'warn');
+        if (picker.count < 2) return toast('至少需要两张图片', 'warn');
         const isV = direction === 'v';
 
         /* 【画布上限】Chrome 的单边上限约 32767px，总面积上限约 2.68 亿像素
@@ -266,12 +318,18 @@
         const MAX_AREA = 268435456;
 
         let cw, ch;
+        /* 顺序即拼接顺序，且顺序可以被用户改 —— 每次拼接都现取列表里的顺序，
+         * 不能沿用「加进来时按文件名排好」的旧快照。 */
+        let loaded;
+        try {
+          loaded = await Promise.all(picker.paths.map((p) => loadImg(p).then((img) => ({ path: p, img }))));
+        } catch (e) { return toast('有图片无法解码：' + (e && e.message ? e.message : e), 'error'); }
         if (isV) {
-          cw = Math.max(...imgs.map(i => i.img.naturalWidth));
-          ch = imgs.reduce((s, i) => s + i.img.naturalHeight, 0);
+          cw = Math.max(...loaded.map(i => i.img.naturalWidth));
+          ch = loaded.reduce((s, i) => s + i.img.naturalHeight, 0);
         } else {
-          cw = imgs.reduce((s, i) => s + i.img.naturalWidth, 0);
-          ch = Math.max(...imgs.map(i => i.img.naturalHeight));
+          cw = loaded.reduce((s, i) => s + i.img.naturalWidth, 0);
+          ch = Math.max(...loaded.map(i => i.img.naturalHeight));
         }
 
         if (cw > MAX_SIDE || ch > MAX_SIDE || cw * ch > MAX_AREA) {
@@ -294,7 +352,7 @@
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
         let x = 0, y = 0;
-        for (const it of imgs) {
+        for (const it of loaded) {
           ctx.drawImage(it.img, x, y);
           if (isV) y += it.img.naturalHeight; else x += it.img.naturalWidth;
         }
@@ -304,7 +362,7 @@
         canvas.style.borderRadius = '8px';
         canvasBox.appendChild(canvas);
         const b64 = canvas.toDataURL('image/png').split(',')[1];
-        const outDefault = (imgs[0].path.replace(/[\\/][^\\/]+$/, '')) + (isV ? '/stitch-v.png' : '/stitch-h.png');
+        const outDefault = (loaded[0].path.replace(/[\\/][^\\/]+$/, '')) + (isV ? '/stitch-v.png' : '/stitch-h.png');
         const saveBtn = btn('💾 保存 PNG', 'btn-primary btn-sm', async () => {
           try {
             const p = await invoke('dialog:save', { defaultPath: outDefault });
@@ -315,7 +373,7 @@
         });
         canvasBox.appendChild(div('form-row', saveBtn, h('span', { class: 'field-hint' }, `${canvas.width}×${canvas.height}px`)));
       }
-      page.appendChild(div('card', div('card-title', '添加图片'), dz, listEl));
+      page.appendChild(div('card', div('card-title', '添加图片'), picker.el));
       page.appendChild(div('card', div('card-title', '拼接'),
         div('form-row', btn('纵向拼接 ↓', 'btn-sm ' + (direction === 'v' ? 'btn-primary' : 'btn-secondary'), (e) => { direction = 'v'; stitch(); }),
           btn('横向拼接 →', 'btn-sm btn-secondary', () => { direction = 'h'; stitch(); })),
@@ -330,29 +388,38 @@
     keywords: ['exif', '照片', '信息', '隐私'],
     render(page) {
       const result = div('');
-      const dz = dropzone({
+      const picker = filePicker({
         text: '拖入 JPEG 照片查看 EXIF',
-        multiple: false,
-        onFiles: async (paths) => {
-          result.innerHTML = '';
-          try {
-            const r = await invoke('fs:read-file-b64', paths[0]);
-            const buf = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
-            const exif = parseExif(buf);
-            if (!exif || !Object.keys(exif).length) { result.appendChild(div('empty-tip', '未找到 EXIF 信息（可能已被清除或不是照片）')); return; }
-            const card = div('card');
-            card.style.border = '1px solid var(--border)';
-            card.appendChild(window.ui.kvGrid(Object.entries(exif)));
-            result.appendChild(card);
-            const cleanBtn = btn('🧹 清除 EXIF 并保存副本', 'btn-danger-plain', async () => {
-              const out = paths[0].replace(/\.jpe?g$/i, '') + '-noexif.jpg';
-              await invoke('fs:write-file-b64', out, stripExif(buf));
-              toast('已保存无 EXIF 副本：' + out, 'success');
-            });
-            result.appendChild(div('form-row', cleanBtn));
-          } catch (e) { result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
+        single: true,
+        emptyText: '还没有选择照片',
+        filters: [{ name: '照片', extensions: ['jpg', 'jpeg'] }],
+        onChange: (items) => {
+          if (items.length && !items[0].virtual) analyze(items[0].path);
+          else result.innerHTML = '';
         }
       });
+      async function analyze(path) {
+        result.innerHTML = '';
+        try {
+          const r = await invoke('fs:read-file-b64', path);
+          const buf = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
+          const exif = parseExif(buf);
+          if (!exif || !Object.keys(exif).length) { result.appendChild(div('empty-tip', '未找到 EXIF 信息（可能已被清除或不是照片）')); return; }
+          const card = div('card');
+          card.style.border = '1px solid var(--border)';
+          card.appendChild(window.ui.kvGrid(Object.entries(exif)));
+          result.appendChild(card);
+          const cleanBtn = btn('🧹 清除 EXIF 并保存副本', 'btn-danger-plain', async () => {
+            // 输出必须唯一：固定 -noexif.jpg 会让第二次点击静默覆盖前一次的结果
+            const out = await invoke('fs:unique-path', path.replace(/\.jpe?g$/i, '') + '-noexif.jpg');
+            try {
+              await invoke('fs:write-file-b64', out, stripExif(buf));
+              toast('已保存无 EXIF 副本：' + out, 'success');
+            } catch (e) { toast('保存失败：' + e.message, 'error'); }
+          });
+          result.appendChild(div('form-row', cleanBtn));
+        } catch (e) { result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
+      }
       function parseExif(buf) {
         try {
           let offset = 2;
@@ -394,11 +461,11 @@
             }
             let val;
             if (type === 2) {
-              /* ASCII 标签：count 是字节数（含结尾  ）。
+              /* ASCII 标签：count 是字节数（含结尾 \0）。
                * 【修正】原来是 `j < len - 1` 只跳过**最后**一个字节，
-               * 若实际字符串后面有多个  （很多相机会补零对齐），
+               * 若实际字符串后面有多个 \0（很多相机会补零对齐），
                * 会把多余的空字节也读进来，显示成乱码。
-               * 正确做法是读到第一个   为止。
+               * 正确做法是读到第一个 \0 为止。
                * 偏移也要区分：count <= 4 时值内联在条目里（绝对偏移 e+8），
                * 否则第 4 字段是相对 TIFF 头(base) 的偏移。 */
               const len = num;
@@ -449,7 +516,7 @@
         for (let i = 0; i < b.length; i += 0x8000) bin2 += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
         return btoa(bin2);
       }
-      page.appendChild(div('card', div('card-title', '照片'), dz, result));
+      page.appendChild(div('card', div('card-title', '照片'), picker.el, result));
     }
   });
 
@@ -589,8 +656,13 @@
           } else result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`;
         }
       }
-      const dz = dropzone({ text: '拖入音视频文件查看信息', multiple: false, onFiles: (paths) => paths[0] && probe(paths[0]) });
-      page.appendChild(div('card', dz, result));
+      const picker = filePicker({
+        text: '拖入音视频文件查看信息',
+        single: true,
+        emptyText: '还没有选择文件',
+        onChange: (items) => { if (items.length) probe(items[0].path); }
+      });
+      page.appendChild(div('card', picker.el, result));
       invoke('ffmpeg:status').then(r => { if (!r.ffmpeg) probe(''); }).catch(() => {});
     }
   });
@@ -601,9 +673,7 @@
     desc: '批量转换格式、压缩、提取音频、转 GIF，参数可调',
     keywords: ['转换', 'ffmpeg', '压缩', '音频', 'gif'],
     render(page) {
-      const files = [];
-      const dz = dropzone({ text: '拖入或选择要转换的音视频文件（可多选）', onFiles: (p) => { files.push(...p); label.textContent = `已选 ${files.length} 个文件`; refreshList(); } });
-      const label = div('field-hint', '未选择');
+      // 文件清单/删除/进度行统一由 filePicker 负责（见下方 picker）
       const fmtSel = h('select', { class: 'select input-sm' },
         ...['mp4', 'mkv', 'webm', 'mp3', 'm4a', 'wav', 'flac', 'gif'].map(f => h('option', { value: f }, f.toUpperCase())));
       const vcodecSel = h('select', { class: 'select input-sm' },
@@ -621,32 +691,33 @@
         const d = await invoke('dialog:open', { properties: ['openDirectory'] });
         if (d && d[0]) outDirIn.value = d[0];
       });
-      const listBox = div('');
       const status = h('div', { class: 'field-hint' }, '');
       let running = false;
       let runJobId = null; // 本页任务的 job id：按 id 精确取消，避免 cancel-latest 取消到别的任务
-      const startBtn = btn('🚀 开始转换', 'btn-primary', run);
-      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); });
-      cancelBtn.disabled = true;
-      function refreshList() {
-        listBox.innerHTML = '';
-        files.forEach((f, i) => {
-          const row = div('form-row');
-          row.dataset.i = i;
-          const tag = h('span', { class: 'tag tag-gray av-tag', style: { width: '64px', justifyContent: 'center' } }, '等待中');
-          row.appendChild(tag);
-          row.appendChild(h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, f.split(/[\\/]/).pop()));
-          row.appendChild(h('span', { class: 'field-hint' }, '→ ' + fmtSel.value.toUpperCase()));
+      const picker = filePicker({
+        text: '拖入或选择要转换的音视频文件（可多选）',
+        emptyText: '还没有添加文件（支持 mp4 / mkv / webm / mp3 / m4a / wav / flac / gif）',
+        // 转换中不允许增删：删掉正在转换的文件会让进度行与结果对不上
+        beforeRemove: () => {
+          if (running) { toast('转换进行中，请先点「取消」再修改文件列表', 'warn'); return false; }
+          return true;
+        },
+        rowEnd: (item, i, row) => {
+          row.appendChild(h('span', { class: 'tag tag-gray av-tag', style: { width: '64px', justifyContent: 'center' } }, '等待中'));
+          row.appendChild(h('span', { class: 'av-to field-hint', style: { fontSize: '11px' } }, '→ ' + fmtSel.value.toUpperCase()));
           const bar = div('progress', { style: { width: '140px' } });
           bar.appendChild(div('progress-fill'));
           row.appendChild(bar);
-          row.appendChild(h('span', { class: 'field-err av-err', style: { fontSize: '11px', maxWidth: '220px' } }, ''));
-          listBox.appendChild(row);
-        });
-      }
-      fmtSel.addEventListener('change', refreshList);
+          row.appendChild(h('span', { class: 'field-err av-err', style: { fontSize: '11px', maxWidth: '200px' } }, ''));
+        }
+      });
+      const startBtn = btn('🚀 开始转换', 'btn-primary', run);
+      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); });
+      cancelBtn.disabled = true;
+      // 目标格式变了只刷新行上的「→ XXX」标签，不重建列表（重建会丢掉进度状态）
+      fmtSel.addEventListener('change', () => picker.list.refresh());
       async function run() {
-        if (!files.length) return toast('请先选择文件', 'warn');
+        if (!picker.count) return toast('请先选择文件', 'warn');
         if (running) return;
         const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) {
@@ -655,9 +726,10 @@
           return;
         }
         running = true; startBtn.disabled = true; cancelBtn.disabled = false;
+        picker.setLocked(true);
         status.textContent = '';
         runJobId = null;
-        const outDir = outDirIn.value.trim() || files[0].replace(/[\\/][^\\/]*$/, '');
+        const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');
         // job id 从流事件里取：invoke 要等全部转码结束才返回，那时已经来不及取消了
         // 【必须按前缀认领】原来写的是 `if (!runJobId && d.id) runJobId = d.id`，
         // 会抓任意任务的第一个 id —— 别的标签页在跑哈希/下载时，
@@ -671,7 +743,7 @@
           } else if (jid !== runJobId) return;
           try {
             const j = JSON.parse(d.data);
-            const row = listBox.querySelector(`[data-i="${j.i}"]`);
+            const row = picker.list.rowAt(j.i);
             if (!row) return;
             const tag = row.querySelector('.av-tag');
             const bar = row.querySelector('.progress-fill');
@@ -683,7 +755,7 @@
         if (window.App && App.onCleanup) App.onCleanup(unsub);
         try {
           const r = await invoke('ffmpeg:convert', {
-            items: [...files], outDir,
+            items: picker.paths, outDir,
             opts: {
               format: fmtSel.value, vcodec: vcodecSel.value, crf: parseInt(crfIn.value) || 23,
               scale: scaleSel.value, fps: fpsIn.value ? parseInt(fpsIn.value) : null,
@@ -692,7 +764,7 @@
             }
           });
           r.results.forEach((res, i) => {
-            const row = listBox.querySelector(`[data-i="${i}"]`);
+            const row = picker.list.rowAt(i);
             if (row && !res.ok) {
               const tag = row.querySelector('.av-tag');
               if (tag) { tag.textContent = '✗ 失败'; tag.className = 'tag tag-red'; }
@@ -705,9 +777,9 @@
         } catch (e) {
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
-        } finally { running = false; startBtn.disabled = false; cancelBtn.disabled = true; unsub(); }
+        } finally { running = false; startBtn.disabled = false; cancelBtn.disabled = true; picker.setLocked(false); unsub(); }
       }
-      page.appendChild(div('card', div('card-title', '选择文件'), dz, label, listBox));
+      page.appendChild(div('card', div('card-title', '选择文件'), picker.el));
       page.appendChild(div('card', div('card-title', '转换参数'),
         div('form-row', h('span', { class: 'form-label' }, '目标格式'), fmtSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '视频编码'), vcodecSel,
@@ -737,6 +809,18 @@
       const prog = progressEl(); prog.hide();
       const result = h('textarea', { class: 'pane-ta', placeholder: '识别结果将显示在这里，可直接编辑…', style: { minHeight: '180px' } });
       let currentImg = null;
+      /* 两条来源要分清，否则会无限递归：
+       *   ① 用户拖入/选择文件 -> picker.onChange -> handleFile 加载图片
+       *   ② 剪贴板/贴图/OCR 直达 -> fromBlob -> showInList 只登记条目
+       * selfUpdating 标记「这次列表变化是我自己登记的」，不再触发加载。 */
+      let selfUpdating = false;
+      function showInList(pathOrName, virtual) {
+        selfUpdating = true;
+        try {
+          picker.clear();
+          picker.list.add([{ path: pathOrName, name: pathOrName, virtual: !!virtual }]);
+        } finally { selfUpdating = false; }
+      }
       // 截图标注/托盘 OCR 直达：带图打开本工具
       if (window.__ocrPendingPath) {
         const p = window.__ocrPendingPath;
@@ -769,42 +853,51 @@
           toast('识别失败：' + e.message, 'error');
         }
       }
-      async function fromBlob(blob) {
+      async function fromBlob(blob, label) {
         currentImg = blob;
         preview.innerHTML = '';
         preview.appendChild(h('img', { src: URL.createObjectURL(blob), style: { maxWidth: '100%', maxHeight: '240px', borderRadius: '8px' } }));
+        showInList(label || '剪贴板图片', true);
       }
       async function handleFile(pathArg, blob) {
         if (blob) return fromBlob(blob);
         const r = await invoke('fs:read-file-b64', pathArg);
         const bin = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
         const type = pathArg.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-        await fromBlob(new Blob([bin], { type }));
+        await fromBlob(new Blob([bin], { type }), pathArg);
       }
-      const dz = dropzone({
+      const picker = filePicker({
         text: '拖入或选择图片（PNG/JPG）',
-        multiple: false,
-        onFiles: (paths, blobs) => {
-          if (blobs && blobs.length && !paths.length) handleFile(null, blobs[0]);
-          else handleFile(paths[0]);
+        single: true,
+        filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'webp'] }],
+        onBlob: (file) => fromBlob(file),
+        onChange: (items) => {
+          // 单文件槽位：列表里最多一项，换图时 preview 跟着换
+          if (selfUpdating) return; // 自己登记的条目（剪贴板/贴图），图片已经加载好了
+          if (!items.length) { currentImg = null; preview.innerHTML = ''; return; }
+          const it = items[0];
+          if (it.virtual) return; // 虚拟条目没有磁盘路径，图片也已就位
+          handleFile(it.path).catch((e) => toast(e.message, 'error'));
         }
       });
+      /* 把当前图片登记到列表里：磁盘文件按真实路径登记，剪贴板图片登记成虚拟条目， */
+      /* 让两种来源在界面上看起来完全一样，也都能点「×」移除。 */
       page.addEventListener('paste', async (e) => {
         const items = [...((e.clipboardData || {}).items || [])];
         const imgItem = items.find(i => i.type.startsWith('image/'));
-        if (imgItem) { await fromBlob(imgItem.getAsFile()); toast('已读取剪贴板截图', 'success', 1200); }
+        if (imgItem) { await fromBlob(imgItem.getAsFile(), '剪贴板图片'); toast('已读取剪贴板截图', 'success', 1200); }
       });
       const pasteBtn = btn('📋 粘贴截图（Win+Shift+S 后点这里）', 'btn-secondary', async () => {
         try {
           const imgData = await invoke('clip:read-image');
           if (!imgData) return toast('剪贴板中没有图片', 'warn');
           const bin = Uint8Array.from(atob(imgData.split(',')[1]), c => c.charCodeAt(0));
-          await fromBlob(new Blob([bin], { type: 'image/png' }));
+          await fromBlob(new Blob([bin], { type: 'image/png' }), '剪贴板图片');
         } catch (e) { toast(e.message, 'error'); }
       });
       page.appendChild(div('card', div('card-title', '图片'),
         div('form-row', pasteBtn, ' ', h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '语言'), langSel),
-        dz, preview));
+        picker.el, preview));
       page.appendChild(div('card', div('card-title', '识别'),
         div('form-row', btn('🔍 开始识别', 'btn-primary', recognize), prog.el, status),
         result,
@@ -818,9 +911,7 @@
     desc: '智能压缩 / 指定质量 / 压到目标体积，JPG·WebP·PNG 输出与前后大小对比',
     keywords: ['压缩', '图片', '体积', 'webp', '缩小', '瘦身'],
     render(page) {
-      const paths = [];
-      const dz = dropzone({ text: '拖入或选择要压缩的图片（可多选）', onFiles: (p) => { paths.push(...p); label.textContent = `已选 ${paths.length} 张图片`; } });
-      const label = div('field-hint', '未选择');
+      /* 文件清单/删除由 filePicker 负责；压缩进度与前后体积直接写回列表行 */
       const modeSel = h('select', { class: 'select input-sm' },
         h('option', { value: 'smart' }, '智能压缩（推荐）'),
         h('option', { value: 'target' }, '压到目标体积'),
@@ -843,7 +934,21 @@
         targetIn.disabled = modeSel.value !== 'target';
       };
       modeSel.addEventListener('change', refreshMode); refreshMode();
-      const listBox = div('');
+      const picker = filePicker({
+        text: '拖入或选择要压缩的图片（可多选）',
+        filters: [IMG_FILTER],
+        filter: isImgPath,
+        onReject: (n) => toast(`已忽略 ${n} 个非图片文件`, 'warn'),
+        beforeRemove: () => {
+          if (running) { toast('压缩进行中，请先等待完成再修改文件列表', 'warn'); return false; }
+          return true;
+        },
+        rowEnd: (item, i, row) => {
+          row.appendChild(h('span', { class: 'comp-size field-hint', style: { fontSize: '11px' } }, '…'));
+          row.appendChild(h('span', { class: 'tag tag-gray', style: { minWidth: '64px', justifyContent: 'center' } }, '待压缩'));
+          row.appendChild(h('span', { class: 'field-err comp-err', style: { fontSize: '11px', maxWidth: '200px' } }, ''));
+        }
+      });
       const prog = progressEl(); prog.hide();
       const status = h('span', { class: 'field-hint' }, '');
       let running = false;
@@ -929,10 +1034,12 @@
         return drawTo(img, mime, 1, 0.05);
       }
       async function run() {
-        if (!paths.length) return toast('请先选择图片', 'warn');
+        if (!picker.count) return toast('请先选择图片', 'warn');
         if (running) return;
         running = true; startBtn.disabled = true;
-        prog.show(); status.textContent = ''; listBox.innerHTML = '';
+        picker.setLocked(true);
+        prog.show(); status.textContent = '';
+        const paths = picker.paths.slice();
         const outDir = outDirIn.value.trim() || (paths[0].replace(/[\\/][^\\/]+$/, '') + '/hehe-compressed');
         try { await invoke('fs:mkdir', outDir); } catch (e) {}
         let totalBefore = 0, totalAfter = 0, ok = 0, fail = 0;
@@ -940,10 +1047,11 @@
           prog.set((i + 1) / paths.length * 100);
           const p = paths[i];
           const name = p.split(/[\\/]/).pop();
-          const row = div('form-row', h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, name),
-            h('span', { class: 'field-hint comp-size' }, '…'),
-            h('span', { class: 'tag tag-gray', style: { minWidth: '64px', justifyContent: 'center' } }, '压缩中'));
-          listBox.appendChild(row);
+          const row = picker.list.rowAt(i);
+          if (row) {
+            const t0 = row.querySelector('.tag');
+            if (t0) { t0.textContent = '压缩中'; t0.className = 'tag tag-orange'; }
+          }
           try {
             const img = await loadImg(p);
             const orig = (await invoke('fs:stat', p)).size;
@@ -971,21 +1079,24 @@
             const newSize = (await invoke('fs:stat', outPath)).size;
             ok++; totalBefore += orig; totalAfter += newSize;
             const pct = Math.round((1 - newSize / orig) * 100);
-            const sizeEl = row.querySelector('.comp-size'), tagEl = row.querySelector('.tag');
-            sizeEl.textContent = `${fmtBytes(orig)} → ${fmtBytes(newSize)}`;
-            tagEl.textContent = pct >= 0 ? `-${pct}%` : `+${-pct}%`;
-            tagEl.className = 'tag ' + (pct >= 0 ? 'tag-green' : 'tag-orange');
+            const sizeEl = row && row.querySelector('.comp-size'), tagEl = row && row.querySelector('.tag');
+            if (sizeEl) sizeEl.textContent = `${fmtBytes(orig)} → ${fmtBytes(newSize)}`;
+            if (tagEl) { tagEl.textContent = pct >= 0 ? `-${pct}%` : `+${-pct}%`; tagEl.className = 'tag ' + (pct >= 0 ? 'tag-green' : 'tag-orange'); }
           } catch (e) {
             fail++;
-            const tagEl = row.querySelector('.tag'); tagEl.textContent = '✗'; tagEl.className = 'tag tag-red';
-            row.appendChild(h('span', { class: 'field-err', style: { fontSize: '11px', maxWidth: '220px' } }, (e && e.message) || String(e)));
+            if (row) {
+              const tagEl2 = row.querySelector('.tag');
+              if (tagEl2) { tagEl2.textContent = '✗'; tagEl2.className = 'tag tag-red'; }
+              const errEl = row.querySelector('.comp-err');
+              if (errEl) errEl.textContent = (e && e.message) || String(e);
+            }
           }
         }
-        prog.hide(); running = false; startBtn.disabled = false;
+        prog.hide(); running = false; startBtn.disabled = false; picker.setLocked(false);
         status.textContent = totalBefore ? `完成：成功 ${ok}，失败 ${fail}，合计 ${fmtBytes(totalBefore)} → ${fmtBytes(totalAfter)}（节省 ${fmtBytes(Math.max(0, totalBefore - totalAfter))}），输出目录 ${outDir}` : '';
         toast(`压缩完成（${ok} 成功 / ${fail} 失败）`, fail ? 'warn' : 'success');
       }
-      page.appendChild(div('card', div('card-title', '选择图片'), dz, label));
+      page.appendChild(div('card', div('card-title', '选择图片'), picker.el));
       page.appendChild(div('card', div('card-title', '压缩参数'),
         div('form-row', h('span', { class: 'form-label' }, '模式'), modeSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '质量'), qualityIn,
@@ -994,11 +1105,10 @@
         div('form-row', h('span', { class: 'form-label' }, '输出格式'), fmtSel),
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
         div('form-row', startBtn, ' ', prog.el, status)));
-      page.appendChild(div('card', div('card-title', '压缩结果'), listBox));
       // 测试钩子：**只在开发态挂载**（打包版默认不挂，避免留下可注入的调试后门）。
       // 打包态跑 E2E 时用环境变量 HEHE_TEST_HOOKS=1 临时开启。
       if (window.api.isDev) (window.__heheTest = window.__heheTest || {}).imgCompress = {
-        setPaths: (arr) => { paths.length = 0; paths.push(...arr); },
+        setPaths: (arr) => { picker.clear(); picker.add(arr); },
         setOpts: (o) => {
           if (o.mode) { modeSel.value = o.mode; modeSel.dispatchEvent(new Event('change')); }
           if (o.quality != null) qualityIn.value = o.quality;
@@ -1017,9 +1127,7 @@
     desc: 'H.264/H.265 重编码瘦身：预设、CRF、分辨率、音频码率，压完看省了多少',
     keywords: ['压制', '视频', '压缩', 'h265', 'hevc', '瘦身', '体积'],
     render(page) {
-      const files = [];
-      const dz = dropzone({ text: '拖入或选择要压制的视频（可多选）', onFiles: (p) => { files.push(...p); label.textContent = `已选 ${files.length} 个文件`; refreshList(); } });
-      const label = div('field-hint', '未选择');
+      /* 文件清单/删除由 filePicker 负责；压制进度与节省体积写回列表行 */
       const presetSel = h('select', { class: 'select input-sm' },
         h('option', { value: 'balanced' }, '均衡推荐（H.264 · CRF23 · 中速）'),
         h('option', { value: 'quality' }, '高画质（H.265 · CRF20 · 慢速）'),
@@ -1043,7 +1151,22 @@
         const d = await invoke('dialog:open', { properties: ['openDirectory'] });
         if (d && d[0]) outDirIn.value = d[0];
       });
-      const listBox = div('');
+      const picker = filePicker({
+        text: '拖入或选择要压制的视频（可多选）',
+        emptyText: '还没有添加视频',
+        beforeRemove: () => {
+          if (running) { toast('压制进行中，请先点「取消」再修改文件列表', 'warn'); return false; }
+          return true;
+        },
+        rowEnd: (item, i, row) => {
+          row.appendChild(h('span', { class: 'tag tag-gray av-tag', style: { width: '64px', justifyContent: 'center' } }, '等待中'));
+          row.appendChild(h('span', { class: 'vp-size field-hint', style: { fontSize: '11px' } }, ''));
+          const bar = div('progress', { style: { width: '120px' } });
+          bar.appendChild(div('progress-fill'));
+          row.appendChild(bar);
+          row.appendChild(h('span', { class: 'field-err av-err', style: { fontSize: '11px', maxWidth: '200px' } }, ''));
+        }
+      });
       const status = h('span', { class: 'field-hint' }, '');
       let running = false;
       let runJobId = null; // 本页任务的 job id：按 id 精确取消，避免 cancel-latest 取消到别的任务
@@ -1059,24 +1182,8 @@
         else if (v === 'strong') { codecSel.value = 'libx265'; crfIn.value = '28'; speedSel.value = 'medium'; }
       }
       presetSel.addEventListener('change', applyPreset); applyPreset();
-      function refreshList() {
-        listBox.innerHTML = '';
-        files.forEach((f, i) => {
-          const row = div('form-row');
-          row.dataset.i = i;
-          const tag = h('span', { class: 'tag tag-gray av-tag', style: { width: '64px', justifyContent: 'center' } }, '等待中');
-          row.appendChild(tag);
-          row.appendChild(h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, f.split(/[\\/]/).pop()));
-          row.appendChild(h('span', { class: 'field-hint vp-size', style: { fontSize: '11px' } }, ''));
-          const bar = div('progress', { style: { width: '140px' } });
-          bar.appendChild(div('progress-fill'));
-          row.appendChild(bar);
-          row.appendChild(h('span', { class: 'field-err av-err', style: { fontSize: '11px', maxWidth: '200px' } }, ''));
-          listBox.appendChild(row);
-        });
-      }
       async function run() {
-        if (!files.length) return toast('请先选择视频', 'warn');
+        if (!picker.count) return toast('请先选择视频', 'warn');
         if (running) return;
         const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) {
@@ -1085,9 +1192,10 @@
           return;
         }
         running = true; startBtn.disabled = true; cancelBtn.disabled = false;
+        picker.setLocked(true);
         status.textContent = '';
         runJobId = null;
-        const outDir = outDirIn.value.trim() || (files[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-pressed');
+        const outDir = outDirIn.value.trim() || (picker.paths[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-pressed');
         // job id 从流事件里取：invoke 要等全部压制结束才返回，那时已经来不及取消了
         // 【必须按前缀认领】本任务 id 形如 prs<数字>。原因同 av-convert：
         // 不校验归属会抓到别的标签页的任务 id，点「取消」杀错任务。
@@ -1099,7 +1207,7 @@
           } else if (jid !== runJobId) return;
           try {
             const j = JSON.parse(d.data);
-            const row = listBox.querySelector(`[data-i="${j.i}"]`);
+            const row = picker.list.rowAt(j.i);
             if (!row) return;
             const tag = row.querySelector('.av-tag');
             const bar = row.querySelector('.progress-fill');
@@ -1111,7 +1219,7 @@
         if (window.App && App.onCleanup) App.onCleanup(unsub);
         try {
           const r = await invoke('ffmpeg:press', {
-            items: [...files], outDir,
+            items: picker.paths, outDir,
             opts: {
               vcodec: codecSel.value, crf: parseInt(crfIn.value) || 23, preset: speedSel.value,
               scale: scaleSel.value, fps: fpsIn.value ? parseInt(fpsIn.value) : null,
@@ -1120,7 +1228,7 @@
           });
           let okN = 0, saveB = 0;
           r.results.forEach((res, i) => {
-            const row = listBox.querySelector(`[data-i="${i}"]`);
+            const row = picker.list.rowAt(i);
             if (!row) return;
             const tag = row.querySelector('.av-tag'), errEl = row.querySelector('.av-err'), sizeEl = row.querySelector('.vp-size');
             if (res.ok) {
@@ -1140,9 +1248,9 @@
         } catch (e) {
           status.textContent = '✗ ' + e.message;
           toast(e.message, 'error');
-        } finally { running = false; startBtn.disabled = false; cancelBtn.disabled = true; unsub(); }
+        } finally { running = false; startBtn.disabled = false; cancelBtn.disabled = true; picker.setLocked(false); unsub(); }
       }
-      page.appendChild(div('card', div('card-title', '选择视频'), dz, label, listBox));
+      page.appendChild(div('card', div('card-title', '选择视频'), picker.el));
       page.appendChild(div('card', div('card-title', '压制参数'),
         div('form-row', h('span', { class: 'form-label' }, '预设'), presetSel),
         div('form-row', h('span', { class: 'form-label' }, '编码'), codecSel,
@@ -1156,7 +1264,7 @@
         div('form-row', startBtn, ' ', cancelBtn, status)));
       // 测试钩子：只在开发态挂载（同上）
       if (window.api.isDev) (window.__heheTest = window.__heheTest || {}).videoPress = {
-        setFiles: (arr) => { files.length = 0; files.push(...arr); refreshList(); },
+        setFiles: (arr) => { picker.clear(); picker.add(arr); },
         setOpts: (o) => {
           if (o.preset) { presetSel.value = o.preset; presetSel.dispatchEvent(new Event('change')); }
           if (o.codec) codecSel.value = o.codec;
@@ -1273,9 +1381,13 @@
           camPreviewHint.textContent = '预览不可用：' + e.message + '（不影响录制）';
         }
       }
-      const regionBtn = btn('▭ 选择区域', 'btn-sm btn-secondary', pickRegion);
-      const clearRegionBtn = btn('✕ 全屏', 'btn-sm btn-text', () => { region = null; regionLabel.textContent = '全屏'; });
       const regionLabel = h('span', { class: 'field-hint' }, '全屏');
+      const regionBtn = btn('▭ 选择区域', 'btn-sm btn-secondary', pickRegion);
+      // 按钮文案改成「清除区域」：原来叫「✕ 全屏」，而紧挨着的 regionLabel 也显示「全屏」，
+      // 两个「全屏」并排重复，用户分不清哪个是按钮哪个是状态。
+      // 另外这里必须放在 regionLabel 之后声明 —— 原来的箭头函数引用了后面的 const，
+      // 属于暂时性死区，点击瞬间虽然能用，但顺序本身是不可靠的写法。
+      const clearRegionBtn = btn('清除区域', 'btn-sm btn-text', () => { region = null; regionLabel.textContent = '全屏'; });
       const gifChk = h('input', { type: 'checkbox', class: 'checkbox' });
       const status = h('div', { class: 'field-hint' }, '支持区域录制、麦克风、摄像头画中画、暂停恢复；停止后自动封装');
       const startBtn = btn('⏺ 开始录制', 'btn-primary', start);
@@ -1393,9 +1505,13 @@
     desc: '从视频抽取单帧图片，或按间隔批量导出帧序列（ffmpeg）',
     keywords: ['截帧', '视频', '帧', '截图', 'frames'],
     render(page) {
-      const files = [];
-      const dz = dropzone({ text: '拖入或选择视频文件', onFiles: (p) => { files.length = 0; files.push(...p); label.textContent = files[0]; } });
-      const label = div('field-hint', '未选择');
+      let running = false; // 防重入标志：处理中禁止重复点击
+      const picker = filePicker({
+        text: '拖入或选择视频文件',
+        single: true,
+        emptyText: '还没有选择视频',
+        filters: [{ name: '视频', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v', 'ts'] }]
+      });
       const modeSel = h('select', { class: 'select input-sm' },
         h('option', { value: 'single' }, '抽单帧（指定时间点）'),
         h('option', { value: 'seq' }, '按间隔批量导出帧序列'));
@@ -1408,10 +1524,12 @@
       const refresh = () => { timeIn.disabled = modeSel.value !== 'single'; everyIn.disabled = countIn.disabled = modeSel.value !== 'seq'; };
       modeSel.addEventListener('change', refresh); refresh();
       async function run() {
-        if (!files.length) return toast('请先选择视频', 'warn');
+        if (running) return; // 防重入：双击会起两个 ffmpeg 抢同一输出
+        running = true;
+        if (!picker.count) { running = false; return toast('请先选择视频', 'warn'); }
         const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
-        const src = files[0];
+        const src = picker.paths[0];
         const base = src.split(/[\\/]/).pop().replace(/\.\w+$/, '');
         const outDir = src.replace(/[\\/][^\\/]+$/, '') + '/hehe-frames';
         try { await invoke('fs:mkdir', outDir); } catch (e) {}
@@ -1429,9 +1547,9 @@
             : `✓ 帧序列 ${r.count} 张已导出到 ${r.outDir}`;
           toast('截帧完成', 'success');
         } catch (e) { outLabel.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
-        finally { goBtn.disabled = false; }
+        finally { goBtn.disabled = false; running = false; }
       }
-      page.appendChild(div('card', div('card-title', '视频'), dz, label));
+      page.appendChild(div('card', div('card-title', '视频'), picker.el));
       page.appendChild(div('card', div('card-title', '参数'),
         div('form-row', h('span', { class: 'form-label' }, '模式'), modeSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时间点'), timeIn,
@@ -1508,9 +1626,13 @@
     desc: '截取音频片段、淡入淡出、音量增益（ffmpeg）',
     keywords: ['音频', '剪辑', '截取', '淡入', '淡出', '音量'],
     render(page) {
-      const files = [];
-      const dz = dropzone({ text: '拖入或选择音频文件（mp3/m4a/wav/flac）', onFiles: (p) => { files.length = 0; files.push(...p); label.textContent = files[0]; } });
-      const label = div('field-hint', '未选择');
+      let running = false; // 防重入标志：处理中禁止重复点击
+      const picker = filePicker({
+        text: '拖入或选择音频文件（可多选则取第一个）',
+        single: true,
+        emptyText: '还没有选择音频',
+        filters: [{ name: '音频', extensions: ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg'] }]
+      });
       const ssIn = h('input', { class: 'input input-sm mono', placeholder: '00:00', style: { width: '70px' } });
       const toIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '秒数', style: { width: '70px' }, title: '从起点开始截取的时长' });
       const fadeInIn = h('input', { type: 'number', class: 'input input-sm', value: '0', min: '0', max: '30', style: { width: '56px' }, title: '淡入秒数（0=关闭）' });
@@ -1520,10 +1642,12 @@
       const status = h('div', { class: 'field-hint' }, '');
       const goBtn = btn('✂️ 开始剪辑', 'btn-primary', run);
       async function run() {
-        if (!files.length) return toast('请先选择音频', 'warn');
+        if (running) return; // 防重入
+        running = true;
+        if (!picker.count) { running = false; return toast('请先选择音频', 'warn'); }
         const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
-        const src = files[0];
+        const src = picker.paths[0];
         const dur = Math.max(0, +toIn.value || 0);
         const fi = Math.max(0, +fadeInIn.value || 0), fo = Math.max(0, +fadeOutIn.value || 0), gain = +gainIn.value || 0;
         let fmt = fmtSel.value;
@@ -1539,9 +1663,9 @@
           status.textContent = `✓ 已输出：${out}（${fmtBytes(r.size)}）`;
           toast('剪辑完成', 'success');
         } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
-        finally { goBtn.disabled = false; }
+        finally { goBtn.disabled = false; running = false; }
       }
-      page.appendChild(div('card', div('card-title', '音频'), dz, label));
+      page.appendChild(div('card', div('card-title', '音频'), picker.el));
       page.appendChild(div('card', div('card-title', '剪辑参数'),
         div('form-row', h('span', { class: 'form-label' }, '起点'), ssIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时长（秒）'), toIn,
@@ -1559,6 +1683,7 @@
     desc: '感知哈希（dHash）找出内容相近的图片：改过尺寸/压缩过的也能找出',
     keywords: ['相似', '图片', '重复', '去重', 'dhash'],
     render(page) {
+      let running = false; // 防重入标志：处理中禁止重复点击
       let dir = '';
       const dirLabel = h('span', { class: 'field-hint' }, '未选择');
       const pickBtn = btn('选择文件夹…', 'btn-secondary', async () => {
@@ -1570,6 +1695,8 @@
       const status = h('span', { class: 'field-hint' }, '');
       const listBox = div('');
       async function run() {
+        if (running) return; // 防重入：重复扫描会叠加两次哈希计算
+        running = true;
         if (!dir) return toast('请先选择文件夹', 'warn');
         prog.show(); listBox.innerHTML = ''; status.textContent = '读取图片…';
         try {
@@ -1630,7 +1757,7 @@
           });
           toast(`发现 ${groups.length} 组相似图片`, 'success');
         } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); prog.hide(); }
-        finally { prog.hide(); }
+        finally { prog.hide(); running = false; }
       }
       page.appendChild(div('card', div('card-title', '图片文件夹'),
         div('form-row', pickBtn, dirLabel,

@@ -817,12 +817,22 @@
         try { await invoke('sched:add', s); toast('已添加（重启应用后依然生效）', 'success'); rMsg.value = ''; loadRecurring(); }
         catch (e) { toast(e.message, 'error'); }
       });
-      const refreshR = () => { rTime.style.display = rType.value === 'loop' ? 'none' : ''; rEvery.style.display = rType.value === 'loop' ? '' : 'none'; };
+      /* 「时间」和「间隔」各有「标签 + 控件」两段，必须一起隐藏。
+       * 旧实现只藏了控件（rEvery.style.display），「间隔」这个小标签留在原地悬空，
+       * 于是 daily 模式下会看到一个没有任何控件跟随的「间隔」二字。 */
+      const timeWrap = h('span', { class: 'form-inline' },
+        h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时间'), rTime);
+      const everyWrap = h('span', { class: 'form-inline' },
+        h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '间隔'), rEvery);
+      const refreshR = () => {
+        const isLoop = rType.value === 'loop';
+        timeWrap.style.display = isLoop ? 'none' : '';
+        everyWrap.style.display = isLoop ? '' : 'none';
+      };
       rType.addEventListener('change', refreshR); refreshR();
       page.appendChild(div('card', div('card-title', '周期任务（持久化）'),
         div('form-row', h('span', { class: 'form-label' }, '类型'), rType,
-          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '时间'), rTime,
-          h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '间隔'), rEvery, rMsg),
+          timeWrap, everyWrap, rMsg),
         div('form-row', rAddBtn),
         rList,
         div('field-hint', '周期任务由主进程调度并随配置持久化：到点弹系统通知；自动清理只删除本应用自己的临时文件（截图、录制分段、FFmpeg 下载包），不会动系统临时目录里的其他文件')));

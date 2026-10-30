@@ -196,15 +196,18 @@
   }
 
   /* ---------- 拖拽区 ---------- */
-  function dropzone({ text = '点击选择或拖拽文件到此处', sub = '', multiple = true, accept, onFiles, pickProps, directory = false }) {
+  function dropzone({ text = '点击选择或拖拽文件到此处', sub = '', multiple = true, accept, onFiles, pickProps, directory = false, filters }) {
     const dz = div('dropzone');
     dz.appendChild(div('dz-icon', iconLg('upload')));
-    dz.appendChild(div('dz-main', text));
+    const mainEl = div('dz-main', text);
+    dz.appendChild(mainEl);
     if (sub) dz.appendChild(div('dz-sub', sub));
+    // 供 picker 在「已有内容」时把提示文案换成「继续添加」
+    dz.setMain = (t) => { mainEl.textContent = t; };
     const getFiles = async () => {
       try {
-        const props = directory ? ['openDirectory'] : (multiple ? ['openFile', 'multiSelections'] : ['openFile']);
-        const paths = await invoke('dialog:open', { properties: props });
+        const props = pickProps || (directory ? ['openDirectory'] : (multiple ? ['openFile', 'multiSelections'] : ['openFile']));
+        const paths = await invoke('dialog:open', filters ? { properties: props, filters } : { properties: props });
         if (paths && paths.length) onFiles(paths);
       } catch (e) { toast(e.message, 'error'); }
     };
@@ -220,6 +223,297 @@
       else onFiles([], files);
     });
     return dz;
+  }
+
+  /* ---------- 待处理文件列表 ----------
+   * 统一的「已加入的文件」清单：可见、可单删、可清空。
+   *
+   * 之前每个工具都是把文件名拼成一句 `已选 N 项：a、b、c…` 塞进一行
+   * field-hint —— 超过 3 个就用省略号截断，用户既看不到到底选了哪几个，
+   * 也没法把选错的那一个去掉，只能清空重选。这里把这件事抽成公共组件。
+   *
+   * 参数：
+   *   onChange    条目变化后回调（增/删/清空都会触发）
+   *   beforeRemove(item, index) 返回 false 或 Promise<false> 可拦截删除
+   *               （例如任务运行中不允许改输入）
+   *   rowStart    行首插槽 (item, i, row)：在「序号」之后、文件名之前插入
+   *               自定义元素（缩略图这类）。默认的行内容照常渲染。
+   *   rowEnd      行尾插槽 (item, i, row)：在文件名/体积之后、删除按钮之前
+   *               追加自定义元素（状态标签、进度条、上下移按钮）。
+   *   emptyText   空列表文案
+   *   single      单文件模式：add() 用新文件替换旧的（而不是追加）
+   *
+   * 【为什么拆成 rowStart/rowEnd 而不是一个 rowRender】
+   * 早期的 rowRender 是「整行交给你画」，结果凡是用了它的工具
+   * （哈希、PDF、压缩包、音视频）都**丢掉了文件名列**，列表里只剩一个序号和 ×，
+   * 用户根本看不出选的是哪些文件 —— 这正是这个组件本来要解决的问题。
+   * 现在默认内容（序号 / 文件名 / 路径 / 体积 / ×）永远渲染，
+   * 扩展只能往两头插，谁也不会不小心把文件名挤掉。
+   */
+  function fileList({ onChange, beforeRemove, rowStart, rowEnd, emptyText = '还没有添加文件', single = false } = {}) {
+    const items = [];
+    const el = div('file-list');
+    const head = h('div', { class: 'fl-head' });
+    const body = h('div', { class: 'fl-body' });
+    const emptyEl = div('fl-empty', emptyText);
+    let locked = false;
+    el.appendChild(head); el.appendChild(emptyEl); el.appendChild(body);
+
+    const normKey = (p) => String(p || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+    function baseName(p) {
+      const s = String(p || '').replace(/[\\/]+$/, '');
+      const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+      return i >= 0 ? s.slice(i + 1) : s;
+    }
+    function dirName(p) {
+      const s = String(p || '');
+      const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+      return i > 0 ? s.slice(0, i) : '';
+    }
+    /* 上级目录只显示「最后两级」。完整路径在 title 里，
+     * 因为 C:\Users\xxx\AppData\Local\Temp\... 这种长前缀每行都重复一遍，
+     * 会把文件名挤成很小一截，同一目录下的文件还完全看不出差别。 */
+    function shortDir(p) {
+      const d = dirName(p);
+      if (!d) return '';
+      const parts = d.replace(/\\/g, '/').split('/').filter(Boolean);
+      // 盘符（C:）永远算第一段
+      if (parts.length <= 3) return d.replace(/\//g, '\\');
+      return '…\\' + parts.slice(-2).join('\\');
+    }
+
+    function renderHead() {
+      head.innerHTML = '';
+      if (!items.length) return;
+      let total = 0, unknown = 0;
+      for (const it of items) { if (typeof it.size === 'number') total += it.size; else unknown++; }
+      head.appendChild(h('span', { class: 'fl-count' },
+        `共 ${items.length} 项` + (unknown ? '' : `，合计 ${fmtBytes(total)}`)));
+      if (!locked) {
+        head.appendChild(h('button', {
+          class: 'btn btn-text btn-sm', onclick: (e) => { e.stopPropagation(); clearAll(); }
+        }, '清空'));
+      }
+    }
+
+    function fillSize(item, sizeEl) {
+      // 虚拟条目（剪贴板图片等没有磁盘路径）：不 stat，直接显示来源
+      if (item.virtual) { sizeEl.textContent = item.sizeLabel || '剪贴板'; return; }
+      // 异步补体积：目录与不存在的路径都按「—」收场，绝不抛异常打断列表渲染
+      invoke('fs:stat', item.path).then((st) => {
+        item.size = st.size;
+        item.isDir = !!st.isDir;
+        if (!items.includes(item)) return; // 期间被删掉了
+        sizeEl.textContent = st.isDir ? '文件夹' : fmtBytes(st.size);
+        renderHead();
+      }).catch(() => { sizeEl.textContent = '—'; });
+    }
+
+    function makeRow(item, i) {
+      const row = h('div', { class: 'fl-row' });
+      row.dataset.i = String(i);
+      row.dataset.path = item.path;
+      row.appendChild(h('span', { class: 'fl-idx' }, String(i + 1)));
+      // 行首插槽（缩略图等）：在序号之后、文件名之前
+      if (rowStart) { try { rowStart(item, i, row); } catch (e) {} }
+      // 默认内容永远渲染：文件名 + 上级目录 + 体积
+      const main = h('div', { class: 'fl-main' });
+      main.appendChild(h('span', { class: 'fl-name', title: item.path }, item.name));
+      const d = shortDir(item.path);
+      if (d) main.appendChild(h('span', { class: 'fl-path', title: item.path }, d));
+      row.appendChild(main);
+      const sizeEl = h('span', { class: 'fl-size' }, item.virtual ? (item.sizeLabel || '剪贴板') : '…');
+      row.appendChild(sizeEl);
+      if (item.virtual) { /* 虚拟条目没有磁盘路径，不 stat */ }
+      else fillSize(item, sizeEl);
+      // 行尾插槽（状态标签、进度条、上下移按钮）
+      if (rowEnd) { try { rowEnd(item, i, row); } catch (e) {} }
+      const del = h('button', {
+        class: 'fl-del', title: '从列表移除', 'aria-label': '移除 ' + item.name,
+        onclick: (e) => { e.stopPropagation(); removeAt(i); }
+      }, '×');
+      del.disabled = locked;
+      row.appendChild(del);
+      return row;
+    }
+
+    function refresh() {
+      body.innerHTML = '';
+      items.forEach((it, i) => body.appendChild(makeRow(it, i)));
+      emptyEl.style.display = items.length ? 'none' : '';
+      el.classList.toggle('has-items', !!items.length);
+      renderHead();
+    }
+
+    function notify() { refresh(); if (onChange) onChange(items.slice()); }
+
+    async function removeAt(i) {
+      const item = items[i];
+      if (!item) return false;
+      if (locked) { toast('任务进行中，无法修改文件列表', 'warn'); return false; }
+      if (beforeRemove) {
+        let ok;
+        try { ok = await beforeRemove(item, i); } catch (e) { ok = true; }
+        if (ok === false) return false;
+      }
+      items.splice(i, 1);
+      notify();
+      return true;
+    }
+
+    async function clearAll() {
+      if (locked) { toast('任务进行中，无法修改文件列表', 'warn'); return false; }
+      if (beforeRemove) {
+        for (const [i, it] of items.entries()) {
+          let ok;
+          try { ok = await beforeRemove(it, i); } catch (e) { ok = true; }
+          if (ok === false) return false;
+        }
+      }
+      items.length = 0;
+      notify();
+      return true;
+    }
+
+    /* 返回 { added, dup }：dup 是被去重挡下的数量（同一路径选两次不会出现两行）
+     * 接受字符串路径，也接受 { path, name?, size?, virtual? } 对象 ——
+     * 剪贴板/贴图这类没有磁盘路径的输入也要能在列表里占一行。 */
+    function add(paths) {
+      const raw = Array.isArray(paths) ? paths : [paths];
+      const list = raw.map((x) => (typeof x === 'string' ? { path: x } : x))
+        .filter((x) => x && typeof x.path === 'string' && x.path);
+      let added = 0, dup = 0;
+      if (single && list.length) {
+        items.length = 0;
+        const src = list[list.length - 1];
+        items.push({ path: src.path, name: src.name || baseName(src.path), size: src.size, isDir: false, virtual: !!src.virtual });
+        added = 1;
+        if (list.length > 1) dup = list.length - 1;
+      } else {
+        const seen = new Set(items.map((x) => normKey(x.path)));
+        for (const src of list) {
+          const k = normKey(src.path);
+          if (seen.has(k)) { dup++; continue; }
+          seen.add(k);
+          items.push({ path: src.path, name: src.name || baseName(src.path), size: src.size, isDir: false, virtual: !!src.virtual });
+          added++;
+        }
+      }
+      if (added) notify(); else if (dup) refresh();
+      return { added, dup };
+    }
+
+    function remove(path) {
+      const i = items.findIndex((x) => normKey(x.path) === normKey(path));
+      return i >= 0 ? removeAt(i) : Promise.resolve(false);
+    }
+
+    /* 顺序对拼接、合并、图片转 PDF 这类工具是有意义的输入，所以列表要能调序 */
+    function move(i, delta) {
+      const j = i + delta;
+      if (i < 0 || j < 0 || i >= items.length || j >= items.length) return false;
+      if (locked) return false;
+      const [it] = items.splice(i, 1);
+      items.splice(j, 0, it);
+      notify();
+      return true;
+    }
+    function sortBy(fn) {
+      if (locked) return;
+      /* 只重排、只重绘，**不触发 onChange**。
+       * 顺序类工具是在 onChange 里调用 sortBy 的，
+       * 若这里再调 notify() 就会 onChange → sortBy → onChange 无限递归。 */
+      items.sort(fn);
+      refresh();
+    }
+
+    function setLocked(v) {
+      locked = !!v;
+      // 运行中禁止增删：删掉正在处理的文件会让进度与结果对不上
+      el.classList.toggle('locked', locked);
+      /* 【不能 refresh()】refresh 会重建所有行，把各工具已经写进行里的
+       * 进度、状态标签、体积对比全部清掉 —— 一锁一定就把「已完成」变回「待处理」。
+       * 这里只把已有的删除按钮禁用/启用，并重画表头（表头里有「清空」按钮）。 */
+      for (const btn of el.querySelectorAll('.fl-del')) btn.disabled = locked;
+      renderHead();
+    }
+
+    refresh();
+    const api = {
+      el, add, remove, clear: clearAll, refresh, setLocked, move, sortBy, rowAt: (i) => body.children[i] || null,
+      get items() { return items; },
+      get count() { return items.length; },
+      get locked() { return locked; }
+    };
+    // 挂到 DOM 上：E2E 测试要能驱动真实组件（也给调试时在 DevTools 里手动操纵留个入口）
+    el.__fl = api;
+    return api;
+  }
+
+  /* ---------- 拖拽区 + 待处理列表 ----------
+   * 把「拖拽区」和「文件列表」打包成一个整体，所有需要用户先攒一批文件
+   * 再点开始的功能都用它，避免每个工具各写一套。
+   *
+   * 用法：
+   *   const picker = filePicker({ text: '拖入或选择图片（可多选）', filters: imgFilters });
+   *   picker.add(paths); picker.paths; picker.setLocked(true); picker.el
+   *
+   * 参数：
+   *   text / textMore   空列表 / 已有内容时的拖拽区文案
+   *   filter(p)         返回 false 的路径会被挡下并累计到 rejected（如只收图片）
+   *   onReject(n, list) 被挡下时的提示（不给就静默）
+   *   single            true = 单文件槽位（新文件顶替旧的）
+   *   其余参数透传给 fileList
+   */
+  function filePicker(opts = {}) {
+    const {
+      text = '点击选择或拖拽文件到此处', textMore, sub = '', multiple = true,
+      directory = false, filters, filter, onReject, onChange, single = false,
+      beforeRemove, rowStart, rowEnd, emptyText, onBlob
+    } = opts;
+    const fl = fileList({
+      single, beforeRemove, rowStart, rowEnd, emptyText: emptyText || '还没有添加文件',
+      onChange: (items) => {
+        // 有内容时把拖拽区收成一条窄横条：省下的纵向空间留给列表
+        dz.classList.toggle('compact', items.length > 0 && !single);
+        if (dz.setMain) dz.setMain(items.length ? (textMore || '继续添加文件（可多选）') : text);
+        if (onChange) onChange(items);
+      }
+    });
+    const dz = dropzone({
+      text, sub, multiple: multiple && !single, directory, filters,
+      onFiles: (paths, files) => {
+        const list = (paths || []).filter((p) => typeof p === 'string' && p);
+        // 拖拽时拿不到真实路径（如从浏览器拖来的图片）：交给调用方走 blob 分支
+        if (!list.length && files && files.length && onBlob) { onBlob(files[0]); return; }
+        let ok = list, rejected = 0;
+        if (filter) {
+          ok = list.filter((p) => { try { return filter(p); } catch (e) { return false; } });
+          rejected = list.length - ok.length;
+        }
+        const r = fl.add(ok);
+        if (rejected && onReject) onReject(rejected, list.filter((p) => !ok.includes(p)));
+        else if (rejected) toast(`已忽略 ${rejected} 个不支持的文件`, 'warn');
+        // 重复项给个轻提示：用户拖了同一个文件两次，列表里却没多出来，不说明会以为是 bug
+        if (r.dup) toast(`跳过 ${r.dup} 个重复项`, 'info', 1200);
+        return r;
+      }
+    });
+    const el = h('div', { class: 'picker' });
+    el.appendChild(dz); el.appendChild(fl.el);
+    const api = {
+      el, dz, list: fl,
+      get paths() { return fl.items.map((x) => x.path); },
+      get count() { return fl.count; },
+      add: (p) => fl.add(p),
+      clear: () => fl.clear(),
+      setLocked: (v) => fl.setLocked(v),
+      move: (i, d) => fl.move(i, d),
+      sortBy: (fn) => fl.sortBy(fn),
+      setMainText: (t) => dz.setMain && dz.setMain(t)
+    };
+    el.__picker = api;
+    return api;
   }
 
   /* ---------- 迷你折线图 ---------- */
@@ -353,6 +647,6 @@
 
   window.h = h; // 全局 DOM 构建函数，供所有工具直接使用
   // 全局兜底：工具文件即使遗漏解构也能直接使用这些助手
-  Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId });
-  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId };
+  Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId });
+  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId };
 })();
