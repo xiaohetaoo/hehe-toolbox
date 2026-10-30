@@ -56,7 +56,34 @@ jobs:
           if ($n -lt 90) { throw "tool count regressed: $n" }
 
       - name: Pure-function regression tests
-        run: npm test
+        shell: bash
+        run: |
+          # 逐个跑每个测试并记录退出码。npm test 用 && 串联，
+          # 中间任一步非零都会中断整串，而 GitHub 只会把整步标成 failure，
+          # 日志里看不出到底哪个脚本挂了 —— 已经因此排查了好几轮。
+          # 这里显式循环：把失败脚本名和末尾输出直接打到日志里。
+          set +e
+          node -e "require('./package.json').scripts.test.split('&&').map(s=>s.trim()).filter(Boolean).forEach(s=>console.log(s))" > /tmp/steps.txt
+          I=0
+          FAILED=""
+          while IFS= read -r C; do
+            [ -z "$C" ] && continue
+            I=$((I + 1))
+            echo "----- [$I] $C"
+            OUT=$($C 2>&1)
+            RC=$?
+            echo "$OUT" | tail -8
+            if [ $RC -ne 0 ]; then
+              FAILED="$C (exit $RC)"
+              echo "::::: STEP FAILED: $C"
+              break
+            fi
+          done < /tmp/steps.txt
+          if [ -n "$FAILED" ]; then
+            echo "::error::测试失败：$FAILED"
+            exit 1
+          fi
+          echo "全部测试步骤通过（共 $I 步）"
 
       # 冒烟测试：真的把 Electron 跑起来，确认 93 个工具页全部能渲染。
       # 这是唯一能抓住「IPC handler 重复注册导致应用启动即卡死」这类
