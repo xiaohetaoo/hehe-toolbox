@@ -112,36 +112,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # 兜底：把 Release 标题钉死成「核核工具箱 vX.Y.Z」。
-      # 实测 v0.2.1 发布后 name 变成了 "0.2.1"（只是 tag 去掉前缀），
+      # 实测 v0.2.1 / v0.2.6 发布后 name 变成了去掉 v 前缀的 tag（"0.2.1" / "0.2.6"），
       # action 的 name 输入没有按预期生效。这里不依赖 action 的行为，
-      # 发布完直接用 API 改写一次，保证与既有 6 个 Release 命名一致。
+      # 发布完直接回读并改写，保证与既有 Release 命名一致。
+      #
+      # 为什么不再用 curl：v0.2.6 这一步挂红就是 curl 造成的。
+      # `curl -d` 默认 Content-Type 是 application/x-www-form-urlencoded，
+      # GitHub 按表单解析 JSON 体拿不到 name，返回 200 但标题不变，
+      # 循环跑完后判定失败——而包其实早就发布成功了，白挂一个红灯。
+      # 改成 scripts/fix-release-title.js：显式 application/json、
+      # 每次改完都回读校验、标题已正确时不发 PATCH（可重复跑）。
       - name: Normalize release title
+        if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -e
-          WANT="核核工具箱 $TAG"
-          REPO="${{ github.repository }}"
-          echo "want title: $WANT"
-          # 等 Release 就绪（action 刚创建，可能有短暂延迟）
-          for i in $(seq 1 10); do
-            GOT=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/$REPO/releases/tags/$TAG" \
-              | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).name||'')}catch(e){console.log('')}})")
-            if [ "$GOT" = "$WANT" ]; then
-              echo "title already correct"
-              exit 0
-            fi
-            echo "attempt $i: current name = '$GOT'"
-            curl -sf -X PATCH -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/releases/tags/$TAG" \
-              -d "{\"name\":\"$WANT\"}" > /dev/null && echo "patched"
-            sleep 2
-          done
-          GOT=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$REPO/releases/tags/$TAG" \
-            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).name||'')}catch(e){console.log('')}})")
-          if [ "$GOT" = "$WANT" ]; then echo "OK title = $GOT"; else echo "::error::标题未统一，实际 '$GOT'，期望 '$WANT'"; exit 1; fi
+          node scripts/fix-release-title.js "$TAG"
