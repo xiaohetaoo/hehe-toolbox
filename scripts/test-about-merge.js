@@ -51,8 +51,18 @@ const PROBE = `
   if (btn && bodyEl) {
     const br = btn.getBoundingClientRect();
     const pr = bodyEl.getBoundingClientRect();
-    // 按钮右边缘应贴近面板右边缘（容差 60px 含 padding）
-    log('btn-align', { gap: Math.round(pr.right - br.right), aligned: (pr.right - br.right) < 60 });
+    /* 无头/未激活窗口里，窗口没有被真正绘制时布局可能全是 0：
+       此时 right 差值为 0，会伪装成「完美对齐」通过，
+       或者在被最小化时给出异常大值造成误报。
+       把「盒子尺寸有效」作为前提，无效就标记 unavailable，
+       由下面断言跳过而不是判失败。 */
+    const valid = pr.width > 0 && pr.height > 0 && br.width > 0;
+    log('btn-align', {
+      gap: Math.round(pr.right - br.right),
+      aligned: valid ? (pr.right - br.right) < 60 : null,
+      unavailable: !valid,
+      box: { bodyW: Math.round(pr.width), bodyH: Math.round(pr.height), btnW: Math.round(br.width) }
+    });
   }
 
   /* ---- 5. 旧路由 'about' 仍能渲染（不能白屏），且落到设置的关于分区 ---- */
@@ -154,8 +164,18 @@ if (R.fatal) {
   chk(by.content && by.content.hasCheckBtn,
       '关于分区保留「检查更新」按钮（仍是唯一更新入口）');
 
-  chk(by['btn-align'] && by['btn-align'].aligned,
-      '「检查更新」按钮右对齐（距右边缘 ' + (by['btn-align'] && by['btn-align'].gap) + 'px）');
+  /* 布局类断言：无头环境拿不到有效盒子尺寸时跳过，不算失败。
+     否则 CI 会因为「测量不到」被判成「功能坏了」——
+     这两件事完全不同，不该用同一个红灯。 */
+  const ba = by['btn-align'];
+  if (!ba) {
+    chk(false, '「检查更新」按钮或设置面板没找到');
+  } else if (ba.unavailable) {
+    console.log('SKIP  「检查更新」按钮对齐（无头环境布局不可测：' + JSON.stringify(ba.box) + '）');
+  } else {
+    chk(ba.aligned,
+        '「检查更新」按钮右对齐（距右边缘 ' + ba.gap + 'px）');
+  }
 
   chk(by['legacy-route'] && by['legacy-route'].rendered && by['legacy-route'].isSettings,
       '旧 about 路由仍能渲染，且落到设置页（不白屏）');
