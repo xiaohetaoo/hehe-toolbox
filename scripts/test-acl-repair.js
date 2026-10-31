@@ -237,5 +237,47 @@ t('权限修复把结果存进 state，重查后能复现', () => {
     'render() 末尾应按 state.repair 重画修复结果');
 });
 
+/* ---------- ownerIsMe 三态：null（读不到）不能当成「不是你」 ----------
+ * CI 的 runneradmin 上实测到了：Get-Acl 返回空（owner=null），
+ * 而 hasFull=true、权限完全正常。早期 `if (!x.ownerIsMe)` 把 null 也当成
+ * 「所有者不是你」，于是诊断报「当前所有者不是你，因此你无法修改它的权限」——
+ * 把「读不到」渲染成「有问题」，正是本模块要避免的那类错误。 */
+t('ownerIsMe 为 null（读不到）时，不报「所有者不是你」', () => {
+  const r = A.diagnose({
+    exists: true, isDir: false, childCount: -1,
+    ownerIsMe: null, ownerName: null,
+    acl: { entries: [{ principal: 'BUILTIN\\Users', perms: 'F', deny: false, mine: true }], hasFull: true, hasDenied: false },
+    isAdmin: false, lockedPaths: [],
+  });
+  assert.strictEqual(r.ok, true, '读不到所有者不该判成「有问题」，实际 codes=' + JSON.stringify(r.codes));
+  assert.ok(!/所有者不是你/.test(r.messages.join(' ')),
+    '不该编出「所有者不是你」：' + r.messages.join(' | '));
+  assert.ok(/无法读取所有者信息/.test(r.messages.join(' ')),
+    '应如实说明读不到所有者：' + r.messages.join(' | '));
+});
+
+t('ownerIsMe 为 false 时仍然要报 OWNER（真问题不能漏）', () => {
+  const r = A.diagnose({
+    exists: true, isDir: false, childCount: -1,
+    ownerIsMe: false, ownerName: 'Administrators',
+    acl: { entries: [{ principal: 'BUILTIN\\Users', perms: 'F', deny: false, mine: true }], hasFull: true, hasDenied: false },
+    isAdmin: false, lockedPaths: [],
+  });
+  assert.strictEqual(r.ok, false, '明确「所有者不是你」应算问题');
+  assert.ok(r.codes.indexOf('OWNER') !== -1, '应报 OWNER，实际 ' + JSON.stringify(r.codes));
+  assert.ok(/所有者不是你/.test(r.messages.join(' ')), '应说明所有者不是你');
+});
+
+t('ownerIsMe 为 true 时一切正常', () => {
+  const r = A.diagnose({
+    exists: true, isDir: false, childCount: -1,
+    ownerIsMe: true, ownerName: 'me',
+    acl: { entries: [{ principal: 'me', perms: 'F', deny: false, mine: true }], hasFull: true, hasDenied: false },
+    isAdmin: false, lockedPaths: [],
+  });
+  assert.strictEqual(r.ok, true, '正常文件应判 ok，实际 codes=' + JSON.stringify(r.codes));
+  assert.deepStrictEqual(r.codes, [], '不该有任何 codes');
+});
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

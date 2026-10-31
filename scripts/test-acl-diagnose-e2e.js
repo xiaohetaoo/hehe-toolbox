@@ -116,10 +116,19 @@ chk(d.hasFull === true, 'hasFull 为 true（自己拥有且有完全控制的文
 /* 3) 关键验收：不能再出现「缺少写入权限」 */
 chk((d.codes || []).indexOf('NO_WRITE') === -1,
   '诊断结论里没有 NO_WRITE「缺少写入权限」');
-/* 4) 结论整体应为 ok */
-chk(d.ok === true, '诊断结论 ok（不是「有问题」）');
-/* 5) 所有者应当就是我（这才符合「我自己建的文件」这个前提） */
-chk(d.ownerIsMe === true, 'ownerIsMe 为 true');
+/* 4) 结论整体应为 ok。
+ * 【这里必须允许 ownerIsMe 读不到】
+ * CI（runneradmin）上 Get-Acl 返回空 → owner=null、ownerIsMe=null。
+ * 旧实现把 null 当成「所有者不是你」，于是这条会红（v0.3.3 第一次构建
+ * 就死在这里）。现在 null 归「未知」，不该影响结论。 */
+chk(d.ok === true, '诊断结论 ok（不是「有问题」）' +
+  (d.ownerIsMe === null ? '（本机读不到所有者：' + JSON.stringify(d.codes) + '）' : ''));
+/* 5) ownerIsMe 若读到了，应当就是 true；读不到（null）时不该被当成 false */
+chk(d.ownerIsMe === true || d.ownerIsMe === null,
+  'ownerIsMe 为 true 或 null（读不到），不能是 false');
+/* 6) 读不到所有者时，也不能冒出「所有者不是你」这个结论 */
+chk(!/所有者不是你/.test((d.messages || []).join(' ')),
+  '不该编出「所有者不是你」：' + JSON.stringify(d.messages));
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
