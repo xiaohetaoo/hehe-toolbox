@@ -2,18 +2,19 @@
 (function () {
   /* 模块名给两种语言：nameEn 缺失时回退到 name。
      模块名会出现在导航、首页分类条、模块页标题、搜索结果行和面包屑五处，
-     是外壳里露出频率最高的文字，所以必须翻译；工具名本身不翻译（工具正文是中文）。 */
+     是外壳里露出频率最高的文字，所以必须翻译；工具名本身不翻译（工具正文是中文）。
+     desc / descEn 同理：模块描述出现在首页分类卡与模块页副标题，也要双语。 */
   const MODULES = [
-    { id: 'system',   name: '系统与硬件', nameEn: 'System & Hardware', icon: 'cpu',      desc: '硬件信息、进程管理、磁盘分析、系统维护' },
-    { id: 'file',     name: '文件处理',   nameEn: 'Files',             icon: 'folder',   desc: '哈希校验、批量重命名、加密分割、查重' },
-    { id: 'text',     name: '文本与编码', nameEn: 'Text & Encoding',   icon: 'type',     desc: '编解码转换、进制、文本批量处理' },
-    { id: 'net',      name: '网络运维',   nameEn: 'Network',           icon: 'globe',    desc: '网络信息、Ping、端口、Hosts' },
-    { id: 'dev',      name: '开发调试',   nameEn: 'Dev Tools',         icon: 'code',     desc: '取色、二维码、HTTP、正则、计算' },
-    { id: 'media',    name: '多媒体处理', nameEn: 'Media',             icon: 'image',    desc: '图片批量处理、水印、拼接' },
-    { id: 'office',   name: '办公文档',   nameEn: 'Office & Docs',     icon: 'file-text',desc: 'PDF 处理、Markdown、文档对比' },
-    { id: 'security', name: '安全与密码', nameEn: 'Security',          icon: 'lock',     desc: '密码生成、强度检测、剪贴板' },
-    { id: 'launch',   name: '快捷启动',   nameEn: 'Launchers',         icon: 'zap',      desc: '快捷启动栏、命令收藏、全局搜索' },
-    { id: 'life',     name: '生活辅助',   nameEn: 'Everyday',          icon: 'coffee',   desc: '番茄钟、日历农历、便签、标尺' }
+    { id: 'system',   name: '系统与硬件', nameEn: 'System & Hardware', icon: 'cpu',      desc: '硬件信息、进程管理、磁盘分析、系统维护', descEn: 'Hardware info, processes, disk analysis, maintenance' },
+    { id: 'file',     name: '文件处理',   nameEn: 'Files',             icon: 'folder',   desc: '哈希校验、批量重命名、加密分割、查重', descEn: 'Hashing, batch rename, encrypt & split, duplicates' },
+    { id: 'text',     name: '文本与编码', nameEn: 'Text & Encoding',   icon: 'type',     desc: '编解码转换、进制、文本批量处理', descEn: 'Encoding conversion, number bases, batch text ops' },
+    { id: 'net',      name: '网络运维',   nameEn: 'Network',           icon: 'globe',    desc: '网络信息、Ping、端口、Hosts', descEn: 'Network info, ping, ports, hosts' },
+    { id: 'dev',      name: '开发调试',   nameEn: 'Dev Tools',         icon: 'code',     desc: '取色、二维码、HTTP、正则、计算', descEn: 'Color picker, QR codes, HTTP, regex, calculator' },
+    { id: 'media',    name: '多媒体处理', nameEn: 'Media',             icon: 'image',    desc: '图片批量处理、水印、拼接', descEn: 'Batch images, watermarks, stitching' },
+    { id: 'office',   name: '办公文档',   nameEn: 'Office & Docs',     icon: 'file-text',desc: 'PDF 处理、Markdown、文档对比', descEn: 'PDF tools, Markdown, document diff' },
+    { id: 'security', name: '安全与密码', nameEn: 'Security',          icon: 'lock',     desc: '密码生成、强度检测、剪贴板', descEn: 'Password generation, strength check, clipboard' },
+    { id: 'launch',   name: '快捷启动',   nameEn: 'Launchers',         icon: 'zap',      desc: '快捷启动栏、命令收藏、全局搜索', descEn: 'Quick launch bar, saved commands, global search' },
+    { id: 'life',     name: '生活辅助',   nameEn: 'Everyday',          icon: 'coffee',   desc: '番茄钟、日历农历、便签、标尺', descEn: 'Pomodoro, calendar & lunar, notes, ruler' }
   ];
   /* 按当前界面语言取模块名。调用点很多，统一收在这里，
      免得每个渲染位置都写一遍 `i18n.lang === 'en' ? m.nameEn : m.name`。 */
@@ -21,6 +22,12 @@
     if (!m) return '';
     const en = window.i18n && window.i18n.lang === 'en';
     return (en && m.nameEn) ? m.nameEn : m.name;
+  }
+  /* 模块描述同理：英文界面下优先 descEn，缺失时回退中文（不至于空白）。 */
+  function modDesc(m) {
+    if (!m) return '';
+    const en = window.i18n && window.i18n.lang === 'en';
+    return (en && m.descEn) ? m.descEn : (m.desc || '');
   }
 
   const tools = [];
@@ -56,6 +63,8 @@
       'process-manager', 'monitor', 'hw-info',
       // 空间与清理：三件套
       'disk-analyze', 'junk-clean', 'empty-dir-clean',
+      // 磁盘健康：与空间分析同属「关心我的盘」，挨着放
+      'disk-health',
       // 系统操作：断电类动作
       'quick-ops', 'scheduler', 'services-power',
       // 右键菜单：两个同类
@@ -64,9 +73,16 @@
       'autostart', 'window-manager'
     ],
     file: [
-      // 压缩、搜索、改名：这三类是全盘操作里最高频的
+      // 「删不掉、提示被占用，但不知道谁占的」是中文 Windows 上最高频的痛点，
+      // 排第一位；随后是压缩与搜索这两组主力，保持同组相邻。
+      'file-unlock',
       'zip-tool', 'archive-7z',
       'global-search', 'content-search',
+      // 权限修复与占用解锁是「删不掉」的两个并列原因，紧随其后
+      'acl-repair',
+      // 链接体检（只读、看一眼就走）与搬家（高危、低频）放在主力之后，
+      // 靠搜索也能直达，不占网格首行
+      'link-doctor', 'dir-move',
       'batch-rename', 'batch-ext',
       // 查重与校验：判断「这是不是同一个文件」
       'dedupe', 'hash-tool',
@@ -76,6 +92,8 @@
     text: [
       // 编码五连：日常最常打交道的五种
       'base64', 'url-codec', 'unicode-convert', 'html-entity', 'hex-ascii',
+      // 乱码修复：中文用户踩坑率极高，紧跟编码五连
+      'mojibake-fix',
       // 数值与时间：开发者高频
       'radix', 'timestamp',
       // 文本处理三连
@@ -87,7 +105,7 @@
     ],
     net: [
       // 网络体检：先看状态，再测通不通
-      'net-info', 'ping-test', 'tracert',
+      'net-info', 'ping-test', 'lan-scan', 'tracert',
       // 端口三连：占用 → 连通 → 扫描
       'port-occupy', 'port-test', 'port-scan',
       // 传输
@@ -207,5 +225,5 @@
       .map(s => s.tool);
   }
 
-  window.Registry = { MODULES, register, byModule, get, all: tools, search, ORDER, modName };
+  window.Registry = { MODULES, register, byModule, get, all: tools, search, ORDER, modName, modDesc };
 })();

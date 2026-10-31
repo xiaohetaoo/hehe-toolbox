@@ -13,7 +13,8 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const APP = path.join(__dirname, '..', 'js', 'app.js');
+const ROOT = path.join(__dirname, '..');
+const APP = path.join(ROOT, 'js', 'app.js');
 const I18N = path.join(__dirname, '..', 'js', 'i18n.js');
 
 let pass = 0, fail = 0;
@@ -158,6 +159,63 @@ t('设置区引用的 i18n 键全部存在', () => {
   });
   assert.deepStrictEqual(missing, [], '这些键在字典里不存在：' + missing.join(', '));
   assert.ok(used.size > 20, '设置区应当引用相当数量的键，实际只有 ' + used.size);
+});
+
+/* ---- 5. 配色主题：9 套的 name/desc 都必须双语 ---- */
+t('九套配色主题的 name/desc 都有中英键', () => {
+  const isrc = fs.readFileSync(I18N, 'utf8');
+  const zh = isrc.slice(isrc.indexOf('zh: {'), isrc.indexOf('en: {'));
+  const known = new Set([...zh.matchAll(/^\s*'([^']+)':/gm)].map((m) => m[1]));
+  const IDS = ['polar', 'mist', 'jade', 'violet', 'rose', 'gold', 'teal', 'sand', 'mono'];
+  const missing = [];
+  for (const id of IDS) {
+    for (const f of ['name', 'desc']) {
+      const k = 'accent.' + id + '.' + f;
+      if (!known.has(k)) missing.push(k);
+    }
+  }
+  assert.deepStrictEqual(missing, [], '缺配色词条：' + missing.join(', '));
+  // app.js 里不能再有写死的配色名
+  const offenders = [];
+  for (const name of ['极地白', '雾霭蓝', '苔原绿', '紫罗兰', '樱花粉', '鎏金', '青碧', '暖砂', '纯黑白']) {
+    if (new RegExp("name: '" + name + "'").test(fs.readFileSync(APP, 'utf8'))) {
+      offenders.push(name);
+    }
+  }
+  assert.deepStrictEqual(offenders, [], '配色名仍写死在 app.js：' + offenders.join(', '));
+});
+
+/* ---- 6. 模块描述必须双语（descEn 齐全） ---- */
+t('10 个模块都有 descEn', () => {
+  const rsrc = fs.readFileSync(path.join(ROOT, 'js', 'registry.js'), 'utf8');
+  const mods = [...rsrc.matchAll(/\{ id: '(\w+)'[^}]*?desc: '[^']*'(?:, descEn: '([^']*)')?/g)];
+  const missing = [];
+  for (const m of mods) {
+    if (!m[2]) missing.push(m[1]);
+  }
+  // intro 之类的非模块行会被正则带上，只关心已知的 10 个 id
+  const IDS = ['system', 'file', 'text', 'net', 'dev', 'media', 'office', 'security', 'launch', 'life'];
+  const realMissing = missing.filter((id) => IDS.indexOf(id) !== -1);
+  assert.deepStrictEqual(realMissing, [], '这些模块缺 descEn：' + realMissing.join(', '));
+  assert.ok(/function modDesc/.test(rsrc), '没有 modDesc 取值函数');
+  assert.ok(/modDesc/.test(rsrc.slice(rsrc.indexOf('window.Registry'))), 'modDesc 没有导出');
+});
+
+/* ---- 7. ui.js 的公共默认文案要能跟随语言 ---- */
+t('ui.js 的默认文案走 i18n 而不是写死中文', () => {
+  const usrc = fs.readFileSync(path.join(ROOT, 'js', 'ui.js'), 'utf8');
+  const offenders = [];
+  /* 这几个以前是**参数默认值**里的中文字面量：参数默认值在函数定义时
+   * 就求值了，切语言后不会跟着变，所以必须挪到函数体里用 TT() 取。 */
+  for (const pat of ["title = '确认操作'", "okText = '确定'", "cancelText = '取消'", "empty = '暂无数据'"]) {
+    if (usrc.indexOf(pat) !== -1) offenders.push(pat);
+  }
+  assert.deepStrictEqual(offenders, [], '仍有写死的默认文案：' + offenders.join(', '));
+  // 必须通过 TT() 取词
+  for (const [k, label] of [['dialog.ok', 'confirmBox'], ['dialog.cancel', 'confirmBox'],
+                            ['table.empty', 'renderTable'], ['unit.sec', 'fmtTime']]) {
+    assert.ok(new RegExp("TT\\('" + k + "'").test(usrc), label + ' 没走 TT(' + k + ')');
+  }
 });
 
 /* ---- 4. 英文字典里不能有中文（漏翻会直接暴露） ---- */

@@ -232,7 +232,6 @@
     desc: 'AES-256-CBC 本地加密，密码经 scrypt 派生，离线安全',
     keywords: ['加密', '解密', 'aes', '密码'],
     render(page) {
-      let running = false; // 防重入标志：处理中禁止重复点击
       let mode = 'encrypt';
       let filePath = null;
       const picker = filePicker({
@@ -245,8 +244,6 @@
       const status = h('div', { class: 'field-hint' }, '');
       const prog = progressEl(); prog.hide();
       async function run() {
-        if (running) return; // 防重入：两次加密会写坏同一个目标文件
-        running = true;
         if (!filePath) return toast('请先选择文件', 'warn');
         if (!pwdIn.value) return toast('请输入密码', 'warn');
         const outDefault = mode === 'encrypt' ? filePath + '.hehe' : filePath.replace(/\.hehe$/, '') + '.dec';
@@ -262,14 +259,18 @@
         } catch (e) {
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
-        } finally { prog.hide(); unsub(); running = false; }
+        } finally { prog.hide(); unsub(); }
       }
+      /* 统一收口：防重入由 guard 自己管。
+       * 以前手写 running 标志时，三条提前返回（没选文件 / 没填密码 /
+       * 保存对话框点取消）全都忘了复位，按钮从此永久没反应。 */
+      const runGuarded = guard(run);
       const encBtn = btn('🔒 加密模式', 'btn-sm btn-primary', () => setMode('encrypt'));
       const decBtn = btn('🔓 解密模式', 'btn-sm btn-secondary', () => setMode('decrypt'));
       // 主按钮必须提升为变量：原来在 appendChild 里用 btn(...) 一次性渲染，
       // 文案被写死成「开始加密」，切到解密模式后按钮仍显示「开始加密」，
       // 实际执行的是解密 —— 文案与动作相反，属于危险的误导。
-      const mainBtn = btn('开始加密', 'btn-primary', run);
+      const mainBtn = btn('开始加密', 'btn-primary', () => runGuarded());
       function setMode(m) {
         mode = m;
         encBtn.className = 'btn btn-sm ' + (m === 'encrypt' ? 'btn-primary' : 'btn-secondary');

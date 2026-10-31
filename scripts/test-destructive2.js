@@ -19,6 +19,14 @@ function body(src, channel) {
   return src.slice(start, src.indexOf('\n});', start));
 }
 
+/* 去掉注释再断言。否则「注释里写着旧实现」会让测试误判成仍有旧代码，
+ * 而注释里描述旧行为恰恰是这类修复的正常做法（要说明为什么改）。 */
+function stripComments(s) {
+  return String(s)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/[^\n]*/gm, '');
+}
+
 const main = read('main.js');
 
 /* ---------- P0-1：exec:run 绕过 system-power 门禁 ---------- */
@@ -73,6 +81,57 @@ t('P0 ctxmenu:toggle 校验注册表路径白名单', () => {
   assert.ok(fn.includes('FULL_ROOTS'), '没有白名单根列表');
   assert.ok(fn.includes('非法的注册表路径'), '没有路径校验');
   assert.ok(fn.includes('层级过深'), '没有层级限制');
+});
+
+/* ---------- acl:repair 必须接门禁 ----------
+ * 早期 DANGEROUS_CAPS 里声明了 'acl-repair'，但没有任何通道映射到它，
+ * TOOL_DANGEROUS_CAPS 里也没有这个工具 —— 开关拨了不生效、卡片不标红，
+ * 只要以管理员运行就能直接调 acl:repair。改所有者 + 递归放宽整棵子树的
+ * 权限，是这批功能里影响面最大的一个，必须设闸。 */
+t('acl:repair 已纳入 acl-repair 门禁', () => {
+  const gate = main.match(/const CAP_GATED_CHANNELS = \{[\s\S]*?\};/)[0];
+  assert.ok(/'acl:repair':\s*'acl-repair'/.test(gate),
+    'acl:repair 不在 CAP_GATED_CHANNELS —— 管理员下可绕过开关直接改权限');
+});
+t('acl-repair 工具卡片会被标红（登记进 TOOL_DANGEROUS_CAPS）', () => {
+  const tbl = main.match(/const TOOL_DANGEROUS_CAPS = \{[\s\S]*?\};/)[0];
+  assert.ok(/'acl-repair':\s*\[/.test(tbl), 'acl-repair 不在 TOOL_DANGEROUS_CAPS');
+});
+t('acl:diagnose 是只读的，不进高危门禁', () => {
+  const gate = main.match(/const CAP_GATED_CHANNELS = \{[\s\S]*?\};/)[0];
+  assert.ok(!/'acl:diagnose':/.test(gate),
+    '诊断只是读取，加门禁会让用户连「得了什么病」都查不了');
+});
+
+/* ---------- link:remove 不再逐条起 PowerShell ----------
+ * 早期循环里 `await links.linkInfo(p, ps)`，每项启动一次 powershell.exe，
+ * 50 个僵尸链接要一两分钟，用户点下去长时间没反馈会重复点。
+ * 二次复核（kind !== 'dead' 就 skip）**不能省** —— 只换掉慢的那一层。 */
+t('link:remove 循环里不再逐条调 linkInfo/powershell', () => {
+  const fn = stripComments(body(main, 'link:remove'));
+  assert.ok(!/await\s+links\.linkInfo/.test(fn),
+    'link:remove 仍在循环里逐条调 linkInfo（每个链接一次 PowerShell）');
+  assert.ok(fn.includes('readlinkSync'),
+    '应改用 fs.readlinkSync 读目标（纯文件系统操作，不起进程）');
+});
+t('link:remove 二次复核没被省略（非僵尸一律 skip）', () => {
+  const fn = stripComments(body(main, 'link:remove'));
+  assert.ok(fn.includes('classifyLink'), '必须逐项重新分类，不能信渲染层的结论');
+  assert.ok(/kind\s*!==\s*'dead'/.test(fn), '非僵尸链接必须跳过');
+  assert.ok(fn.includes('removeLinkOnly'), '删除必须只经 removeLinkOnly');
+});
+
+/* ---------- 占用查询批量取进程信息 ----------
+ * 早期每个占用进程单独 ps 一次取 exe 路径与内存，5 个占用就是 5 次
+ * powershell.exe 启动，拖到四五秒。RM 一次就给了全部 pid，没理由逐条查。 */
+t('占用查询用一次 PowerShell 取回整批 pid 的信息', () => {
+  const fn = main.match(/async function rmQueryLockers[\s\S]*?\n\}/);
+  assert.ok(fn, '找不到 rmQueryLockers');
+  const code = stripComments(fn[0]);
+  assert.ok(code.includes('foreach($id in @('),
+    '应把整批 pid 拼进一次调用，而不是循环里逐个 ps()');
+  assert.ok(!/for \(const row of rows\)[\s\S]{0,500}await ps\(/.test(code),
+    '仍在 for 循环里对每个 row 单独 ps()');
 });
 
 /* ---------- P0-4：7z 密码脱敏 ---------- */

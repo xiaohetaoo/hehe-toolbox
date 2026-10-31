@@ -39,13 +39,30 @@
     return v.toFixed(v >= 100 ? 0 : digits) + ' ' + units[i];
   }
   function fmtNum(n) { return (n || 0).toLocaleString('zh-CN'); }
+  /* ui.js 是最底层的组件库，加载早于 app.js，拿不到那边的 T()。
+   * 这里自己包一层：i18n 还没加载时回退到传入的中文默认值，
+   * 保证组件库单独被引用（或加载顺序异常）时也不会抛错、不显示空白。 */
+  const TT = (key, fallback) => {
+    try {
+      if (window.i18n && window.i18n.t) {
+        const v = window.i18n.t(key);
+        // t() 找不到键时会原样返回键名，这时用 fallback 更可读
+        return (v && v !== key) ? v : fallback;
+      }
+    } catch (e) {}
+    return fallback;
+  };
+
   function pad2(n) { return String(n).padStart(2, '0'); }
   function fmtTime(ms) {
     const s = Math.floor(ms / 1000);
-    if (s < 60) return s + ' 秒';
+    const U_SEC = TT('unit.sec', '秒');
+    const U_MIN = TT('unit.min', '分');
+    const U_HOUR = TT('unit.hour', '时');
+    if (s < 60) return s + ' ' + U_SEC;
     const m = Math.floor(s / 60);
-    if (m < 60) return m + ' 分 ' + (s % 60) + ' 秒';
-    return Math.floor(m / 60) + ' 时 ' + (m % 60) + ' 分';
+    if (m < 60) return m + ' ' + U_MIN + ' ' + (s % 60) + ' ' + U_SEC;
+    return Math.floor(m / 60) + ' ' + U_HOUR + ' ' + (m % 60) + ' ' + U_MIN;
   }
   function fmtDate(ts, withTime = true) {
     const d = new Date(ts);
@@ -116,13 +133,18 @@
     if (firstBtn) firstBtn.focus();
     return { close, el: m, body: bodyEl };
   }
-  function confirmBox({ title = '确认操作', message, danger = false, okText = '确定', cancelText = '取消' }) {
+  function confirmBox({ title, message, danger = false, okText, cancelText }) {
+    /* 默认文案必须在此处求值（不能写在参数默认值里）：参数默认值在**定义**
+     * 时就绑定了，切语言后不会跟着变。 */
+    const ttl = title != null ? title : TT('dialog.confirmTitle', '确认操作');
+    const okT = okText != null ? okText : TT('dialog.ok', '确定');
+    const cancelT = cancelText != null ? cancelText : TT('dialog.cancel', '取消');
     return new Promise((resolve) => {
       let done = false;
-      const okBtn = h('button', { class: danger ? 'btn btn-danger' : 'btn btn-primary', onclick: () => { done = true; md.close(); resolve(true); } }, okText);
-      const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: () => { done = true; md.close(); resolve(false); } }, cancelText);
+      const okBtn = h('button', { class: danger ? 'btn btn-danger' : 'btn btn-primary', onclick: () => { done = true; md.close(); resolve(true); } }, okT);
+      const cancelBtn = h('button', { class: 'btn btn-secondary', onclick: () => { done = true; md.close(); resolve(false); } }, cancelT);
       const md = modal({
-        title, onClose: () => { if (!done) resolve(false); },
+        title: ttl, onClose: () => { if (!done) resolve(false); },
         // pre-wrap：message 里的 \n 要能真正换行，否则多行提示会被压成一长段
         body: (b) => { b.appendChild(h('div', { style: { userSelect: 'text', whiteSpace: 'pre-wrap' } }, message)); },
         foot: [cancelBtn, okBtn]
@@ -132,7 +154,9 @@
   function alertBox(message, title = '提示') {
     return modal({ title, body: (b) => b.appendChild(h('div', null, message)), foot: [h('button', { class: 'btn btn-primary', onclick: function () { this.closest('.modal-mask').remove(); } }, '知道了')] });
   }
-  function promptBox({ title, label = '', value = '', placeholder = '', okText = '确定' }) {
+  function promptBox({ title, label = '', value = '', placeholder = '', okText }) {
+    // 同 confirmBox：默认文案必须运行时取，否则切语言后不跟随
+    if (okText == null) okText = TT('dialog.ok', '确定');
     return new Promise((resolve) => {
       let result = null;
       const input = h('input', { class: 'input', value, placeholder, style: { width: '100%' } });
@@ -157,7 +181,9 @@
   }
 
   /* ---------- 表格 ---------- */
-  function renderTable({ columns, rows, rowKey, onRowClick, empty = '暂无数据' }) {
+  function renderTable({ columns, rows, rowKey, onRowClick, empty }) {
+    // 空态文案也要跟随语言（表格在工具页很常见，但默认值是中文）
+    if (empty == null) empty = TT('table.empty', '暂无数据');
     // columns: {key, title, width?, render?(row), sortable?, sortVal?(row)}
     const wrap = div('table-scroll');
     const table = h('table', { class: 'table' });
@@ -712,8 +738,44 @@
     toastBox = null;
   }
 
+  /* 防重入的**统一收口**。
+   *
+   * 【为什么要这个助手】
+   * 工具页的异步按钮普遍是「先置 running = true，跑完在 finally 里复位」。
+   * 但中间那些「提前 return」的校验分支（没选文件、没填密码、
+   * 在保存对话框点取消、没装 FFmpeg……）如果忘了复位，
+   * running 就永远停在 true —— 按钮彻底没反应，只有切页重建才恢复。
+   * 这类 bug 一共出现过 7 次，全是逐处手写造成的差异。
+   *
+   * 用法：
+   *   const start = guard(() => { flag = true; ...; flag = false; });
+   * 或者帮它管标志本身：
+   *   const start = guard(async () => { ...业务... }, {
+   *     before: () => { goBtn.disabled = true; },
+   *     after:  () => { goBtn.disabled = false; },
+   *   });
+   *
+   * 无论中间怎么 return、抛异常，after 与状态复位都保证执行，
+   * 而且并发的第二次点击会被直接挡掉（不用调用方自己写 if (running) return）。
+   */
+  function guard(fn, opts) {
+    const o = opts || {};
+    let busy = false;
+    return async function guarded(...args) {
+      if (busy) return;              // 防重入：真正并发时挡住第二次
+      busy = true;
+      try {
+        if (typeof o.before === 'function') o.before();
+        return await fn.apply(this, args);
+      } finally {
+        busy = false;                // 关键：任何 return / throw 都会走到这里
+        try { if (typeof o.after === 'function') o.after(); } catch (e) { console.warn('guard after', e); }
+      }
+    };
+  }
+
   window.h = h; // 全局 DOM 构建函数，供所有工具直接使用
   // 全局兜底：工具文件即使遗漏解构也能直接使用这些助手
-  Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId });
-  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild };
+  Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId, guard });
+  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild, guard };
 })();

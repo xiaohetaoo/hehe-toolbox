@@ -413,7 +413,7 @@
         if (running) return; // 防重入：重复转换会并发占用 LibreOffice/Office COM
         running = true;
         if (!picker.count) { running = false; return toast('请先选择文件', 'warn'); }
-        if (targetSel.value === 'docx' && picker.paths.some(f => !f.toLowerCase().endsWith('.pdf'))) return toast('转 DOCX 仅支持 PDF 来源（PDF→Word）', 'warn');
+        if (targetSel.value === 'docx' && picker.paths.some(f => !f.toLowerCase().endsWith('.pdf'))) { running = false; return toast('转 DOCX 仅支持 PDF 来源（PDF→Word）', 'warn'); }
         startBtn.disabled = true; status.textContent = '转换中…';
         listBox.innerHTML = '';
         const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');

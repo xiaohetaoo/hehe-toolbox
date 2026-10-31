@@ -32,6 +32,13 @@ const powerGate = require('./lib/power-gate');       // 电源命令识别 + 门
  * 这里原先有一行未使用的 require，已删除 —— 留着会让「主进程也参与过滤」
  * 看起来像真的，实际两份数据源靠测试脚本手工对齐，容易长期漂移。 */
 const fsOps = require('./lib/fs-ops');               // 唯一名/临时名等文件命名纯逻辑
+const rmLockers = require('./lib/rm-lockers');       // 查文件被哪个进程占用（Restart Manager 内嵌 C#）
+const links = require('./lib/links');                 // junction/symlink 识别、体检、「只删链接」安全删除
+const dirMove = require('./lib/dir-move');            // 目录搬家的校验规则与回退状态机（纯逻辑）
+const mojibake = require('./lib/mojibake');           // 乱码识别与编码探测（纯逻辑）
+const aclRepair = require('./lib/acl-repair');        // 权限修复：判据与命令构造（纯逻辑）
+const diskHealth = require('./lib/disk-health');      // 磁盘健康：诚实区分「拿到了/拿不到」（纯逻辑）
+const lanScanLib = require('./lib/lan-scan');         // 局域网扫描：ARP 解析与结果合并（纯逻辑）
 bootMark('deps-loaded');
 
 const isMac = process.platform === 'darwin';
@@ -210,7 +217,12 @@ const DANGEROUS_CAPS = {
   'service-stop': { name: '停止系统服务', desc: '停止正在运行的 Windows 服务，依赖它的程序可能异常退出' },
   'system-power': { name: '关机 / 重启 / 休眠', desc: '执行关机、重启、休眠等系统电源操作（锁屏与睡眠不受限制）' },
   'hosts-edit': { name: '编辑 Hosts', desc: '写入系统 hosts 文件并刷新 DNS，影响全机解析' },
-  'registry-edit': { name: '注册表与右键菜单', desc: '删除开机自启项、切换 Win11 经典右键菜单' }
+  'registry-edit': { name: '注册表与右键菜单', desc: '删除开机自启项、切换 Win11 经典右键菜单' },
+  /* 目录搬家最坏的结果是「源目录删了、链接是坏的、数据在别处」——
+   * 用户会以为文件丢了。中间态（已改名但链接没建成）尤其危险，
+   * 所以它必须是独立的高危能力，不能借用 file-delete。 */
+  'dir-move': { name: '目录搬家（建链接替身）', desc: '把目录搬到别处并在原位置建目录联接；失败时可能留下坏链接' },
+  'acl-repair': { name: '取得所有权 / 修复权限', desc: '改文件所有者并授予完全控制；会放宽该路径（及其子项）的访问权限' },
 };
 const DANGEROUS_CAP_IDS = Object.keys(DANGEROUS_CAPS);
 // 默认全部关闭；用户在设置里开启的存到 settings.dangerousCaps（数组）
@@ -235,7 +247,19 @@ const CAP_GATED_CHANNELS = {
   'ctxmenu:classic': 'registry-edit',
   // 逐条禁用/启用右键菜单项改的是同一类 HKCR 键，与「Win11 经典菜单」等价，
   // 之前漏在门禁外：没开开关的用户也能直接调它写注册表。
-  'ctxmenu:toggle': 'registry-edit'
+  'ctxmenu:toggle': 'registry-edit',
+  /* 清理僵尸链接 = 删除文件系统条目，按删除门禁管 */
+  'link:remove': 'file-delete',
+  /* 目录搬家会复制/改名/建链接/删备份，最坏情况是「数据在别处、链接是坏的」，
+   * 单独一个能力，不能借用 file-delete */
+  'dir:move': 'dir-move',
+  /* 【权限修复必须走门禁】
+   * 早期 DANGEROUS_CAPS 里声明了 acl-repair，但没有任何通道映射到它，
+   * TOOL_DANGEROUS_CAPS 里也没有这个工具 —— 结果是设置页的开关拨了不生效、
+   * 工具卡片不标红、只要以管理员运行就能直接调 acl:repair。
+   * 而「改所有者 + 递归放宽整棵子树的权限」是这批功能里影响面最大的一个
+   * （对目录递归就是一次性放开其下所有条目），所以它不能只靠「用户看得见」。 */
+  'acl:repair': 'acl-repair'
 };
 // sys:power 通道里既有危险动作（关机/重启/休眠）也有无害动作（锁屏/睡眠），
 // 睡眠只是把内存转成待机状态、不会丢数据，所以不纳入高危门禁。
@@ -271,7 +295,11 @@ const TOOL_DANGEROUS_CAPS = {
   'quick-ops': ['system-power', 'recycle-empty'],
   'hosts-edit': ['hosts-edit'],
   'autostart': ['registry-edit'],
-  'win-classic-menu': ['registry-edit']
+  'win-classic-menu': ['registry-edit'],
+  'dir-move': ['dir-move'],
+  'link-doctor': ['file-delete'],
+  /* 诊断（acl:diagnose）是只读的，不进这张表；只有真正改权限的 acl:repair 计入 */
+  'acl-repair': ['acl-repair']
 };
 handle('dangerous:tool-caps', () => {
   const out = {};
@@ -426,6 +454,11 @@ function showWindowAfterSplash() {
 function createWindow() {
   bootMark('create-window-start');
   mainShown = false; // 窗口可能被销毁后重建（从托盘重新打开），需要重新走一次显示流程
+  /* preload 在渲染进程里拿不到 app（typeof app === 'undefined'，
+   * 直接读 app.isPackaged 会抛 TypeError 并被兜底成 isDev=true，
+   * 于是打包版也当自己是开发态、测试钩子常驻）。
+   * 这里由主进程判断好，通过 additionalArguments 注入给 preload 读。 */
+  const packagedArg = '--hehe-packaged=' + (app.isPackaged ? '1' : '0');
   win = new BrowserWindow({
     width: 1000, height: 660, minWidth: 860, minHeight: 580,
     frame: false, show: false,
@@ -435,6 +468,7 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: false,
+      additionalArguments: [packagedArg],
       spellcheck: false
     }
   });
@@ -621,6 +655,73 @@ handle('dialog:save', async (e, opts = {}) => {
 });
 /* dialog:message 已移除：全项目无调用方（需要确认时用渲染层的 confirmBox，
  * 需要系统原生提示时走 dialog:save / dialog:open 那条线）。 */
+
+/* ================= IPC: 乱码修复 / 编码探测 =================
+ * 中文 Windows 上最常见的三种乱码（锟斤拷、GBK 当 UTF-8 读、
+ * UTF-8 当 latin1 读）都在这里处理。核心逻辑在 lib/mojibake.js。
+ *
+ * 输入有两种形态：
+ *   - 用户粘贴的一段乱码文本（字符串）
+ *   - 一个文件（原始字节，探测最准）
+ * 两者都走同一条分析链，返回排序后的候选 + 每条的分数。
+ */
+handle('text:detect-encoding', async (e, input, opts = {}) => {
+  const o = opts || {};
+  if (!input) throw new Error('没有要分析的内容');
+
+  /* 文件形态：直接读字节，交给编码探测（最准，因为拿的是原始数据） */
+  if (o.isFile) {
+    const st = await fsp.stat(input).catch(() => null);
+    if (!st) throw new Error('文件不存在：' + input);
+    if (st.size > 16 * 1024 * 1024) throw new Error('文件过大（>16MB），请改用「文件编码转换」');
+    const buf = await fsp.readFile(input);
+    const cands = mojibake.detectEncodings(buf);
+    /* 【把候选统一成 from/to 形状再返回】
+     * lib 里 detectEncodings 的字段是 encodings/label/text/score（见
+     * lib/mojibake.js 的签名注释；那个字段名叫 encodings 是历史拼写，
+     * 有测试与外部引用，不在主进程这边改名）。
+     * 而渲染层读的是 from/to —— 早期直接把原始对象透出去，于是文件模式的
+     * 「最可能的结果」显示「? → ?」、候选表的「转换」列全是「? → ?」、
+     * rowKey 全为空串，真正有用的编码名一个字都没显示出来。
+     * 文件模式存在的意义就是告诉用户「这文件其实是 GBK」，所以这里补上：
+     *   from = '原始字节'（文件模式没有「从某个编码解过来」这一步，是原始字节换解码器）
+     *   to   = label（真正要显示的东西）
+     * 同时保留 label / encodings 原字段，外部若有引用不受影响。 */
+    const shaped = cands.slice(0, 6).map((c) => Object.assign({}, c, {
+      from: '原始字节',
+      to: c.label || c.encodings || '?',
+    }));
+    return {
+      source: 'file', path: input, size: st.size,
+      best: shaped[0] || null,
+      candidates: shaped,
+      kuen: false,
+      note: cands.length ? '' : '这个运行时缺少可用的编码解码器',
+    };
+  }
+
+  /* 文本形态 */
+  const r = mojibake.analyzeMojibake(String(input));
+  return Object.assign({ source: 'text' }, r);
+});
+
+/* 把「按某个编码解码后」的文本再按另一个编码编回去 —— 用于「我想换成 GBK
+ * 存盘」这类需求。注意：Node 没有 GBK 编码器，所以只能给出**提示**，
+ * 真正的转换要走 fs:write-text-with-encoding（用 PowerShell 转）。
+ * 这里先做「确认能不能无损往回编」的判定，避免用户以为一定能转。 */
+handle('text:can-reencode', async (e, text, enc) => {
+  const target = String(enc || '');
+  const lossy = /[\uFFFD]/.test(String(text || ''));
+  const supported = ['utf-8', 'utf-16le', 'utf-16be'].indexOf(mojibake.normEnc(target)) !== -1;
+  return {
+    ok: true, supported, lossy,
+    note: lossy
+      ? '文本里含替换字符（U+FFFD），说明原始字节已经丢失，任何转码都无法完全还原'
+      : (supported
+        ? '可以转换'
+        : '这个编码需要借助系统工具完成（Node 只内置 UTF 系列）'),
+  };
+});
 
 /* ================= IPC: fs ================= */
 const TEXT_LIMIT = 8 * 1024 * 1024, BIN_LIMIT = 64 * 1024 * 1024;
@@ -1689,6 +1790,144 @@ handle('net:tcp-test', (e, host, port, timeoutMs = 4000) => {
     sock.connect(parseInt(port, 10), host);
   });
 });
+/* ================= IPC: 局域网设备扫描 =================
+ * 「网里有谁」—— 现有 net 模块只有「我这台机器」的视角（端口/连通/路由）。
+ *
+ * 【方法】ARP + ping 合并（原因见 lib/lan-scan.js 顶部注释）：
+ *   1. 先并发 ping 一轮本机所在 /24 段，把 ARP 缓存催起来；
+ *   2. 读 arp -a 拿到 IP + MAC（这是最可靠的来源）；
+ *   3. 合并两者，ARP 为主、ping 补充。
+ *
+ * 【并发】复用 net:scan 的分批并发模型：254 个地址一次全发会打满句柄，
+ * 按 20 个一批、每批等完成再下一批。
+ */
+handle('lan:scan', async (e, opts = {}) => {
+  const net = require('net');
+  const o = opts || {};
+
+  /* 取本机 IPv4 与默认网关：用 ipconfig 而不是 WMI，因为 ipconfig 更稳且已在本项目里用了 */
+  let selfIp = '';
+  let adapterName = '';
+  let ifaces = [];
+  try {
+    const r = await runCmd('ipconfig', ['/all'], { timeout: 15000, encoding: 'gbk' });
+    const txt = String(r.stdout || '');
+    /* 交给 lib 解析出**全部** IPv4 与网卡名，不再取第一个（见下方注释） */
+    ifaces = lanScanLib.parseIpconfig(txt);
+  } catch (err) { ifaces = []; }
+
+  /* 【必须收集全部 IPv4 再挑，不能取第一个】
+   * 装了 VMware / Hyper-V / VirtualBox / WSL 的机器上，虚拟网卡常排在前面，
+   * 直接取第一个会去扫虚拟网段（结果「一台设备都没有」，用户以为工具坏了），
+   * 本机在公网地址上还会去打别人的 /24。
+   * 所以：解析全部候选 → 默认选第一个私有网段 → 没有私有网段就明确报错。
+   * 渲染层也可以用 opts.ip 指定网卡（多网卡机器上要让用户能切换）。 */
+  const wanted = String(o.ip || o.iface || '').trim();
+  if (wanted) {
+    const hit = ifaces.find((x) => x.ip === wanted || (x.adapter && x.adapter.indexOf(wanted) !== -1));
+    if (hit) { selfIp = hit.ip; adapterName = hit.adapter || ''; }
+  }
+  if (!selfIp) {
+    const pick = lanScanLib.pickScanTarget(ifaces);
+    if (pick) { selfIp = pick.ip; adapterName = pick.adapter || ''; }
+  }
+  if (!selfIp) {
+    /* 没有私有网段：明确报错，不要退回去照扫一个公网 /24。
+     * 把找到了哪些地址一并说明，用户才知道为什么被拒。 */
+    const found = ifaces.map((x) => x.ip).filter(Boolean);
+    throw new Error('本机没有可扫描的私有网段（10/8、172.16/12、192.168/16）。' +
+      (found.length
+        ? '当前检测到的 IPv4：' + found.join('、') + '。请连回内网后重试。'
+        : '未能从 ipconfig 读到任何 IPv4 地址，请检查网络连接。'));
+  }
+
+  const sub = lanScanLib.subnetOf(selfIp);
+  if (!sub) throw new Error('本机 IP 不属于常规 IPv4 地址：' + selfIp);
+
+  const hosts = lanScanLib.hostsToScan(selfIp);
+  const id = 'lanscan' + (++jobSeq);
+  const cancelRef = { canceled: false };
+  jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
+
+  /* ---- 1) 并发 ping ---- */
+  const pinged = [];
+  const BATCH = 20;
+  const TIMEOUT = 1200;
+  let done = 0;
+
+  async function pingOne(ip) {
+    return new Promise((resolve) => {
+      const s = new net.Socket();
+      let finished = false;
+      const fin = (ok) => {
+        if (finished) return;
+        finished = true;
+        try { s.destroy(); } catch (err) {}
+        resolve(ok);
+      };
+      s.setTimeout(TIMEOUT);
+      s.once('connect', () => fin(true));
+      s.once('timeout', () => fin(false));
+      s.once('error', () => fin(false));
+      try { s.connect(80, ip); } catch (err) { fin(false); }
+      /* 用 TCP 80 而不是 ICMP ping：Node 没有原生 ICMP，
+       * 且很多设备不响应 ICMP 但开了 80/443。
+       * 端口不通不代表设备不在线 —— 那一部分靠 ARP 兜底，
+       * 而「催 ARP 缓存」这个目的也达到了（连过就会进 ARP 表）。 */
+    });
+  }
+
+  try {
+    for (let i = 0; i < hosts.length; i += BATCH) {
+      if (cancelRef.canceled) break;
+      const slice = hosts.slice(i, i + BATCH);
+      const res = await Promise.all(slice.map(pingOne));
+      for (let k = 0; k < res.length; k++) if (res[k]) pinged.push(slice[k]);
+      done += slice.length;
+      send('job:progress', { id, kind: 'lan', done, total: hosts.length, found: pinged.length });
+    }
+  } finally {
+    jobs.delete(id);
+  }
+  if (cancelRef.canceled) throw new Error('已取消');
+
+  /* ---- 2) 读 ARP 表 ---- */
+  let arpRows = [];
+  try {
+    const r = await runCmd('arp', ['-a'], { timeout: 15000, encoding: 'gbk' });
+    arpRows = lanScanLib.parseArp(String(r.stdout || ''));
+  } catch (err) { arpRows = []; }
+
+  /* ---- 3) 反查主机名（只查前若干个，避免拖太久） ---- */
+  const names = {};
+  const toResolve = arpRows.slice(0, 30);
+  for (const row of toResolve) {
+    if (cancelRef.canceled) break;
+    try {
+      const r = await ps(`(Resolve-DnsName -Name '${row.ip}' -NameType A -ErrorAction SilentlyContinue).NameHost`, 6000);
+      const n = String(r.stdout || '').trim().split(/\r?\n/)[0];
+      if (n && !/^\d+\./.test(n)) names[row.ip] = n;
+    } catch (err) { /* 反查失败很常见，忽略即可 */ }
+  }
+
+  /* ---- 4) 合并 ---- */
+  const devices = lanScanLib.mergeDevices({ arp: arpRows, pinged, selfIp, names });
+  const arpOnly = devices.filter((d) => d.source === 'arp').length;
+  const pingOnly = devices.filter((d) => d.source === 'ping').length;
+
+  return {
+    selfIp, subnet: sub, scanned: hosts.length,
+    /* adapter：本机实际用的网卡名（多网卡时用户要知道扫的是哪张）
+     * ifaces：全部候选地址，界面据此给一个网卡切换下拉 ——
+     * 默认判断可能仍有偏差（比如虚拟网卡也报了私有段），让用户能自己改。 */
+    adapter: adapterName || null,
+    ifaces,
+    devices,
+    stats: { total: devices.length, arpOnly, pingOnly, pingedCount: pinged.length },
+    caveats: lanScanLib.caveats({ arpOnly, pingOnly }),
+  };
+});
+
 handle('net:scan', async (e, host, ports, opts = {}) => {
   const net = require('net');
   const concurrency = opts.concurrency || 300, timeout = opts.timeout || 500;
@@ -1819,6 +2058,109 @@ handle('server:stop', () => {
  * server:start / server:stop 的返回值直接告知，不必再轮询状态）。 */
 
 /* ================= IPC: system ================= */
+
+/* 磁盘健康采集。**诚实原则**见 lib/disk-health.js 顶部注释：
+ * 拿不到的字段留 null，绝不填 0，绝不合成「健康度」。
+ *
+ * 【实测过的数据源与结果】
+ *   Get-PhysicalDisk               → 可靠（型号/介质/总线/容量/系统健康状态）
+ *   Get-StorageReliabilityCounter  → 本机 NVMe 拿不到（返回空）
+ *   MSStorageDriver_FailurePredictStatus → 同样拿不到
+ *   Win32_DiskDrive.Status         → 只有 "OK"/"Error" 粗粒度
+ * 所以采集脚本要把每个能取到的值**单独 try**，任一失败就留空，
+ * 而不是整段失败、也不是补 0。 */
+let diskHealthCache = null, diskHealthCacheAt = 0;
+
+handle('sys:disk-health', async (e, force) => {
+  if (!force && diskHealthCache && Date.now() - diskHealthCacheAt < 300000) return diskHealthCache;
+
+  const isAdmin = await isRunningAsAdmin();
+
+  /* PowerShell 侧：逐字段取值，取不到就输出空字符串。
+   * 用 JSON 输出，让 Node 侧能区分「缺失」与「0」——
+   * 注意 PowerShell 里的 0 会被 JSON 序列化成 0，
+   * 所以取不到的字段统一用 $null（序列化成 null），不能写 0。 */
+  const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$out = @()
+$disks = Get-PhysicalDisk
+foreach ($d in $disks) {
+  $o = [ordered]@{}
+  $o.model = [string]$d.FriendlyName
+  $o.mediaType = [string]$d.MediaType
+  $o.busType = [string]$d.BusType
+  $o.size = if ($d.Size) { [long]$d.Size } else { $null }
+  $o.healthStatus = [string]$d.HealthStatus
+  $o.operationalStatus = [string]$d.OperationalStatus
+  $o.temperature = $null
+  $o.powerOnHours = $null
+  $o.wear = $null
+  $o.readErrors = $null
+  $o.writeErrors = $null
+  $o.startStop = $null
+  # 可靠性计数器：很多机器上返回空，取到才填
+  $c = $null
+  try { $c = $d | Get-StorageReliabilityCounter -ErrorAction Stop } catch { $c = $null }
+  if ($c) {
+    if ($c.Temperature -ne $null -and $c.Temperature -gt 0) { $o.temperature = [int]$c.Temperature }
+    if ($c.PowerOnHours -ne $null) { $o.powerOnHours = [long]$c.PowerOnHours }
+    if ($c.Wear -ne $null) { $o.wear = [int]$c.Wear }
+    if ($c.ReadErrorsTotal -ne $null) { $o.readErrors = [long]$c.ReadErrorsTotal }
+    if ($c.WriteErrorsTotal -ne $null) { $o.writeErrors = [long]$c.WriteErrorsTotal }
+    if ($c.StartStopCycleCount -ne $null) { $o.startStop = [long]$c.StartStopCycleCount }
+  }
+  $out += $o
+}
+@($out) | ConvertTo-Json -Depth 4 -Compress
+`;
+
+  let raw = { disks: [] };
+  try {
+    const r = await ps(script, 40000);
+    const text = String(r.stdout || '').trim();
+    if (text) {
+      const parsed = JSON.parse(text);
+      /* ConvertTo-Json 在只有一个元素时会输出对象而不是数组 —— 统一成数组 */
+      const arr = Array.isArray(parsed) ? parsed : [parsed];
+      /* 【关键】把 PowerShell 的 null 与「空字符串」都归一成 null，
+       * 绝不把空字符串当 0。 */
+      raw.disks = arr.map((d) => {
+        const pick = (k) => {
+          const v = d[k];
+          if (v == null) return null;
+          if (typeof v === 'string' && v.trim() === '') return null;
+          return v;
+        };
+        return {
+          model: pick('model'),
+          mediaType: pick('mediaType'),
+          busType: pick('busType'),
+          size: pick('size'),
+          healthStatus: pick('healthStatus'),
+          operationalStatus: pick('operationalStatus'),
+          temperature: pick('temperature'),
+          powerOnHours: pick('powerOnHours'),
+          wear: pick('wear'),
+          readErrors: pick('readErrors'),
+          writeErrors: pick('writeErrors'),
+          startStop: pick('startStop'),
+        };
+      });
+    }
+  } catch (err) {
+    raw = { disks: [], error: err.message };
+  }
+
+  const shaped = diskHealth.shape({ disks: raw.disks, isAdmin });
+  if (raw.error) shaped.limitations.push('采集过程出错：' + raw.error);
+  /* 每块盘附带剩余寿命说明（拿不到 wear 就是 null，界面显示「本机取不到」） */
+  for (const d of shaped.disks) d.estimate = diskHealth.estimateRemaining(d.wear);
+
+  diskHealthCache = shaped;
+  diskHealthCacheAt = Date.now();
+  return shaped;
+});
+
 let hwCache = null, hwCacheAt = 0;
 handle('sys:hw-info', async (e, force) => {
   if (!force && hwCache && Date.now() - hwCacheAt < 60000) return hwCache;
@@ -2066,7 +2408,8 @@ handle('win:ruler', (e, dir) => {
     width: horizontal ? 600 : 56, height: horizontal ? 56 : 600,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false,
     skipTaskbar: true, hasShadow: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false }
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false,
+      additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
   rulerWin.setAlwaysOnTop(true, 'screen-saver');
   const self = rulerWin;
@@ -3452,7 +3795,8 @@ async function createPinWindow(srcPath) {
   const bw = new BrowserWindow({
     width: Math.max(80, Math.round(size.width * scale)), height: Math.max(60, Math.round(size.height * scale)),
     frame: false, transparent: true, alwaysOnTop: true, resizable: false, skipTaskbar: true, hasShadow: true,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false }
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false,
+      additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
   bw.setAlwaysOnTop(true, 'screen-saver');
   pinWins.set(bw.id, bw);
@@ -3501,6 +3845,932 @@ handle('winmgr:list', async () => {
 handle('winmgr:topmost', (e, hwnd, on) => winmgrRun(`[HeheWin.Util]::Topmost(${+hwnd}, ${on ? '$true' : '$false'})`));
 handle('winmgr:bottom', (e, hwnd) => winmgrRun(`[HeheWin.Util]::Bottom(${+hwnd})`));
 handle('winmgr:opacity', (e, hwnd, alpha) => winmgrRun(`[HeheWin.Util]::Opacity(${+hwnd}, ${Math.max(20, Math.min(255, alpha | 0))})`));
+
+/* ================= IPC: 文件占用解锁（Restart Manager） =================
+ * 中文 Windows 上最高频的痛点之一：删不掉、提示被占用，但不知道谁占的。
+ * 用系统自带的 Restart Manager（rstrtmgr.dll）查占用进程，无需 handle.exe、
+ * 无需管理员权限，也不引入第三方 exe（handle.exe 常被杀软报毒）。
+ *
+ * 只查不杀：查询是只读操作，安全。要结束占用进程走已有的 proc:kill
+ * （那条通道受 process-kill 高危门禁保护），本模块不重复提供杀进程能力。
+ */
+
+/* 【为什么必须每次重新 Add-Type】
+ * ps() 每次都会启动一个**新的 powershell.exe 进程**，Add-Type 定义的
+ * 类型只存在于那一个进程里，进程退出就没了。
+ * 早期这里用一个进程内布尔标志做「已编译就跳过 Add-Type」的缓存，
+ * 结果第二次调用必然报「找不到类型 [HeheFiles.Util]」——
+ * 缓存的是「本 Node 进程编译过」，而真正需要类型的 PowerShell 进程早换了。
+ *
+ * 代价是每次多 0.4~1.2 秒的编译时间。这个代价值得付：
+ * 想省掉它就得维持一个常驻 PowerShell runspace 或落盘一个 C# 程序集，
+ * 两者都会引入生命周期管理与清理问题，为一个只读查询不值得。
+ * 后人不要把它改回缓存 —— 改了就是必现的功能失效。
+ */
+
+async function rmQueryLockers(paths) {
+  const list = (Array.isArray(paths) ? paths : [paths]).filter((p) => typeof p === 'string' && p.trim());
+  if (!list.length) throw new Error('没有要查询的路径');
+
+  /* 先确认文件存在：Restart Manager 对不存在的路径会返回成功但空列表，
+   * 那会让用户误以为「没有进程占用」，其实是路径本身错了。 */
+  const missing = [];
+  for (const p of list) {
+    if (!(await pathExists(p))) missing.push(p);
+  }
+  if (missing.length === list.length) throw new Error('路径不存在：' + missing.join('、'));
+
+  // 单引号转义（PowerShell 里 '' 表示一个字面单引号）
+  const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+  const arr = list.map(q).join(',');
+  /* 无条件带上 Add-Type：每次 ps() 都是新进程，类型不会跨进程留存 */
+  const addType = `Add-Type -TypeDefinition @'\n${rmLockers.FILES_CS}\n'@\n`;
+  const r = await ps(`${addType}[HeheFiles.Util]::Lockers(@(${arr}))`, 45000);
+
+  const out = String(r.stdout || '');
+  if (/^ERR\t/m.test(out)) {
+    const parts = out.trim().split('\t');
+    throw new Error('Restart Manager 查询失败（' + parts[1] + '，错误码 ' + parts[2] + '）');
+  }
+
+  const rows = [];
+  for (const line of out.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const p = line.split('\t');
+    const pid = parseInt(p[0], 10);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    rows.push({ pid, name: p[1] || '', type: p[2] || 'app' });
+  }
+
+  /* 补上进程的可执行路径与启动时间，方便用户判断「这是不是我自己开的」。
+   * RM 只给 PID 和名字，路径要从进程表取。取不到（已退出/无权限）就留空。
+   *
+   * 【一次 PowerShell 取回整批，不要每个 pid 起一次】
+   * 早期这里是循环里逐个 ps()，5 个占用进程就是 5 次 powershell.exe 启动，
+   * 拖到四五秒才出结果。而 RM 一次就能给出全部 pid，没有理由逐条查。
+   * 现在把整批 pid 拼成一次调用的 `-Id 1,2,3`，每行回一个
+   * `pid \t ProcessName \t Path \t WorkingSet`，再按 pid 合并回去。
+   * 取不到的字段照旧留空，不因为某个进程没权限/已退出就中断整批。 */
+  const needPath = rows.filter((r) => r.type !== 'service');
+  if (needPath.length) {
+    const ids = needPath.map((r) => r.pid).join(',');
+    try {
+      const r2 = await ps(
+        `foreach($id in @(${ids})){` +
+        `$p=Get-Process -Id $id -ErrorAction SilentlyContinue;` +
+        `if($p){ $path=''; try{$path=$p.Path}catch{}; ` +
+        `@($p.Id, $p.ProcessName, $path, [int]$p.WorkingSet64) -join "\`t" } }`,
+        Math.max(8000, needPath.length * 400));
+      for (const line of String(r2.stdout || '').split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const seg = line.split('\t');
+        const pid = parseInt(seg[0], 10);
+        if (!Number.isFinite(pid)) continue;
+        const row = rows.find((r) => r.pid === pid);
+        if (!row) continue;
+        if (seg[1]) row.procName = seg[1];
+        if (seg[2]) row.path = seg[2];
+        if (seg[3]) row.mem = parseInt(seg[3], 10) || 0;
+      }
+    } catch (err) { /* 整批取不到不影响主结果：pid 与名字已经有 */ }
+  }
+
+  // 按 pid 去重（同一进程可能被 RM 列多次）
+  const seen = new Set();
+  const uniq = [];
+  for (const row of rows) {
+    const k = row.pid + '|' + row.type;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(row);
+  }
+  return { paths: list, missing, lockers: uniq };
+}
+
+handle('file:who-locks', async (e, paths) => {
+  const r = await rmQueryLockers(paths);
+  // 有占用进程时给一条可操作的建议，而不是只回一堆 pid
+  if (!r.lockers.length) {
+    return Object.assign(r, { advice: '没有进程占用这些文件。若仍然删不掉，可能是权限不足或路径被其它程序（如杀软）临时拦截。' });
+  }
+  const names = [...new Set(r.lockers.map((x) => x.name || x.procName || ('PID ' + x.pid)))];
+  return Object.assign(r, {
+    advice: '被以下进程占用：' + names.join('、') + '。确认是你自己的程序后可以结束它；系统服务请勿随意结束。',
+  });
+});
+
+/* 一次查多个文件时，也要能查「目录里所有被占用的文件」——
+ * 删目录删不掉时最有用。这里只扫一层，避免大目录卡死。 */
+handle('file:who-locks-dir', async (e, dir) => {
+  if (!(await pathExists(dir))) throw new Error('目录不存在：' + dir);
+  const st = await fsp.stat(dir).catch(() => null);
+  if (!st || !st.isDirectory()) throw new Error('不是目录：' + dir);
+  /* 只取前 200 个：Restart Manager 单次注册太多文件会明显变慢，
+   * 而用户真常见的是「目录里有一两个文件被占用」。
+   *
+   * 【只注册普通文件，不注册子目录和链接 —— 实测这是必须的】
+   * 逐个二分验证过，RmGetList 返回错误码 5（Access denied）的条件是：
+   *   注册一个普通文件            → 正常返回占用进程
+   *   注册一个目录（哪怕只是父目录）→ ERR list 5
+   *   注册一个 junction/符号链接    → ERR list 5
+   *   注册 文件+目录 / 文件+链接    → 同样整批 ERR 5
+   * 这类条目会让**整个查询**失败，而不是「这一项没查到」。
+   * 而这恰恰是最常见的情形：用「目录搬家」搬过的目录里就有一个 junction，
+   * 于是用户点「查占用」只看到「Restart Manager 查询失败」。
+   *
+   * 跳过它们不影响结论：用户要的是「删目录删不掉时，里面哪个文件被占」，
+   * 文件被占用才是 RM 能定位的情形；目录被占用（有程序把它当工作目录）
+   * RM 本来就查不到。跳过的项在 advice 里如实说明，不假装扫过全部。 */
+  let files = [];
+  let skipped = 0;
+  let total = 0;
+  try {
+    const raw = await fsp.readdir(dir, { withFileTypes: true });
+    total = raw.length;
+    for (const ent of raw) {
+      if (files.length >= 200) break;
+      /* 用 Dirent 判断：不额外 stat，也不会跟随链接 */
+      if (!ent.isFile()) { skipped++; continue; }
+      files.push(path.join(dir, ent.name));
+    }
+  } catch (err) { throw new Error('读取目录失败：' + err.message); }
+
+  if (!files.length) {
+    return {
+      paths: [], missing: [], lockers: [], scanned: 0, total, skipped,
+      advice: total
+        ? '目录内没有可查询的普通文件（共 ' + total + ' 项，其中 ' + skipped +
+          ' 项是子目录或链接）。'
+        : '目录是空的，没有被占用的文件。',
+    };
+  }
+  const r = await rmQueryLockers(files);
+  return Object.assign(r, {
+    scanned: files.length, total, skipped,
+    advice: r.lockers.length
+      ? '目录内有 ' + r.lockers.length + ' 个进程占用的文件。' +
+        (skipped ? '（另有 ' + skipped + ' 项子目录/链接未纳入查询）' : '')
+      : '目录内没有检测到文件被占用（已检查 ' + files.length + ' 个普通文件' +
+        (skipped ? '，跳过 ' + skipped + ' 项子目录/链接' : '') + '）。',
+  });
+});
+
+/* ================= IPC: 链接体检与清理（reparse point） =================
+ * 只读为主：枚举 reparse point、逐个判定，僵尸链接可批量清理，
+ * 其余类型只提示不动手。
+ *
+ * 【清理的硬约束】删链接必须用 links.removeLinkOnly()，
+ * 它内部复核「这确实是链接本身」并拒绝任何解析后的目标路径。
+ * 实测：对 realpath 结果做 recursive 删除会删光真实数据（连 junction 也没了）。
+ * 所以本模块**不允许**自己写 fs.rm —— 所有删除都经那一层。
+ */
+
+/* 遍历目录树，收集所有 reparse point。不进入链接目标（避免把目标里的
+ * 链接也算进来、也避免环导致的死循环）。 */
+async function collectLinks(root, opts) {
+  const o = opts || {};
+  const maxEntries = o.maxEntries || 200000;
+  const found = [];
+  let scanned = 0, truncated = false;
+  const stack = [path.resolve(root)];
+
+  while (stack.length) {
+    const cur = stack.pop();
+    let ents;
+    try { ents = await fsp.readdir(cur, { withFileTypes: true }); }
+    catch (err) { continue; }   // 无权限/已消失的目录跳过即可
+
+    for (const d of ents) {
+      scanned++;
+      if (scanned > maxEntries) { truncated = true; break; }
+      const full = path.join(cur, d.name);
+
+      /* isSymbolicLink() 对 junction 也返回 true —— 这正是我们要找的 */
+      if (d.isSymbolicLink()) {
+        found.push(full);
+        continue;    // 关键：不进入链接，否则会把目标树当成本目录树
+      }
+      if (d.isDirectory()) stack.push(full);
+    }
+    if (truncated) break;
+  }
+  return { links: found, scanned, truncated };
+}
+
+handle('link:scan', async (e, root, opts = {}) => {
+  if (!(await pathExists(root))) throw new Error('目录不存在：' + root);
+  const r0 = await fsp.stat(root).catch(() => null);
+  if (!r0 || !r0.isDirectory()) throw new Error('不是目录：' + root);
+
+  const { links: found, scanned, truncated } = await collectLinks(root, opts);
+
+  /* 【为什么不再对每个链接起一次 PowerShell】
+   * 原来在循环里调 links.linkInfo(p, ps)，每一项都是一次新的
+   * powershell.exe 启动（约 0.3~1 秒）。200 个链接就是几分钟，
+   * 耗时随链接数线性膨胀。
+   *
+   * 现在改成：
+   *   1) 目标用 fs.readlinkSync —— 它直接读 reparse point 的 target，
+   *      junction 同样支持（已实测：readlinkSync 返回 junction 的目标）；
+   *   2) 类型与属性用**一次** Get-ChildItem 批量取回整个 root 的所有
+   *      reparse point，不再放进循环。
+   * 某个链接读不到目标就标 null，绝不因此中断整批。
+   *
+   * 分类逻辑（links.classifyLink）保持原样，只换数据来源。 */
+  const targetByName = new Map();   // 小写路径 → 目标
+  const typeByName = new Map();
+
+  for (const p of found) {
+    try {
+      /* readlinkSync 返回的是目标路径；读不到（权限/损坏）就留 null */
+      targetByName.set(p.toLowerCase(), fs.readlinkSync(p));
+    } catch (err) {
+      targetByName.set(p.toLowerCase(), null);
+    }
+  }
+
+  /* 批量取 LinkType（junction / SymbolicLink / HardLink）：
+   * 一次调用覆盖 root 下全部 reparse point。取不到就整体留空 ——
+   * 类型只是展示信息，缺了不影响分类。 */
+  try {
+    const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+    const r = await ps(
+      `Get-ChildItem -LiteralPath ${q(root)} -Recurse -Force -ErrorAction SilentlyContinue | ` +
+      `Where-Object { $_.Attributes -match 'ReparsePoint' } | ` +
+      `ForEach-Object { @($_.FullName, [string]$_.LinkType, [string]$_.Target) -join [char]9 }`,
+      60000);
+    for (const line of String(r.stdout || '').split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const seg = line.split('\t');
+      if (seg.length < 2) continue;
+      const key = seg[0].toLowerCase();
+      typeByName.set(key, seg[1] || '');
+      /* PowerShell 的 Target 只在 readlink 失败时作为兜底 */
+      if (!targetByName.get(key) && seg[2]) targetByName.set(key, seg.slice(2).join('\t'));
+    }
+  } catch (err) { /* 批量取类型失败不影响主结果 */ }
+
+  const items = [];
+  for (const p of found) {
+    const key = p.toLowerCase();
+    const info = {
+      type: typeByName.get(key) || '',
+      target: targetByName.get(key) || '',
+    };
+    const cls = links.classifyLink(p, info);
+    items.push({
+      path: p,
+      kind: cls.kind,
+      reason: cls.reason,
+      target: cls.target || info.target || null,
+      linkType: info.type || null,
+      notLink: !!cls.notLink,
+      crossVolume: !!cls.crossVolume,
+    });
+  }
+
+  /* 分四类汇总（前端按这个顺序分组） */
+  const groups = { ok: [], dead: [], loop: [], system: [], crossvol: [] };
+  for (const it of items) {
+    const k = groups[it.kind] ? it.kind : 'ok';
+    groups[k].push(it);
+  }
+  const counts = {};
+  for (const k of Object.keys(groups)) counts[k] = groups[k].length;
+
+  return {
+    root, scanned, truncated,
+    total: items.length,
+    counts,
+    groups,
+    kinds: links.LINK_KINDS,
+    advice: items.length
+      ? '共 ' + items.length + ' 个链接：' +
+        Object.entries(counts).filter(([, n]) => n).map(([k, n]) => links.LINK_KINDS[k].label + ' ' + n).join('、')
+      : '这个目录里没有找到任何链接（目录联接或符号链接）。',
+  };
+});
+
+handle('link:remove', async (e, paths, opts = {}) => {
+  /* 只允许清理僵尸链接。这一条必须在主进程强制 —— 前端过滤只是体验，
+   * 渲染层完全可能构造任意路径调过来。 */
+  const list = (Array.isArray(paths) ? paths : [paths]).filter((p) => typeof p === 'string' && p);
+  if (!list.length) throw new Error('没有要清理的链接');
+
+  const removed = [];
+  const skipped = [];
+
+  /* 【不再对每个链接起一次 PowerShell，但复核一步都不能省】
+   * 早期这里是循环里 `await links.linkInfo(p, ps)`：每项启动一个新的
+   * powershell.exe（约 0.3~1 秒），50 个僵尸链接就要一两分钟，
+   * 和刚修好的 link:scan 形成反差 —— 用户点下去长时间没反馈，会重复点。
+   *
+   * 现在目标用 fs.readlinkSync 直接读 reparse point 的 target（junction 也支持），
+   * 这是纯文件系统操作，不起进程；类型只是展示信息，清理路径根本不用它。
+   * classifyLink 仍**逐项**重新跑一遍：扫描结论是渲染层带过来的历史数据，
+   * 不能当授权依据 —— 二次校验这道闸必须留着，只是换掉了慢的那一层。 */
+  for (const p of list) {
+    let target = '';
+    try { target = fs.readlinkSync(p); } catch (err) { target = ''; }
+    const info = { target };
+    const cls = links.classifyLink(p, info);
+    if (cls.kind !== 'dead') {
+      /* 非僵尸链接一律不动：ok 是不必删，loop/system/crossvol 是需要人工判断。
+       * 用户明确只想清僵尸，这里替他把关。 */
+      skipped.push({ path: p, kind: cls.kind, reason: cls.reason });
+      continue;
+    }
+    if (opts.dryRun) { removed.push({ path: p, dryRun: true, target: cls.target }); continue; }
+    const r = await links.removeLinkOnly(p);
+    removed.push({ path: p, target: r.target, method: r.method });
+  }
+  return {
+    removed, skipped,
+    advice: removed.length
+      ? '已清理 ' + removed.length + ' 个僵尸链接（只删链接本身，未触碰任何目标数据）' +
+        (skipped.length ? '；跳过 ' + skipped.length + ' 个非僵尸链接' : '')
+      : '没有可清理的僵尸链接' + (skipped.length ? '（' + skipped.length + ' 个链接不属于僵尸类）' : ''),
+  };
+});
+
+/* ================= IPC: 目录搬家（建链接替身） =================
+ * 高危能力（dir-move），默认关闭。流程见 lib/dir-move.js 顶部注释。
+ * 每一步都通过 job:progress 回报，界面上逐步显示而不是一个转圈。
+ */
+handle('dir:move-precheck', async (e, { src, dst } = {}) => {
+  if (!dirMove) throw new Error('内部错误：搬家模块未加载');
+  const srcAbs = path.resolve(String(src || ''));
+  const dstAbs = path.resolve(String(dst || ''));
+
+  const sst = await fsp.stat(srcAbs).catch(() => null);
+  const lst = links.linkStat(srcAbs);
+  const srcExists = !!sst;
+  const srcIsDir = !!sst && sst.isDirectory();
+  const srcIsRoot = links.isVolumeRootOnly(srcAbs);
+  /* 系统关键目录：path-guard 内部会做 realpath 归一，能挡住 junction 绕行 */
+  const srcIsCritical = pathGuard.isCriticalPath(srcAbs);
+  const dstExists = await pathExists(dstAbs);
+
+  /* 目标盘的剩余空间（同卷时没有意义，但校验里同卷会先被拒） */
+  let freeBytes = null;
+  try {
+    if (typeof fs.statfsSync === 'function') {
+      const sf = fs.statfsSync(path.parse(dstAbs).root || dstAbs);
+      freeBytes = sf.bavail * sf.bsize;
+    }
+  } catch (err) { freeBytes = null; }
+
+  /* 需要复制的字节数（不跟随链接） */
+  let needBytes = null;
+  if (srcExists && srcIsDir && !lst.isLink) {
+    try { needBytes = (await links.dirSize(srcAbs)).bytes; } catch (err) { needBytes = null; }
+  }
+
+  /* 占用检查：只看顶层文件，查得快且覆盖绝大多数情况 */
+  let lockedPaths = [];
+  if (srcExists && srcIsDir && !lst.isLink) {
+    try {
+      const names = (await fsp.readdir(srcAbs)).slice(0, 64);
+      if (names.length) {
+        const probe = names.map((n) => path.join(srcAbs, n));
+        const lr = await rmQueryLockers(probe).catch(() => null);
+        if (lr && lr.lockers && lr.lockers.length) {
+          lockedPaths = lr.lockers.map((x) => x.files ? x.files.join(',') : String(x.pid));
+        }
+      }
+    } catch (err) { lockedPaths = []; }
+  }
+
+  const verdict = dirMove.validateMove({
+    src: srcAbs, dst: dstAbs,
+    srcExists, srcIsDir, srcIsLink: lst.isLink, srcIsRoot, srcIsCritical,
+    dstExists, needBytes: needBytes || 0, freeBytes, lockedPaths,
+    allowSameVolume: false,
+    bakExists: await pathExists(srcAbs + '.hehe-bak'),
+    bakPath: srcAbs + '.hehe-bak',
+  });
+
+  return Object.assign(verdict, {
+    src: srcAbs, dst: dstAbs,
+    srcExists, srcIsDir, srcIsLink: lst.isLink, srcIsRoot, srcIsCritical,
+    dstExists, needBytes, freeBytes, lockedPaths,
+    plan: dirMove.movePlan(srcAbs, dstAbs),
+  });
+});
+
+/* 【为什么需要一个模块级单飞标志】
+ * 渲染层的 state.running 只在**当前页面实例**里有效：用户离开工具页再回来，
+ * 会拿到全新的 state（running=false），于是能对同一对路径再发起一次搬家，
+ * 与主进程里仍在跑的那次重叠 —— cp 与 rename 交叉，结果不可预测。
+ * 所以互斥必须放在主进程。
+ *
+ * 不用 jobs map 的 cancel 机制：这条流程不支持中途取消（复制/改名/建链接
+ * 做到一半被 cancel 会留下危险中间态），所以这里只拒绝、不取消。 */
+let dirMoveBusy = false;
+
+/* 实际执行搬家。**严格按 dir-move.js 的状态机走**，每一步失败都按
+ * rollbackPlan 给的 actions 回退，不许临时发挥。
+ *
+ * 回报方式：通过 job:stream 逐条推送进度（界面上逐步显示，而不是转圈）。
+ * 任何一步失败都会：① 执行回退 ② 把「数据现在在哪」如实告诉用户。 */
+handle('dir:move', async (e, { src, dst, jobId: clientJob } = {}) => {
+  if (dirMoveBusy) throw new Error('已有搬家任务在进行，请等待它完成后再试（或重启应用）。');
+  dirMoveBusy = true;
+  try {
+    return await dirMoveRun({ src, dst, jobId: clientJob });
+  } finally {
+    /* 必须无条件复位：失败、成功、抛异常都要能再次搬家 */
+    dirMoveBusy = false;
+  }
+});
+
+/* 搬家的实际流程。拆成独立函数，让上面的单飞包装保持简洁：
+ * 置位/复位与业务逻辑分开，避免以后有人在流程里 return 时忘了复位。 */
+async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
+  const id = clientJob || ('dirmv' + (++jobSeq));
+  const srcAbs = path.resolve(String(src || ''));
+  const dstAbs = path.resolve(String(dst || ''));
+
+  const emit = (stage, extra) => {
+    try { send('job:stream', { id, data: JSON.stringify(Object.assign({ stage }, extra || {})) }); } catch (err) {}
+  };
+
+  // 前置校验必须在主进程重做一遍：渲染层的历史结论不能当授权依据。
+  // 直接复用 dirMove.validateMove（不通过 IPC 回调另一个 handler，
+  // 那样会依赖 ipcMain 的内部结构，也没必要）。
+  {
+    const sst = await fsp.stat(srcAbs).catch(() => null);
+    const lst = links.linkStat(srcAbs);
+    const dstExists = await pathExists(dstAbs);
+    let freeBytes = null;
+    try {
+      if (typeof fs.statfsSync === 'function') {
+        const sf = fs.statfsSync(path.parse(dstAbs).root || dstAbs);
+        freeBytes = sf.bavail * sf.bsize;
+      }
+    } catch (err) {}
+    let needBytes = 0;
+    if (sst && sst.isDirectory() && !lst.isLink) {
+      try { needBytes = (await links.dirSize(srcAbs)).bytes; } catch (err) {}
+    }
+    /* 【执行阶段也要真的查一次占用，不能恒传空数组】
+     * 早期这里写死 lockedPaths: []，等于预检的占用结论和执行现实完全脱节：
+     * 预检说「可以搬」，执行时 fsp.cp 撞到被占用文件才失败，白拷一遍再删掉。
+     * 但**不能**改成「必须无占用才允许执行」—— 占用可能在这几秒内消失，
+     * 那样会把本来能成功的搬家拒掉。所以这里只做「再核一次」：
+     * 有占用就带着 lockedPaths 进 validateMove，由它按原有规则给出 LOCKED 结论
+     * （提示先关闭占用它的程序），行为和预检一致，用户不会看到两套说法。 */
+    let lockedPaths = [];
+    if (sst && sst.isDirectory() && !lst.isLink) {
+      try {
+        const names = (await fsp.readdir(srcAbs)).slice(0, 64);
+        if (names.length) {
+          const probe = names.map((n) => path.join(srcAbs, n));
+          const lr = await rmQueryLockers(probe).catch(() => null);
+          if (lr && lr.lockers && lr.lockers.length) {
+            lockedPaths = lr.lockers.map((x) => x.files ? x.files.join(',') : String(x.pid));
+          }
+        }
+      } catch (err) { lockedPaths = []; }
+    }
+    const v = dirMove.validateMove({
+      src: srcAbs, dst: dstAbs,
+      srcExists: !!sst, srcIsDir: !!sst && sst.isDirectory(),
+      srcIsLink: lst.isLink, srcIsRoot: links.isVolumeRootOnly(srcAbs),
+      srcIsCritical: pathGuard.isCriticalPath(srcAbs),
+      dstExists, needBytes, freeBytes, lockedPaths,
+      allowSameVolume: false,
+      bakExists: await pathExists(srcAbs + '.hehe-bak'),
+      bakPath: srcAbs + '.hehe-bak',
+    });
+    if (!v.ok) {
+      emit('check', { ok: false, error: v.reason });
+      throw new Error(v.reason);
+    }
+  }
+
+  const bakPath = srcAbs + '.hehe-bak';
+  const ctx = { srcPath: srcAbs, dstPath: dstAbs, bakPath, linkPath: srcAbs };
+  emit('check', { ok: true });
+
+  /* ---------- 1) 复制到目标 ---------- */
+  try {
+    emit('copy', { ok: null, started: true });
+    /* 【不要先 mkdir，也不要用 errorOnExist】
+     * 实测（本机 Node 24 / Windows）：fsp.cp 的目标**已存在**且
+     * errorOnExist:true 时，不是抛异常，而是让 Node 进程直接崩溃
+     * （退出码 127，无任何 JS 栈）。先 mkdir 再 cp 正好制造这个组合。
+     *
+     * 所以：目标存在性由我们自己先判（上面的 validateMove 已经查过 dstExists，
+     * 这里再兜一次，防并发），cp 只负责「往不存在的路径写」。
+     * 去掉 errorOnExist 后，目标若意外存在会被 cp 合并写入 ——
+     * 但那已经被前置的 EEXIST 检查挡住了，不会走到这里。 */
+    if (await pathExists(dstAbs)) throw new Error('目标位置已存在，为避免覆盖已拒绝：' + dstAbs);
+    await fsp.cp(srcAbs, dstAbs, {
+      recursive: true,
+      force: false,          // 不覆盖已有内容
+      preserveTimestamps: true,
+    });
+    emit('copy', { ok: true });
+  } catch (err) {
+    // 源完好，只需要删掉拷了一半的目标
+    try { await fsp.rm(dstAbs, { recursive: true, force: true }); } catch (e2) {}
+    emit('copy', { ok: false, error: err.message });
+    throw new Error('复制失败（源目录未受影响）：' + err.message);
+  }
+
+  /* ---------- 2) 逐文件校验：大小 + 抽样哈希 ----------
+   * 【为什么不能只比字节数】复制工具/文件系统可能截断或粘贴出等长的坏块，
+   * 大小相同但内容不同是真实存在的（尤其跨盘 + 压缩/加密卷）。
+   * 全量哈希对大目录太慢，所以：**每个文件都比大小**，
+   * 再对其中若干文件（按大小排序取头尾 + 随机）做 SHA-256 抽样。 */
+  try {
+    emit('verify', { ok: null, started: true });
+    const vr = await verifyCopy(srcAbs, dstAbs);
+    if (!vr.ok) throw new Error(vr.reason);
+    emit('verify', { ok: true, files: vr.files, hashed: vr.hashed, bytes: vr.bytes });
+  } catch (err) {
+    try { await fsp.rm(dstAbs, { recursive: true, force: true }); } catch (e2) {}
+    emit('verify', { ok: false, error: err.message });
+    throw new Error('校验失败（已删除目标副本，源目录未受影响）：' + err.message);
+  }
+
+  /* ---------- 3) 源改名为 .bak ---------- */
+  try {
+    emit('rename', { ok: null, started: true });
+    await fsp.rename(srcAbs, bakPath);
+    emit('rename', { ok: true });
+  } catch (err) {
+    try { await fsp.rm(dstAbs, { recursive: true, force: true }); } catch (e2) {}
+    emit('rename', { ok: false, error: err.message });
+    throw new Error('源目录改名失败（已删除目标副本，源目录未变）：' + err.message);
+  }
+
+  /* ---------- 4) 在原位置建目录联接 ----------
+   * 从这一刻起进入「危险中间态」：原路径是空的。任何失败都必须
+   * 先把 .bak 改回原名。 */
+  try {
+    emit('link', { ok: null, started: true });
+    /* 【不用 cmd /c mklink】那条命令要把路径拼进 PowerShell 字符串，
+     * 双引号内的 $ 会被当变量/子表达式展开、反引号会被当转义符 ——
+     * 而 Windows 允许目录名含这两个字符。一个叫 $(...) 的目录会被执行，
+     * 既是功能失效也是注入风险。
+     * 这里直接用 Node 原生 API，路径作为**参数**传递，不经过任何 shell 解析。
+     * 注意参数顺序是 (target, path)：symlink 先给目标，再给链接自身位置。
+     * junction 类型不需要管理员权限。 */
+    await fsp.symlink(dstAbs, srcAbs, 'junction');
+    // 建完再确认一次：API 返回成功但链接没出现的情况也要当失败处理
+    if (!(await pathExists(srcAbs))) throw new Error('创建目录联接后路径仍不存在：' + srcAbs);
+    emit('link', { ok: true });
+  } catch (err) {
+    // 关键回退：先保证原路径能打开东西
+    const back = await restoreBak(bakPath, srcAbs);
+    emit('link', { ok: false, error: err.message, restored: back.ok });
+    throw new Error(
+      '建链接失败' + (back.ok
+        ? '（已把源目录改回原名，原路径可正常打开，数据未丢）'
+        : '（**且回退失败**：原始数据完整保存在 ' + bakPath + '，请手动把它改名为 ' + srcAbs + '）') +
+      '：' + err.message);
+  }
+
+  /* ---------- 5) 验证链接真的可读 ----------
+   * 建了链接不代表链接是好的：要真的读一遍其中的文件。 */
+  try {
+    emit('linkcheck', { ok: null, started: true });
+    const r = await verifyLinkReadable(srcAbs, dstAbs);
+    if (!r.ok) throw new Error(r.reason);
+    emit('linkcheck', { ok: true, sampled: r.sampled });
+  } catch (err) {
+    /* 回退：先拆链接（必须用「只删链接」的安全入口），再把 .bak 改回原名 */
+    let linkRemoved = false;
+    try { await links.removeLinkOnly(srcAbs); linkRemoved = true; } catch (e2) {}
+    const back = await restoreBak(bakPath, srcAbs);
+    emit('linkcheck', { ok: false, error: err.message, linkRemoved, restored: back.ok });
+    throw new Error(
+      '链接验证未通过' + (back.ok
+        ? '（已拆除链接并把源目录改回原名，原路径可正常打开）'
+        : '（**且回退失败**：数据完整保存在 ' + bakPath + '，请手动改名为 ' + srcAbs + '）') +
+      '：' + err.message);
+  }
+
+  /* ---------- 6) 最后才删 .bak ---------- */
+  let dropped = false;
+  try {
+    emit('dropbak', { ok: null, started: true });
+    await fsp.rm(bakPath, { recursive: true, force: true });
+    dropped = true;
+    emit('dropbak', { ok: true });
+  } catch (err) {
+    // 删不掉备份不影响可用性，只是多占空间，如实提示即可
+    emit('dropbak', { ok: false, error: err.message });
+  }
+
+  emit('done', { ok: true });
+  return {
+    ok: true, src: srcAbs, dst: dstAbs, bakRemoved: dropped,
+    advice: '搬家完成：原路径现在是指向新位置的目录联接，打开它看到的就是新位置的内容。' +
+      (dropped ? '备份已清理。' : '（备份 .bak 未能删除，可在确认无误后手动删除）'),
+  };
+}
+
+/* 把 .bak 改回原名；成功与否都要如实回报。 */
+/* ================= IPC: 权限修复与取得所有权 =================
+ * 「文件删不掉」的另一半原因（另一半是占用，见 file:who-locks）。
+ *
+ * 【分寸】只处理用户**显式选中的那一个**路径：
+ *   - 不枚举、不全盘扫描、不批量套用（这是刻意的，见 lib/acl-repair.js 注释）；
+ *   - 执行前必须把「会影响多少子项」算出来，界面上大字提示；
+ *   - 递归必须是用户自己勾的，不默认递归。
+ *
+ * 复用 path-guard：它本来就是所有删除的必经闸门。它拒绝时，
+ * 除了报「拒绝操作」，还把「可以提权修复」作为可选下一步递出去
+ * （系统关键目录除外 —— 那些不该引导用户去改权限）。
+ */
+
+/* 是否以管理员身份运行。用 PowerShell 查 WindowsPrincipal，比 fs 探测可靠。 */
+let _isAdminCache = null;
+async function isRunningAsAdmin() {
+  if (_isAdminCache != null) return _isAdminCache;
+  try {
+    const r = await ps(`$id=[Security.Principal.WindowsIdentity]::GetCurrent();` +
+      `$p=New-Object Security.Principal.WindowsPrincipal($id);` +
+      `if($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'1'}else{'0'}`, 15000);
+    _isAdminCache = String(r.stdout || '').trim() === '1';
+  } catch (err) { _isAdminCache = false; }
+  return _isAdminCache;
+}
+
+/* 读当前所有者与 ACL 摘要。读不到就如实返回 null，不编造。
+ *
+ * 【为什么先取当前用户名，再解析 icacls】
+ * parseIcacls 的第二个参数 userName 决定每条 ACE 的 mine 归属，而
+ * hasFull 的语义是「当前用户自己有没有完全控制」（见 lib/acl-repair.js 里
+ * 那段说明）。早期这里把取用户名的 ps 放在解析**之后**，解析时 userName
+ * 恒为 undefined —— 于是 hasFull 恒 false，两条判据连带着全错：
+ *   acl:diagnose 对权限正常的文件也报「缺少写入权限」；
+ *   acl:repair 修完复核 gained 恒 false，界面永远说「复核没读到完全控制」。
+ * 这是「结论必错」的 bug，所以顺序是硬的：先拿 me，再解析。 */
+async function readAclFacts(target) {
+  const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+  const out = { owner: null, ownerIsMe: null, acl: null, aclRaw: null, me: null };
+
+  /* 第一步：当前用户名。取不到就留 null —— parseIcacls 在 userName 缺失时
+   * 不猜测归属（entry.mine 全部为 false，hasFull 保持 false），
+   * 而 diagnose 会把「找不到我那条 ACE」当作「无法确定」处理，不会误判为正常。 */
+  try {
+    const r = await ps(`[Security.Principal.WindowsIdentity]::GetCurrent().Name`, 10000);
+    const me = String(r.stdout || '').trim();
+    if (me) out.me = me;
+  } catch (err) { out.me = null; }
+
+  try {
+    const r = await ps(`(Get-Acl -LiteralPath ${q(target)}).Owner`, 15000);
+    const owner = String(r.stdout || '').trim();
+    if (owner) out.owner = owner;
+  } catch (err) { /* 取不到就留 null */ }
+
+  try {
+    const r = await ps(`icacls ${q(target)}`, 15000);
+    out.aclRaw = String(r.stdout || '');
+    /* 把 me 传进去：这是 hasFull / deniedForMe 能正确工作的前提 */
+    out.acl = aclRepair.parseIcacls(out.aclRaw, out.me || undefined);
+  } catch (err) { out.acl = null; }
+
+  /* 所有者是不是当前用户：拿当前用户名做包含比较（域账号带前缀） */
+  if (out.me && out.owner) {
+    const a = out.owner.toLowerCase(), b = out.me.toLowerCase();
+    out.ownerIsMe = a === b || a.endsWith('\\' + b.split('\\').pop());
+  }
+  return out;
+}
+
+handle('acl:diagnose', async (e, target) => {
+  const p = String(target || '');
+  if (!p) throw new Error('没有指定路径');
+  const exists = await pathExists(p);
+  let isDir = false, childCount = -1;
+  if (exists) {
+    const st = await fsp.stat(p).catch(() => null);
+    isDir = !!st && st.isDirectory();
+    if (isDir) {
+      try { childCount = (await fsp.readdir(p)).length; } catch (err) { childCount = -1; }
+    }
+  }
+
+  const facts = exists ? await readAclFacts(p) : { owner: null, ownerIsMe: null, acl: null };
+  const isAdmin = await isRunningAsAdmin();
+
+  /* 占用检查：和权限问题长得一样，但修复方式完全不同，必须区分 */
+  let lockedPaths = [];
+  if (exists && !isDir) {
+    const lr = await rmQueryLockers([p]).catch(() => null);
+    if (lr && lr.lockers && lr.lockers.length) lockedPaths = lr.lockers.map((x) => x.pid + ':' + (x.name || ''));
+  }
+
+  const diag = aclRepair.diagnose({
+    exists, isDir, childCount,
+    ownerIsMe: facts.ownerIsMe, ownerName: facts.owner,
+    acl: facts.acl, isAdmin, lockedPaths,
+  });
+
+  return Object.assign({
+    path: p, isAdmin,
+    owner: facts.owner, me: facts.me || null, ownerIsMe: facts.ownerIsMe,
+    aclEntries: (facts.acl && facts.acl.entries || []).slice(0, 20),
+    hasFull: !!(facts.acl && facts.acl.hasFull),
+    hasDeny: !!(facts.acl && facts.acl.hasDeny),
+  }, diag);
+});
+
+handle('acl:repair', async (e, opts = {}) => {
+  const target = String(opts.target || '');
+  if (!target) throw new Error('没有指定路径');
+  if (!(await pathExists(target))) throw new Error('路径不存在：' + target);
+
+  /* 第一道闸：系统关键目录一律拒绝改权限。
+   * 即便用户有管理员权限也不该让工具去改 System32 的 ACL ——
+   * 改错会导致系统更新失败或被安全软件拦截，而且没有恢复路径。 */
+  if (pathGuard.isCriticalPath(target)) {
+    throw new Error('拒绝：这是系统关键目录，不应该修改它的权限。' +
+      '改错会导致系统更新失败或被安全软件拦截。');
+  }
+
+  /* 第二道闸：递归必须由调用方**显式**要求，且是目录 */
+  const st = await fsp.stat(target).catch(() => null);
+  const isDir = !!st && st.isDirectory();
+  const recursive = !!opts.recursive && isDir;
+
+  const admin = await isRunningAsAdmin();
+  if (!admin) {
+    throw new Error('修复权限需要管理员权限。请右键「以管理员身份运行」核核工具箱后重试。' +
+      '（改所有者 takeown 这一步普通权限做不了）');
+  }
+
+  const me = (await ps(`[Security.Principal.WindowsIdentity]::GetCurrent().Name`, 10000)
+    .then((r) => String(r.stdout || '').trim())
+    .catch(() => '')) || '';
+  if (!me) throw new Error('无法取得当前用户名，已放弃修复');
+
+  const plan = aclRepair.buildRepairCommands({ path: target, isDir, recursive, user: me });
+  const log = [];
+  for (const step of plan.steps) {
+    try {
+      const r = await runCmd(step.tool, step.args, { timeout: 60000 });
+      const text = (String(r.stdout || '') + String(r.stderr || '')).trim();
+      if (r.code !== 0) {
+        log.push({ tool: step.tool, ok: false, text: text.slice(-500) });
+        throw new Error(step.tool + ' 执行失败：' + (text.split(/\r?\n/).filter(Boolean).slice(-1)[0] || ('退出码 ' + r.code)));
+      }
+      log.push({ tool: step.tool, ok: true, text: text.slice(-300) });
+    } catch (err) {
+      return { ok: false, steps: log, user: me,
+        advice: '修复中止。' + (err.code === 'ENOENT' ? '系统里找不到 ' + step.tool + ' 命令。' : err.message) };
+    }
+  }
+
+  /* 复核：修完再读一遍 ACL，确认真的拿到了完全控制 */
+  const after = await readAclFacts(target).catch(() => null);
+  const gained = !!after && !!after.ownerIsMe && !!(after.acl && after.acl.hasFull);
+  return {
+    ok: true, steps: log, user: me, recursive,
+    gained,
+    owner: after && after.owner, ownerIsMe: after && after.ownerIsMe,
+    advice: gained
+      ? '已取得所有权并授予完全控制。现在可以重新尝试删除或修改这个路径。'
+      : '命令已执行完毕，但复核时没有读到完全控制权限 —— 可能被组策略或安全软件拦截了。' +
+        '请用当前权限再试操作，或查看下方命令输出。',
+  };
+});
+
+
+/* 把 .bak 改回原名；成功与否都要如实回报。 */
+async function restoreBak(bakPath, srcPath) {
+  try {
+    if (!(await pathExists(bakPath))) return { ok: false, reason: '备份目录不存在' };
+    if (await pathExists(srcPath)) return { ok: false, reason: '原路径已被占用，无法改名回去' };
+    await fsp.rename(bakPath, srcPath);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+/* 逐文件校验：每个文件比大小；再抽样若干做 SHA-256。 */
+async function verifyCopy(srcDir, dstDir) {
+  const stack = [[path.resolve(srcDir), path.resolve(dstDir)]];
+  let files = 0, bytes = 0, hashed = 0;
+  const toHash = [];
+  const SIZE_LIMIT = 512 * 1024 * 1024;   // 单个文件超过 512MB 不做全量哈希（太慢）
+  const HASH_BUDGET = 12;                 // 最多抽样 12 个不同大小的文件
+
+  while (stack.length) {
+    const [s, d] = stack.pop();
+    let ents;
+    try { ents = await fsp.readdir(s, { withFileTypes: true }); }
+    catch (err) { throw new Error('读取源目录失败：' + s + '（' + err.message + '）'); }
+    for (const ent of ents) {
+      const sp = path.join(s, ent.name);
+      const dp = path.join(d, ent.name);
+      if (ent.isSymbolicLink()) continue;   // 不跟随链接（目标内容不在这次复制里）
+      if (ent.isDirectory()) { stack.push([sp, dp]); continue; }
+      if (!ent.isFile()) continue;
+
+      const sst = await fsp.stat(sp).catch(() => null);
+      const dst = await fsp.stat(dp).catch(() => null);
+      if (!sst) throw new Error('读取源文件失败：' + sp);
+      if (!dst) throw new Error('目标缺少文件：' + dp);
+      if (sst.size !== dst.size) {
+        throw new Error('大小不一致：' + path.basename(sp) + '（源 ' + sst.size + ' / 目标 ' + dst.size + '）');
+      }
+      files++; bytes += sst.size;
+      if (sst.size > 0 && sst.size <= SIZE_LIMIT) toHash.push({ sp, dp, size: sst.size });
+    }
+  }
+
+  /* 抽样策略：按大小排序后取「最大几个 + 中间均匀取样」，
+   * 这样既能覆盖大文件（最容易复制出问题），也覆盖中小文件。 */
+  toHash.sort((a, b) => b.size - a.size);
+  const pick = [];
+  const seenSize = new Set();
+  for (const it of toHash) {
+    if (pick.length >= HASH_BUDGET) break;
+    // 尽量从不同大小里取，避免 12 个都是同尺寸的日志文件
+    const bucket = Math.floor(Math.log2(it.size + 1));
+    if (seenSize.has(bucket) && pick.length >= 4) continue;
+    seenSize.add(bucket);
+    pick.push(it);
+  }
+  for (const it of pick) {
+    const a = await hashFile(it.sp), b = await hashFile(it.dp);
+    if (a !== b) throw new Error('内容校验失败（哈希不一致）：' + path.basename(it.sp));
+    hashed++;
+  }
+  return { ok: true, files, hashed, bytes };
+}
+
+function hashFile(p) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const rs = fs.createReadStream(p);
+    rs.on('data', (c) => h.update(c));
+    rs.on('end', () => resolve(h.digest('hex')));
+    rs.on('error', reject);
+  });
+}
+
+/* 验证「链接可读」：真的从原路径读一遍文件，而不是只看链接存不存在。
+ * 这一步能抓住「链接建立了但指向空/指向错地方」的情况。 */
+async function verifyLinkReadable(linkPath, expectTarget) {
+  const st = await fsp.lstat(linkPath).catch(() => null);
+  if (!st || !st.isSymbolicLink()) return { ok: false, reason: '原路径不是链接' };
+  let real;
+  try { real = fs.realpathSync.native(linkPath); } catch (err) { return { ok: false, reason: '链接无法解析：' + err.message }; }
+  const norm = (s) => path.resolve(s).toLowerCase();
+  if (norm(real) !== norm(expectTarget)) {
+    return { ok: false, reason: '链接指向了非预期位置：' + real };
+  }
+  // 真的读几个文件
+  let sampled = 0;
+  try {
+    const ents = await fsp.readdir(linkPath, { withFileTypes: true });
+    for (const ent of ents) {
+      if (sampled >= 3) break;
+      if (!ent.isFile()) continue;
+      const full = path.join(linkPath, ent.name);
+      /* 【只读前 4KB，不要整份读进内存】
+       * 判据是「通过链接能不能真的读到字节」，不需要读完整个文件。
+       * 早期这里用 fsp.readFile(full)，等于把每个抽样文件整个塞进内存：
+       * 目录里有 VM 镜像 / ISO / 大视频时就是几个 GB。
+       * 而这一步正好发生在「源已改名、链接已建」之后 —— 主进程 OOM 直接崩，
+       * 连回退逻辑都跑不到，流程就停在最危险的中间态。
+       * 用 open + 定长 read 后 close：占用内存与文件大小无关（固定 4KB 缓冲区）。
+       * 抽样数量和抽样策略保持不变（仍是前 3 个文件）。 */
+      /* 注意读出来的**字节数**可能是 0（空文件），那不代表失败 ——
+       * 空文件通过链接能打开、能读，恰恰说明链接是通的。
+       * 所以判据是「有没有抛出」，而不是「读到的字节数是不是真值」：
+       * 失败时 readHeadBytes 会 reject，上面的 .catch 把它变成 null。 */
+      const got = await readHeadBytes(full, 4096).catch(() => null);
+      if (got === null) return { ok: false, reason: '通过链接读取文件失败：' + ent.name };
+      sampled++;
+    }
+  } catch (err) {
+    return { ok: false, reason: '通过链接列目录失败：' + err.message };
+  }
+  return { ok: true, sampled };
+}
+
+/* 打开文件、读前 n 个字节就关掉。返回实际读到的字节数（0 也算成功：
+ * 空文件通过链接读得到 0 字节，这恰恰说明链接是通的）。 */
+async function readHeadBytes(file, n) {
+  const fh = await fsp.open(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(n);
+    const r = await fh.read(buf, 0, n, 0);
+    return r.bytesRead;
+  } finally {
+    await fh.close().catch(() => {});
+  }
+}
 
 /* ================= IPC: 7z 压缩包（7za / 系统 7-Zip） ================= */
 const sevenZa = (() => { try { return require('7zip-bin').path7za; } catch (e) { return null; } })();
@@ -3819,7 +5089,8 @@ async function snipStart(mode) {
   snipWin = new BrowserWindow({
     x: display.bounds.x, y: display.bounds.y, width: display.bounds.width, height: display.bounds.height,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false, skipTaskbar: true, hasShadow: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false }
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false,
+      additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
   snipWin.setAlwaysOnTop(true, 'screen-saver');
   snipWin.setFullScreen(true);

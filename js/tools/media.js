@@ -1532,7 +1532,7 @@
         running = true;
         if (!picker.count) { running = false; return toast('请先选择视频', 'warn'); }
         const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
-        if (!st.ffmpeg) { toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
+        if (!st.ffmpeg) { running = false; toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
         const src = picker.paths[0];
         const base = src.split(/[\\/]/).pop().replace(/\.\w+$/, '');
         const outDir = src.replace(/[\\/][^\\/]+$/, '') + '/hehe-frames';
@@ -1597,7 +1597,7 @@
         try {
           const items = await invoke('fs:list', dir);
           const imgs = items.filter(x => /\.(png|jpe?g|bmp|webp)$/i.test(x.name || x));
-          if (!imgs.length) { toast('该文件夹没有图片', 'warn'); return; }
+          if (!imgs.length) { running = false; toast('该文件夹没有图片', 'warn'); return; }
           let done = 0;
           for (const it of imgs) {
             const name = it.name || it;
@@ -1650,7 +1650,7 @@
         running = true;
         if (!picker.count) { running = false; return toast('请先选择音频', 'warn'); }
         const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
-        if (!st.ffmpeg) { toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
+        if (!st.ffmpeg) { running = false; toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
         const src = picker.paths[0];
         const dur = Math.max(0, +toIn.value || 0);
         const fi = Math.max(0, +fadeInIn.value || 0), fo = Math.max(0, +fadeOutIn.value || 0), gain = +gainIn.value || 0;
@@ -1701,7 +1701,7 @@
       async function run() {
         if (running) return; // 防重入：重复扫描会叠加两次哈希计算
         running = true;
-        if (!dir) return toast('请先选择文件夹', 'warn');
+        if (!dir) { running = false; return toast('请先选择文件夹', 'warn'); }
         prog.show(); listBox.innerHTML = ''; status.textContent = '读取图片…';
         try {
           const items = await invoke('fs:list', dir);

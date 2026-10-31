@@ -7,6 +7,7 @@
      用简写 T 是为了让下面几百处调用不至于被 `window.i18n.t(...)` 撑得太长。 */
   const T = (k, v) => (window.i18n ? window.i18n.t(k, v) : k);
   const MN = (m) => (R.modName ? R.modName(m) : (m && m.name) || '');
+  const MD = (m) => (R.modDesc ? R.modDesc(m) : (m && m.desc) || '');
   let lang = 'zh';
 
   const state = {
@@ -40,17 +41,14 @@
      明暗 data-theme  = light | dark（由系统偏好或用户选择决定）
      配色 data-accent = 极地白/雾霭蓝/苔原/紫罗兰/樱粉/鎏金/青碧/暖砂/纯黑白
      配色只写 data-accent，明暗只写 data-theme，CSS 变量层负责组合。 */
-  const ACCENTS = [
-    { id: 'polar', name: '极地白', desc: '经典商务蓝，清爽专业' },
-    { id: 'mist', name: '雾霭蓝', desc: '冷调低饱和，安静专注' },
-    { id: 'jade', name: '苔原绿', desc: '低饱和绿，久看不累' },
-    { id: 'violet', name: '紫罗兰', desc: '科技感，适合开发调试' },
-    { id: 'rose', name: '樱花粉', desc: '柔和轻盈' },
-    { id: 'gold', name: '鎏金', desc: '暖调沉稳，商务质感' },
-    { id: 'teal', name: '青碧', desc: '清新冷静' },
-    { id: 'sand', name: '暖砂', desc: '暖调复古，纸质感' },
-    { id: 'mono', name: '纯黑白', desc: '无彩极简，高对比' }
-  ];
+  /* 配色主题：name/desc 走 i18n（英文界面下不能还显示「极地白 / 经典商务蓝」）。
+   * 用函数而不是常量对象：T() 依赖当前语言，语言切换后重建设置页要拿到新值。 */
+  const ACCENT_IDS = ['polar', 'mist', 'jade', 'violet', 'rose', 'gold', 'teal', 'sand', 'mono'];
+  const ACCENTS = ACCENT_IDS.map((id) => ({
+    id,
+    get name() { return T('accent.' + id + '.name'); },
+    get desc() { return T('accent.' + id + '.desc'); },
+  }));
   let currentAccent = 'polar';
   let themeListeners = [];
   /* buildShell 注册的 document 级监听的退订函数（见 applyLangLabels） */
@@ -139,7 +137,7 @@
     const i = state.favorites.indexOf(toolId);
     if (i >= 0) state.favorites.splice(i, 1); else state.favorites.unshift(toolId);
     await invoke('store:set', 'favorites', state.favorites);
-    toast(i >= 0 ? '已取消收藏' : '已收藏', 'success', 1000);
+    toast(i >= 0 ? T('toast.favRemoved') : T('toast.favAdded'), 'success', 1000);
     // 原地更新星标：不重建工具页，避免清空用户未保存的输入/结果
     const starBtn = document.querySelector('.tool-header .th-star');
     if (starBtn && state.view.type === 'tool' && state.view.toolId === toolId) {
@@ -177,7 +175,7 @@
     const main = div('sr-main');
     main.appendChild(icon(t.icon));
     main.appendChild(h('span', { class: 'sr-name', html: highlightHit(t.name, q) }));
-    if (isDangerTool(t.id)) main.appendChild(h('span', { class: 'sr-danger' }, isDangerEnabled(t.id) ? '高危' : '未启用'));
+    if (isDangerTool(t.id)) main.appendChild(h('span', { class: 'sr-danger' }, isDangerEnabled(t.id) ? T('badge.danger') : T('badge.disabled')));
     main.appendChild(h('span', { class: 'sr-module' }, mod ? MN(mod) : ''));
     row.appendChild(main);
     row.appendChild(h('span', { class: 'sr-desc', title: t.desc || '' }, t.desc || ''));
@@ -509,7 +507,16 @@
       if (v.type === 'home') renderHome(page);
       else if (v.type === 'fav') renderFavPage(page);
       else if (v.type === 'module') renderModulePage(page, v.moduleId);
-      else if (v.type === 'tool') renderToolPage(page, v.toolId);
+      else if (v.type === 'tool') {
+        /* 工具页现在是 async（未启用的高危工具需要在卡片里查询能力名与状态）。
+         * 不能在这里 await：renderContent 被同步调用（切换视图、渲染循环），
+         * 改成异步会把「先清空再填充」的顺序打乱，出现短暂白屏。
+         * 所以让它在后台跑，异常单独兜底 —— 与这里原有的 try/catch 等价。 */
+        renderToolPage(page, v.toolId).catch((e) => {
+          console.error('工具页渲染失败', v.toolId, e);
+          page.appendChild(window.ui.placeholder('alert', T('tool.renderFail'), e && e.message));
+        });
+      }
       else if (v.type === 'settings') renderSettings(page);
       // 旧的 'about' 路由仍可用（托盘/外部调起可能还带着它），统一转到设置的关于分区，
       // 保证任何时候都只有一个「关于」界面存在。
@@ -715,7 +722,7 @@
     sec.appendChild(div('home-cats', ...R.MODULES.map(m => {
       const count = R.byModule(m.id).length;
       const c = div('home-cat');
-      c.title = m.desc || '';
+      c.title = MD(m);
       c.appendChild(h('span', { class: 'hc-icon' }, iconLg(m.icon)));
       c.appendChild(h('span', { class: 'hc-name' }, MN(m)));
       c.appendChild(h('span', { class: 'hc-count' }, String(count)));
@@ -739,12 +746,12 @@
     const m = R.MODULES.find(x => x.id === moduleId);
     if (!m) return;
     page.appendChild(div('tool-header', div('th-icon', iconLg(m.icon)),
-      div('', h('h2', null, MN(m)), h('div', { class: 'th-desc' }, m.desc))));
+      div('', h('h2', null, MN(m)), h('div', { class: 'th-desc' }, MD(m)))));
     const card = div('card');
     card.appendChild(div('tool-grid', ...R.byModule(moduleId).map(t => toolCard(t))));
     page.appendChild(card);
   }
-  function renderToolPage(page, toolId) {
+  async function renderToolPage(page, toolId) {
     const t = R.get(toolId);
     if (!t) { page.appendChild(div('empty-tip', T('tool.notFound'))); return; }
     const head = div('tool-header');
@@ -764,7 +771,7 @@
     // 现在：只有「整个工具的所有能力都是高危」才锁页；否则照常渲染，
     // 交由各操作自己在触发时弹门禁提示（IPC 层本来就有操作级门禁，双层覆盖）。
     if (isDangerTool(toolId) && !isDangerEnabled(toolId) && requiresWholeToolLock(toolId)) {
-      page.appendChild(dangerLockedCard(toolId, t.name));
+      page.appendChild(await dangerLockedCard(toolId, t.name));
       return;
     }
     // 部分高危：渲染功能本体，但在页面顶部放一条提示，说明哪些操作需要开启
@@ -778,13 +785,86 @@
       page.appendChild(window.ui.placeholder('alert', T('tool.renderFail'), e.message));
     }
   }
-  // 高危工具未启用时的占位卡
-  function dangerLockedCard(toolId, toolName) {
+  /* 高危工具未启用时的占位卡。
+   *
+   * 【为什么在这里能直接开启】
+   * 早先只给一个「前往设置 → 高危功能」的按钮，用户被弹到一个不认识的
+   * 设置分区里，还要在七八个开关中找出对应的那个 —— 多绕两层。
+   * 现在直接把**这个工具涉及的那几项**能力列在卡片里，逐个开关，
+   * 开启即生效并就地重绘页面。
+   *
+   * 【安全边界没有放松】
+   * - 仍然逐项开启，不提供「全部开启」；
+   * - 每一开启都要二次确认，并复述这一项会带来什么后果；
+   * - 确认框走统一的 confirmBox，与设置页的行为一致。
+   * 换句话说：只是把「在哪儿开」提前到这里，开启的门槛完全没变。 */
+  async function dangerLockedCard(toolId, toolName) {
     const card = div('card danger-locked');
     card.appendChild(div('danger-locked-title', icon('lock'), T('settings.notice.wholeToolLocked')));
     card.appendChild(div('danger-locked-text',
       T('settings.notice.wholeToolLockedText', { name: toolName })));
-    card.appendChild(div('form-row', btn(T('settings.notice.goDanger'), 'btn-danger', () => showView({ type: 'settings' }))));
+
+    /* 该工具涉及哪些能力：优先用已加载的 toolDanger，缺了再问主进程 */
+    let caps = (toolDanger[toolId] && toolDanger[toolId].caps) || [];
+    if (!caps.length && isDesktop) {
+      try {
+        const all = await invoke('dangerous:tool-caps');
+        caps = (all && all[toolId] && all[toolId].caps) || [];
+      } catch (e) { caps = []; }
+    }
+
+    if (caps.length) {
+      /* 需要拿能力的名字与说明（tool-caps 只给 id） */
+      let capInfo = {};
+      try {
+        const list = await invoke('dangerous:list');
+        for (const c of (list.caps || [])) capInfo[c.id] = c;
+      } catch (e) { capInfo = {}; }
+
+      const box = div('danger-locked-enable');
+      for (const capId of caps) {
+        const info = capInfo[capId] || { name: capId, desc: '', enabled: false };
+        const row = div('set-row', { style: { padding: '8px 0', borderTop: '1px solid var(--border)' } });
+        const left = div('');
+        left.appendChild(div('set-label', info.name || capId));
+        if (info.desc) left.appendChild(div('set-desc', info.desc));
+        row.appendChild(left);
+
+        const sw = window.ui.switchEl(!!info.enabled, async (v) => {
+          if (v) {
+            /* 与设置页同一套门槛：开启前必须二次确认，并复述具体能力 */
+            const ok = await window.ui.confirmBox({
+              title: T('danger.enableTitle'),
+              message: T('danger.enableMsg', { name: info.name || capId, desc: info.desc || '' }),
+              danger: true, okText: T('danger.enableOk'),
+            });
+            if (!ok) { sw.set(false); return; }
+          }
+          try {
+            await invoke('dangerous:set', capId, v);
+            toast(v
+              ? T('danger.enabled', { name: info.name || capId })
+              : T('danger.disabledToast', { name: info.name || capId }),
+              v ? 'warn' : 'success');
+            /* 重新读状态并重绘当前页：工具解锁后要立刻能用，而不是留在占位卡上 */
+            await loadDangerousState();
+            render();
+          } catch (e) {
+            sw.set(!v);
+            toast(e.message, 'error');
+          }
+        });
+        row.appendChild(div('set-control', sw));
+        box.appendChild(row);
+      }
+      card.appendChild(box);
+      card.appendChild(div('field-hint', { style: { marginTop: '8px', color: 'var(--text-3)' } },
+        T('danger.lockHint')));
+    }
+
+    /* 保留原来的跳转入口：用户可能还想看看其它高危能力的全貌 */
+    card.appendChild(div('form-row', { style: { marginTop: '8px' } },
+      btn(T('settings.notice.goDanger'), 'btn-danger', () => showView({ type: 'settings' }))));
     return card;
   }
   /* 只有「删文件」这一项高危能力的工具（记事本、剪贴板历史）：
@@ -861,8 +941,14 @@
       applyLang(v);
       /* toast 必须在 applyLangLabels() **之后**发：
        * 重建会换掉整个 body，先发的那条会挂在已被丢弃的容器上，用户看不到。
-       * 文案按「切到哪个语言」来定，而不是按切换后的 lang —— 用户需要读懂
-       * 「刚刚发生了什么」，用他原来的语言更自然。 */
+       *
+       * 【文案用的是**新**语言】applyLang(v) 已在上一步切好了当前语言，
+       * 所以这里 T('settings.langSwitched.en/zh') 取到的是切换**之后**的语言。
+       * 举例：从中文切到 English，提示语是英文的
+       * 「Language switched to English」，而不是中文的「...切换为 English」。
+       * 这是刻意的：切换后整壳已经是新语言了，提示跟随新语言才和界面一致；
+       * 若混用旧语言，用户会看到「一半中文一半英文」的瞬间。
+       * （早期注释写成「用户原来的语言更自然」，那是笔误，实现一直如此。） */
       settingsSection = 'general';
       applyLangLabels();
       toast(T('settings.langSwitched.' + (v === 'en' ? 'en' : 'zh')), 'success', 1600);

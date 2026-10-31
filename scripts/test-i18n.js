@@ -72,9 +72,31 @@ const PROBE = `
   const toolTitle = (document.querySelector('.tool-header h2') || {}).textContent;
   log('tool-page', { title: toolTitle });
 
-  /* ---- 5. 切回中文 ---- */
+  /* ---- 4b. 英文下设置页的配色主题名与描述必须也是英文 ---- */
   window.App.showView({ type: 'settings' });
   await tick(500);
+  // 切到「外观」分区才能看到配色卡
+  const appearanceItem = [...document.querySelectorAll('.settings-nav-item')]
+    .find((el) => el.dataset.sid === 'appearance');
+  if (appearanceItem) { appearanceItem.click(); await tick(600); }
+  const accentNames = [...document.querySelectorAll('.accent-card .tc-name2')].map((x) => x.textContent);
+  const accentDescs = [...document.querySelectorAll('.accent-card .accent-desc')].map((x) => x.textContent);
+  log('accents-en', { names: accentNames, descs: accentDescs.slice(0, 4) });
+
+  /* ---- 4c. 英文下首页分类卡描述（模块描述）必须也是英文 ---- */
+  window.App.showView({ type: 'home' });
+  await tick(500);
+  const catTitles = [...document.querySelectorAll('.home-cat')].map((x) => x.title).slice(0, 4);
+  log('module-desc-en', { titles: catTitles });
+
+  /* ---- 5. 切回中文 ---- */
+  window.App.showView({ type: 'settings' });
+  await tick(400);
+  /* 4b 把分区切到了「外观」，语言下拉在「通用」里，得先切回去。
+   * 否则这里拿到的 select 是别的东西（或根本没有），切语言静默失败。 */
+  const generalItem = [...document.querySelectorAll('.settings-nav-item')]
+    .find((el) => el.dataset.sid === 'general');
+  if (generalItem) { generalItem.click(); await tick(500); }
   const sel3 = document.querySelector('.settings-body select');
   if (sel3) {
     sel3.value = 'zh';
@@ -187,6 +209,21 @@ if (R.fatal) {
   /* 工具页正文保持中文（设计边界，写死防误改） */
   chk(by['tool-page'] && /压缩/.test(by['tool-page'].title || ''),
       '英文模式下工具页标题仍是中文（' + (by['tool-page'] && by['tool-page'].title) + '）');
+
+  /* 配色主题名/描述在英文下必须是英文（以前是写死的中文） */
+  const CJK = /[\u4e00-\u9fff]/;
+  const acc = by['accents-en'] || {};
+  chk(acc.names && acc.names.length === 9,
+      '英文下能看到 9 套配色主题（实际 ' + (acc.names && acc.names.length) + '）');
+  chk(acc.names && !acc.names.some((n) => CJK.test(n)),
+      '英文下配色主题名不含中文（实际 ' + JSON.stringify((acc.names || []).slice(0, 3)) + '）');
+  chk(acc.descs && !acc.descs.some((d) => CJK.test(d)),
+      '英文下配色描述不含中文（实际 ' + JSON.stringify((acc.descs || []).slice(0, 2)) + '）');
+
+  /* 首页分类卡的模块描述在英文下也要是英文 */
+  const md = by['module-desc-en'] || {};
+  chk(md.titles && md.titles.length > 0 && !md.titles.some((d) => CJK.test(d)),
+      '英文下模块描述不含中文（实际 ' + JSON.stringify((md.titles || []).slice(0, 2)) + '）');
 
   /* 切回中文 */
   const back = by['back-to-zh'] || {};
