@@ -45,7 +45,9 @@ chk(/app\.isReady\(\)/.test(whole), 'second-instance 判断了 app.isReady()（�
 
 /* ---- 3. 渲染层确实接收并提示 ---- */
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'js', 'app.js'), 'utf8');
-chk(/on\('app:already-running'/.test(appJs), '渲染层订阅了 app:already-running');
+/* 订阅可能写成 on(...) 或 sub(...)：sub 是「注册并登记退订」的封装
+ * （切语言整壳重建时必须能退订，否则每次重建多一份监听），语义等价。 */
+chk(/(?:on|sub)\('app:already-running'/.test(appJs), '渲染层订阅了 app:already-running');
 chk(/toast\([^)]*已经在运行/.test(appJs), '渲染层弹出「已经在运行」的 toast');
 
 /* ---- 4. 最小化场景要能恢复 ---- */

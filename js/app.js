@@ -292,33 +292,46 @@
     document.body.appendChild(sidebarEl);
     document.body.appendChild(main);
 
-    on('win:maximized', (v) => { maxBtn.innerHTML = ''; maxBtn.appendChild(icon(v ? 'copy' : 'square', 'icon-lg')); });
+    /* 这一整组 IPC 订阅都在 buildShell 里注册，而切换界面语言会整壳重建。
+     * 之前它们**从不退订**：切一次语言多一份，切 N 次就有 N 份。
+     * 后果不是「只是多占点内存」——
+     *   · 周期任务触发时弹 N 个系统通知 + N 个 toast；
+     *   · 托盘「截图 OCR」一次会打开 N 个相同的工具页；
+     *   · 每个 window.api.on 都要过主进程广播，监听器越多越慢。
+     * 所以每个订阅的退订函数都收进 shellUnsubs，最后并入 shellCleanup，
+     * 由 applyLangLabels 在重建前统一调用。 */
+    const shellUnsubs = [];
+    const sub = (ev, cb) => { const u = on(ev, cb); if (typeof u === 'function') shellUnsubs.push(u); return u; };
+
+    sub('win:maximized', (v) => { maxBtn.innerHTML = ''; maxBtn.appendChild(icon(v ? 'copy' : 'square', 'icon-lg')); });
 
     /* 状态栏数据 */
-    on('sys:stats', (s) => {
+    sub('sys:stats', (s) => {
       const cpu = s.cpu, mem = s.memPct;
       cpuEl.textContent = `CPU ${cpu.toFixed(0)}%`;
       memEl.textContent = (lang === 'en' ? 'MEM ' : '内存 ') + mem.toFixed(0) + '%';
       cpuEl.className = 'sb-val ' + (cpu >= 90 ? 'bad' : cpu >= 70 ? 'warn' : 'ok');
       memEl.className = 'sb-val ' + (mem >= 90 ? 'bad' : mem >= 80 ? 'warn' : 'ok');
     });
-    on('hotkey:pressed', () => toast('全局热键已唤起', 'info', 1000));
+    sub('hotkey:pressed', () => toast('全局热键已唤起', 'info', 1000));
 
     /* 主进程事件路由：截图 OCR / 托盘直达工具 / 周期任务触发 / 区域截图结果 / 托盘错误 */
-    on('snip:ocr', (filePath) => {
+    sub('snip:ocr', (filePath) => {
       window.__ocrPendingPath = filePath;
       openTool('screenshot-ocr');
     });
-    on('app:open-tool', (id) => { if (R.get(id)) openTool(id); });
+    sub('app:open-tool', (id) => { if (R.get(id)) openTool(id); });
     /* 用户重复双击了图标：主实例已经把窗口提到前面，这里再说明一句，
        否则用户只会看到窗口「突然冒出来」，不明白刚才那次点击为什么没开新窗口。 */
-    on('app:already-running', () => toast('核核工具箱已经在运行，已切换到当前窗口', 'info', 2500));
-    on('sched:fire', (s) => {
-      try { new Notification('核核工具箱 · 定时任务', { body: s.message || '任务触发' }); } catch (e) {}
-      toast('⏰ ' + (s.message || '周期任务触发'), 'info', 6000);
+    sub('app:already-running', () => toast('核核工具箱已经在运行，已切换到当前窗口', 'info', 2500));
+    sub('sched:fire', (s) => {
+      // 系统通知的正文来自用户填写的任务内容（不翻译），
+      // 但标题与「没有内容时的兜底文案」是我们自己的，要走 i18n。
+      try { new Notification(T('notify.schedTitle'), { body: s.message || T('notify.schedBody') }); } catch (e) {}
+      toast('⏰ ' + (s.message || T('notify.schedBody')), 'info', 6000);
     });
-    on('snip:region', (rect) => { window.__recRegion = rect; });
-    on('tray:err', (msg) => toast(msg, 'warn'));
+    sub('snip:region', (rect) => { window.__recRegion = rect; });
+    sub('tray:err', (msg) => toast(msg, 'warn'));
 
     /* 标题栏搜索：结果行复用 searchResultRow()，与首页结果列表同一套渲染 */
     let hlIndex = -1;
@@ -367,10 +380,13 @@
     document.addEventListener('keydown', onDocKey);
     /* 这两个是 document 级监听，整壳重建时旧的不退掉就会累积：
      * 切一次语言多一份 Ctrl+K 处理、多一份点空白关闭搜索。
-     * 把退订函数交给 applyLangLabels，重建前统一调用。 */
+     * 把退订函数交给 applyLangLabels，重建前统一调用。
+     * 同时把上面那 9 个 IPC 订阅的退订函数也一并收口 —— 它们同样是
+     * 「重建一次就多一份」的类型（见 shellUnsubs 的注释）。 */
     shellCleanup = () => {
       document.removeEventListener('click', onDocClick);
       document.removeEventListener('keydown', onDocKey);
+      for (const u of shellUnsubs.splice(0)) { try { u(); } catch (e) {} }
     };
   }
 
@@ -578,8 +594,25 @@
      * 那不是用户在移动鼠标。只有真的观察到 mousemove 之后，
      * 才认为后续的 mouseenter 是用户的意图。 */
     let pointerMoved = false;
-    const markPointerMoved = () => { pointerMoved = true; };
-    window.addEventListener('mousemove', markPointerMoved, { once: true, passive: true });
+    /* 保存「那个还没触发的 once 监听器」，重挂之前先摘掉旧的。
+     *
+     * 两处 addEventListener('mousemove', ..., { once:true }) 原来都是裸挂：
+     * once 只保证命中后自动摘除，**没命中就一直挂着**。
+     * 用户只打字不碰鼠标时，每次 renderResults 都会再挂一个，
+     * 直到下次移动鼠标才一起触发、一起摘除。连打 50 个字符＝50 个监听器，
+     * 触发时 50 次 markPointerMoved（结果没错，但多余的开销和解绑时机都不对）。
+     * 现在任意时刻最多只留一个：挂之前先移除上一次没触发的那个。
+     * 复用原来的 markPointerMoved 作为回调，只是多清一下自己的句柄。 */
+    let pointerMovedListener = null;
+    const markPointerMoved = () => { pointerMoved = true; pointerMovedListener = null; };
+    function armPointerMoved() {
+      if (pointerMovedListener) {
+        window.removeEventListener('mousemove', pointerMovedListener);
+      }
+      pointerMovedListener = markPointerMoved;
+      window.addEventListener('mousemove', markPointerMoved, { once: true, passive: true });
+    }
+    armPointerMoved();
 
     function renderResults() {
       const q = inp.value;
@@ -588,7 +621,7 @@
       /* 列表重建：之前的 mouseenter 记录已经失效。
        * 重新开始计「指针是否动过」，这样新列表不会带着旧列表的鼠标状态。 */
       pointerMoved = false;
-      window.addEventListener('mousemove', markPointerMoved, { once: true, passive: true });
+      armPointerMoved();
       current = q.trim() ? R.search(q) : [];
       if (!q.trim()) {
         results.classList.remove('show');
@@ -1099,8 +1132,11 @@
     body.appendChild(updActions);
 
     // 清理「已经应用过」的旧安装包（刚下载、还没装的新包会被主进程按版本号豁免）
+    // 同时回收 exe 旁的历史 .bak：每次升级会留两套备份（.bak + .bak.<时间戳>），
+    // 时间戳那套以前从不清理，升几次就在用户目录里堆几份 100MB。
     invoke('update:cleanup').then((r) => {
       if (r && r.removed) console.log('[update] 清理旧安装包', r.removed, '个', (r.bytes / 1048576).toFixed(1) + 'MB', '保留', r.kept || 0, '个');
+      if (r && r.bakRemoved) console.log('[update] 回收历史备份', r.bakRemoved, '个', (r.bakBytes / 1048576).toFixed(1) + 'MB');
     }).catch(() => {});
 
     async function checkUpdate(ev) {
@@ -1175,8 +1211,7 @@
   /* ============ 状态 ============ */
   function setStatus(text) { statusText.textContent = text; }
 
-  /* ============ 界面语言 ============
-   * 语言只影响外壳（导航/首页/设置/状态栏等）。工具页正文保持中文，
+  /* ============ 界面语言 ============   * 语言只影响外壳（导航/首页/设置/状态栏等）。工具页正文保持中文，
    * 这一点在设置页有明确说明，不让用户以为「切了英文但工具还是中文」是 bug。
    *
    * 切换后必须整壳重建：导航项、搜索框 placeholder、状态栏、面包屑
@@ -1185,7 +1220,23 @@
    */
   function applyLang(v) {
     lang = (window.i18n && window.i18n.setLang(v)) || 'zh';
+    // 同步缓存到 localStorage：下次启动时 DOMContentLoaded 能在**同步阶段**
+    // 读到语言，不必等 store:get 的 IPC 往返（那段等待会让英文用户看到
+    // 一帧中文界面再翻成英文）。localStorage 是同步 API，正好用在这里。
+    try { window.localStorage.setItem('hehe-lang', lang); } catch (e) {}
+    // 主进程侧还有托盘菜单与系统通知是自己画的（不跑 js/i18n.js），
+    // 通过 IPC 告诉它当前语言，否则英文用户的托盘永远是中文。
+    if (isDesktop) invoke('app:set-lang', lang).catch(() => {});
     return lang;
+  }
+  /* 启动时同步取语言：localStorage → 系统语言。
+   * 不能用 store:get，那是异步的，等它回来时首帧已经画成中文了。 */
+  function readLangSync() {
+    try {
+      const cached = window.localStorage.getItem('hehe-lang');
+      if (cached) return cached;
+    } catch (e) {}
+    return window.i18n ? window.i18n.detect() : 'zh';
   }
   function applyLangLabels() {
     // 重建外壳：保留当前视图与标签页状态
@@ -1222,14 +1273,27 @@
     }
   };
   document.addEventListener('DOMContentLoaded', async () => {
-    // 语言要在 buildShell 之前定好，否则第一帧会用默认中文再整壳重绘，闪一下。
-    let savedLang = null;
-    try { savedLang = await invoke('store:get', 'settings.lang', null); } catch (e) {}
-    applyLang(savedLang || (window.i18n ? window.i18n.detect() : 'zh'));
+    /* 语言必须在 buildShell 之前定好，否则第一帧是中文、随后整壳重绘成英文，
+     * 英文用户每次启动都会看到一次闪。
+     *
+     * 但 store:get 是**异步 IPC**，等它回来时首帧早就画完了。所以分两步：
+     *   1) 同步：从 localStorage 缓存（applyLang 每次都会写）取语言，
+     *      立刻建壳 —— 这一步不 await 任何东西，不会有闪；
+     *   2) 异步：再问主进程真相。若与缓存不一致（用户换过机器、
+     *      清过浏览器数据、或从未切过语言），再纠正一次。
+     * 正常情况下第 2 步是一致的，不触发重建。 */
+    applyLang(readLangSync());
     buildShell();
     applyTheme();
     await loadUserData();
     await loadDangerousState();
     render();
+
+    let savedLang = null;
+    try { savedLang = await invoke('store:get', 'settings.lang', null); } catch (e) {}
+    if (savedLang && savedLang !== lang && (window.i18n ? window.i18n.normalize(savedLang) : savedLang)) {
+      applyLang(savedLang);
+      applyLangLabels();
+    }
   });
 })();

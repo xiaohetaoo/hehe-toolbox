@@ -37,7 +37,10 @@
           }
         }
       }
-      window.__drawn = true;
+      /* 只在开发/测试态挂出，与 snip-2.js 的 __snipTest 同一口径：
+       * 生产包里不该留一个「标尺已经画完」的调试标记。
+       * 辅助窗口的 isDev 来自 preload.js 的 contextBridge（window.hehe.isDev）。 */
+      if (window.hehe && window.hehe.isDev) window.__drawn = true;
     }
 
     // 整个标尺都是拖动区，而 Electron 的 -webkit-app-region: drag 会吞掉鼠标事件，

@@ -22,6 +22,8 @@
       'nav.settings': '设置',
       'nav.collapse': '收起',
       'nav.expand': '展开',
+      'notify.schedTitle': '核核工具箱 · 定时任务',
+      'notify.schedBody': '周期任务触发',
 
       'search.placeholder': '搜索工具，如「pdf 合并」「图片压缩」「密码」…',
       'search.aria': '搜索工具',
@@ -185,6 +187,8 @@
       'nav.settings': 'Settings',
       'nav.collapse': 'Collapse',
       'nav.expand': 'Expand',
+      'notify.schedTitle': 'HeHe Toolbox · Scheduled task',
+      'notify.schedBody': 'Scheduled task fired',
 
       'search.placeholder': 'Search tools, e.g. “pdf merge”, “image compress”, “password”…',
       'search.aria': 'Search tools',

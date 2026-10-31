@@ -467,31 +467,64 @@ function showMainWindow() {
 }
 
 /* ---------------- tray ---------------- */
+/* 主进程侧没有 i18n 体系（渲染层的 js/i18n.js 只在窗口里跑）。
+ * 托盘菜单和系统通知是主进程自己画的，所以这里放一份**极小的**双语表，
+ * 只覆盖托盘与通知用到的几条文案。语言由渲染层通过 app:set-lang 传过来，
+ * 切换语言时会重新建菜单 —— 否则英文用户看到的中文托盘菜单永远不跟着变。
+ * 新增托盘项时请同时补两套文案，不要只写中文。 */
+const TRAY_I18N = {
+  zh: { tooltip: '核核工具箱', show: '显示主界面', snip: '✂️ 截图标注',
+        pin: '📌 贴剪贴板图片', notes: '📝 记事', ocr: '🔍 OCR 剪贴板图片',
+        quit: '退出', noClipImg: '剪贴板中没有图片' },
+  en: { tooltip: 'HeHe Toolbox', show: 'Show main window', snip: '✂️ Annotate screenshot',
+        pin: '📌 Pin clipboard image', notes: '📝 Notes', ocr: '🔍 OCR clipboard image',
+        quit: 'Quit', noClipImg: 'No image in clipboard' },
+};
+let uiLang = 'zh';
+function trayText(key) {
+  const pack = TRAY_I18N[uiLang] || TRAY_I18N.zh;
+  return pack[key] != null ? pack[key] : TRAY_I18N.zh[key];
+}
+
 function createTray() {
   try {
     tray = new Tray(path.join(__dirname, 'assets', 'icon32.png'));
-    tray.setToolTip('核核工具箱');
+    tray.setToolTip(trayText('tooltip'));
     const menu = Menu.buildFromTemplate([
-      { label: '显示主界面', click: showMainWindow },
+      { label: trayText('show'), click: showMainWindow },
       { type: 'separator' },
-      { label: '✂️ 截图标注', click: () => { snipStart('annotate').catch(() => {}); } },
-      { label: '📌 贴剪贴板图片', click: () => { pinClipboardImage().catch((e2) => { showMainWindow(); send('tray:err', e2.message); }); } },
-      { label: '📝 记事', click: () => { showMainWindow(); send('app:open-tool', 'local-notes'); } },
-      { label: '🔍 OCR 剪贴板图片', click: async () => {
+      { label: trayText('snip'), click: () => { snipStart('annotate').catch(() => {}); } },
+      { label: trayText('pin'), click: () => { pinClipboardImage().catch((e2) => { showMainWindow(); send('tray:err', e2.message); }); } },
+      { label: trayText('notes'), click: () => { showMainWindow(); send('app:open-tool', 'local-notes'); } },
+      { label: trayText('ocr'), click: async () => {
           const img = clipboard.readImage();
-          if (img.isEmpty()) { showMainWindow(); send('tray:err', '剪贴板中没有图片'); return; }
+          if (img.isEmpty()) { showMainWindow(); send('tray:err', trayText('noClipImg')); return; }
           const file = snipTmp();
           await fsp.writeFile(file, img.toPNG());
           showMainWindow();
           send('snip:ocr', file);
         } },
       { type: 'separator' },
-      { label: '退出', click: () => { isQuitting = true; app.quit(); } }
+      { label: trayText('quit'), click: () => { isQuitting = true; app.quit(); } }
     ]);
     tray.setContextMenu(menu);
     tray.on('double-click', showMainWindow);
   } catch (e) { console.error('tray failed', e); tray = null; }
 }
+
+/* 渲染层切换界面语言时通知主进程，让托盘菜单跟着换。
+ * 只重建托盘菜单，不动别的状态。语言值不认识时保守回中文。 */
+handle('app:set-lang', (e, lang) => {
+  const next = lang === 'en' ? 'en' : 'zh';
+  if (next === uiLang && tray) return true; // 没变就不用重建
+  uiLang = next;
+  if (tray) {
+    try { tray.destroy(); } catch (err) {}
+    tray = null;
+    createTray();
+  }
+  return true;
+});
 
 /* ---------------- global hotkey ---------------- */
 let currentHotkey = null;
@@ -678,6 +711,18 @@ handle('fs:stat', async (e, p) => { const st = await fsp.stat(p); return { size:
  * 8 路足够快，也不会挤掉主进程里别的 IO。 */
 handle('fs:stat-multi', async (e, paths) => {
   const list = Array.isArray(paths) ? paths : [];
+  /* 一次最多 2000 个。
+   *
+   * 上限存在的理由：这个通道是渲染层传什么主进程就 stat 什么，没有天花板。
+   * 正常用法（最近文件、工具页几十个）离 2000 很远；一旦哪里写错把整盘
+   * 的结果全投进来（或用户选了上万项的目录），主进程会被这 8 路 worker
+   * 长时间占住 —— 那是唯一跑 IPC 的进程，它忙起来整个界面都在排队。
+   * 直接报错比默默卡住好查：报错能指出「谁传多了」，卡住只能靠猜。
+   * 阈值取 2000：比任何现实调用高一个量级，又不至于让主进程排太久。 */
+  const MAX_STAT_BATCH = 2000;
+  if (list.length > MAX_STAT_BATCH) {
+    throw new Error('批量查询文件信息一次最多 ' + MAX_STAT_BATCH + ' 个，收到 ' + list.length + ' 个');
+  }
   const CONCURRENCY = 8;
   const out = new Array(list.length).fill(null);
   let idx = 0;
@@ -3211,18 +3256,29 @@ function recSpawnSeg(segPath) {
   args.push('-movflags', '+faststart', segPath);
   return { proc: spawn(ffmpeg, args, { windowsHide: true }), args };
 }
-handle('rec:start', async (e, { outPath, fps, rect, audio, camera, camPos, camScale }) => {
+handle('rec:start', async (e, { outPath, fps, rect, audio, camera, camPos, camScale, overwrite }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   if (recProc && recProc.exitCode === null) throw new Error('已有录制进行中');
-  /* 录制是唯一没走覆盖闸门的写盘通道：以前 recOut 直接等于渲染层给的 outPath，
+  /* 录制曾经是唯一没走覆盖闸门的写盘通道：recOut 直接等于渲染层给的 outPath，
    * 目标已存在就被 copyFile / ffmpeg -y 静默盖掉，界面上还只显示「录制完成」。
-   * 与其它通道保持一致：先过系统关键目录闸门，已存在则直接拒绝，
-   * 让用户换个路径——录屏是用户亲手指定的输出，覆盖掉一段旧录像没有道理。 */
+   *
+   * 但「一律拒绝」也过头了：输出路径是走 dialog:save 选的，Windows 原生保存框
+   * 在用户选中已存在文件时会**自己弹**「文件已存在，要替换它吗？」，
+   * 用户点过「是」之后再被这里二次否决，就只能手动改文件名 ——
+   * 等于把系统对话框的确认当空气，这是 v0.2.7 引入的回归。
+   *
+   * 所以分两种情况：
+   *   overwrite=true  用户在系统对话框里已明确确认要替换，放行；
+   *   overwrite 缺省  非交互调用（将来若有），保守起见仍然拒绝。
+   * 无论哪种情况，系统关键目录的闸门都照旧执行 —— 不能因为「用户确认过」
+   * 就去覆盖 System32 里的文件。 */
   if (typeof outPath !== 'string' || !outPath.trim()) throw new Error('录制输出路径无效');
   const recBad = pathGuard.checkOverwritable(outPath);
   if (recBad) throw pathGuard.err(recBad.code, recBad.reason);
-  if (fs.existsSync(outPath)) throw new Error('目标文件已存在，为避免覆盖已拒绝：' + outPath);
+  if (fs.existsSync(outPath) && !overwrite) {
+    throw new Error('目标文件已存在，为避免覆盖已拒绝：' + outPath);
+  }
   recOut = outPath;
   // yuv420p 要求偶数尺寸/偏移，框选结果向下取偶
   if (rect && typeof rect === 'object') {
@@ -4022,6 +4078,41 @@ handle('update:apply', async (e, opts = {}) => {
 // 判据：文件名里的版本号 <= 当前运行版本，说明那份包要么是当前版本、要么早已被取代，
 // 留着纯属占地方；只有版本号 > 当前版本、且没被 update:apply 记录为已应用的，才保留。
 function updatePendingGet() { return updateCacheGet() || {}; }
+/* .bak 回收：每次升级都会在 exe 旁留下两套备份
+ *   <exe>.bak              最近一次（回滚用）
+ *   <exe>.bak.<时间戳>      历史（防「连续升级两次把更早那版挤掉」）
+ * 时间戳那套**从来没人清理**，升几次就在用户目录里堆几份 100MB。
+ * 这里只保留最近 N 份时间戳备份：
+ *   - 最新的 1 份一定留（万一刚升级的新版起不来，还要靠它）；
+ *   - .bak 本身永远不动（那是脚本自动回滚会读的那份）。
+ * 只看文件名里的时间戳（yyyyMMdd-HHmmss），不依赖文件时间 ——
+ * 拷来拷去会改 mtime，但那不代表「备份的新旧顺序」。 */
+async function pruneExeBackups(exePath, keep = 3) {
+  const dir = path.dirname(exePath);
+  const base = path.basename(exePath);
+  const prefix = base + '.bak.';
+  let names;
+  try { names = await fsp.readdir(dir); } catch (e) { return { removed: 0, bytes: 0 }; }
+
+  const stamped = names
+    .filter((n) => n.startsWith(prefix))
+    .map((n) => ({ n, stamp: n.slice(prefix.length) }))
+    .filter((x) => /^\d{8}-\d{6}$/.test(x.stamp))
+    // 时间戳字符串可以直接按字典序比较（定宽、从大到小 = 新到旧）
+    .sort((a, b) => (a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0));
+
+  let removed = 0, bytes = 0;
+  for (const item of stamped.slice(keep)) {
+    const full = path.join(dir, item.n);
+    try {
+      const st = await fsp.stat(full);
+      await fsp.unlink(full);
+      removed++; bytes += st.size;
+    } catch (e) { /* 被占用/已删除：跳过 */ }
+  }
+  return { removed, bytes };
+}
+
 handle('update:cleanup', async () => {
   const dir = path.join(app.getPath('userData'), 'update');
   const current = app.getVersion();
@@ -4045,7 +4136,19 @@ handle('update:cleanup', async () => {
       } catch (e) {}
     }
   } catch (e) { /* 目录不存在 */ }
-  return { removed, bytes, kept };
+
+  /* 顺手回收 exe 旁边的历史 .bak（见 pruneExeBackups 的注释）。
+   * 目标取便携版原始 exe：PORTABLE_EXECUTABLE_FILE 指向用户双击的那个文件，
+   * 升级脚本替换的也是它。取不到（开发态/非便携版）就跳过，不猜路径。 */
+  let bakRemoved = 0, bakBytes = 0;
+  const portableExe = process.env.PORTABLE_EXECUTABLE_FILE;
+  if (portableExe) {
+    try {
+      const r = await pruneExeBackups(portableExe, 3);
+      bakRemoved = r.removed; bakBytes = r.bytes;
+    } catch (e) {}
+  }
+  return { removed, bytes, kept, bakRemoved, bakBytes };
 });
 // 记下“已下载、等待安装”的那份包名，供 update:cleanup 豁免
 handle('update:mark-pending', (e, name) => {

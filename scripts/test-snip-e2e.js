@@ -62,6 +62,33 @@ const PROBE = `
     T.select(100, 80, 200, 140);
     out.undo = { ok: true, pts: sample() };
   } catch (e) { out.undo = { ok: false, err: e.message }; }
+  // 5) 连续添加三处文字，必须恰好三个标注（P1 回归）
+  // 以前 openTextInput 每次都 addEventListener('keydown') 且从不摘除，
+  // 旧闭包封着旧坐标、commit 读的却是当前输入框的值 —— 每加一处，
+  // 之前所有位置都会再被写一份。这里按真实路径触发：stage mousedown
+  // 打开输入框 → 填值 → Enter 提交。
+  try {
+    const stage = document.getElementById('stage');
+    const ti = document.getElementById('textInput');
+    T.getShapes().length = 0;
+    T.select(50, 40, 300, 220);
+    T.setTool('text');
+    const pts = [[80, 70], [160, 120], [240, 170]];
+    const names = ['甲', '乙', '丙'];
+    for (let i = 0; i < pts.length; i++) {
+      stage.dispatchEvent(new MouseEvent('mousedown', {
+        clientX: pts[i][0], clientY: pts[i][1], button: 0, bubbles: true
+      }));
+      ti.value = names[i];
+      ti.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    }
+    const texts = T.getShapes().filter(s => s.type === 'text');
+    out.text3 = {
+      ok: true,
+      count: texts.length,
+      items: texts.map(s => s.text + '@' + s.x1 + ',' + s.y1)
+    };
+  } catch (e) { out.text3 = { ok: false, err: e.message }; }
   return out;
 })()
 `;
@@ -130,6 +157,17 @@ else {
   if (R.undo && R.undo.ok) {
     const [r, g, b] = R.undo.pts.edge;
     chk(!(r > 180 && g < 90 && b < 90), `清空标注后红色消失 rgb(${r},${g},${b})`);
+  }
+  /* P1 回归：连续三处文字必须恰好三个标注，且文字与坐标一一对应。
+   * 以前 keydown 监听累积，每加一处就把之前所有位置各重写一份 ——
+   * 加三处会得到 6 份，坐标与文字全都错位。 */
+  if (R.text3 && R.text3.ok) {
+    chk(R.text3.count === 3, `连续三处文字恰好三个标注（实际 ${R.text3.count} 个：${JSON.stringify(R.text3.items)}）`);
+    const want = ['甲@80,70', '乙@160,120', '丙@240,170'];
+    chk(JSON.stringify(R.text3.items) === JSON.stringify(want),
+        `文字与输入位置一一对应（实际 ${JSON.stringify(R.text3.items)}）`);
+  } else {
+    chk(false, '文字标注回归没跑起来' + (R.text3 && R.text3.err ? ' -> ' + R.text3.err : ''));
   }
 }
 

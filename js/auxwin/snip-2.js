@@ -4,6 +4,12 @@
     const W = +params.get('w') || window.innerWidth, H = +params.get('h') || window.innerHeight;
     const canvas = document.getElementById('c');
     const bar = document.getElementById('bar');
+    /* stage 是整块画布容器（框选/拖动/标注的三个 mousedown/mousemove/mouseup
+     * 都挂在它上面）。以前这里没写这一行，靠「元素的 id 会自动成为 window
+     * 上的同名属性」这条老机制才没报错 —— 但那是浏览器兼容行为，
+     * 本文件里 canvas/bar/tip/textInput 全是显式 getElementById，
+     * 只有它悬空，读代码时会以为 stage 是从别处传进来的。补齐。 */
+    const stage = document.getElementById('stage');
     const ctx = canvas.getContext('2d');
     const img = new Image();
     let sel = null;           // {x,y,w,h} 逻辑坐标（相对本窗口）
@@ -99,7 +105,14 @@
         else drawing = { type: tool, color, size, x1: p.x, y1: p.y, x2: p.x, y2: p.y };
       }
     });
-    function drawingTool() { return ['rect', 'arrow', 'pen', 'mosaic'].includes(tool); }
+    /* 哪些工具靠「按下—拖动—抬起」产生图形。
+     *
+     * text 必须在内：它的流程是「点一下弹出输入框、回车落字」，没有拖拽那一步，
+     * 但**第一下也要走这个 mousedown 分支**才能调到 openTextInput。
+     * 以前白名单只有 rect/arrow/pen/mosaic，于是 tool==='text' 时整段被跳过 ——
+     * 工具条上明明有 T 按钮（见 TOOLS），点了却在画布上没反应，
+     * openTextInput 永远不会被调用。 */
+    function drawingTool() { return ['rect', 'arrow', 'pen', 'mosaic', 'text'].includes(tool); }
     stage.addEventListener('mousemove', (e) => {
       if (selecting) {
         sel = { x: Math.min(dragStart.x, e.clientX), y: Math.min(dragStart.y, e.clientY),
@@ -180,25 +193,42 @@
 
     /* ---------- 文字输入 ---------- */
     const textInput = document.getElementById('textInput');
+    /* 文字输入的提交必须**只挂一次**。
+     *
+     * 这里原来每次 openTextInput 都执行一次 textInput.addEventListener('keydown', ...)，
+     * 而提交后只 removeEventListener('blur', commit) —— keydown 那一个从不摘除。
+     * 于是每加一处文字就多留一个闭包，闭包里封着**那一次的坐标 p**，
+     * 而 commit 读的是输入框**当前**的值：下一次输入时，所有旧闭包都被同一个
+     * Enter 唤醒，各按自己记住的坐标 push 一份当前文本。
+     * 实测「A 点输入甲 → B 点输入乙 → C 点输入丙」会得到 6 份文字标注（而不是 3 份）。
+     *
+     * 修法：keydown 用 onkeydown 赋值（每次覆盖，天然只有一份），
+     * blur 仍在 commit 里自行摘除 —— 两条提交路径（Enter / 失焦）都要收一次尾。
+     * 另加 committed 闸：Enter 提交后输入框会隐藏并失焦，blur 会再进来一次，
+     * 没有这个闸就会同一次输入 push 两份。 */
     function openTextInput(p) {
       textInput.value = '';
       textInput.style.left = p.x + 'px'; textInput.style.top = p.y + 'px';
       textInput.style.color = color;
       textInput.style.display = 'block';
       textInput.focus();
+      let committed = false;
       const commit = () => {
+        if (committed) return;
+        committed = true;
         textInput.style.display = 'none';
+        textInput.onkeydown = null;
         if (textInput.value.trim()) {
           shapes.push({ type: 'text', x1: p.x, y1: p.y, color, size, text: textInput.value });
           render();
         }
         textInput.removeEventListener('blur', commit);
       };
-      textInput.addEventListener('keydown', (ev) => {
+      textInput.onkeydown = (ev) => {
         ev.stopPropagation();
         if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); commit(); }
         if (ev.key === 'Escape') { textInput.value = ''; commit(); }
-      });
+      };
       textInput.addEventListener('blur', commit);
     }
 
@@ -232,12 +262,25 @@
     });
     render();
 
-    // E2E 测试钩子
-    window.__snipTest = {
-      select(x, y, w, h) { sel = { x, y, w, h }; if (MODE !== 'region') showBar(); render(); },
-      setTool(t) { tool = t; },
-      addShape(s) { shapes.push(s); render(); },
-      finish,
-      getSel: () => sel, getShapes: () => shapes
-    };
+    /* E2E 测试钩子：只在开发/测试态挂出。
+     *
+     * 以前无条件 `window.__snipTest = {...}`，打包版里也一直躺着 —— 等于给生产
+     * 包留了一个能直接改选区、塞 shape、触发 finish 的后门。js/tools/media.js
+     * 里同类钩子都用 isDev 门控，这里跟它对齐。
+     *
+     * 辅助窗口没有渲染层的 window.api（那套只在主窗口的 js/api.js 里），
+     * 但 preload.js 已经把 isDev 通过 contextBridge 暴露到 window.hehe，
+     * 因此这里读 hehe.isDev 就够了，不需要另造注入机制。
+     * scripts/test-snip-e2e.js 用未打包的 electron.exe 起窗口，此时
+     * app.isPackaged 为 false → isDev 为 true，测试照常能拿到钩子。
+     * 打包态若确实需要跑 E2E，设 HEHE_TEST_HOOKS=1 即可（见 preload.js）。 */
+    if (window.hehe && window.hehe.isDev) {
+      window.__snipTest = {
+        select(x, y, w, h) { sel = { x, y, w, h }; if (MODE !== 'region') showBar(); render(); },
+        setTool(t) { tool = t; },
+        addShape(s) { shapes.push(s); render(); },
+        finish,
+        getSel: () => sel, getShapes: () => shapes
+      };
+    }
   

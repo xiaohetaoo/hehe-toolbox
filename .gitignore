@@ -17,6 +17,8 @@ _seg*
 Thumbs.db
 # 审查时的临时探测脚本目录
 .tmp-audit/
+# 一次性调试脚本：排查时随手写的复现，不进仓库（避免像 _tmp-check-* 那样残留）
+scripts/_tmp-*.js
 # e2e 测试会临时解出的应用目录 / 校验产物（防止误提交几百 MB）
 dl-verify/
 .ciunpack/

@@ -1454,7 +1454,11 @@
         try {
           // 摄像头是独占设备：录制前必须先释放预览流，否则 ffmpeg 打不开设备
           await stopPreview();
+          /* overwrite: true —— 这个路径来自上面的 dialog:save，用户若选了已存在的
+           * 文件，Windows 原生保存框已经弹过「要替换它吗？」并拿到了「是」。
+           * 不传这个标志就会在 rec:start 里被二次否决，想覆盖旧录像只能手动改名。 */
           await invoke('rec:start', { outPath: p, fps: +fpsSel.value, rect: region, audio: audioSel.value || null,
+            overwrite: true,
             camera: camSel.value || null, camPos: camPosSel.value, camScale: +camSizeSel.value });
           recording = true; paused = false;
           startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
