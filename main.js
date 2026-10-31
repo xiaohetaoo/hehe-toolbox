@@ -4725,8 +4725,21 @@ async function verifyLinkReadable(linkPath, expectTarget) {
   if (!st || !st.isSymbolicLink()) return { ok: false, reason: '原路径不是链接' };
   let real;
   try { real = fs.realpathSync.native(linkPath); } catch (err) { return { ok: false, reason: '链接无法解析：' + err.message }; }
-  const norm = (s) => path.resolve(s).toLowerCase();
-  if (norm(real) !== norm(expectTarget)) {
+  /* 【两侧都要 realpath 归一，不能只对一侧做字符串比较】
+   * realpathSync 返回的是**规范长名**，而 expectTarget 可能是调用方
+   * 从别处拿到的 8.3 短名（Agent 机 / CI 的 runneradmin 上尤其常见：
+   * Temp 下会生成 SHORT~1 这种短目录名）。直接比字符串就会把
+   * 「指向完全正确」的链接判成「指向非预期位置」——
+   * 而这条判据位于「源已改名、链接已建」之后，误判会触发回滚，
+   * 让一次本已成功的搬家白折腾一遍。
+   * 两侧各自 realpath 后再比；某一侧解析不了（比如目标已被删）时，
+   * 退回到字面比较，保持「真僵尸链接仍能被判失败」这个能力。 */
+  const canon = (s) => {
+    const abs = path.resolve(String(s || ''));
+    try { return fs.realpathSync.native(abs).toLowerCase(); }
+    catch (e) { return abs.toLowerCase(); }
+  };
+  if (canon(real) !== canon(expectTarget)) {
     return { ok: false, reason: '链接指向了非预期位置：' + real };
   }
   // 真的读几个文件

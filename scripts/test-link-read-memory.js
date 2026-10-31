@@ -168,6 +168,37 @@ t('原路径不是链接时判失败', async () => {
   } finally { rmDir(dir); }
 });
 
+/* ---------- 期望目标与 realpath 结果形式不同，不应误判 ----------
+ * CI（runneradmin）上就是这条把 Release 构建打挂的：realpathSync 返回
+ * **规范形式**，而 expectTarget 来自调用方的另一种写法（CI 上是 8.3 短名
+ * SHORT~1，本地能复现的是 \\?\ 长路径前缀）。只对一侧做 path.resolve
+ * 再比字符串，就会把「指向完全正确」的链接判成「指向非预期位置」。
+ * 这条判据位于「源已改名、链接已建」之后 —— 误判会触发回滚，
+ * 让一次本已成功的搬家白折腾一遍。
+ *
+ * 本机卷没启用 8.3 短名，所以用 \\?\ 前缀验证同一类问题：
+ * path.resolve('\\\\?\\C:\\...') 会保留前缀，而 realpath 会剥掉它，
+ * 两侧不归一必然不等。 */
+t('期望目标带 \\\\?\\ 长路径前缀时不应误判（两侧都 realpath 归一）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vlr8-'));
+  const real = path.join(root, 'realdir');
+  fs.mkdirSync(real);
+  fs.writeFileSync(path.join(real, 'a.txt'), 'hi');
+  const link = path.join(root, 'link');
+  try {
+    cp.execFileSync('cmd.exe', ['/c', 'mklink', '/J', link, real], { windowsHide: true });
+    const canon = fs.realpathSync.native(link);
+    const oddTarget = '\\\\?\\' + canon;   // 另一种写法，指向同一目录
+    /* 先确认这确实是「形式不同」的场景，否则用例会退化成普通路径 */
+    assert.notStrictEqual(path.resolve(oddTarget).toLowerCase(),
+      path.resolve(canon).toLowerCase(),
+      '构造失败：两种写法在 path.resolve 后竟然相等，用例失去意义');
+    const r = await mod.verifyLinkReadable(link, oddTarget);
+    assert.strictEqual(r.ok, true,
+      '同一目录的另一种写法不该被判失败（CI 就死在这类规范化差异上）。实际：' + r.reason);
+  } finally { rmDir(root); }
+});
+
 (async () => {
   for (const [name, fn] of cases) {
     try { await fn(); pass++; console.log('PASS  ' + name); }
