@@ -1,7 +1,7 @@
 /* 模块：文件处理 —— 文件占用解锁（查谁占着文件） */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, confirmBox, filePicker, renderTable } = window.ui;
+  const { div, btn, toast, confirmBox, filePicker, renderTable, guard } = window.ui;
   const { invoke } = window.api;
   const MOD = 'file';
 
@@ -186,7 +186,13 @@
         });
       }
 
-      async function scan() {
+      /* 【扫描的防重入收口】
+       * 一次扫描要发 1 次 fs:stat-multi + N 次 file:who-locks(-dir)，
+       * 用户双击「查出占用它的进程」就会并发两轮，两轮结果互相覆盖、
+       * 界面闪烁且结论可能来自不同时刻。手写 running 标志在这里没有，
+       * 一律走 ui.guard()：并发时第二次直接挡掉，任何 return/throw 都复位。
+       * （scan 的调用点有两处：按钮，以及解锁成功后自动重查。） */
+      async function scanOnce() {
         if (!state.items.length) return toast('请先选择文件或目录', 'warn');
         await resolveTypes();
         /* 清空放在 resolveTypes 之后：await 期间用户可能又改了选择，
@@ -232,6 +238,7 @@
         }
       }
 
+      const scan = guard(scanOnce);
       const scanBtn = btn('🔍 查出占用它的进程', 'btn-primary', scan);
       const clearBtn = btn('清空', 'btn-sm btn-secondary', () => {
         state.items = [];

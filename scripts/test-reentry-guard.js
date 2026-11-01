@@ -198,6 +198,80 @@ t('guard 已导出给所有工具用', () => {
   assert.ok(/Object\.assign\(window, \{[\s\S]*?\bguard\b/.test(ui), '全局兜底没带上 guard');
 });
 
+/* ---------- 4. 新工具也必须接入 guard（round-10） ----------
+ * guard() 早就建好了，但只有 file-tools 一处接入。扫描类工具
+ * （file-unlock 查询、link-doctor 全树体检、disk-health 读盘、lan-scan 扫段、
+ * acl-repair 诊断）全是「慢 + 重」的操作，双击就会并发两轮、结果互相覆盖。
+ * lan-scan 原本有手写守卫，也一并收口到 guard —— 这样「工具里不再有手写的
+ * 重入标志」才是一条可断言的不变量。 */
+t('扫描类工具都接入了 ui.guard()', () => {
+  const EXPECT = [
+    ['js/tools/file-unlock.js', /const scan = guard\(scanOnce\)/, /async function scanOnce\(\)/],
+    ['js/tools/link-doctor.js', /const doScan = guard\(doScanOnce\)/, /async function doScanOnce\(\)/],
+    ['js/tools/disk-health.js', /const doScan = guard\(doScanOnce\)/, /async function doScanOnce\(\)/],
+    ['js/tools/lan-scan.js', /const doScan = guard\(doScanOnce/, /async function doScanOnce\(\)/],
+    ['js/tools/acl-repair.js', /guard\(diagRun\)/, /async function diagRun\(\)/],
+    ['js/tools/dir-move.js', /const doCheck = guard\(doCheckOnce\)/, /async function doCheckOnce\(\)/],
+    ['js/tools/mojibake-fix.js', /const analyze = guard\(analyzeOnce\)/, /async function analyzeOnce\(\)/],
+    ['js/tools/dir-move.js', /guard\(runMoveOnce\)/, /async function runMoveOnce\(\)/],
+  ];
+  const missing = [];
+  for (const [rel, reGuard, reOnce] of EXPECT) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    if (!reGuard.test(src)) missing.push(rel + ' 没有 guard 包装');
+    if (!reOnce.test(src)) missing.push(rel + ' 找不到被包装的原始函数');
+    if (!/,\s*guard\s*\}/.test(src)) missing.push(rel + ' 没有从 window.ui 取出 guard');
+  }
+  assert.deepStrictEqual(missing, [], missing.join('；'));
+});
+
+t('工具页里不再有手写的重入标志（一律走 guard）', () => {
+  const FILES = [
+    'js/tools/file-unlock.js', 'js/tools/link-doctor.js', 'js/tools/disk-health.js',
+    'js/tools/lan-scan.js', 'js/tools/acl-repair.js', 'js/tools/file-tools.js',
+    'js/tools/dir-move.js', 'js/tools/mojibake-fix.js',
+  ];
+  const offenders = [];
+  for (const rel of FILES) {
+    const lines = fs.readFileSync(path.join(ROOT, rel), 'utf8').split('\n');
+    lines.forEach((l, i) => {
+      /* 只认代码行：注释里提到 state.running 是在讲历史，不算违规 */
+      if (/^\s*(\*|\/\/)/.test(l)) return;
+      if (/^\s*state\.running\s*=/.test(l) || /^\s*running\s*=\s*true/.test(l)
+          || /if\s*\(\s*state\.running\s*\)\s*return/.test(l)) {
+        offenders.push(rel + ':' + (i + 1) + '  ' + l.trim().slice(0, 90));
+      }
+    });
+  }
+  assert.deepStrictEqual(offenders, [],
+    '这些地方还在手写重入标志（漏一处就是按钮永久卡死）：\n  ' + offenders.join('\n  '));
+});
+
+t('guard 包装后「没填路径」这类早退不会卡住下一次', async () => {
+  let entered = 0;
+  const raw = async (root) => { entered++; if (!root) return 'warn'; return 'ok'; };
+  const g = guard(raw);
+  assert.strictEqual(await g(''), 'warn');
+  assert.strictEqual(await g('D:\\x'), 'ok', '早退后第二次进不来 —— 正是要防的卡死');
+  assert.strictEqual(entered, 2);
+});
+
+t('guard 包装后并发双击只跑一次（新工具的防重入真的生效）', async () => {
+  let entered = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const raw = async () => { entered++; await gate; return 'done'; };
+  const g = guard(raw);
+  const p1 = g();
+  const p2 = g();
+  release();
+  const r1 = await p1;
+  const r2 = await p2;
+  assert.strictEqual(entered, 1, '两次都进来了 —— 防重入没生效');
+  assert.strictEqual(r1, 'done');
+  assert.strictEqual(r2, undefined, '被挡掉的第二次应当直接返回 undefined');
+});
+
 /* 等所有异步用例结束 */
 Promise.all(pending).then(() => {
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);

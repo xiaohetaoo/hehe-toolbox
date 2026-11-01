@@ -21,14 +21,19 @@
      dangerousCaps: 已开启的高危能力 id 列表（来自主进程）
      toolDanger:    工具 id → { caps, enabled }，用于把高危工具卡片标红 */
   let dangerousCaps = [];
+  /* 能力 id → { name, desc }：部分锁的提示卡要复述「这个工具的哪一项被锁」，
+   * 名字只能从 dangerous:list 拿（i18n 在主进程侧，见 main.js 的 cap 文案）。 */
+  let dangerousCapInfo = {};
   let toolDanger = {};
   async function loadDangerousState() {
     if (!isDesktop) return;
     try {
       const r = await invoke('dangerous:list');
       dangerousCaps = r.enabled || [];
+      dangerousCapInfo = {};
+      for (const c of (r.caps || [])) dangerousCapInfo[c.id] = c;
       toolDanger = await invoke('dangerous:tool-caps');
-    } catch (e) { dangerousCaps = []; toolDanger = {}; }
+    } catch (e) { dangerousCaps = []; dangerousCapInfo = {}; toolDanger = {}; }
   }
   function isDangerTool(toolId) { return !!toolDanger[toolId]; }
   function isDangerEnabled(toolId) {
@@ -867,18 +872,32 @@
       btn(T('settings.notice.goDanger'), 'btn-danger', () => showView({ type: 'settings' }))));
     return card;
   }
-  /* 只有「删文件」这一项高危能力的工具（记事本、剪贴板历史）：
-   * 浏览/编辑是安全的，锁整页会让用户以为功能坏了，所以只提示不封锁。 */
-  const DELETE_ONLY_TOOLS = new Set(['local-notes', 'clipboard-history']);
+  /* 只有一部分功能需要高危能力的工具：浏览/诊断是安全的，锁整页会让用户
+   * 以为功能坏了，所以只提示不封锁。
+   *   - local-notes / clipboard-history：记笔记、看历史无害，只有删除要 file-delete
+   *   - link-doctor：体检（link:scan）只读，只有「清理僵尸链接」（link:remove）要 file-delete
+   *   - acl-repair：诊断（acl:diagnose）只读，只有「取得所有权/修复权限」（acl:repair）要 acl-repair
+   * 也就是说这两个工具的「清理 / 修复」按钮由主进程的通道级门禁锁着
+   * （CAP_GATED_CHANNELS: link:remove / acl:repair），页面本身照常可用。 */
+  const DELETE_ONLY_TOOLS = new Set(['local-notes', 'clipboard-history', 'link-doctor', 'acl-repair']);
   function requiresWholeToolLock(toolId) { return !DELETE_ONLY_TOOLS.has(toolId); }
   function dangerNoticeCard(toolId) {
     const card = div('card');
     card.style.border = '1px solid var(--warning)';
     card.style.background = 'color-mix(in srgb, var(--warning) 8%, transparent)';
     card.appendChild(div('', { style: { fontWeight: 600, marginBottom: '4px' } },
-      T('settings.notice.deleteOnly')));
+      T('settings.notice.partial')));
+    /* 【必须复述「这个工具的哪一项」】
+     * 早期这里所有工具共用一句「⚠ 删除功能默认关闭……浏览、编辑、复制不受影响」，
+     * 那段话是为记事本/剪贴板历史写的。链接体检要开的是「删除文件」、
+     * 权限修复要开的是「取得所有权 / 修复权限」，用户读到的却是一句
+     * 与链接清理、权限修复都无关的描述 —— 对不上，只好去设置页逐个试。
+     * 现在按 toolDanger 登记的能力逐项列出名字，说不清时再退回通用文案。 */
+    const caps = (toolDanger[toolId] && toolDanger[toolId].caps) || [];
+    const names = caps.map((id) => (dangerousCapInfo[id] && dangerousCapInfo[id].name) || id)
+      .join(T('common.listSep'));
     card.appendChild(div('field-hint',
-      T('settings.notice.deleteOnlyText')));
+      names ? T('danger.partialNotice', { op: names }) : T('settings.notice.deleteOnlyText')));
     card.appendChild(div('form-row', btn(T('settings.notice.goDanger'), 'btn-sm btn-secondary', () => showView({ type: 'settings' }))));
     return card;
   }
@@ -1110,7 +1129,11 @@
   async function drawDanger(body, token) {
     const banner = div('danger-banner');
     banner.appendChild(div('danger-banner-title', icon('alert'), T('danger.disabled')));
-    banner.appendChild(div('danger-banner-text', T('danger.text')));
+    /* 【{name} 必须真的传进来】danger.text 里带 {name} 占位符，
+     * 早期调用时一个变量都没传，于是中英界面都原样显示
+     * 「「{name}」涉及的破坏性操作……」—— 占位符直接漏在界面上。
+     * 这条横幅讲的是整个分区，所以传分区名（危险功能本身）。 */
+    banner.appendChild(div('danger-banner-text', T('danger.text', { name: T('danger.category') })));
     body.appendChild(banner);
 
     let info;
@@ -1312,7 +1335,16 @@
     try { window.localStorage.setItem('hehe-lang', lang); } catch (e) {}
     // 主进程侧还有托盘菜单与系统通知是自己画的（不跑 js/i18n.js），
     // 通过 IPC 告诉它当前语言，否则英文用户的托盘永远是中文。
-    if (isDesktop) invoke('app:set-lang', lang).catch(() => {});
+    // 高危能力的名称/描述也在主进程（CAP_TEXT）—— 那些字符串会被
+    // 设置页的能力清单与「部分锁」提示卡直接显示，所以切完语言要
+    // **重新拉一次**缓存，否则它们还停在旧语言（托盘是英文、能力名还是中文）。
+    // 顺序是硬的：先让主进程切好语言，再读它返回的文案。
+    if (isDesktop) {
+      invoke('app:set-lang', lang)
+        .catch(() => {})
+        .then(() => loadDangerousState())
+        .catch(() => {});
+    }
     return lang;
   }
   /* 启动时同步取语言：localStorage → 系统语言。

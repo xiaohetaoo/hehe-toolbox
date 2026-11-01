@@ -1,7 +1,7 @@
 /* 模块：系统与硬件 —— 磁盘健康与寿命 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, renderTable, fmtBytes } = window.ui;
+  const { div, btn, toast, renderTable, fmtBytes, guard } = window.ui;
   const { invoke } = window.api;
   const MOD = 'system';
 
@@ -28,20 +28,26 @@
       page.appendChild(div('card',
         div('card-title', '这个工具能告诉你什么'),
         div('field-hint',
-          '系统自己怎么看这些磁盘（健康状态、运行状态），以及**如果能读到**的话，' +
+          '系统自己怎么看这些磁盘（健康状态、运行状态），以及「如果能读到」的话，' +
           '厂商上报的温度、通电时长、已用寿命、读写错误。'),
         div('field-hint', { style: { marginTop: '6px' } },
           '⚠ 重要：很多机器上根本读不到 SMART 明细 —— SATA 盘需要特定驱动接口、' +
           '厂商驱动可能拦截读取、外置 USB 盘通常不支持、普通权限也可能被系统策略挡住。' +
-          '这些情况下本工具会明确写「本机取不到」，**不会显示 0，也不会给你算一个健康度**。' +
+          '这些情况下本工具会明确写「本机取不到」，不会显示 0，也不会给你算一个健康度。' +
           '没有数据 ≠ 磁盘健康。'),
         div('field-hint', { style: { marginTop: '6px', color: 'var(--text-3)' } },
           '想知道真实寿命，最可靠的办法是用硬盘厂商自家工具（如三星 Magician、' +
           '西数 Dashboard）或用管理员权限下的 CrystalDiskInfo。')));
 
+      /* 【读取的防重入收口】
+       * 这一条要起 PowerShell 查每块盘的存储驱动读数，慢且重；
+       * 双击「读取磁盘健康」会并发两次，两次结果互相覆盖。
+       * 统一走 ui.guard()（并发挡掉、任何出口都复位）。
+       * doScanOnce 是函数声明（会被提升），所以 guard 这行能写在按钮前面。 */
+      const doScan = guard(doScanOnce);
       const scanBtn = btn('🔍 读取磁盘健康', 'btn-primary', doScan);
 
-      async function doScan() {
+      async function doScanOnce() {
         resultBox.innerHTML = '<div class="card"><div class="field-hint">读取中…</div></div>';
         try {
           const r = await invoke('sys:disk-health', true);

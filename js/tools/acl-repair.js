@@ -1,7 +1,7 @@
 /* 模块：文件处理 —— 权限修复与取得所有权 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, confirmBox, renderTable, filePicker } = window.ui;
+  const { div, btn, toast, confirmBox, renderTable, filePicker, guard } = window.ui;
   const { invoke } = window.api;
   const MOD = 'file';
 
@@ -29,7 +29,7 @@
         div('field-hint', { style: { marginTop: '3px' } },
           '② 你没有权限 —— 就是这个工具。表现为「拒绝访问」「需要权限」或删除按钮灰掉。'),
         div('field-hint', { style: { marginTop: '6px', color: 'var(--text-3)' } },
-          '本工具只处理**你显式选中的那一个路径**，不会全盘扫描、不会批量套用。' +
+          '本工具只处理你显式选中的那一个路径，不会全盘扫描、不会批量套用。' +
           '修复会放宽该路径（以及它的子项）的访问权限，请确认这确实是你要的。')));
 
       /* ---------------- 选择目标 ---------------- */
@@ -40,9 +40,12 @@
         directory: false,
         emptyText: '还没有选择目标',
         onChange: (items) => {
+          /* 换了目标 → 勾选状态复位：递归是针对「这一个目录」的授权，
+           * 换到别的路径上沿用上一次的勾选是危险的默认值。 */
           state.target = items.length ? items[0].path : null;
           state.diag = null;
           state.repair = null;
+          state.recursive = false;
           resultBox.innerHTML = '';
         },
       });
@@ -54,13 +57,21 @@
         state.target = v;
         state.diag = null;
         state.repair = null;
+        state.recursive = false;   // 换路径 → 勾选复位（同上）
         resultBox.innerHTML = '';
         toast('已选定：' + v, 'info', 1600);
       });
 
       const resultBox = div('');
 
-      const diagBtn = btn('🔍 诊断缺什么权限', 'btn-primary', async () => {
+      /* 【诊断的防重入收口】
+       * acl:diagnose 要起 3 次 PowerShell（取用户名 / Get-Acl / icacls），
+       * 每次约 0.3~1 秒。双击「诊断缺什么权限」会并发两轮，两轮结果互相覆盖。
+       * 统一走 ui.guard()：并发挡掉、任何 return/throw 都复位。
+       * 修复完成后的自动重查走 diagBtn.click()，同样受这层保护。 */
+      const diagBtn = btn('🔍 诊断缺什么权限', 'btn-primary', guard(diagRun));
+
+      async function diagRun() {
         if (!state.target) return toast('请先选择文件/目录，或填一个路径', 'warn');
         resultBox.innerHTML = '<div class="card"><div class="field-hint">诊断中…</div></div>';
         try {
@@ -72,7 +83,7 @@
           resultBox.appendChild(div('card', div('card-title', '诊断失败'),
             div('field-err', '✗ ' + e.message)));
         }
-      });
+      }
       function render() {
         resultBox.innerHTML = '';
         const d = state.diag;
@@ -149,7 +160,15 @@
         const recRow = div('form-row');
         if (/目录/.test(d.risk || '')) {
           const chk = h('input', { type: 'checkbox', id: 'acl-rec' });
-          chk.checked = false;
+          /* 【必须读回 state.recursive，不能硬设 false】
+           * 修复完成后会自动重查，render() 重建修复卡时会新建这个 checkbox。
+           * 早期这里硬设 chk.checked = false，于是界面显示未勾选，
+           * 而 state.recursive 仍是 true —— 下次点修复按钮时 isRec 读到残留的
+           * true，确认框弹出「已勾选递归」的大段警告，但界面上那个框看起来是空的，
+           * 用户根本不知道自己什么时候勾上的。
+           * 复位只发生在「换了目标路径」时（见 onChange / 用这个路径），
+           * 「重新诊断」同一路径不该清掉勾选。 */
+          chk.checked = !!state.recursive;
           chk.addEventListener('change', () => { state.recursive = chk.checked; });
           const lab = h('label', { for: 'acl-rec', style: { display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px' } });
           lab.appendChild(chk);
@@ -165,7 +184,7 @@
             message:
               '目标：' + d.path + '\n\n' +
               (isRec
-                ? '⚠ 已勾选递归：会改动该目录下**每一个**条目。\n\n'
+                ? '⚠ 已勾选递归：会改动该目录下每一个条目。\n\n'
                 : '只作用于这一个路径。\n\n') +
               '将执行两步：\n' +
               '  1. takeown —— 把所有者改成你\n' +
@@ -248,7 +267,7 @@
         div('form-row', { style: { marginTop: '8px' } }, dirInput, ' ', usePathBtn),
         div('form-row', { style: { marginTop: '8px' } }, diagBtn,
           ' ', btn('清空', 'btn-sm btn-secondary', () => {
-            state.target = null; state.diag = null; state.recursive = false;
+            state.target = null; state.diag = null; state.repair = null; state.recursive = false;
             resultBox.innerHTML = '';
             if (picker.clear) picker.clear();
           }))));

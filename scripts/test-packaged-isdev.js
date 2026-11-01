@@ -70,9 +70,55 @@ t('preload 不再解构 app，也不再直接读 app.isPackaged', () => {
   }
 });
 
-t('主进程给所有 preload 窗口注入打包标记', () => {
-  const n = (mainSrc.match(/--hehe-packaged=/g) || []).length;
-  if (n < 4) throw new Error('注入点只有 ' + n + ' 处，应至少 4（主窗口 + 3 个辅助窗口）');
+t('主进程给所有带 preload 的窗口注入打包标记（配平断言）', () => {
+  const code = stripComments(mainSrc);
+
+  /* 【为什么不能只数注入点总数】
+   * 早期断言是「--hehe-packaged= 出现次数 >= 4 就通过」。
+   * 那种数法抓不到「某个窗口漏了」—— splash 就是这样漏掉的：
+   * 总数仍然够，但 splash 的 webPreferences 里没有注入，
+   * 它的 preload 拿不到参数就按开发态处理。
+   * 现在改成配平：每个带 preload 的 BrowserWindow 都必须有注入。
+   *
+   * 注意主窗口用的是变量 packagedArg（定义在 createWindow 里），
+   * 所以「已注入」有两种形态：字面量 --hehe-packaged=... 或 packagedArg。 */
+  const hasInject = (block) => /--hehe-packaged=/.test(block) || /\bpackagedArg\b/.test(block);
+
+  /* 1) 找出所有 BrowserWindow 调用，按是否带 preload 分组 */
+  const calls = [];
+  const re = /new\s+BrowserWindow\s*\(/g;
+  let m;
+  while ((m = re.exec(code)) !== null) {
+    /* 从 '(' 起做括号配平，截出这次调用的参数 */
+    let i = m.index + m[0].length - 1;
+    let depth = 0;
+    const start = i;
+    for (; i < code.length; i++) {
+      if (code[i] === '(') depth++;
+      else if (code[i] === ')') { depth--; if (depth === 0) { i++; break; } }
+    }
+    calls.push(code.slice(start, i));
+  }
+  if (!calls.length) throw new Error('没找到任何 new BrowserWindow 调用 —— 解析失效？');
+
+  const withPreload = calls.filter((c) => /\bpreload\s*:/.test(c));
+  const withInject = withPreload.filter(hasInject);
+
+  if (withPreload.length < 5) {
+    throw new Error('带 preload 的窗口只有 ' + withPreload.length + ' 个，' +
+      '预期至少 5（主窗口 + 标尺 + 贴图 + 截图 + splash）；' +
+      '若确实增减了窗口，请同步更新这条断言');
+  }
+  if (withInject.length !== withPreload.length) {
+    /* 找出漏掉的那个，给出可定位的提示 */
+    const missing = withPreload.filter((c) => !hasInject(c));
+    const hint = missing.map((c) => {
+      const pm = /\bpreload\s*:\s*(.+?)[,}\n]/.exec(c);
+      return pm ? pm[1].trim() : '(未知 preload)';
+    }).join(' | ');
+    throw new Error('有 ' + withPreload.length + ' 个窗口带 preload，' +
+      '但只有 ' + withInject.length + ' 个注入了打包标记。漏掉的：' + hint);
+  }
   if (!/app\.isPackaged/.test(mainSrc)) throw new Error('主进程没有读取 app.isPackaged');
 });
 

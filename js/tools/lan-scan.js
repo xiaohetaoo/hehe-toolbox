@@ -1,7 +1,7 @@
 /* 模块：网络运维 —— 局域网设备扫描 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, renderTable, copyText, progressEl } = window.ui;
+  const { div, btn, toast, renderTable, copyText, progressEl, guard } = window.ui;
   const { invoke } = window.api;
   const MOD = 'net';
 
@@ -13,14 +13,15 @@
     desc: '扫描本机所在网段，列出网里有哪设备（IP / MAC / 主机名），可复制成表格',
     keywords: ['局域网', 'LAN', '内网', '扫描', '设备', 'ARP', '网段', '谁在线', 'scan'],
     render(page) {
-      const state = { result: null, running: false, ip: null };
+      const state = { result: null, ip: null };
 
       page.appendChild(div('card',
         div('card-title', '能看到什么'),
         div('field-hint',
           '列出与本机在同一网段（/24）的设备：IP、MAC 地址、能反查到的主机名，并标出哪台是你自己。'),
         div('field-hint', { style: { marginTop: '6px', color: 'var(--text-3)' } },
-          '⚠ 结果**可能不全**：Windows 防火墙默认挡 ICMP，很多手机/打印机也不回应，' +
+          '⚠ 结果可能不全：本工具用的是 TCP 80 端口探测（Node 没有原生 ICMP），' +
+          '只对开着 80 端口的设备有效 —— 手机、打印机、以及防火墙后面的机器大多不回应，' +
           '它们只能靠 ARP 缓存被发现，所以刚从休眠回来的设备可能不在列表里。' +
           '只要设备在 ARP 表里就一定不会漏。')));
 
@@ -44,10 +45,18 @@
 
       let unsub = null;
 
-      async function doScan() {
-        if (state.running) return;
-        state.running = true;
-        scanBtn.disabled = true;
+      /* 【手写守卫换成统一收口】
+       * 这段原来是 `if (state.running) return; state.running = true;` +
+       * 在 finally 里复位 —— 本项目已经因为「置位后某个早退忘了复位」
+       * 出过 7 次按钮永久卡死。这里改用 ui.guard()：并发直接挡掉，
+       * 按钮禁用/恢复也交给 before/after 成对执行，任何出口都不会漏。
+       * doScanOnce 是函数声明（提升），所以 guard 那行能写在按钮前面。 */
+      const doScan = guard(doScanOnce, {
+        before: () => { scanBtn.disabled = true; },
+        after: () => { scanBtn.disabled = false; },
+      });
+
+      async function doScanOnce() {
         prog.show(); prog.set(0);
         status.textContent = '正在扫描本机所在网段…（约 10–30 秒）';
         resultBox.innerHTML = '';
@@ -81,8 +90,6 @@
         } finally {
           if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
           prog.hide();
-          scanBtn.disabled = false;
-          state.running = false;
         }
       }
 
@@ -116,7 +123,7 @@
         const chips = div('form-row');
         chips.appendChild(h('span', { class: 'tag tag-green' }, '发现 ' + (stats.total || 0) + ' 台'));
         if (stats.arpOnly) chips.appendChild(h('span', { class: 'tag tag-orange' }, '仅 ARP: ' + stats.arpOnly));
-        if (stats.pingOnly) chips.appendChild(h('span', { class: 'tag' }, '仅 ping: ' + stats.pingOnly));
+        if (stats.pingOnly) chips.appendChild(h('span', { class: 'tag' }, '仅 80 端口: ' + stats.pingOnly));
         head.appendChild(chips);
 
         const acts = div('form-row', { style: { marginTop: '8px' } });
@@ -171,7 +178,10 @@
             {
               key: 'source', title: '发现方式', width: '100px',
               render: (row) => {
-                const label = { 'arp': 'ARP', 'ping': 'Ping', 'arp+ping': 'ARP+Ping' }[row.source] || row.source;
+                /* 内部数据里这两个值仍叫 ping（历史字段名，改动会牵动合并逻辑与
+                 * 单测），但界面上必须说清它其实是 TCP 80 端口探测 ——
+                 * 写「Ping」会让用户以为漏扫是因为没回应 ICMP。 */
+                const label = { 'arp': '仅 ARP', 'ping': '仅 80 端口', 'arp+ping': 'ARP + 80 端口' }[row.source] || row.source;
                 const cls = row.source === 'arp' ? 'tag-orange' : 'tag-green';
                 return h('span', { class: 'tag ' + cls }, label);
               },

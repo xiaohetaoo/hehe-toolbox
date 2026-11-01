@@ -1,7 +1,7 @@
 /* 模块：文本与编码 —— 乱码修复 / 编码识别 */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, renderTable, filePicker } = window.ui;
+  const { div, btn, toast, copyText, renderTable, filePicker, guard } = window.ui;
   const { invoke } = window.api;
   const MOD = 'text';
 
@@ -35,7 +35,7 @@
           '原始内容多半已经丢了，本工具只能恢复还能救回的部分。'),
         div('field-hint', { style: { marginTop: '4px' } },
           '② GBK / Big5 文本被当成 UTF-8 读 —— 表现为成片的问号、方块或怪字。' +
-          '这类**通常能完整修复**，因为原始字节还在。'),
+          '这类通常能完整修复，因为原始字节还在。'),
         div('field-hint', { style: { marginTop: '4px' } },
           '③ 「烫烫烫 / 屯屯屯」—— 那是程序 bug 留下的未初始化内存，不是编码问题，' +
           '没有任何办法还原。')));
@@ -56,7 +56,13 @@
 
       const resultBox = div('');
 
-      const analyzeBtn = btn('🔍 分析编码', 'btn-primary', async () => {
+      /* 【分析也要防重入】
+       * 文本形态的分析现在会起一次 PowerShell（借 .NET 的 CP936 编码器
+       * 尝试「按 GBK 编回字节」那条修复链），不再是瞬时的。
+       * 双击按钮会并发两次：两个 powershell 进程 + 两次结果互相覆盖。 */
+      const analyze = guard(analyzeOnce);
+
+      async function analyzeOnce() {
         const text = ta.value;
         const useFile = state.file && !text.trim();
         if (!useFile && !text.trim()) return toast('请粘贴乱码文本，或选择一个文件', 'warn');
@@ -73,7 +79,8 @@
           resultBox.appendChild(div('card', div('card-title', '分析失败'),
             div('field-err', '✗ ' + e.message)));
         }
-      });
+      }
+      const analyzeBtn = btn('🔍 分析编码', 'btn-primary', analyze);
 
       function render() {
         resultBox.innerHTML = '';

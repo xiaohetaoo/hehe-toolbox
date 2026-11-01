@@ -1,7 +1,7 @@
 /* 模块：文件处理 —— 目录搬家（复制到新盘 + 在原位建目录联接） */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, confirmBox, renderTable } = window.ui;
+  const { div, btn, toast, confirmBox, renderTable, guard } = window.ui;
   const { invoke } = window.api;
   const MOD = 'file';
 
@@ -17,7 +17,6 @@
         src: '',
         dst: '',
         precheck: null,
-        running: false,
         steps: [],      // { id, label, detail, status, note }
       };
 
@@ -26,13 +25,13 @@
         div('card-title', '它做什么？'),
         div('field-hint',
           '把「源目录」完整复制到新位置，校验无误后，把源目录改名为 .bak，' +
-          '再在**原路径**上建一个目录联接（junction）指向新位置。'),
+          '再在原路径上建一个目录联接（junction）指向新位置。'),
         div('field-hint', { style: { marginTop: '6px' } },
           '结果：程序仍然按原路径访问它（路径完全不变），但实际数据已经在新盘上 —— ' +
           '适合「C 盘满了但某软件只认固定路径」的场景。'),
         div('field-hint', { style: { marginTop: '6px', color: 'var(--text-3)' } },
           '注意：目录联接只在本机有效。如果把这个目录所在的位置同步到云端或拷到别的机器，' +
-          '链接不会跟着走。源目录与目标必须在**不同盘**（同盘搬家没意义，直接移动即可）。')));
+          '链接不会跟着走。源目录与目标必须在不同盘（同盘搬家没意义，直接移动即可）。')));
 
       /* ---------------- 选择源与目标 ---------------- */
       const srcInput = h('input', { class: 'input', placeholder: '源目录，例如 C:\\Users\\me\\AppData\\Local\\某软件', style: { flex: '1' } });
@@ -82,7 +81,14 @@
       const stepsBox = div('');
 
       /* ---------------- 校验 ---------------- */
-      const checkBtn = btn('① 校验能不能搬', 'btn-primary', async () => {
+      /* 【校验也要防重入】
+       * 预检现在是「一次全树遍历（体积+链接）+ 必要时一次 PowerShell」，
+       * 大目录上要几秒。双击「校验能不能搬」会并发两遍全树 IO，
+       * 而且两次结论会互相覆盖（后一次未必对应界面上的路径）。 */
+      const doCheck = guard(doCheckOnce);
+      const checkBtn = btn('① 校验能不能搬', 'btn-primary', doCheck);
+
+      async function doCheckOnce() {
         state.src = srcInput.value.trim();
         state.dst = dstInput.value.trim();
         if (!state.src) return toast('请填写源目录', 'warn');
@@ -102,7 +108,7 @@
           state.precheck = null;
           goBtn.disabled = true;
         }
-      });
+      }
 
       function renderPrecheck() {
         precheckBox.innerHTML = '';
@@ -127,6 +133,23 @@
           { k: '需要空间', v: r.needBytes != null ? fmtBytes(r.needBytes) : '（无法预估）' },
           { k: '目标盘剩余', v: r.freeBytes != null ? fmtBytes(r.freeBytes) : '（未知）' },
         ];
+        /* 【源目录里的链接必须提前告知】
+         * 搬家会把它们原样重建到新位置，用户若不知道，事后看到「多了一个链接」
+         * 会以为是 bug（甚至是「被塞了东西」）。这条数之前就返回了却没人显示，
+         * 等于白算了一遍全树遍历。 */
+        if (r.linkCount) {
+          rows.push({
+            k: '源里的链接',
+            v: r.linkCount + ' 个（会原样重建到新位置）' +
+              (r.fileLinkCount ? '，其中 ' + r.fileLinkCount + ' 个是文件符号链接 —— ' +
+                'Windows 创建符号链接需要特权，这一步可能失败' : ''),
+          });
+        }
+        /* 占用查询本身失败（Restart Manager 报错）时如实说明：
+         * 「查不到」不等于「没有占用」，两者混同会让用户反复重试。 */
+        if (r.lockCheckError) {
+          rows.push({ k: '占用检查', v: '查询失败：' + r.lockCheckError + '（这不代表没有占用）' });
+        }
         card.appendChild(renderTable({
           columns: [
             { key: 'k', title: '项目', width: '110px' },
@@ -174,9 +197,17 @@
         renderSteps();
       }
 
-      /* ---------------- 执行 ---------------- */
-      const goBtn = btn('② 开始搬家', 'btn-danger', async () => {
-        if (state.running) return;
+      /* ---------------- 执行 ----------------
+       * 【防重入收口到 guard】
+       * 原来这里是手写的 `if (state.running) return; state.running = true;`。
+       * 手写标志要在每个出口都记得复位，本项目已经因为漏复位出过 7 次卡死；
+       * 而且它在 confirmBox 的 await **之后**才置位 —— 连点两次会两次都进
+       * 确认框。改用 ui.guard() 后并发第二次直接挡掉。
+       * 按钮禁用/恢复仍写在业务里（不能用 guard 的 after 统一恢复：
+       * 「路径已改动」那个早退分支是**故意**把按钮禁到重新校验为止的）。 */
+      const goBtn = btn('② 开始搬家', 'btn-danger', guard(runMoveOnce));
+
+      async function runMoveOnce() {
         if (!state.precheck || !state.precheck.ok) {
           return toast('请先通过校验', 'warn');
         }
@@ -208,7 +239,6 @@
         });
         if (!ok) return;
 
-        state.running = true;
         goBtn.disabled = true;
         for (const s of state.steps) { s.status = 'idle'; s.note = ''; }
         renderSteps();
@@ -256,10 +286,9 @@
             div('field-err', '✗ ' + e.message)));
         } finally {
           try { unsub && unsub(); } catch (err) {}
-          state.running = false;
           goBtn.disabled = false;
         }
-      });
+      }
 
       page.appendChild(div('card',
         div('card-title', '① 选择源目录与新位置'),

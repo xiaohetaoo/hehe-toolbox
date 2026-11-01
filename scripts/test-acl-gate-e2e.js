@@ -96,8 +96,13 @@ console.log('  caps keys :', r.caps ? Object.keys(r.caps).filter((k) => k === 'a
 
 /* 1) 未开启时必须被拒绝 */
 chk(r.repair && r.repair.ok === false, '未开启时 acl:repair 被拒绝（不再能直接调）');
-/* 2) 拒绝信息要指路到设置页 */
-chk(/高危功能/.test(String(r.repair && r.repair.msg)) && /设置/.test(String(r.repair && r.repair.msg)),
+/* 2) 拒绝信息要指路到设置页。
+ * 【为什么要接受中英两种写法】这条文案由**主进程**生成（dangerousDenied），
+ * 而主进程的文案语言跟随渲染层送来的 app:set-lang。CI 的 runner 是 en-US，
+ * 启动时渲染层会把语言设成 en —— 断言写死「高危功能」就会在 CI 上假红。
+ * 这里只钉住真正重要的两点：指路到设置、并且点名是「高危功能」这一类。 */
+chk(/(高危功能|High-risk)/.test(String(r.repair && r.repair.msg)) &&
+  /(设置|Settings)/.test(String(r.repair && r.repair.msg)),
   '拒绝信息指向「设置 → 高危功能」：' + (r.repair && r.repair.msg));
 /* 3) 诊断是只读的，不该被门禁挡住 */
 chk(r.diag && r.diag.ok === true, 'acl:diagnose 不受门禁影响（只读通道仍可用）');

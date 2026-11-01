@@ -209,22 +209,59 @@ function isOwnTempName(name) { return OWN_TEMP_PATTERNS.some(re => re.test(name)
    显式开启才能使用。
    门禁放在主进程而不是渲染层：渲染层的 if 只是界面约束，任何一次误改或
    绕过都可能让删文件的 IPC 直接生效。主进程这里是最后一道闸。 */
-const DANGEROUS_CAPS = {
-  'file-delete': { name: '删除文件', desc: '删除重复文件、空目录、笔记、剪贴板图片等（不进回收站）' },
-  'junk-clean': { name: '垃圾清理', desc: '清理系统临时文件、浏览器缓存、缩略图缓存' },
-  'recycle-empty': { name: '清空回收站', desc: '永久清空系统回收站，不可恢复' },
-  'process-kill': { name: '结束进程', desc: '强制结束任意进程，未保存数据会丢失' },
-  'service-stop': { name: '停止系统服务', desc: '停止正在运行的 Windows 服务，依赖它的程序可能异常退出' },
-  'system-power': { name: '关机 / 重启 / 休眠', desc: '执行关机、重启、休眠等系统电源操作（锁屏与睡眠不受限制）' },
-  'hosts-edit': { name: '编辑 Hosts', desc: '写入系统 hosts 文件并刷新 DNS，影响全机解析' },
-  'registry-edit': { name: '注册表与右键菜单', desc: '删除开机自启项、切换 Win11 经典右键菜单' },
-  /* 目录搬家最坏的结果是「源目录删了、链接是坏的、数据在别处」——
-   * 用户会以为文件丢了。中间态（已改名但链接没建成）尤其危险，
-   * 所以它必须是独立的高危能力，不能借用 file-delete。 */
-  'dir-move': { name: '目录搬家（建链接替身）', desc: '把目录搬到别处并在原位置建目录联接；失败时可能留下坏链接' },
-  'acl-repair': { name: '取得所有权 / 修复权限', desc: '改文件所有者并授予完全控制；会放宽该路径（及其子项）的访问权限' },
+/* 【高危能力的名称与描述是双语的，且必须留在主进程】
+ * 这些名字会出现在三个地方：
+ *   1) 设置页的能力清单（渲染层直接显示 dangerous:list 的结果）
+ *   2) 门禁拒绝时的错误文案（dangerousDenied 在主进程生成）
+ *   3) 部分锁工具顶部的提示卡（渲染层复述「哪一项被锁」）
+ * 早期只有中文，托盘修了、这里没跟上：英文界面下「设置 → 高危功能」
+ * 整页中英混排（分区标题是英文，每一项能力名却是中文）。
+ * 语言用渲染层通过 app:set-lang 传过来的 uiLang，与托盘同一份。 */
+const CAP_TEXT = {
+  zh: {
+    'file-delete': ['删除文件', '删除重复文件、空目录、笔记、剪贴板图片等（不进回收站）'],
+    'junk-clean': ['垃圾清理', '清理系统临时文件、浏览器缓存、缩略图缓存'],
+    'recycle-empty': ['清空回收站', '永久清空系统回收站，不可恢复'],
+    'process-kill': ['结束进程', '强制结束任意进程，未保存数据会丢失'],
+    'service-stop': ['停止系统服务', '停止正在运行的 Windows 服务，依赖它的程序可能异常退出'],
+    'system-power': ['关机 / 重启 / 休眠', '执行关机、重启、休眠等系统电源操作（锁屏与睡眠不受限制）'],
+    'hosts-edit': ['编辑 Hosts', '写入系统 hosts 文件并刷新 DNS，影响全机解析'],
+    'registry-edit': ['注册表与右键菜单', '删除开机自启项、切换 Win11 经典右键菜单'],
+    /* 目录搬家最坏的结果是「源目录删了、链接是坏的、数据在别处」——
+     * 用户会以为文件丢了。中间态（已改名但链接没建成）尤其危险，
+     * 所以它必须是独立的高危能力，不能借用 file-delete。 */
+    'dir-move': ['目录搬家（建链接替身）', '把目录搬到别处并在原位置建目录联接；失败时可能留下坏链接'],
+    'acl-repair': ['取得所有权 / 修复权限', '改文件所有者并授予完全控制；会放宽该路径（及其子项）的访问权限'],
+  },
+  en: {
+    'file-delete': ['Delete files', 'Delete duplicate files, empty folders, notes, clipboard images, etc. (bypassing the Recycle Bin)'],
+    'junk-clean': ['Junk cleanup', 'Clean temp files, browser caches and thumbnail caches'],
+    'recycle-empty': ['Empty Recycle Bin', 'Permanently empty the Recycle Bin; this cannot be undone'],
+    'process-kill': ['Kill processes', 'Force-kill any process; unsaved work is lost'],
+    'service-stop': ['Stop services', 'Stop running Windows services; programs that depend on them may fail'],
+    'system-power': ['Shutdown / restart / hibernate', 'Shut down, restart or hibernate the system (lock and sleep are not restricted)'],
+    'hosts-edit': ['Edit hosts', 'Write the system hosts file and flush DNS; affects name resolution machine-wide'],
+    'registry-edit': ['Registry and context menu', 'Remove startup entries, switch to the Windows 11 classic context menu'],
+    'dir-move': ['Folder move (with link)', 'Move a folder elsewhere and leave a directory junction behind; a failed run may leave a broken link'],
+    'acl-repair': ['Take ownership / repair permissions', 'Change the owner and grant full control; widens access for that path and everything under it'],
+  },
 };
-const DANGEROUS_CAP_IDS = Object.keys(DANGEROUS_CAPS);
+/* 清单顺序即设置页展示顺序（显式列出，不靠对象键顺序）。 */
+const DANGEROUS_CAP_IDS = [
+  'file-delete', 'junk-clean', 'recycle-empty', 'process-kill', 'service-stop',
+  'system-power', 'hosts-edit', 'registry-edit', 'dir-move', 'acl-repair',
+];
+function capText(id) {
+  const pack = CAP_TEXT[uiLang] || CAP_TEXT.zh;
+  const pair = pack[id] || CAP_TEXT.zh[id] || [id, ''];
+  return { name: pair[0], desc: pair[1] };
+}
+/* 用取值器而不是快照：语言切换后同一处代码（dangerousDenied / dangerous:list）
+ * 立刻给出新语言的文案，不需要重建这个对象。 */
+const DANGEROUS_CAPS = {};
+for (const id of DANGEROUS_CAP_IDS) {
+  Object.defineProperty(DANGEROUS_CAPS, id, { get() { return capText(id); }, enumerable: true });
+}
 // 默认全部关闭；用户在设置里开启的存到 settings.dangerousCaps（数组）
 function dangerousEnabled(cap) {
   const list = storeGet('settings.dangerousCaps', []);
@@ -264,8 +301,15 @@ const CAP_GATED_CHANNELS = {
 // sys:power 通道里既有危险动作（关机/重启/休眠）也有无害动作（锁屏/睡眠），
 // 睡眠只是把内存转成待机状态、不会丢数据，所以不纳入高危门禁。
 const DANGEROUS_POWER_ACTIONS = ['hibernate', 'restart', 'shutdown'];
+/* 门禁拒绝文案也要双语：它会直接弹在界面上（toast / 错误提示）。
+ * 只翻能力名是不够的 —— 整句「…属于高危功能，已默认关闭…」同样是中文。 */
+const GATE_TEXT = {
+  zh: (name) => `「${name}」属于高危功能，已默认关闭。请到「设置 → 高危功能」中开启后再使用。`,
+  en: (name) => `"${name}" is a high-risk feature and is currently off. Enable it under Settings → High-risk features first.`,
+};
 function dangerousDenied(cap) {
-  return `「${DANGEROUS_CAPS[cap].name}」属于高危功能，已默认关闭。请到「设置 → 高危功能」中开启后再使用。`;
+  const pack = GATE_TEXT[uiLang] || GATE_TEXT.zh;
+  return pack(DANGEROUS_CAPS[cap].name);
 }
 handle('dangerous:list', () => ({
   caps: DANGEROUS_CAP_IDS.map(id => ({
@@ -377,7 +421,11 @@ function createSplash() {
       show: false, backgroundColor: '#00000000',
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
-        contextIsolation: true, nodeIntegration: false, sandbox: false, spellcheck: false
+        contextIsolation: true, nodeIntegration: false, sandbox: false, spellcheck: false,
+        /* 与主窗口/标尺/贴图/截图窗保持一致：preload 的 isDev 完全依赖这个注入，
+         * 漏掉就按开发态处理。splash 目前没用 isDev，但这是隐患 ——
+         * 一旦 splash.js 以后要按打包态分支，就会静默走错分支。 */
+        additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')]
       }
     });
     const self = splashWin;
@@ -700,15 +748,33 @@ handle('text:detect-encoding', async (e, input, opts = {}) => {
     };
   }
 
-  /* 文本形态 */
-  const r = mojibake.analyzeMojibake(String(input));
-  return Object.assign({ source: 'text' }, r);
+  /* 文本形态。
+   * 【锟斤拷这类乱码以前只能识别、修不了】
+   * 标准解法是「按源编码把字符编回字节 → 按目标编码解」，而 Node 只有
+   * UTF 系列的编码器（GBK/Big5 只能解不能编），这条链一直缺着。
+   * 现在把主进程的 ps() 注入给 lib：.NET 的 GetEncoding(936) 就是 CP936，
+   * 一次 PowerShell 进程算完所有需要的源编码（逐条起进程要好几秒）。
+   * 文本过长会撞上命令行长度上限，超过就跳过并如实说明 ——
+   * 不能悄悄退回「无候选」，那会让用户以为这条修复路径不存在。 */
+  const textIn = String(input);
+  const canUsePs = textIn.length <= 6000;
+  if (canUsePs) {
+    const r = await mojibake.analyzeWithEncoder(textIn, ps);
+    return Object.assign({ source: 'text' }, r);
+  }
+  const r = mojibake.analyzeMojibake(textIn);
+  return Object.assign({ source: 'text' }, r, {
+    externalTried: false,
+    note: (r.note ? r.note + ' ' : '') +
+      '（文本较长，未尝试借助系统编码器的 GBK 修复；把内容拆短一些再试。）',
+  });
 });
 
 /* 把「按某个编码解码后」的文本再按另一个编码编回去 —— 用于「我想换成 GBK
- * 存盘」这类需求。注意：Node 没有 GBK 编码器，所以只能给出**提示**，
- * 真正的转换要走 fs:write-text-with-encoding（用 PowerShell 转）。
- * 这里先做「确认能不能无损往回编」的判定，避免用户以为一定能转。 */
+ * 存盘」这类需求。Node 只内置 UTF 系列的编码器，其它编码要靠系统编码器
+ * （mojibake.encodeTextMany 那条路，乱码修复已经在用），但「另存为该编码」
+ * 这个功能尚未提供 —— 所以这里只给**判定**，不假装能转。
+ * 判定本身仍是有用的：含 U+FFFD 的文本任何转码都救不回来。 */
 handle('text:can-reencode', async (e, text, enc) => {
   const target = String(enc || '');
   const lossy = /[\uFFFD]/.test(String(text || ''));
@@ -719,7 +785,8 @@ handle('text:can-reencode', async (e, text, enc) => {
       ? '文本里含替换字符（U+FFFD），说明原始字节已经丢失，任何转码都无法完全还原'
       : (supported
         ? '可以转换'
-        : '这个编码需要借助系统工具完成（Node 只内置 UTF 系列）'),
+        : '这个编码要靠系统工具（.NET 编码器）完成 —— 本应用在乱码修复时已经在用；' +
+          '但目前不提供「另存为该编码」'),
   };
 });
 
@@ -1610,7 +1677,12 @@ function isPowerCommand(cmd) {
 function assertPowerAllowed(cmd) {
   const denyMsg = powerGate.checkPowerGate(cmd, dangerousEnabled('system-power'));
   if (denyMsg) {
-    const e = new Error(denyMsg);
+    /* 【文案由这里生成，不用 lib 里那句】
+     * lib/power-gate.js 是纯函数模块，没有语言上下文，它返回的固定中文句子
+     * 在英文界面下就是「一半英文一半中文」。这里按当前语言重建一句：
+     * 能力名走 capText（与设置页同一份），句式走 GATE_TEXT。
+     * 仍然用 powerGate 的返回值当判据 —— 判定逻辑只有一份。 */
+    const e = new Error(dangerousDenied('system-power'));
     e.code = 'CAP_DENIED';
     throw e;
   }
@@ -4030,8 +4102,15 @@ handle('file:who-locks-dir', async (e, dir) => {
 async function collectLinks(root, opts) {
   const o = opts || {};
   const maxEntries = o.maxEntries || 200000;
+  const wantSize = !!o.wantSize;
   const found = [];
   let scanned = 0, truncated = false;
+  /* 【wantSize：一次遍历同时给出体积与链接】
+   * 搬家预检本来既要「要复制多少字节」（links.dirSize）又要「有几个链接」
+   * （collectLinks），于是就同一棵树走两遍 —— 目录项读两遍、文件还各 stat 一遍。
+   * 大目录上预检要等很久，而两个数的遍历规则（不跟随链接）本来就一样。
+   * 需要体积时在这里顺带累加，两份数据出自同一次遍历。 */
+  let bytes = 0, files = 0, dirs = 0;
   const stack = [path.resolve(root)];
 
   while (stack.length) {
@@ -4039,6 +4118,7 @@ async function collectLinks(root, opts) {
     let ents;
     try { ents = await fsp.readdir(cur, { withFileTypes: true }); }
     catch (err) { continue; }   // 无权限/已消失的目录跳过即可
+    dirs++;
 
     for (const d of ents) {
       scanned++;
@@ -4050,11 +4130,16 @@ async function collectLinks(root, opts) {
         found.push(full);
         continue;    // 关键：不进入链接，否则会把目标树当成本目录树
       }
-      if (d.isDirectory()) stack.push(full);
+      if (d.isDirectory()) { stack.push(full); continue; }
+      if (wantSize && d.isFile()) {
+        /* 与 lib/links.js 的 dirSize 同规则：链接不占本卷空间，跳过；
+         * 普通文件按真实大小累加（读不到就跳过，不编数字）。 */
+        try { const st = await fsp.stat(full); bytes += st.size; files++; } catch (err) {}
+      }
     }
     if (truncated) break;
   }
-  return { links: found, scanned, truncated };
+  return { links: found, scanned, truncated, bytes, files, dirs };
 }
 
 handle('link:scan', async (e, root, opts = {}) => {
@@ -4089,24 +4174,33 @@ handle('link:scan', async (e, root, opts = {}) => {
     }
   }
 
-  /* 批量取 LinkType（junction / SymbolicLink / HardLink）：
-   * 一次调用覆盖 root 下全部 reparse point。取不到就整体留空 ——
-   * 类型只是展示信息，缺了不影响分类。 */
+  /* 【不再用 Get-ChildItem -Recurse 重扫一遍全树】
+   * 早期这里为了拿到 LinkType，又用 PowerShell 把整个 root 递归遍历一次 ——
+   * 而 collectLinks 已经用 Node 完整遍历过了，等于双倍 IO，
+   * 大目录上这一趟就是几十秒的纯浪费。
+   * 现在只对**已经收集到的链接**做一次批量 Get-Item（数量通常是个位数到几十），
+   * 并把 Node 侧就能判断的特征先填上：
+   *   - readlink 得到的 target 若是目录且能在盘符内解析 → 极可能是 junction；
+   *   - 但真正的 LinkType 交给 PowerShell 批量取，取不到就留空（只是展示信息）。
+   * 注意：targetByName 已经有了 readlink 的结果，这里只用它兜底。 */
   try {
-    const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
-    const r = await ps(
-      `Get-ChildItem -LiteralPath ${q(root)} -Recurse -Force -ErrorAction SilentlyContinue | ` +
-      `Where-Object { $_.Attributes -match 'ReparsePoint' } | ` +
-      `ForEach-Object { @($_.FullName, [string]$_.LinkType, [string]$_.Target) -join [char]9 }`,
-      60000);
-    for (const line of String(r.stdout || '').split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const seg = line.split('\t');
-      if (seg.length < 2) continue;
-      const key = seg[0].toLowerCase();
-      typeByName.set(key, seg[1] || '');
-      /* PowerShell 的 Target 只在 readlink 失败时作为兜底 */
-      if (!targetByName.get(key) && seg[2]) targetByName.set(key, seg.slice(2).join('\t'));
+    if (found.length) {
+      const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+      /* 只取这些具体的链接，不再递归整个目录 */
+      const arr = found.map(q).join(',');
+      const r = await ps(
+        `Get-Item -LiteralPath @(${arr}) -Force -ErrorAction SilentlyContinue | ` +
+        `ForEach-Object { @($_.FullName, [string]$_.LinkType, [string]$_.Target) -join [char]9 }`,
+        Math.max(15000, found.length * 300));
+      for (const line of String(r.stdout || '').split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const seg = line.split('\t');
+        if (seg.length < 2) continue;
+        const key = seg[0].toLowerCase();
+        typeByName.set(key, seg[1] || '');
+        /* PowerShell 的 Target 只在 readlink 失败时作为兜底 */
+        if (!targetByName.get(key) && seg[2]) targetByName.set(key, seg.slice(2).join('\t'));
+      }
     }
   } catch (err) { /* 批量取类型失败不影响主结果 */ }
 
@@ -4129,8 +4223,11 @@ handle('link:scan', async (e, root, opts = {}) => {
     });
   }
 
-  /* 分四类汇总（前端按这个顺序分组） */
-  const groups = { ok: [], dead: [], loop: [], system: [], crossvol: [] };
+  /* 分五类汇总（前端按这个顺序分组）。
+   * 【新增 opaque 必须在这里登记】漏登记的类别会被下面的
+   * `groups[it.kind] ? it.kind : 'ok'` 兜底塞进「正常」——
+   * 一个「读不到、无法判断」的链接被显示成「正常」，比不显示更糟。 */
+  const groups = { ok: [], dead: [], loop: [], system: [], crossvol: [], opaque: [] };
   for (const it of items) {
     const k = groups[it.kind] ? it.kind : 'ok';
     groups[k].push(it);
@@ -4193,6 +4290,200 @@ handle('link:remove', async (e, paths, opts = {}) => {
   };
 });
 
+/* 把链接集合转成「相对源根的 posix 相对路径」映射，便于目标侧重建。 */
+function relKey(root, full) {
+  const r = path.resolve(root);
+  const f = path.resolve(full);
+  return path.relative(r, f).split(path.sep).join('/');
+}
+
+/* 判断某个路径是否落在「被排除的链接」列表里。
+ * 用规范化后的相对路径做精确比较，避免前缀误伤
+ * （/a/link 不应把 /a/link2 也算进去）。 */
+function buildLinkKeySet(root, linkList) {
+  const set = new Set();
+  for (const l of linkList) set.add(relKey(root, l).toLowerCase());
+  return set;
+}
+
+/**
+ * 复制目录树，但**跳过**给定的链接路径（不跟随、不重建）。
+ *
+ * 为什么不用 fs.cp：它没有 exclude 参数，且遇到 reparse point 会尝试
+ * symlink() 而失败（见调用处的实测）。这里自己 walk：
+ *   - 目录：mkdir + 递归
+ *   - 普通文件：copyFile
+ *   - 链接：完全跳过（交给 restoreLinksIntoTarget 重建）
+ *
+ * @param {string} srcAbs
+ * @param {string} dstAbs
+ * @param {string[]} linkList 源侧链接的绝对路径
+ */
+async function copyTreeExcludingLinks(srcAbs, dstAbs, linkList) {
+  const skip = buildLinkKeySet(srcAbs, linkList);
+
+  async function walk(relPosix) {
+    const srcDir = relPosix ? path.join(srcAbs, ...relPosix.split('/')) : srcAbs;
+    const dstDir = relPosix ? path.join(dstAbs, ...relPosix.split('/')) : dstAbs;
+    await fsp.mkdir(dstDir, { recursive: true });
+
+    let ents;
+    try { ents = await fsp.readdir(srcDir, { withFileTypes: true }); }
+    catch (err) { throw new Error('读取目录失败（' + srcDir + '）：' + err.message); }
+
+    for (const ent of ents) {
+      const childRel = relPosix ? relPosix + '/' + ent.name : ent.name;
+      const srcChild = path.join(srcDir, ent.name);
+      const dstChild = path.join(dstDir, ent.name);
+
+      if (skip.has(childRel.toLowerCase())) continue;  // 链接：跳过，稍后重建
+      if (ent.isSymbolicLink()) continue;               // 兜底：任何漏网的链接
+
+      if (ent.isDirectory()) {
+        await walk(childRel);
+      } else if (ent.isFile()) {
+        await fsp.copyFile(srcChild, dstChild);
+      }
+      /* 其它类型（设备/管道等）在普通目录里不常见，跳过即可 */
+    }
+  }
+
+  await walk('');
+}
+
+/**
+ * 在目标侧按相对路径重建源目录树里的链接。
+ *
+ * 【按链接的性质重建，不能一律用 junction】
+ * 目录链接用 'junction'：Windows 上创建 junction **不需要**
+ * SeCreateSymbolicLinkPrivilege（这正是它能在非管理员下工作的原因）。
+ * 文件链接必须用符号链接：junction 只能指向目录，把文件链接重建为 junction
+ * 会得到一个打不开的坏链接，而创建本身**不报错** —— 搬家说成功、
+ * 用户却发现那个链接成了死链。这类失败现在就如实报出来（走 failed 中止流程）。
+ *
+ * 目标解析不到（例如指向另一个盘、该盘现在不在）时：目录链接仍能建出来
+ * （Windows 允许悬空 junction），文件链接则要特权、失败即上报。
+ *
+ * @param {string} srcAbs
+ * @param {string} dstAbs
+ * @param {string[]} linkList
+ * @param {Map<string,string>} [natures] linkNatures 的结果（缺省时当场判定）
+ * @returns {Promise<{created:number, failed:Array, fileLinks:number}>}
+ */
+async function restoreLinksIntoTarget(srcAbs, dstAbs, linkList, natures) {
+  const nat = natures || new Map();
+  const created = { count: 0, failed: [], fileLinks: 0 };
+  for (const l of linkList) {
+    const rel = relKey(srcAbs, l);
+    try {
+      const target = fs.readlinkSync(l);
+      /* junction 的目标必须是绝对路径；这里统一解析一次 */
+      const absTarget = path.resolve(target);
+      const dstChild = path.join(dstAbs, ...rel.split('/'));
+      await fsp.mkdir(path.dirname(dstChild), { recursive: true });
+      /* 若目标侧同名项已存在（理论上不会，因为上面刚建好目录树），先清掉 */
+      if (await pathExists(dstChild)) {
+        try { fs.unlinkSync(dstChild); } catch (e) { /* 忽略 */ }
+      }
+      const kind = nat.get(l.toLowerCase()) || linkNature(l);
+      if (kind === 'dir') {
+        await fsp.symlink(absTarget, dstChild, 'junction');
+      } else if (kind === 'file') {
+        /* 文件符号链接：不加类型参数（Node 默认按 file 语义创建）。
+         * 需要 SeCreateSymbolicLinkPrivilege，失败会被下面的 catch 记入 failed。 */
+        await fsp.symlink(absTarget, dstChild);
+        created.fileLinks++;
+      } else {
+        /* 连「目录还是文件」都判不出来：宁可不建，也不造一个坏链接。
+         * junction 与符号链接在目标类型上不通用，猜错的代价是
+         * 「搬家成功但链接打不开」这种最难排查的形态。 */
+        throw new Error('无法判断这个链接指向目录还是文件，拒绝重建（避免造出打不开的链接）');
+      }
+      created.count++;
+    } catch (err) {
+      created.failed.push({ link: l, error: err.message });
+    }
+  }
+  return { created: created.count, failed: created.failed, fileLinks: created.fileLinks };
+}
+
+/* 收集「可以安全注册给 Restart Manager」的探测路径。
+ *
+ * 【为什么只收普通文件】实测二分：注册普通文件 -> 正常返回占用进程；
+ * 注册目录（哪怕只是父目录）-> ERR list 5；注册 junction/符号链接 -> ERR list 5；
+ * 混合注册 -> 整批 ERR 5。
+ * 这类条目会让**整个查询**失败，而不是「这一项没查到」。
+ * 用 readdir 的 withFileTypes 判断，不额外 stat，也不跟随链接。
+ *
+ * @param {string} dir 源目录
+ * @returns {Promise<{files:string[], error:string|null}>}
+ */
+async function collectLockProbe(dir) {
+  let ents;
+  try { ents = await fsp.readdir(dir, { withFileTypes: true }); }
+  catch (err) { return { files: [], error: '读取目录失败：' + err.message }; }
+  const files = [];
+  for (const ent of ents) {
+    if (files.length >= 64) break;   // 只看前 64 个普通文件，够覆盖常见情形
+    if (!ent.isFile()) continue;     // 目录/链接一律不注册（会让整批失败）
+    files.push(path.join(dir, ent.name));
+  }
+  return { files, error: null };
+}
+
+/**
+ * 判断一个链接指向的是**目录还是文件**（dir / file / unknown）。
+ *
+ * 【为什么必须区分】重建时一律用 junction 是错的：junction 只能指向目录，
+ * 把一个「文件符号链接」重建为 junction，得到的是一个打不开的坏链接，
+ * 而创建本身不报错 —— 搬家显示成功、用户却发现某个链接变成了死链。
+ * 判据用 statSync（跟随链接）拿到目标类型；目标不在（悬空链接）或没权限时
+ * 返回 unknown，由调用方再用 PowerShell 的 Attributes 兜底（见 linkNatures）。
+ *
+ * @param {string} p 链接自身路径
+ * @returns {'dir'|'file'|'unknown'}
+ */
+function linkNature(p) {
+  try {
+    const st = fs.statSync(p);
+    return st.isDirectory() ? 'dir' : 'file';
+  } catch (err) { return 'unknown'; }
+}
+
+/**
+ * 批量判定链接性质。先走 statSync 这条零成本的路，剩下的（悬空/无权限）
+ * 用**一次** Get-Item 批量取 Attributes —— 即使目标不存在，
+ * reparse point 自身带的 FILE_ATTRIBUTE_DIRECTORY 仍能告诉我们它是目录链接。
+ *
+ * @param {string[]} list 链接绝对路径
+ * @returns {Promise<Map<string,string>>} 小写路径 → 'dir' | 'file'
+ */
+async function linkNatures(list) {
+  const out = new Map();
+  const unknown = [];
+  for (const l of list) {
+    const n = linkNature(l);
+    if (n === 'unknown') unknown.push(l);
+    else out.set(l.toLowerCase(), n);
+  }
+  if (!unknown.length) return out;
+  try {
+    const q = (x) => "'" + String(x).replace(/'/g, "''") + "'";
+    const arr = unknown.map(q).join(',');
+    const r = await ps(
+      `Get-Item -LiteralPath @(${arr}) -Force -ErrorAction SilentlyContinue | ` +
+      `ForEach-Object { @($_.FullName, ('' + $_.Attributes)) -join [char]9 }`,
+      Math.max(15000, unknown.length * 300));
+    for (const line of String(r.stdout || '').split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const seg = line.split('\t');
+      if (seg.length < 2) continue;
+      out.set(seg[0].trim().toLowerCase(), /Directory/i.test(seg.slice(1).join('\t')) ? 'dir' : 'file');
+    }
+  } catch (err) { /* 取不到就保持未知：重建时会如实报失败，不猜 */ }
+  return out;
+}
+
 /* ================= IPC: 目录搬家（建链接替身） =================
  * 高危能力（dir-move），默认关闭。流程见 lib/dir-move.js 顶部注释。
  * 每一步都通过 job:progress 回报，界面上逐步显示而不是一个转圈。
@@ -4207,8 +4498,18 @@ handle('dir:move-precheck', async (e, { src, dst } = {}) => {
   const srcExists = !!sst;
   const srcIsDir = !!sst && sst.isDirectory();
   const srcIsRoot = links.isVolumeRootOnly(srcAbs);
-  /* 系统关键目录：path-guard 内部会做 realpath 归一，能挡住 junction 绕行 */
-  const srcIsCritical = pathGuard.isCriticalPath(srcAbs);
+  /* 【这里用 isProtectedForModify 而不是 isCriticalPath】
+   * isCriticalPath 把「关键目录的直接子目录」也算危险，而 criticalDirs()
+   * 含用户家目录 —— 于是「把 Documents 搬到 D 盘」这种完全正常的操作
+   * 会被 SRC_CRITICAL 拒掉。搬家的破坏面是「搬错地方」，不是「毁掉系统」，
+   * 边界应当比删除更窄：系统目录/盘符根/别人的家目录/自己家目录本身才拦。
+   * path-guard 内部做 realpath 归一，能挡住 junction 绕行。 */
+  const protectedMod = pathGuard.isProtectedForModify(srcAbs);
+  const srcIsCritical = protectedMod.protected;
+  /* 【目标侧同样过闸门】源有保护判据，目标一直没有 ——
+   * 在「新位置」里填 C:\Windows\moved 就能往系统目录里写整棵树。
+   * 用同一份判据（isProtectedForModify），预检与执行两处都传。 */
+  const dstProtectedMod = pathGuard.isProtectedForModify(dstAbs);
   const dstExists = await pathExists(dstAbs);
 
   /* 目标盘的剩余空间（同卷时没有意义，但校验里同卷会先被拒） */
@@ -4220,25 +4521,63 @@ handle('dir:move-precheck', async (e, { src, dst } = {}) => {
     }
   } catch (err) { freeBytes = null; }
 
-  /* 需要复制的字节数（不跟随链接） */
+  /* 【一次遍历同时拿到「要复制多少字节」与「树里有几个链接」】
+   * 早期这里是 links.dirSize(srcAbs) + collectLinks(srcAbs)：同一棵树走两遍
+   * （目录项读两遍、文件各 stat 一遍）。大目录上光是预检就要等很久，
+   * 而这两个数的遍历规则（不跟随链接）本来就完全一致。 */
   let needBytes = null;
-  if (srcExists && srcIsDir && !lst.isLink) {
-    try { needBytes = (await links.dirSize(srcAbs)).bytes; } catch (err) { needBytes = null; }
-  }
-
-  /* 占用检查：只看顶层文件，查得快且覆盖绝大多数情况 */
-  let lockedPaths = [];
+  let treeLinks = [];
   if (srcExists && srcIsDir && !lst.isLink) {
     try {
-      const names = (await fsp.readdir(srcAbs)).slice(0, 64);
-      if (names.length) {
-        const probe = names.map((n) => path.join(srcAbs, n));
-        const lr = await rmQueryLockers(probe).catch(() => null);
+      const walk = await collectLinks(srcAbs, { wantSize: true });
+      needBytes = walk.bytes;
+      treeLinks = walk.links;
+    } catch (err) { needBytes = null; }
+  }
+  /* 其中有多少是「文件符号链接」：这类在目标侧必须重建为符号链接，
+   * 而 Windows 创建符号链接需要特权 —— 提前告诉用户，
+   * 免得搬家在这一步失败（失败会回退，但白等一次完整拷贝）。 */
+  let fileLinkCount = 0;
+  try {
+    const natures = await linkNatures(treeLinks);
+    for (const [, n] of natures) if (n === 'file') fileLinkCount++;
+  } catch (err) { fileLinkCount = 0; }
+
+  /* 占用检查：只看顶层**普通文件**，查得快且覆盖绝大多数情况。
+   *
+   * 【两个必须守住的点】
+   * 1) 只注册普通文件。实测：Restart Manager 的注册列表里只要混进一个
+   *    目录或 junction，RmGetList 就整批返回错误码 5（Access denied），
+   *    整批失败 —— 不是「这一项没查到」，而是整个查询作废。
+   *    而「目录搬家」搬过的目录里恰好就有一个 junction。
+   *    同文件的 file:who-locks-dir 早已改成 ent.isFile() 过滤，这里对齐。
+   * 2) 探测失败不许静默吞。早期写成 .catch(() => null) 再判空，
+   *    查询失败和「没有占用」长得一模一样，于是 lockedPaths 恒为空、
+   *    lib/dir-move.js 的 LOCKED 判定永远不触发 —— 预检成了摆设。
+   *    现在把错误带进 lockCheckError，由调用方告知用户「查询失败」，
+   *    并明确说「这不代表没有占用」。 */
+  let lockedPaths = [];
+  let lockCheckError = null;
+  if (srcExists && srcIsDir && !lst.isLink) {
+    const probe = await collectLockProbe(srcAbs);
+    if (probe.error) {
+      lockCheckError = probe.error;
+    } else if (probe.files.length) {
+      try {
+        const lr = await rmQueryLockers(probe.files);
         if (lr && lr.lockers && lr.lockers.length) {
-          lockedPaths = lr.lockers.map((x) => x.files ? x.files.join(',') : String(x.pid));
+          /* 【lockedPaths 存的是「进程」而不是文件路径】
+           * rmQueryLockers 返回的元素是 { pid, name, type }，
+           * 根本没有 files 字段（早期这里写 x.files 永远走不到，
+           * 于是 map 出来其实一直是 pid）。RM 是整批注册再取列表，
+           * 进程与路径的对应关系拿不到，所以这里就按「进程」表达，
+           * 文案也改成「N 个进程占用」，不再假装知道是哪些文件。 */
+          lockedPaths = lr.lockers.map((x) => (x.pid || 0) + ':' + (x.name || x.procName || ''));
         }
+      } catch (err) {
+        lockCheckError = err.message;
       }
-    } catch (err) { lockedPaths = []; }
+    }
   }
 
   const verdict = dirMove.validateMove({
@@ -4248,11 +4587,27 @@ handle('dir:move-precheck', async (e, { src, dst } = {}) => {
     allowSameVolume: false,
     bakExists: await pathExists(srcAbs + '.hehe-bak'),
     bakPath: srcAbs + '.hehe-bak',
+    dstProtected: dstProtectedMod.protected,
+    dstProtectedReason: dstProtectedMod.protected ? dstProtectedMod.reason : '',
   });
 
   return Object.assign(verdict, {
     src: srcAbs, dst: dstAbs,
     srcExists, srcIsDir, srcIsLink: lst.isLink, srcIsRoot, srcIsCritical,
+    /* 保护原因带上，界面能说清「为什么这块不能搬」（区分系统目录/家目录） */
+    srcProtectedKind: protectedMod.protected ? protectedMod.kind : null,
+    srcProtectedReason: protectedMod.protected ? protectedMod.reason : null,
+    /* 目标侧的保护原因同理 */
+    dstProtected: dstProtectedMod.protected,
+    dstProtectedKind: dstProtectedMod.protected ? dstProtectedMod.kind : null,
+    dstProtectedReason: dstProtectedMod.protected ? dstProtectedMod.reason : null,
+    /* 占用查询本身失败时要让界面能看到（不能与「没有占用」混同） */
+    lockCheckError,
+    /* 源目录树里有多少链接 —— 搬家时这些会被原样重建，
+     * 提前告诉用户，免得事后看到「多了一个链接」以为是 bug。
+     * 用的是上面那次遍历的结果，不再走第二遍。 */
+    linkCount: treeLinks.length,
+    fileLinkCount,
     dstExists, needBytes, freeBytes, lockedPaths,
     plan: dirMove.movePlan(srcAbs, dstAbs),
   });
@@ -4322,26 +4677,34 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
      * （提示先关闭占用它的程序），行为和预检一致，用户不会看到两套说法。 */
     let lockedPaths = [];
     if (sst && sst.isDirectory() && !lst.isLink) {
-      try {
-        const names = (await fsp.readdir(srcAbs)).slice(0, 64);
-        if (names.length) {
-          const probe = names.map((n) => path.join(srcAbs, n));
-          const lr = await rmQueryLockers(probe).catch(() => null);
+      const probe = await collectLockProbe(srcAbs);
+      if (!probe.error && probe.files.length) {
+        try {
+          const lr = await rmQueryLockers(probe.files);
           if (lr && lr.lockers && lr.lockers.length) {
-            lockedPaths = lr.lockers.map((x) => x.files ? x.files.join(',') : String(x.pid));
+            lockedPaths = lr.lockers.map((x) => (x.pid || 0) + ':' + (x.name || x.procName || ''));
           }
+        } catch (err) {
+          /* 执行阶段查询失败不阻断搬家：占用本来就可能在几秒内消失，
+           * 这里再查只是「再核一次」。失败就当作没查到，但仍要如实记下来，
+           * 由下面 emit 出去，别让用户以为「已确认无占用」。 */
+          emit('check', { ok: true, lockCheckError: err.message });
         }
-      } catch (err) { lockedPaths = []; }
+      }
     }
     const v = dirMove.validateMove({
       src: srcAbs, dst: dstAbs,
       srcExists: !!sst, srcIsDir: !!sst && sst.isDirectory(),
       srcIsLink: lst.isLink, srcIsRoot: links.isVolumeRootOnly(srcAbs),
-      srcIsCritical: pathGuard.isCriticalPath(srcAbs),
+      /* 与预检用同一判据（isProtectedForModify），保证两阶段说法一致 */
+      srcIsCritical: pathGuard.isProtectedForModify(srcAbs).protected,
       dstExists, needBytes, freeBytes, lockedPaths,
       allowSameVolume: false,
       bakExists: await pathExists(srcAbs + '.hehe-bak'),
       bakPath: srcAbs + '.hehe-bak',
+      /* 目标闸门在执行阶段**必须重算**：渲染层的历史结论不能当授权依据 */
+      dstProtected: pathGuard.isProtectedForModify(dstAbs).protected,
+      dstProtectedReason: pathGuard.isProtectedForModify(dstAbs).reason || '',
     });
     if (!v.ok) {
       emit('check', { ok: false, error: v.reason });
@@ -4366,12 +4729,37 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
      * 去掉 errorOnExist 后，目标若意外存在会被 cp 合并写入 ——
      * 但那已经被前置的 EEXIST 检查挡住了，不会走到这里。 */
     if (await pathExists(dstAbs)) throw new Error('目标位置已存在，为避免覆盖已拒绝：' + dstAbs);
-    await fsp.cp(srcAbs, dstAbs, {
-      recursive: true,
-      force: false,          // 不覆盖已有内容
-      preserveTimestamps: true,
-    });
-    emit('copy', { ok: true });
+
+    /* 【必须先找出源目录树里的链接，复制时把它们排除掉】
+     * fs.cp 对 reparse point 默认按符号链接处理，要调用 symlink() 重建，
+     * 而 Windows 创建**符号链接**需要 SeCreateSymbolicLinkPrivilege。
+     * 实测（非管理员）：源目录含一个 junction 时 fsp.cp 直接抛
+     *   EPERM: operation not permitted, symlink ...
+     * 加 verbatimSymlinks: true 同样 EPERM；只有 dereference: true 能过，
+     * 但那会把链接目标的内容整个复制进来 —— 语义错误（多出副本，
+     * 目标在别的盘时还会失败）。
+     *
+     * 所以分两步：先把「除链接之外」的内容复制过去（链接一概不参与），
+     * 再按相对路径在目标侧用 fs.symlinkSync(target, dest, 'junction') 重建
+     * —— junction 类型不需要那个特权。
+     */
+    const treeLinks = await collectLinks(srcAbs);
+    await copyTreeExcludingLinks(srcAbs, dstAbs, treeLinks.links);
+    /* 链接不在 cp 的范围里了，所以 cp 不会再碰 symlink()，EPERM 消失。
+     * 重建前先判定每个链接指向目录还是文件 —— 目录用 junction（免特权），
+     * 文件用符号链接（用 junction 会造出打不开的坏链接且不报错）。 */
+    const natures = await linkNatures(treeLinks.links);
+    const linkRestore = await restoreLinksIntoTarget(srcAbs, dstAbs, treeLinks.links, natures);
+    /* 【重建失败必须报出来，不能静默】
+     * 若某个链接没建起来，目标侧就少一个条目，而源侧还有 ——
+     * 这会让「校验」步骤觉得文件对不上，也可能让用户以为搬家成功但
+     * 实际少了东西。所以这里直接失败并回退，而不是记一笔继续走。 */
+    if (linkRestore.failed && linkRestore.failed.length) {
+      const first = linkRestore.failed[0];
+      throw new Error('目标侧重建链接失败（' + linkRestore.failed.length + ' 个）：' +
+        path.basename(first.link) + ' —— ' + first.error);
+    }
+    emit('copy', { ok: true, links: treeLinks.links.length, fileLinks: linkRestore.fileLinks });
   } catch (err) {
     // 源完好，只需要删掉拷了一半的目标
     try { await fsp.rm(dstAbs, { recursive: true, force: true }); } catch (e2) {}
@@ -4429,7 +4817,7 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
     throw new Error(
       '建链接失败' + (back.ok
         ? '（已把源目录改回原名，原路径可正常打开，数据未丢）'
-        : '（**且回退失败**：原始数据完整保存在 ' + bakPath + '，请手动把它改名为 ' + srcAbs + '）') +
+        : '（且回退失败：原始数据完整保存在 ' + bakPath + '，请手动把它改名为 ' + srcAbs + '）') +
       '：' + err.message);
   }
 
@@ -4449,7 +4837,7 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
     throw new Error(
       '链接验证未通过' + (back.ok
         ? '（已拆除链接并把源目录改回原名，原路径可正常打开）'
-        : '（**且回退失败**：数据完整保存在 ' + bakPath + '，请手动改名为 ' + srcAbs + '）') +
+        : '（且回退失败：数据完整保存在 ' + bakPath + '，请手动改名为 ' + srcAbs + '）') +
       '：' + err.message);
   }
 
@@ -4532,14 +4920,24 @@ async function readAclFacts(target) {
   try {
     const r = await ps(`icacls ${q(target)}`, 15000);
     out.aclRaw = String(r.stdout || '');
-    /* 把 me 传进去：这是 hasFull / deniedForMe 能正确工作的前提 */
-    out.acl = aclRepair.parseIcacls(out.aclRaw, out.me || undefined);
+    /* 把 me 传进去：这是 hasFull / deniedForMe 能正确工作的前提。
+     * path 也一并传：icacls 的第一行是「路径 + 空格 + 主体」，
+     * 而我们**本来就知道**查的是哪个路径 —— 拿它剥前缀，路径里的空格
+     * 就不再是解析难点（靠空白猜边界在路径含空格时必错）。 */
+    out.acl = aclRepair.parseIcacls(out.aclRaw, out.me || undefined, { path: target });
   } catch (err) { out.acl = null; }
 
-  /* 所有者是不是当前用户：拿当前用户名做包含比较（域账号带前缀） */
+  /* 所有者是不是当前用户。
+   * 【用 principalEq，不要自己写后缀匹配】
+   * 早期这里是
+   *   a === b || a.endsWith('\\' + b.split('\\').pop())
+   * 仍是「后缀包含」的老写法：DOMAIN\\admin 会命中
+   * BUILTIN\\Administrators 的尾巴，判成「所有者是你」。
+   * 而 parseIcacls 里判 mine 用的是另一套写法 —— 两处各写一套，
+   * 一旦其中一处改错，诊断结论会自相矛盾。
+   * 现在统一收到 lib/acl-repair.js 的 principalEq（同一份判据）。 */
   if (out.me && out.owner) {
-    const a = out.owner.toLowerCase(), b = out.me.toLowerCase();
-    out.ownerIsMe = a === b || a.endsWith('\\' + b.split('\\').pop());
+    out.ownerIsMe = aclRepair.principalEq(out.owner, out.me);
   }
   return out;
 }
@@ -4560,11 +4958,22 @@ handle('acl:diagnose', async (e, target) => {
   const facts = exists ? await readAclFacts(p) : { owner: null, ownerIsMe: null, acl: null };
   const isAdmin = await isRunningAsAdmin();
 
-  /* 占用检查：和权限问题长得一样，但修复方式完全不同，必须区分 */
+  /* 占用检查：和权限问题长得一样，但修复方式完全不同，必须区分。
+   * 【查询失败不能静默吞】早期是 .catch(() => null) 再判空 ——
+   * 查询失败与「确实没有占用」在这里长得一模一样，于是诊断会漏掉
+   * 「其实是占用问题」这一整类原因，还让用户以为已经排查过了。
+   * 现在把错误单独带出去（lockCheckError），界面上如实说明。 */
   let lockedPaths = [];
+  let lockCheckError = null;
   if (exists && !isDir) {
-    const lr = await rmQueryLockers([p]).catch(() => null);
-    if (lr && lr.lockers && lr.lockers.length) lockedPaths = lr.lockers.map((x) => x.pid + ':' + (x.name || ''));
+    try {
+      const lr = await rmQueryLockers([p]);
+      if (lr && lr.lockers && lr.lockers.length) {
+        lockedPaths = lr.lockers.map((x) => x.pid + ':' + (x.name || ''));
+      }
+    } catch (err) {
+      lockCheckError = err.message;
+    }
   }
 
   const diag = aclRepair.diagnose({
@@ -4575,6 +4984,8 @@ handle('acl:diagnose', async (e, target) => {
 
   return Object.assign({
     path: p, isAdmin,
+    /* 占用查询失败要能被界面看到（不能与「没有占用」混同） */
+    lockCheckError,
     owner: facts.owner, me: facts.me || null, ownerIsMe: facts.ownerIsMe,
     aclEntries: (facts.acl && facts.acl.entries || []).slice(0, 20),
     hasFull: !!(facts.acl && facts.acl.hasFull),
@@ -4587,12 +4998,30 @@ handle('acl:repair', async (e, opts = {}) => {
   if (!target) throw new Error('没有指定路径');
   if (!(await pathExists(target))) throw new Error('路径不存在：' + target);
 
-  /* 第一道闸：系统关键目录一律拒绝改权限。
-   * 即便用户有管理员权限也不该让工具去改 System32 的 ACL ——
-   * 改错会导致系统更新失败或被安全软件拦截，而且没有恢复路径。 */
-  if (pathGuard.isCriticalPath(target)) {
-    throw new Error('拒绝：这是系统关键目录，不应该修改它的权限。' +
-      '改错会导致系统更新失败或被安全软件拦截。');
+  /* 第一道闸：不该改权限的地方一律拒绝。
+   * 【为什么不用 isCriticalPath】它把「关键目录的直接子目录」也算危险，
+   * 而 criticalDirs() 含用户家目录 —— 于是 C:\Users\<你>\Documents 被拒，
+   * 提示语还是「改错会导致系统更新失败或被安全软件拦截」，对这个目标
+   * 完全是误导（用户就是想修自己 Documents 里某个文件）。
+   * isProtectedForModify 只拦系统目录、盘符根、别人的家目录、以及
+   * 自己家目录本身，并给出**分情形**的说明。 */
+  const protectedMod = pathGuard.isProtectedForModify(target);
+  if (protectedMod.protected) {
+    let msg;
+    if (protectedMod.kind === 'SYSTEM') {
+      msg = '拒绝：' + protectedMod.reason + '。' +
+        '即便有管理员权限也不该让工具去改系统目录的 ACL —— ' +
+        '改错会导致系统更新失败或被安全软件拦截，而且没有恢复路径。';
+    } else if (protectedMod.kind === 'OWN_HOME') {
+      msg = '拒绝：' + protectedMod.reason + '。' +
+        '如果你想修某个删不掉的文件，请直接选中那个文件或它所在的子文件夹。';
+    } else if (protectedMod.kind === 'OTHER_HOME') {
+      msg = '拒绝：' + protectedMod.reason + '。' +
+        '需要访问别的用户的数据时，请用那个账号登录后操作。';
+    } else {
+      msg = '拒绝：' + protectedMod.reason + '。';
+    }
+    throw new Error(msg);
   }
 
   /* 第二道闸：递归必须由调用方**显式**要求，且是目录 */
