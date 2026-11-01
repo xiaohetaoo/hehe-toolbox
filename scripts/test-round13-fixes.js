@@ -41,8 +41,14 @@ function extractCryptStream() {
   assert.ok(i > 0 && j > i, '找不到 cryptStream 代码块');
   const block = mainSrc.slice(i, j);
   const requireShim = (m) => (m === 'stream' ? require('stream') : require(m));
-  return new Function('fs', 'fsp', 'path', 'crypto', 'send', 'require', block + '\nreturn { cryptStream };')(
-    fs, fs.promises, path, require('crypto'), () => {}, requireShim);
+  /* 【必须注入 tempNames】cryptStream 里生成临时文件名走的是
+   * tempNames.cryptTmp(outPath)（任务 10 把临时名前缀收进了 lib/temp-names.js）。
+   * 抽取这段代码求值时若不给它 tempNames，会直接 'tempNames is not defined'。
+   * 注入的是**真实现**（require 真实模块），不是复刻，所以行为与生产一致。 */
+  return new Function('fs', 'fsp', 'path', 'crypto', 'send', 'require', 'tempNames',
+    block + '\nreturn { cryptStream };')(
+    fs, fs.promises, path, require('crypto'), () => {}, requireShim,
+    require('../lib/temp-names'));
 }
 
 /* ==================== 1. 解密长度下限 ==================== */
@@ -744,13 +750,23 @@ t('20 update:apply：并发调用要被挡住（连点两次会跑两份替换�
 
 /* ==================== 21. 截图临时文件 ==================== */
 t('21a 截图：文件名带随机后缀（同一毫秒两次不撞名）且仍在临时白名单内', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf('const snipTmp ='), mainSrc.indexOf('const snipTmp =') + 300);
-  assert.ok(/randomBytes/.test(seg), '截图临时名应带随机后缀，避免同一毫秒撞名');
-  /* 白名单必须跟着放宽，否则这些文件永远不被清理 */
-  const i = mainSrc.indexOf('const OWN_TEMP_PATTERNS');
-  const j = mainSrc.indexOf('function isOwnTempName');
-  const k = mainSrc.indexOf('\n', mainSrc.indexOf('function isOwnTempName'));
-  const isOwn = new Function(mainSrc.slice(i, k + 1) + '\nreturn isOwnTempName;')();
+  /* 【改成行为断言】原来是在 main.js 里截 `const snipTmp =` 后面 300 字符，
+   * 看里面有没有 randomBytes —— 那是在断言「实现里出现了某个 API 名」。
+   * 任务 10 把临时名生成搬进 lib/temp-names.js（随机后缀由那里的 stamp() 提供）
+   * 之后 main.js 只剩一行委托，断言自然失配（而行为完全正确）。
+   * 真正要守的是两个语义：
+   *   1) 同一毫秒两次调用**不撞名**（撞名会让后一张截图覆盖前一张）；
+   *   2) 生成出来的名字**仍在清理白名单里**（否则崩溃残留永远清不掉）。 */
+  const T = require('../lib/temp-names');
+  const pathMod = require('path');
+  const NOW = 1700000000000;
+  const a = T.snipTmp({ now: NOW });
+  const b = T.snipTmp({ now: NOW });
+  assert.notStrictEqual(a, b, '同一毫秒两次调用撞名了（后一张截图会覆盖前一张）');
+  assert.ok(T.isOwnTempName(pathMod.basename(a)), '生成的截图临时名不在白名单里：' + a);
+
+  /* 白名单形态断言保留，但直接跑真实现（不再从 main.js 抠源码求值） */
+  const isOwn = (n) => T.isOwnTempName(n);
   assert.ok(isOwn('hehe-snip-1700000000000.png'), '老格式必须在白名单里');
   assert.ok(isOwn('hehe-snip-1700000000000-abc123.png'), '带随机后缀的新格式必须在白名单里');
   assert.ok(isOwn('hehe-toolbox-Portable-0.3.5.exe.part-1700000000-abcdef'), '下载残留的 .part 也要能被清理');

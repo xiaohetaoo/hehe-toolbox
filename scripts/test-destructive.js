@@ -81,11 +81,37 @@ t('P0 fs:clean-junk 拒绝清理 %TEMP% 里的非本应用产物', () => {
   assert.ok(fn.includes('checkDeletable'), '没有系统关键目录闸门');
 });
 t('P0 临时产物白名单覆盖所有本应用目录', () => {
-  const s = read('main.js');
-  const fn = s.match(/const OWN_TEMP_PATTERNS = \[[\s\S]*?\];/)[0];
-  for (const p of ['hehe-7zx-', 'hehe-tgt-', 'hehe-snip-', 'hehe-rec-']) {
-    assert.ok(fn.includes(p), '白名单缺少 ' + p);
-  }
+  /* 【改成行为断言】原来的写法是从 main.js 里正则抠出
+   * `const OWN_TEMP_PATTERNS = [...]` 那一整段，再检查里面出现了哪些前缀字符串。
+   * 任务 10 把白名单搬进 lib/temp-names.js（生成函数与白名单放在一处、
+   * 由生成函数反推正则）之后，main.js 里已经没有那个数组 ——
+   * 断言立刻炸（Cannot read properties of null）。
+   * 而「白名单覆盖所有产物」本来就能**直接行为验证**：
+   * 用每个生成函数造个真实名字，看白名单认不认。
+   * 这比"源码里出现过某字符串"强得多 —— 那个字符串完全可能只出现在注释里，
+   * 而对应的正则根本不存在（.hehe-7zx- 那次事故就是这样）。 */
+  const T = require('../lib/temp-names');
+  const pathMod = require('path');
+  const NOW = 1700000000000, HEX = 'abc123';
+  const mustHit = [
+    T.snipTmp({ now: NOW, hex: HEX }),
+    T.ffmpegZip({ now: NOW }),
+    T.recSegDir({ now: NOW }),
+    T.tgtTmpDir({ now: NOW, hex: HEX }),
+    T.uniqTmpDir({ now: NOW, hex: HEX }),
+    T.sevenStagingDir('D:/out', { now: NOW, hex: HEX }),
+    T.writeTmp('D:/a/x.txt', 'tag1'),
+    T.writeBak('D:/a/x.txt', 'tag1'),
+    T.cryptTmp('D:/a/out.enc', { now: NOW, hex: HEX }),
+    T.updateLogName('20260101-010101'),
+    T.rollbackLogName('20260101-010101'),
+  ];
+  const miss = mustHit.map((x) => pathMod.basename(x)).filter((n) => !T.isOwnTempName(n));
+  assert.deepStrictEqual(miss, [],
+    '这些本应用产物匹配不上清理白名单（崩溃后会永久残留）：' + miss.join(', '));
+  /* 另外确认 main.js 确实把判定委托给了模块（否则两边又会分家） */
+  assert.ok(/isOwnTempName\(name\)\s*\{\s*return tempNames\.isOwnTempName/.test(read('main.js')),
+    'main.js 没有把白名单判定委托给 lib/temp-names.js');
 });
 
 /* ================= P1：升级脚本三个破坏点 ================= */
@@ -243,11 +269,31 @@ t('P0 office:convert COM 分支用 uniqueTarget', () => {
   assert.ok(s.includes('uniqueTarget(outDir, base + \'.\' + target)'), 'COM 分支没有唯一化输出名');
 });
 t('P0 office:convert LibreOffice 分支先转临时目录再挪', () => {
+  /* 【改成行为断言】原来检查的是 `if (soffice) {` 之后 1600 字符里有没有
+   * 字符串 'hehe-uniq-' —— 那是把断言绑在「临时目录叫什么」这个实现细节上。
+   * 任务 10 把前缀收进 lib/temp-names.js 之后，这里涨到 1600 字符以外就失配了
+   * （而行为完全正确）。
+   * 真正要守的语义是：LibreOffice 分支必须「先转临时目录、再挪到唯一目标名」，
+   * 不能直接往最终路径写（否则失败会留下半个文件，且可能覆盖已有文件）。
+   * 所以这里断言两件事：
+   *   1) 该分支调用了 tempNames.uniqTmpDir（临时中转目录的来源）；
+   *   2) 该分支用了 uniqueTarget（输出名唯一化）。 */
   const s = read('main.js');
-  const i = s.indexOf("if (soffice) {");
-  const seg = s.slice(i, i + 1600);
-  assert.ok(seg.includes('hehe-uniq-'), '没有用临时目录中转');
-  assert.ok(seg.includes('uniqueTarget'), '没有唯一化输出名');
+  const i = s.indexOf('if (soffice) {');
+  assert.ok(i > 0, '找不到 LibreOffice 分支');
+  /* 【窗口要给足余量】这里不是在测"代码有多紧凑"，而是在测"分支里有没有那几个动作"。
+   * 第一次取 2500 字符，而提交动作（moveFile）落在 2526 —— 差 26 个字符就误报。
+   * 这种"按字符数截窗口"的断言本身就是脆弱的：实现多写一行注释就会失配。
+   * 所以给到 4000，并且下面只断言**语义动作存在**（临时目录、唯一化、提交），
+   * 不断言它们的具体顺序或版面。 */
+  const seg = s.slice(i, i + 4000);
+  assert.ok(/tempNames\.uniqTmpDir\(/.test(seg),
+    '没有一点用临时目录中转（应调用 tempNames.uniqTmpDir）');
+  assert.ok(seg.includes('uniqueTarget') || seg.includes('fsOps.uniquePath'),
+    '没有唯一化输出名');
+  /* 提交动作可能是 moveFile（跨盘时裸 rename 会 EXDEV）而不是 fsp.rename，
+   * 所以两种都接受 —— 断言的是「有个把临时产物挪到最终位置的动作」。 */
+  assert.ok(seg.includes('moveFile(') || seg.includes('fsp.rename('), '没有「转完再挪」的提交动作');
 });
 
 /* P0-3 PDF 拆分/转图片固定命名 */

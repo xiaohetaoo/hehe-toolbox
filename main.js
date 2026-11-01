@@ -39,6 +39,9 @@ const mojibake = require('./lib/mojibake');           // 乱码识别与编码�
 const aclRepair = require('./lib/acl-repair');        // 权限修复：判据与命令构造（纯逻辑）
 const diskHealth = require('./lib/disk-health');      // 磁盘健康：诚实区分「拿到了/拿不到」（纯逻辑）
 const lanScanLib = require('./lib/lan-scan');         // 局域网扫描：ARP 解析与结果合并（纯逻辑）
+/* 临时产物命名的**唯一来源**：生成函数与清理白名单在同一个模块里，
+ * 避免"新增一种产物忘了登记白名单"（.hehe-7zx-* 那次残留事故的根因）。 */
+const tempNames = require('./lib/temp-names');
 bootMark('deps-loaded');
 
 const isMac = process.platform === 'darwin';
@@ -289,31 +292,14 @@ async function moveFile(src, dst) {
    自动清理只允许碰这些文件，绝不能整目录清空——%TEMP% 是全机器共享的，
    里面还有别的程序正在使用的文件，整目录删除会导致它们崩溃或丢数据。
 
-   白名单必须覆盖**所有**本应用会创建的临时产物，否则会出现两种糟糕情况：
-     - 漏登记 -> 自己的垃圾永远清不掉
-     - 登记太宽 -> 把别人的东西也清了
-   新增临时产物目录时，记得在这里加一条。 */
-const OWN_TEMP_PATTERNS = [
-  /* 截图临时图。末尾的随机后缀是后加的（原先是纯 Date.now()，同一毫秒内
-   * 两次截图会撞名），白名单必须跟着放宽，否则所有带后缀的截图都落在白名单外，
-   * 自动清理永远扫不到 —— 而这张图是全屏 PNG，一张就好几 MB。
-   * 用 (-[0-9a-f]+)? 兼容老版本留下的无后缀文件。 */
-  /^hehe-snip-\d+(-[0-9a-f]+)?\.png$/i,   // 区域截图临时图
-  /* 下载中断残留的 .part 文件：dest 名 + '.part-<ts>-<hex>'。
-   * 下载取消时可能因句柄未释放而删不掉（Windows），这些文件同样只能是
-   * 本应用产生的，登记进来才能被启动清扫回收。 */
-  /^hehe-.*\.part-\d+-[0-9a-f]+$/i,       // 下载未完成的临时文件
-  /^hehe-rec-\d+$/i,             // 录制分段目录
-  /^hehe-ffmpeg-.*\.zip$/i,      // FFmpeg 下载包
-  /^hehe-ffmpeg-win.*\.gz$/i,    // FFmpeg 压缩包
-  /^hehe-update-.*\.log$/i,      // 升级脚本日志
-  /^hehe-rollback-.*\.log$/i,    // 回滚脚本日志
-  /^\.?hehe-7zx-.+/i,           // 7z 解压暂存目录（可能带前导点，见 seven:extract）
-  /^hehe-tgt-.+/i,               // 目标体积压缩暂存目录
-  /^hehe-uniq-.+/i,              // 通用解压暂存目录
-  /^\.?hehe-w-.+/i               // 原子写入的临时文件（实际名带前导点）
-];
-function isOwnTempName(name) { return OWN_TEMP_PATTERNS.some(re => re.test(name)); }
+   【白名单已经搬到 lib/temp-names.js —— 不要再往这里加正则】
+   原来的问题是：生成临时名的字符串散落在十几处，白名单却靠这里的**手写正则**
+   描述 —— 两份独立事实，只能靠人肉同步。真实事故：.hehe-7zx-* 带前导点，
+   白名单写成 ^hehe-7zx-（不带点），于是那个暂存目录永远匹配不上，
+   7z 解压崩溃后永久残留、而「清理临时文件」扫不到它。
+   现在生成函数与白名单在同一个模块里，scripts/test-temp-names.js 会逐个验证
+   「每个生成函数产出的名字都能被白名单命中」—— 新增产物忘登记时测试立刻红。 */
+function isOwnTempName(name) { return tempNames.isOwnTempName(name); }
 
 /* 批量 PowerShell 查询的分块大小（公共常量，放在文件靠前处）。
  *
@@ -969,7 +955,7 @@ async function writeFileAtomic(dest, data, encoding) {
   const dir = path.dirname(dest);
   await fsp.mkdir(dir, { recursive: true });
   const tag = process.pid + '-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
-  const tmp = path.join(dir, '.hehe-w-' + tag + '.tmp');
+  const tmp = tempNames.writeTmp(dest, tag);
   try {
     if (encoding) await fsp.writeFile(tmp, data, encoding);
     else await fsp.writeFile(tmp, data);
@@ -984,7 +970,7 @@ async function writeFileAtomic(dest, data, encoding) {
     // Windows：目标已存在时 rename 失败。绝不能「先 rm(dest) 再 rename」——
     // 那样中途失败会留下空目录项，原文件永久丢失。
     // 改为把原文件挪到备份名，新文件就位后再删备份。
-    const bak = path.join(dir, '.hehe-bak-' + tag);
+    const bak = tempNames.writeBak(dest, tag);
     let moved = false;
     try {
       await fsp.rename(dest, bak);
@@ -1538,7 +1524,7 @@ async function cryptStream(p, outPath, password, decrypt) {
   // 先写同目录临时文件，成功后才改名到 outPath。
   // 原来直接写 outPath：失败时 catch 里 rmSync(outPath) 会把**用户原本就存在**的
   // 同名文件一起删掉（探测脚本 t7 复现过：解密失败后用户的重要文件消失）。
-  const cryptTmp = outPath + '.hehe-crypt-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+  const cryptTmp = tempNames.cryptTmp(outPath);
   const ws = fs.createWriteStream(cryptTmp);
   if (header) ws.write(header);
   let done = 0;
@@ -3051,7 +3037,7 @@ function downloadToFile(url, dest, id, ctrl, label) {
        原实现直接写 dest：下载中断或重试耗尽时，dest 会留下体积不足的残缺文件，
        用户以为下好了（尤其 .exe），要等运行才发现损坏。
        现在失败/取消一律删临时文件，dest 要么不存在、要么是完整内容。 */
-    const tmp = dest + '.part-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+    const tmp = tempNames.downloadPart(dest);
     /* 【取消路径上删除可能失败，必须重试】
      * 取消时 `ws.destroy()` 是异步的，写流句柄还没释放就调 rmSync ——
      * Windows 上会抛 EPERM。原实现 catch 里什么都不做，于是每次取消下载
@@ -3182,7 +3168,7 @@ handle('ffmpeg:download', async (e, sourceId) => {
       return { ok: true, ffmpeg, ffprobe: findFfprobe(), found: 2 };
     }
     // zip 整合包
-    const zipPath = path.join(app.getPath('temp'), 'hehe-ffmpeg-' + Date.now() + '.zip');
+    const zipPath = tempNames.ffmpegZip({ tempDir: app.getPath('temp') });
     try {
       await downloadToFile(src.url, zipPath, id, ctrl, '整合包');
       send('job:stream', { id, data: JSON.stringify({ stage: 'extract' }) });
@@ -3302,7 +3288,7 @@ handle('target:compress-av', async (e, { items, outDir, targetBytes, mode, ratio
         continue;
       }
 
-      const tmpDir = path.join(app.getPath('temp'), 'hehe-tgt-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
+      const tmpDir = tempNames.tgtTmpDir({ tempDir: app.getPath('temp') });
       await fsp.mkdir(tmpDir, { recursive: true });
       let finalOut = null;
       let lastErr = '';
@@ -3710,7 +3696,7 @@ handle('office:convert', async (e, { files, target, outDir }) => {
       // 如果直接 --outdir 到用户选的目录，而同名文件已存在，就会静默覆盖
       // （「输出目录留空=源文件目录」时尤其常见：合同.docx 转 pdf 会盖掉已有的合同.pdf）。
       // 做法：先转到任务专属临时目录，再用 uniqueTarget 挪到目标目录。
-      const stage = path.join(app.getPath('temp'), 'hehe-uniq-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
+      const stage = tempNames.uniqTmpDir({ tempDir: app.getPath('temp') });
       try {
         await fsp.mkdir(stage, { recursive: true });
         /* 保留退出码：soffice 转换失败时退出码非零，而 runCmd 默认不抛 */
@@ -4233,7 +4219,7 @@ handle('rec:start', async (e, { outPath, fps, rect, audio, camera, camPos, camSc
   } else rect = null;
   recOpts = { fps: fps || 30, rect, audio: audio || null, camera: camera || null, camPos: camPos || 'rb', camScale: camScale || 0.25 };
   recSegs = [];
-  recSegDir = path.join(app.getPath('temp'), 'hehe-rec-' + Date.now());
+  recSegDir = tempNames.recSegDir({ tempDir: app.getPath('temp') });
   await fsp.mkdir(recSegDir, { recursive: true });
   try {
     return await recStartSeg();
@@ -5521,8 +5507,8 @@ handle('dir:move-precheck', async (e, { src, dst } = {}) => {
     srcProtectedKind: protectedMod.protected ? protectedMod.kind : '',
     dstExists, needBytes: needBytes || 0, freeBytes, lockedPaths,
     allowSameVolume: false,
-    bakExists: await pathExists(srcAbs + '.hehe-bak'),
-    bakPath: srcAbs + '.hehe-bak',
+    bakExists: await pathExists(tempNames.dirmoveBak(srcAbs)),
+    bakPath: tempNames.dirmoveBak(srcAbs),
     dstProtected: dstProtectedMod.protected,
     dstProtectedReason: dstProtectedMod.protected ? dstProtectedMod.reason : '',
   });
@@ -5657,8 +5643,8 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
       srcProtectedKind: pathGuard.isProtectedForModify(srcAbs).kind || '',
       dstExists, needBytes, freeBytes, lockedPaths,
       allowSameVolume: false,
-      bakExists: await pathExists(srcAbs + '.hehe-bak'),
-      bakPath: srcAbs + '.hehe-bak',
+      bakExists: await pathExists(tempNames.dirmoveBak(srcAbs)),
+      bakPath: tempNames.dirmoveBak(srcAbs),
       /* 目标闸门在执行阶段**必须重算**：渲染层的历史结论不能当授权依据 */
       dstProtected: pathGuard.isProtectedForModify(dstAbs).protected,
       dstProtectedReason: pathGuard.isProtectedForModify(dstAbs).reason || '',
@@ -5669,7 +5655,7 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
     }
   }
 
-  const bakPath = srcAbs + '.hehe-bak';
+  const bakPath = tempNames.dirmoveBak(srcAbs);
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const ctx = { srcPath: srcAbs, dstPath: dstAbs, bakPath, linkPath: srcAbs };
   emit('check', { ok: true });
@@ -6443,7 +6429,7 @@ handle('seven:extract', async (e, { archive, outDir, password }) => {
      重要：staging 必须与 outDir **同卷**。原先放在 %TEMP%（通常 C:），
      而用户常把压缩包解到 D:/E: 盘，此时 fsp.rename 会抛 EXDEV（跨设备链接不允许），
      等于「解压到非 C 盘」100% 失败。放在 outDir 下的隐藏目录即可同卷。 */
-  const staging = path.join(outDir, '.hehe-7zx-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
+  const staging = tempNames.sevenStagingDir(outDir);
   await fsp.mkdir(staging, { recursive: true });
   const movedTo = [];   // 已搬到 outDir 的目标路径，用于失败回滚
   try {
@@ -6675,7 +6661,7 @@ let snipWin = null;
  * 启动清扫虽然会按 24 小时清理，但前提是「下次启动」，且期间一直占着盘。
  * 这里在窗口关闭时统一收口 —— 无论用户是取消、完成、还是直接点窗口关闭。 */
 let snipSrcFile = null;
-const snipTmp = () => path.join(app.getPath('temp'), 'hehe-snip-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex') + '.png');
+const snipTmp = () => tempNames.snipTmp({ tempDir: app.getPath('temp') });
 async function dropSnipSrc() {
   const f = snipSrcFile;
   snipSrcFile = null;
