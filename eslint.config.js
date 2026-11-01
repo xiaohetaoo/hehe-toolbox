@@ -85,7 +85,10 @@ module.exports = [
 
   /* ---- 主进程与 preload：Node 环境 ---- */
   {
-    files: ['main.js', 'preload.js'],
+    /* ipc/ 是任务 5 从 main.js 搬出来的 IPC 域，同样是 Node 主进程环境。
+     * 不加进来的话它们不会被 lint 检查 —— 而「搬出去的文件没人查」
+     * 恰恰是最容易悄悄长出 bug的地方。 */
+    files: ['main.js', 'preload.js', 'ipc/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'commonjs',

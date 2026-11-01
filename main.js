@@ -130,7 +130,34 @@ function storeSet(key, val) {
 }
 
 /* ---------------- helpers ---------------- */
-function send(ev, data) { if (win && !win.isDestroyed()) win.webContents.send(ev, data); }
+/* ============ IPC 域的显式上下文（任务 5 第 1 步）============
+ * main.js 是单文件 + 全闭包，任何一段 handler 想搬出去，都得先查清它隐式
+ * 依赖了什么 —— 而那种依赖漏一处，`node --check` 完全看不见（语法合法，
+ * 运行时才 ReferenceError）。所以这一步不改逻辑，只把依赖收敛成一个显式对象。
+ *
+ * 访问器**故意都是 getter 语义**：win 会重建、jobSeq 会递增、jobs 表会增删。
+ * 做成快照对象的话，搬出去的代码拿到的就是构造那一刻的值 ——
+ * 表现是「第一次能用、换窗口就不对」，非常难查。
+ *
+ * nextJobSeq 与本文件的 ++jobSeq 是**同一份计数**：任务 id 一旦分裂成两套编号，
+ * job:stream 的 id 就可能撞车，渲染层按前缀认领（JobPrefix）会认错任务。
+ *
+ * 【必须在 send 之前声明】send 会调用 ipcCtx.send；const 有暂时性死区，
+ * 声明在后的话 send 在首次调用时会 ReferenceError（而 node --check 看不出来）。
+ */
+const ipcCtx = require('./ipc/ctx').createIpcCtx({
+  getWin: () => win,
+  getJobs: () => jobs,
+  nextJobSeq: () => ++jobSeq,
+  getIsWin: () => isWin,
+  getIsMac: () => isMac,
+});
+
+/* 【send 现在走 ipcCtx.send】是为了让 ctx.send **此刻就在链路里**，
+ * 而不是一份"将来才用"的平行实现 —— 两份逻辑各写一遍的话，
+ * ctx 那份要等搬完才第一次执行，差异也会一起推迟到那时才暴露。 */
+function send(ev, data) { ipcCtx.send(ev, data); }
+
 function fmtErr(e) { return (e && e.message) || String(e); }
 const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
   // 高危能力门禁：未在设置里开启的能力，其 IPC 一律拒绝。
