@@ -34,6 +34,11 @@
   <script src="js/channels.js"></script>
   <script src="js/ui.js"></script>
   <script src="js/registry.js"></script>
+  <!-- 工具页文案的双语表（任务 4）：工具文件里用 TT('域', '中文原文') 取词。
+       必须在各 js/tools/*.js 之前加载 —— 它们定义时就引用全局 TT。
+       中文模式下 TT 直接返回字面量、不查表，所以「中文零行为改动」
+       是结构上保证的；英文表漏翻时回退中文，不会出现空白或键名。 -->
+  <script src="js/tools/i18n.js"></script>
 
   <!-- 工具模块 -->
   <script src="js/tools/text-codec.js"></script>

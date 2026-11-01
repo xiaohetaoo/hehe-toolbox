@@ -1,9 +1,14 @@
-/* 模块：文件处理 —— 文件哈希校验 */
+/* 模块：文件处理 —— 文件哈希校验
+ *
+ * 【文案已迁到双语（任务 4 的样板之二）】
+ * 用户可见文字走 TT('hash', '中文原文')，英文表在 js/tools/i18n.js。
+ * 中文模式下 TT 直接返回字面量、不查表 —— 「中文零行为改动」是结构上保证的。 */
 (function () {
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, filePicker, fmtBytes, renderTable } = window.ui;
   const { on } = window.api;
+  const T = (zh, vars) => TT('hash', zh, vars);
 
   register({
     id: 'hash-tool', name: '哈希校验', module: 'file', icon: 'hash',
@@ -11,8 +16,8 @@
     keywords: ['hash', 'md5', 'sha256', '校验', '哈希'],
     render(page) {
       let tab = 'file';
-      const tabFile = btn('文件校验', 'btn-sm btn-primary', () => switchTab('file'));
-      const tabText = btn('文本校验', 'btn-sm btn-secondary', () => switchTab('file' === tab ? 'text' : 'file'));
+      const tabFile = btn(T('文件校验'), 'btn-sm btn-primary', () => switchTab('file'));
+      const tabText = btn(T('文本校验'), 'btn-sm btn-secondary', () => switchTab('file' === tab ? 'text' : 'file'));
       function switchTab(t) {
         tab = t;
         fileCard.style.display = t === 'file' ? '' : 'none';
@@ -38,8 +43,8 @@
       const hashed = new Set();
       const results = new Map();   // path → { hex: {md5,sha1,…} } 或 { err: '…' }
       const picker = filePicker({
-        text: '拖入文件进行校验，或点击选择',
-        emptyText: '还没有添加文件',
+        text: T('拖入文件进行校验，或点击选择'),
+        emptyText: T('还没有添加文件'),
         rowEnd: (it, i, row) => paintResult(row, it.path),
         onChange: (items) => {
           const present = new Set(items.map((x) => x.path));
@@ -60,13 +65,13 @@
         const r = results.get(p);
         if (!r || !row) return;
         const box = h('div', { class: 'hash-result', style: { flexBasis: '100%', marginTop: '2px' } });
-        if (r.err) box.appendChild(div('field-err', '计算失败: ' + r.err));
+        if (r.err) box.appendChild(div('field-err', T('计算失败: {e}', { e: r.err })));
         else {
           for (const [algo, hex] of Object.entries(r.hex)) {
             box.appendChild(div('form-row',
               h('span', { class: 'form-label', style: { minWidth: '70px', textTransform: 'uppercase' } }, algo),
               h('span', { class: 'mono', style: { flex: '1', userSelect: 'text', wordBreak: 'break-all', fontSize: '12px' } }, hex),
-              btn('复制', 'btn-sm btn-text', () => copyText(hex))));
+              btn(T('复制'), 'btn-sm btn-text', () => copyText(hex))));
           }
         }
         row.appendChild(box);
@@ -112,10 +117,10 @@
         if (curRow && results.has(p)) paintResult(curRow, p);
         unsub();
       }
-      const fileCard = div('card', div('card-title', '文件校验'), picker.el);
+      const fileCard = div('card', div('card-title', T('文件校验')), picker.el);
 
       /* 文本模式 */
-      const ta = h('textarea', { class: 'pane-ta', placeholder: '输入文本…', style: { minHeight: '100px' } });
+      const ta = h('textarea', { class: 'pane-ta', placeholder: T('输入文本…'), style: { minHeight: '100px' } });
       const textOut = div('');
       async function hashText() {
         textOut.innerHTML = '';
@@ -129,14 +134,14 @@
           if (!hex) continue;
           textOut.appendChild(div('form-row', h('span', { class: 'form-label', style: { minWidth: '70px', textTransform: 'uppercase' } }, algo),
             h('span', { class: 'mono', style: { flex: '1', userSelect: 'text', wordBreak: 'break-all', fontSize: '12px' } }, hex),
-            btn('复制', 'btn-sm btn-text', () => copyText(hex))));
+            btn(T('复制'), 'btn-sm btn-text', () => copyText(hex))));
         }
       }
-      const textCard = div('card', div('card-title', '文本校验'), ta, textOut);
+      const textCard = div('card', div('card-title', T('文本校验')), ta, textOut);
       textCard.style.display = 'none';
       ta.addEventListener('input', window.ui.debounce(hashText, 400));
 
-      page.appendChild(div('card', div('card-title', '模式', tabFile, ' ', tabText)));
+      page.appendChild(div('card', div('card-title', T('模式'), tabFile, ' ', tabText)));
       page.appendChild(fileCard);
       page.appendChild(textCard);
     }

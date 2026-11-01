@@ -164,6 +164,9 @@ module.exports = [
         /* 三大全局对象：window.ui（助手集合）、window.api（IPC）、window.App（生命周期） */
         ui: 'readonly', api: 'readonly', App: 'readonly', hehe: 'readonly',
         Registry: 'readonly', JobPrefix: 'readonly', I18N: 'readonly',
+        /* 工具页文案取词（js/tools/i18n.js 挂的全局）：TT('域', '中文原文')。
+         * 工具文件里几乎每个渲染点都会用，所以是全局而不是每个文件解构。 */
+        TT: 'readonly', ToolI18n: 'readonly',
         /* 主题主色取值：js/auxwin/snip-1.js 顶层定义，snip-2.js 直接引用
          * （两个都是普通 <script>，共享全局作用域）。 */
         accentPrimary: 'readonly',
