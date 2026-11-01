@@ -5,33 +5,21 @@
   const { invoke } = window.api;
   const MOD = 'file';
 
-  /* 拼「批量操作失败明细」的文本 —— 抽成纯函数，不是为了好看：
+  /* 拼「批量操作失败明细」的文本 —— 实现在 lib/fail-text.js（任务 2）。
    *
-   * 【原来这里是内联在两次 alertBox 调用里的模板字符串】
-   * 于是测试只能去匹配源码形态（`/alertBox\({[\s\S]{0,200}部分文件未能重命名/`），
-   * 那条断言锁住的恰恰是**缺陷本身**：上一轮它要求源码里出现
-   * 「alertBox 紧跟一个左花括号」，而 alertBox 的签名是 (message, title)，
-   * 传配置对象进去会被 h() 当普通对象丢掉，弹出空白框。
-   * 修好之后功能对了、断言反而红了 —— 典型的「测试比代码更坚持错误」。
+   * 【为什么从这里搬走】
+   * 这段逻辑原来内联在两次 alertBox 调用里，于是测试只能去匹配源码形态
+   * （`/alertBox\({[\s\S]{0,200}部分文件未能重命名/`），而那条断言锁住的
+   * 恰恰是**缺陷本身**：alertBox 的签名是 (message, title)，传配置对象进去
+   * 会被 h() 当普通对象丢掉，弹出来是标题「提示」+ 正文全空白。
+   * 修好功能之后断言反而红了 —— 典型的「测试比代码更坚持错误」。
    *
-   * 现在：明细怎么拼、上限多少、剩余多少条怎么提示，全在这个纯函数里，
-   * 测试直接调它断言返回值内容（含文件名、含原因、截断提示），
-   * 源码匹配只剩「调用了 alertBox」这一层结构事实。
-   *
-   * @param {number} ok 成功数
-   * @param {Array<{from:string,to:string,err:string}>} failures 失败项
-   * @param {number} [limit] 最多列出几条（默认 15）
-   * @returns {string} 可直接作为 alertBox 第一个实参的文本
+   * 搬进 lib/ 之后主代码与测试调用**同一份实现**（不会出现「测试测副本」
+   * 造成的假绿），测试断言的是返回值内容，不再依赖任何源码版面。
+   * 渲染层通过 index.html 的 <script src="lib/fail-text.js"> 拿到
+   * window.FailText，Node 侧 require 拿到的就是同一个函数。
    */
-  function buildFailText(ok, failures, limit = 15) {
-    const list = Array.isArray(failures) ? failures : [];
-    const shown = Math.max(0, Number(limit) || 0) || 15;
-    const head = `成功 ${ok} 个，失败 ${list.length} 个：\n\n`;
-    const body = list.slice(0, shown)
-      .map(f => `${f.from}\n  → ${f.to}\n  原因：${f.err}`).join('\n\n');
-    const more = list.length > shown ? `\n\n…还有 ${list.length - shown} 个未列出` : '';
-    return head + body + more;
-  }
+  const buildFailText = window.FailText.buildFailText;
 
   /* ---------- 批量重命名 ---------- */
   register({

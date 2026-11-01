@@ -1429,7 +1429,11 @@
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let recording = false, paused = false, region = null;
       const camOn = () => {
-        /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
+        /* 这里没挂 no-shadow 压制 —— 因为 eslint 并不认为这里有遮蔽
+         * （模块顶层的 on 来自 window.api 解构，与这里的局部 on 不在同一
+         * 作用域链上）。原来挂过一条压制注释，eslint 报它
+         * 「Unused eslint-disable directive」：注释比问题活得久。
+         * 删掉之后 baseline 里只留下真正在生效的压制。 */
         const on = !!camSel.value;
         camPosSel.disabled = !on; camSizeSel.disabled = !on;
         if (!on) { stopPreview(); camPreviewHint.textContent = '选择摄像头后在此预览'; }

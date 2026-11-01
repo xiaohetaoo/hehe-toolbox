@@ -23,6 +23,12 @@
   <script src="js/i18n.js"></script>
   <script src="js/api.js"></script>
   <script src="js/job-prefixes.js"></script>
+  <!-- lib/fail-text.js 是主进程与渲染层共用的纯逻辑（UMD 写法：node 走
+       module.exports，浏览器挂 window.FailText）。渲染层在 contextIsolation
+       下无法 require lib/，所以用 <script> 直接引入同一份文件，
+       避免再写一份副本、也避免「测试测副本」造成的假绿。
+       必须排在引用它的 js/tools/file-tools.js 之前。 -->
+  <script src="lib/fail-text.js"></script>
   <!-- IPC 通道名常量表：工具文件在定义时就会引用 window.Channels，
        所以必须排在 ui.js / registry.js / 各 tools/*.js 之前 -->
   <script src="js/channels.js"></script>

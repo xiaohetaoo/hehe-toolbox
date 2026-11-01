@@ -15,12 +15,12 @@
 2. 让后来者知道「这些行是已知的、有理由的」，不是漏网的真 bug；
 3. 给下一轮清理一张明确清单。
 
-## 总数：75 处
+## 总数：74 处
 
 | 规则 | 处数 | 性质 |
 |---|---|---|
 | `no-unused-vars` | 50 | 解构了未使用的助手 / 局部变量赋值后未使用。**多数无害**（多解构几个助手是常见写法），少数是旧实现残留。 |
-| `no-shadow` | 22 | 内层同名变量。已逐条人工确认无语义影响。（`catch (e)` 嵌套属正常写法，已从规则里排除，这里剩的是真同名遮蔽。） |
+| `no-shadow` | 21 | 内层同名变量。已逐条人工确认无语义影响。（`catch (e)` 嵌套属正常写法，已从规则里排除，这里剩的是真同名遮蔽。） |
 | `no-async-promise-executor` | 3 | `new Promise(async (resolve, reject) => ...)`。**这一条最值得下一轮处理**：async executor 里抛出的异常不会走 reject，而是变成未捕获的 rejection。 |
 
 ## 明细
@@ -79,7 +79,7 @@
 - `main.js:5667` — 'ctx' is assigned a value but never used.
 - `main.js:6358` — 'ARCHIVE_JOB_LIMITS' is assigned a value but never used.
 
-### `no-shadow`（22 处）
+### `no-shadow`（21 处）
 
 - `js/app.js:149` — 'on' is already declared in the upper scope on line 4 column 19.
 - `js/app.js:558` — 'on' is already declared in the upper scope on line 4 column 19.
@@ -88,7 +88,6 @@
 - `js/tools/launch.js:155` — 'items' is already declared in the upper scope on line 144 column 15.
 - `js/tools/life.js:293` — 'items' is already declared in the upper scope on line 287 column 15.
 - `js/tools/life.js:303` — 'items' is already declared in the upper scope on line 287 column 15.
-- `js/tools/media.js:1427` — 'on' is already declared in the upper scope on line 5 column 19.
 - `js/tools/media.js:1582` — 'r' is already declared in the upper scope on line 1578 column 15.
 - `js/tools/net-tools.js:266` — 'r' is already declared in the upper scope on line 247 column 15.
 - `js/tools/net-tools.js:267` — 'r' is already declared in the upper scope on line 247 column 15.
@@ -119,3 +118,19 @@
 
 > 这两处都是 ESLint 的 `no-undef` 抓出来的 —— 语法检查（`node --check`）与所有单元测试都看不见它们，
 > 因为出错路径只在特定输入（命令收藏页 / 带 EXIF 的照片）下才会走到。
+
+## 本轮撤掉的压制（注释比问题活得久）
+
+| 位置 | 原来的压制 | 为什么撤掉 |
+|---|---|---|
+| `js/tools/media.js:1432` | `no-shadow` | ESLint 报「Unused eslint-disable directive」：**那里根本没有遮蔽**。`js/tools/media.js:5` 解构出的 `on` 与录制页局部 `const on` 不在同一作用域链上，规则本来就不会触发。这条压制是早期批量加注释时顺手多挂的，它唯一的作用是让 baseline 的计数虚高。撤掉后 `no-shadow` 从 22 处降到 21 处，总计数 75 → 74。 |
+
+## 生成脚本自身的一道闸（不是压制，是防止文档被静默清空）
+
+`scripts/gen-lint-baseline.js` 的流程是「还原 `*.lintbak` → 重新收集 → 重新插入 → 重写本文件」。
+它依赖 `*.lintbak` 里存着**压制之前**的源码。备份一旦不在（被用掉、或上一次已还原过），
+restore 变成空操作，收集阶段拿到的就是**已经压制过的代码** —— ESLint 一条问题都报不出来，
+本文件被重写成「总数：0 处 + 空明细」，而 `npm run lint` 依然退出码 0。
+**本轮真的踩了一次**：git 里那份 121 行的文档被覆盖成十几行，没有任何自动化信号。
+现在该脚本在找不到任何备份时直接 `exit 2` 并说明原因，不写文件。
+

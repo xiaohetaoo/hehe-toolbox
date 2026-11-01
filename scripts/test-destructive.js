@@ -354,7 +354,7 @@ t('P1 批量改后缀正确处理无扩展名文件', () => {
 
 /* P1-6 批量操作失败可见
  *
- * 【这两条断言原来锁的是**缺陷本身**，必须说明清楚】
+ * 【这一组断言原来锁的是**缺陷本身**，必须说明清楚】
  * 原来写成：
  *   assert.ok(/alertBox\({[\s\S]{0,200}部分文件未能修改/.test(s), '没有弹失败明细');
  * 它要求源码里出现「alertBox 紧跟一个左花括号」——而 alertBox 的签名是
@@ -363,46 +363,31 @@ t('P1 批量改后缀正确处理无扩展名文件', () => {
  * 当成了修复标志；等真正改对（alertBox(文本, 标题)）之后，它反而红了，
  * 而且因为 package.json 用 && 串联，它一红后面 60 多个脚本全不执行。
  *
- * 现在改成「跑真实现」：把明细拼接抽成了 js/tools/file-tools.js 里的
- * buildFailText(ok, failures) 纯函数，测试直接调它断言**返回值内容**
- * （含文件名、含原因、含截断提示），源码匹配只剩「确实调用了 alertBox」
- * 这一层结构事实。断言不再依赖版面，也不再锁死某种调用写法。
+ * 【任务 2 把这条彻底改成了行为断言】
+ * 明细拼接搬进了 lib/fail-text.js，主代码与测试 require 的是**同一个函数**。
+ * 这里直接调它断言返回值内容（含文件名、含原因、含截断提示），
+ * 不再从 file-tools.js 里"按字面量抠出函数体再 new Function"——
+ * 那种做法虽然比正则匹配源码强，仍然是「按版面取实现」：
+ * 只要有人改个函数名（比如 buildFailText → failText），它就报「找不到」。
+ *
+ * 剩下一条源码断言只锁**结构事实**：两处都调用了 alertBox 且第一个实参
+ * 是明细文本、第二个是标题。这条没法用行为断言替代，因为 alertBox 依赖
+ * 真实 DOM 与 ui 层（测试环境不加载 js/ui.js）。
  */
-
-/* 从 file-tools.js 里抽出 buildFailText 的真实现来跑（不复刻逻辑） */
-function loadBuildFailText() {
-  const src = read('js/tools/file-tools.js');
-  const i = src.indexOf('function buildFailText');
-  assert.ok(i > 0, 'file-tools.js 里找不到 buildFailText（失败明细应抽成纯函数以便测试）');
-  // 取到该函数结束：从函数体左花括号起做括号配平（跳过字符串）
-  const open = src.indexOf('{', i);
-  let depth = 0, j = open, inS = null;
-  while (j < src.length) {
-    const c = src[j];
-    if (inS) { if (c === '\\') j++; else if (c === inS) inS = null; j++; continue; }
-    if (c === "'" || c === '"' || c === '`') { inS = c; j++; continue; }
-    if (c === '{') depth++;
-    else if (c === '}') { depth--; if (depth === 0) { j++; break; } }
-    j++;
-  }
-  assert.ok(depth === 0, 'buildFailText 括号不配平');
-  return new Function(src.slice(i, j) + '\nreturn buildFailText;')();
-}
 
 /* 剥注释统一走 lib/src-scan.js（三个测试脚本共用一份实现，见该文件里的说明）。 */
 const { stripComments } = require(path.join(ROOT, 'lib', 'src-scan'));
+const { buildFailText } = require('../lib/fail-text');
 
 t('P1 批量改后缀失败时列出明细', () => {
   const s = read('js/tools/file-tools.js');
   assert.ok(s.includes('failures.push'), '没有收集失败明细');
-  const build = loadBuildFailText();
-  const ok = 3;
   const failures = [
     { from: 'D:/a/one.txt', to: 'D:/a/one.md', err: '被占用' },
     { from: 'D:/a/two.txt', to: 'D:/a/two.md', err: '拒绝访问' },
   ];
-  const text = build(ok, failures);
-  // 关键：文件名、目标名、原因都必须真的出现在文本里（不是"调用大概对了"
+  const text = buildFailText(3, failures);
+  // 关键：文件名、目标名、原因都必须真的出现在文本里（不是"调用大概对了"）
   assert.ok(text.includes('one.txt'), '明细里没有源文件名');
   assert.ok(text.includes('one.md'), '明细里没有目标名');
   assert.ok(text.includes('被占用'), '明细里没有失败原因');
@@ -413,13 +398,12 @@ t('P1 批量改后缀失败时列出明细', () => {
 });
 
 t('P1 批量重命名失败时列出明细', () => {
-  const build = loadBuildFailText();
-  const text = build(0, [{ from: 'D:/b/x.jpg', to: 'D:/b/x.png', err: '目标已存在' }]);
+  const text = buildFailText(0, [{ from: 'D:/b/x.jpg', to: 'D:/b/x.png', err: '目标已存在' }]);
   assert.ok(text.includes('x.jpg') && text.includes('x.png') && text.includes('目标已存在'),
     '重命名明细缺少文件或原因');
   // 截断提示：20 条失败、默认只列 15 条，必须说明"还有 5 个未列出"
   const many = Array.from({ length: 20 }, (_, k) => ({ from: 'f' + k, to: 'g' + k, err: 'err' + k }));
-  const big = build(1, many);
+  const big = buildFailText(1, many);
   assert.ok(big.includes('…还有 5 个未列出'), '超过 15 条时没说明剩余数量');
   assert.ok(!big.includes('err19'), '第 20 条不该被列出（上限 15）');
   assert.ok(big.includes('err14'), '第 15 条应该被列出（上限 15）');

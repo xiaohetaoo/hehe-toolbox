@@ -15,7 +15,31 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 
 /* ---- 1) 还原备份 ---- */
+/* 【为什么要有"备份不存在就中止"这道闸】
+ * 这个脚本的流程是「还原 → 重新收集 → 重新插入 → 重写文档」。它的前提是
+ * *.lintbak 里存着**压制之前**的源码。一旦备份不在（比如备份被用掉了、
+ * 或者上一次运行已经还原过），restore() 什么都不做，于是收集阶段拿到的
+ * 是**已经压制过的代码** —— eslint 一条问题都报不出来，planRows 为空，
+ * baseline 文档就被重写成「总数：0 处 + 空明细」。
+ *
+ * 这不是假想：我在本轮真的踩了一次。git 里那份 121 行的基线文档被覆盖成
+ * 十几行，而 lint 退出码依然是 0（因为压制确实还在源码里）——
+ * 也就是说「文档被清空」这件事没有任何自动化信号。
+ * 所以这里改成：没有任何备份就直接退出，不写文档。
+ */
 function restore() {
+  const backups = [
+    path.join(ROOT, 'js.lintbak'),
+    path.join(ROOT, 'lib.lintbak'),
+    path.join(ROOT, 'main.js.lintbak'),
+    path.join(ROOT, 'preload.js.lintbak'),
+  ].filter((p) => fs.existsSync(p));
+  if (!backups.length) {
+    console.error('找不到任何 *.lintbak 备份 —— 无法还原到压制前的状态。');
+    console.error('继续跑会把 baseline 文档重写成空内容（源码已经是压制状态，eslint 报不出问题）。');
+    console.error('请先手工撤掉源码里的压制注释，再重新运行本脚本。已中止，未修改任何文件。');
+    process.exit(2);
+  }
   const restoreOne = (src, dst) => {
     if (!fs.existsSync(src)) return;
     fs.rmSync(dst, { recursive: true, force: true });
@@ -27,7 +51,7 @@ function restore() {
     const b = path.join(ROOT, f + '.lintbak');
     if (fs.existsSync(b)) { fs.rmSync(path.join(ROOT, f), { force: true }); fs.renameSync(b, path.join(ROOT, f)); }
   }
-  console.log('已还原到压制前的状态');
+  console.log('已还原到压制前的状态（用了 ' + backups.length + ' 个备份）');
 }
 
 restore();
