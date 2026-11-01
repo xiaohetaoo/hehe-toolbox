@@ -416,9 +416,26 @@ t('⑤ 悬空链接不算查询失败（它本来就正常）', async () => {
     fs.symlinkSync(gone, dangling, 'junction');
     fs.rmdirSync(gone);                      // 目标删掉 → 悬空 junction
     const r = await linkNatures([dangling]);
+
+    /* ① 悬空链接**不是**查询失败 —— 任何环境都必须成立。
+     *    查不到性质 ≠ 查询失败；后者会让搬运被整体拒掉。 */
     assert.strictEqual(r.error, null, '悬空链接不该被报成查询失败：' + r.error);
-    assert.strictEqual(r.natures.get(dangling.toLowerCase()), 'dir',
-      '悬空 junction 仍应判出「目录」（靠 Attributes 兜底）');
+
+    /* ② 【关键不变量：读不到时不能猜成 'file'】
+     * 这条才是真正会酿成事故的一层。实测两个环境行为不同：
+     *   本机：Attributes 含 Directory → 判出 'dir'
+     *   GitHub windows-latest：Attributes 为空串 → 旧实现走 else 判成 'file'
+     * 判成 'file' 的后果不是显示错误，而是重建走 fsp.symlink()（需要
+     * SeCreateSymbolicLinkPrivilege），非管理员下必然 EPERM，搬家中止回滚 ——
+     * 能不能搬成功居然取决于 PowerShell 读不读得到那个 Attributes。
+     * 所以断言的是「要么判出 dir，要么干脆不登记」，绝不能是 'file'。 */
+    const n = r.natures.get(dangling.toLowerCase());
+    if (n === undefined) {
+      console.log('      （提示）本机 PowerShell 读不到悬空 junction 的 Attributes → 不登记（正确行为）');
+    } else {
+      assert.strictEqual(n, 'dir',
+        '悬空 junction 若能判出性质，必须是「目录」；判成 ' + n + ' 会让重建走需要特权的符号链接分支');
+    }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -428,6 +445,20 @@ t('⑤ 预检与界面都把 linkNaturesError 显示出来', () => {
   const ui = read('js/tools/dir-move.js');
   assert.ok(/r\.linkNaturesError/.test(ui), '界面没用 linkNaturesError');
   assert.ok(/这不代表没有文件链接/.test(ui), '要说明「查不到 ≠ 没有文件链接」');
+});
+
+/* ================= 附带：链接类型列 ================= */
+
+t('⑤ Attributes 读不到时不能登记成 file（否则重建走需要特权的分支）', async () => {
+  /* 直接喂一个「Get-Item 有输出、但 Attributes 是空串」的假 ps：
+   * 这正是 GitHub windows-latest 上悬空 junction 的真实表现。 */
+  const fakePs = () => Promise.resolve({ stdout: "C:\\x\\dang\t\n", stderr: '' });
+  const linkNatures = makeLinkNatures(fakePs);
+  const r = await linkNatures(['C:\\x\\dang']);
+  assert.strictEqual(r.error, null, '这不是查询失败');
+  assert.strictEqual(r.natures.get('c:\\x\\dang'), undefined,
+    'Attributes 为空时必须「不登记」，绝不能兜底成 file —— ' +
+    'file 会走 fsp.symlink()（需要 SeCreateSymbolicLinkPrivilege），非管理员下必然 EPERM');
 });
 
 /* ================= 附带：链接类型列 ================= */

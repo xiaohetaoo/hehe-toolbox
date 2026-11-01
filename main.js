@@ -5025,7 +5025,22 @@ async function linkNatures(list) {
         if (!line.trim()) continue;
         const seg = line.split('\t');
         if (seg.length < 2) continue;
-        out.set(seg[0].trim().toLowerCase(), /Directory/i.test(seg.slice(1).join('\t')) ? 'dir' : 'file');
+        const attrs = seg.slice(1).join('\t').trim();
+        /* 【Attributes 读不到时不能猜成 'file'】
+         * 原实现是 `(/Directory/i.test(attrs) ? 'dir' : 'file')` —— 空串走 else，
+         * 于是「读不到」被当成「它是文件」。
+         * 实测差异（本机 vs GitHub windows-latest runner）：
+         *   本机：悬空 junction 的 Attributes 含 Directory，判出 'dir'（正确）
+         *   CI：  同一操作 Attributes 返回空串，被判成 'file'
+         * 后果不是「显示不对」，而是**重建走错分支**：文件链接要用
+         * fsp.symlink(absTarget, dstChild)（需要 SeCreateSymbolicLinkPrivilege），
+         * 非管理员下必然 EPERM，整个搬家中止并回滚 —— 一台机器能不能搬成功，
+         * 竟然取决于 PowerShell 能否读到那个 Attributes。
+         * 判不出来就不该登记：让调用方显式看到「性质未知」，由
+         * restoreLinksIntoTarget 的 unknown 分支拒绝重建并如实报错，
+         * 而不是偷偷按文件处理。 */
+        if (!attrs) continue;
+        out.set(seg[0].trim().toLowerCase(), /Directory/i.test(attrs) ? 'dir' : 'file');
       }
     } catch (err) {
       errors.push(shortErr(err));
