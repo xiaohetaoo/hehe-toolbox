@@ -194,8 +194,30 @@ t('P2 path-guard 已进构建配置', () => {
   assert.ok(pkg.build.files.includes('lib/**/*'), 'lib 未进构建');
 });
 t('P2 path-guard 测试已接入 npm test', () => {
+  /* 【这条断言的本意是「跑 npm test 时会连 test-path-guard.js 一起跑」】
+   * 原来只读 pkg.scripts.test 这一个字符串 —— 等于把断言绑死在
+   * 「test 是一条长长的 && 链」这个实现细节上。
+   * 任务 8 把 test 拆成 `npm run test:unit && npm run test:ui` 之后，
+   * 这个字符串里自然不再出现具体脚本名，断言就误报了（功能完全正常：
+   * test-path-guard.js 在 test:unit 里）。
+   * 现在按**语义**判：把 test 展开成实际会执行的脚本清单（跟随一层
+   * npm run 引用），再看目标脚本在不在里面。无论 test 怎么组织
+   * （单链 / 两条 / 将来再拆三条）都成立。 */
   const pkg = require('../package.json');
-  assert.ok(pkg.scripts.test.includes('test-path-guard.js'), '未接入 npm test');
+  const seen = new Set();
+  const collect = (scriptName, depth) => {
+    if (depth > 3) return;
+    const body = pkg.scripts[scriptName];
+    if (typeof body !== 'string') return;
+    for (const piece of body.split('&&').map((s) => s.trim()).filter(Boolean)) {
+      const m = piece.match(/^npm\s+run\s+([^\s]+)$/);
+      if (m) { collect(m[1], depth + 1); continue; }
+      seen.add(piece);
+    }
+  };
+  collect('test', 0);
+  assert.ok([...seen].some((s) => s.includes('test-path-guard.js')),
+    '未接入 npm test（展开 test 后实际执行的脚本里没有 test-path-guard.js）');
 });
 
 /* ================= 第二轮：子代理审查发现的破坏性 bug ================= */

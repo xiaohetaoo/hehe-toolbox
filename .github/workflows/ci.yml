@@ -74,7 +74,25 @@ jobs:
           # 日志里看不出到底哪个脚本挂了 —— 已经因此排查了好几轮。
           # 这里显式循环：把失败脚本名和末尾输出直接打到日志里。
           set +e
-          node -e "require('./package.json').scripts.test.split('&&').map(s=>s.trim()).filter(Boolean).forEach(s=>console.log(s))" > /tmp/steps.txt
+          # 【任务 8 之后 test 不再是单条长链】
+          # 它现在是 `npm run test:unit && npm run test:ui`，
+          # 直接按 && 拆会得到两条 npm run —— 失败定位粒度就退化成一个整步了。
+          # 所以这里把 test:unit / test:ui 两条脚本各自再拆开，合并成扁平清单，
+          # 保持「一行一个 node 脚本」的定位能力。
+          node -e "
+            const p = require('./package.json');
+            const flat = (name, depth) => {
+              const body = p.scripts[name];
+              if (typeof body !== 'string' || depth > 3) return [];
+              return body.split('&&').map(s => s.trim()).filter(Boolean)
+                .flatMap(piece => {
+                  const m = piece.match(/^npm\s+run\s+([^\s]+)\$/);
+                  return m ? flat(m[1], depth + 1) : [piece];
+                });
+            };
+            flat('test', 0).forEach(s => console.log(s));
+          " > /tmp/steps.txt
+          echo "要执行的测试步数：$(( $(wc -l < /tmp/steps.txt) ))"
           I=0
           FAILED=""
           while IFS= read -r C; do

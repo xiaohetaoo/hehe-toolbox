@@ -56,9 +56,15 @@ js/
 ## 开发与质量
 
 ```bash
-npm test        # 跑全部测试（当前 1106 条断言，约 150 秒）
+npm test        # 跑全部测试（1106 条断言，约 147 秒）
+npm run test:unit  # 纯 node 的测试（不启 Electron、不 spawn 外部进程，约 10 秒）
+npm run test:ui    # 启 Electron / 调外部命令的测试（约 137 秒）
 npm run lint    # ESLint 静态检查（退出码 0 = 通过）
 ```
+
+- **分道的判断标准**：脚本若 `require(electron)`、启动 electron 二进制、或 spawn
+  外部进程（powershell / cmd / mklink 等），归 `test:ui`；其余纯 node 的归 `test:unit`。
+  日常改代码只需跑 `npm run test:unit`（10 秒内出结果）；提交前跑 `npm test`。
 
 - **测试骨架**：所有测试脚本共用 `scripts/lib/harness.js`（`t(name, fn)` + `done()`），
   不要再在单个脚本里自己写一份 `t()`。异步用例直接传 `async` 函数，harness 会等待。
