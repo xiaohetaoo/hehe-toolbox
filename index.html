@@ -59,7 +59,26 @@
   <script src="js/tools/sys-tools.js"></script>
   <script src="js/tools/disk-health.js"></script>
   <script src="js/tools/qr.js"></script>
-  <script src="js/tools/media.js"></script>
+  <!-- 多媒体工具（任务 9 从 media.js 拆成 17 个文件）。
+       shared.js **必须排第一个**：其余文件在定义 IIFE 那一刻就会解构
+       window.MediaShared。顺序由 scripts/test-media-split.js 校验。 -->
+  <script src="js/tools/media/shared.js"></script>
+  <script src="js/tools/media/img-batch.js"></script>
+  <script src="js/tools/media/img-watermark.js"></script>
+  <script src="js/tools/media/img-stitch.js"></script>
+  <script src="js/tools/media/img-compress.js"></script>
+  <script src="js/tools/media/img-dedup.js"></script>
+  <script src="js/tools/media/exif-view.js"></script>
+  <script src="js/tools/media/screenshot-ocr.js"></script>
+  <script src="js/tools/media/batch-ocr.js"></script>
+  <script src="js/tools/media/snip-tool.js"></script>
+  <script src="js/tools/media/screen-rec.js"></script>
+  <script src="js/tools/media/ffmpeg-setup.js"></script>
+  <script src="js/tools/media/av-info.js"></script>
+  <script src="js/tools/media/av-convert.js"></script>
+  <script src="js/tools/media/video-press.js"></script>
+  <script src="js/tools/media/video-frames.js"></script>
+  <script src="js/tools/media/audio-cut.js"></script>
   <script src="js/tools/target-size.js"></script>
   <script src="js/tools/office.js"></script>
   <script src="js/tools/launch.js"></script>

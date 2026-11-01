@@ -4,6 +4,7 @@
  */
 const AdmZip = require('adm-zip');
 const fs = require('fs');
+const { readTree } = require('./lib/harness');
 const path = require('path');
 const os = require('os');
 const asarLib = require('@electron/asar');
@@ -77,7 +78,7 @@ chk(/maxTotalBytes:\s*8\s*\*\s*1024/.test(arch), '总大小上限收紧到 8GB')
 const office = read('js/tools/office.js') || '';
 chk(office.includes('-split-' + "' + stamp") || office.includes("-split-' + stamp"), 'PDF 拆分目录带时间戳');
 
-const media = read('js/tools/media.js') || '';
+const media = readTree('js/tools/media') || '';
 chk(media.includes('function normAbs'), 'media.js 有路径归一化函数');
 
 /* --- 重复注册检查 --- */

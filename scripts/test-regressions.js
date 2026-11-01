@@ -1,5 +1,8 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readTree } = require('./lib/harness');
+/* 任务 9 把 media.js 拆成了 js/tools/media/*.js —— 媒体相关的源码断言
+ * 一律改读整棵树：断言的语义是「媒体工具里有这个实现」，与文件数无关。 */
+const readMedia = () => readTree('js/tools/media');
 /* 回归测试：锁死本轮修复的 5 个问题。
  * 每个用例都对应一个真实发生过的 bug —— 只断言“代码里有没有那段字符串”是不够的，
  * 尽量验证行为本身。
@@ -106,7 +109,7 @@ t('P2 回滚脚本按 exe 路径停进程，不用写死的中文名', () => {
 
 /* ---------- P2-4：摄像头预览 deviceId ---------- */
 t('P2 摄像头预览按 label 解析出真实 deviceId', () => {
-  const s = read('js/tools/media.js');
+  const s = readMedia();
   assert.ok(s.includes('resolveDeviceId'), '没有 label -> deviceId 的解析函数');
   const rfn = s.match(/async function resolveDeviceId[\s\S]*?\n      \}/)[0];
   assert.ok(rfn.includes('enumerateDevices'), '没有枚举设备');

@@ -63,6 +63,37 @@ function readSrc(relPath, opts) {
 }
 
 /**
+ * 读「一个逻辑单元可能散落在多个文件里」的全部源码。
+ *
+ * 【为什么需要它】任务 9 把 js/tools/media.js（1803 行、16 个工具）拆成了
+ * js/tools/media/*.js 的 17 个文件。原来有 11 个测试脚本按**固定路径**
+ * 读 media.js 做源码断言，拆完就会全部报「文件不存在」——
+ * 而它们要验的是「媒体工具里有没有某个实现」，这个语义与文件数无关。
+ *
+ * 所以这些断言改成 readTree('js/tools/media')：把整个目录拼起来再断言。
+ * 拼起来的文本里，原来单文件内的断言（函数定义、某段逻辑）照样成立。
+ *
+ * 一个要注意的地方：**跨文件的顺序断言会失效**。例如原来断言
+ * 「A 出现在 B 之前」，拆到两个文件后拼接顺序取决于目录遍历顺序 ——
+ * 这类断言不能直接用 readTree，要么按明确文件顺序读，要么改成行为断言。
+ *
+ * @param {string} relDir 相对项目根的目录
+ * @param {object} [opts] 同 readSrc（raw 保留原始文本）
+ * @returns {string} 该目录下所有 .js 文件按文件名排序拼接后的文本
+ */
+function readTree(relDir, opts) {
+  const abs = path.isAbsolute(relDir) ? relDir : path.join(ROOT, relDir);
+  const names = fs.readdirSync(abs).filter((n) => n.endsWith('.js')).sort();
+  const parts = names.map((n) => {
+    const absFile = path.join(abs, n);
+    const text = fs.readFileSync(absFile, 'utf8');
+    return (opts && opts.raw) ? text : srcScan.stripComments(text);
+  });
+  /* 用换行 + 注释分隔，避免两个文件首尾相接粘连成一个假 token。 */
+  return parts.join('\n/* ---- 文件分隔 ---- */\n');
+}
+
+/**
  * 造一个测试套件。
  * @param {object} [opts]
  * @param {string} [opts.failSep='  -> '] FAIL 与 message 之间的分隔符
@@ -139,12 +170,13 @@ function createSuite(opts) {
 const assert = require('assert');
 const helpers = {
   readSrc,
+  readTree,
   ROOT,
   stripComments: srcScan.stripComments,
   extractFn: srcScan.extractFn,
 };
 
-module.exports = Object.assign({ createSuite, readSrc }, helpers, { assert });
+module.exports = Object.assign({ createSuite, readSrc, readTree }, helpers, { assert });
 
 /* 便捷默认实例：绝大多数脚本直接用 `const { t, done } = require('./lib/harness')`。 */
 const defaultSuite = createSuite();

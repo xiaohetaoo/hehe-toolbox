@@ -4,7 +4,7 @@
  * 那是原版的**隐患**：异步断言失败时没人接，会静默通过。
  * 这里用 order:'sequential' 保持迁移前的输出顺序，同时 harness 会**等待**
  * 该 Promise —— 顺序与原版一致，而且异步失败现在能被抓住了。 */
-const { createSuite } = require('./lib/harness');
+const { createSuite, readTree } = require('./lib/harness');
 const { t, done } = createSuite({ order: 'sequential' });
 /* 本轮四项的回归测试（其中两项是 v0.2.7 的遗留/回归）。
  *
@@ -90,7 +90,7 @@ t('② rec:start 只在未显式确认时才拒绝已存在的目标', () => {
 });
 
 t('② 录屏 UI 在系统对话框确认后传 overwrite: true', () => {
-  const media = fs.readFileSync(path.join(ROOT, 'js', 'tools', 'media.js'), 'utf8');
+  const media = readTree('js/tools/media');
   const s = media.indexOf("invoke('rec:start'");
   assert.ok(s > 0, '找不到 rec:start 调用');
   const chunk = media.slice(s, s + 400);

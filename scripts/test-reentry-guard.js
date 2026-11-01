@@ -1,5 +1,5 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readTree } = require('./lib/harness');
 /* ① 防重入标志回归测试：不许再有「置 true 之后提前 return 却不复位」的分支。
  *
  * 背景：这类 bug 一共出现过 7 次，后果都一样 —— 按钮永久失去响应，
@@ -17,6 +17,25 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
+
+/**
+ * 把「文件或目录」清单展开成实际文件清单。
+ * 任务 9 之后媒体工具是一个目录 —— 但这条断言的判据是**单文件内的行序**
+ * （从 running=true 往下找 try/finally），把多文件拼成一坨会破坏行序，
+ * 所以按文件名逐个展开，而不是用 readTree 拼起来。
+ */
+function expandTargets(list) {
+  const out = [];
+  for (const rel of list) {
+    const abs = path.join(ROOT, rel);
+    if (fs.statSync(abs).isDirectory()) {
+      for (const n of fs.readdirSync(abs).filter((x) => x.endsWith('.js')).sort()) {
+        out.push(rel + '/' + n);
+      }
+    } else out.push(rel);
+  }
+  return out;
+}
 
 /* 支持异步用例：把 promise 收集起来，最后统一等待 */
 
@@ -105,11 +124,14 @@ t('对照：手写标志的旧写法确实会卡死（证明这个测试有意�
 
 /* ---------- 2. 静态 ---------- */
 t('工具页里没有「running = true 后、finally 之前」的裸 return', () => {
-  const FILES = ['js/tools/file-tools.js', 'js/tools/media.js', 'js/tools/office.js'];
+  /* 任务 9 把 media.js 拆成 js/tools/media/*.js，所以这里列的是「文件或目录」，
+   * 目录按文件名顺序逐个展开 —— 这条断言的判据是**单文件内的行序**
+   * （从 running=true 往下找 try/finally），把多个文件拼成一坨会破坏行序， */
+  const TARGETS = ['js/tools/file-tools.js', 'js/tools/media', 'js/tools/office.js'];
   const offenders = [];
 
-  for (const rel of FILES) {
-    const lines = fs.readFileSync(path.join(ROOT, rel), 'utf8').split('\n');
+  for (const target of expandTargets(TARGETS)) {
+    const lines = fs.readFileSync(path.join(ROOT, target), 'utf8').split('\n');
     for (let i = 0; i < lines.length; i++) {
       if (!/running\s*=\s*true/.test(lines[i])) continue;
       let tryAt = -1, finallyAt = -1;
@@ -142,7 +164,7 @@ t('工具页里没有「running = true 后、finally 之前」的裸 return', ()
               && !/\bfunction\s+run\s*\(/.test(L)) { boundary = 'inner'; break; }
         }
         if (boundary !== 'run') continue;   // 在嵌套回调里，不归这一层
-        offenders.push(`${rel}:${j + 1}  ${l.trim().slice(0, 100)}`);
+        offenders.push(`${target}:${j + 1}  ${l.trim().slice(0, 100)}`);
       }
     }
   }
@@ -152,13 +174,13 @@ t('工具页里没有「running = true 后、finally 之前」的裸 return', ()
 
 /* ---------- 3. 报告点名的位置都必须已修 ---------- */
 t('两个未装 FFmpeg 的早退都会复位', () => {
-  const src = fs.readFileSync(path.join(ROOT, 'js', 'tools', 'media.js'), 'utf8');
+  const src = readTree('js/tools/media');
   const hits = (src.match(/if \(!st\.ffmpeg\) \{ running = false; toast\('未安装 FFmpeg'/g) || []).length;
   assert.ok(hits >= 2, '应有两处（视频截帧 + 音频剪辑），实际 ' + hits);
 });
 
 t('图片查重「没选文件夹」会复位', () => {
-  const src = fs.readFileSync(path.join(ROOT, 'js', 'tools', 'media.js'), 'utf8');
+  const src = readTree('js/tools/media');
   assert.ok(/if \(!dir\) \{ running = false; return toast\('请先选择文件夹'/.test(src),
     '图片查重的早退没复位');
 });

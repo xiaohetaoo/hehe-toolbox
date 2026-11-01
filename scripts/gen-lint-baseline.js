@@ -59,7 +59,7 @@ restore();
 /* ---- 2) 收集问题 ---- */
 const r = spawnSync(process.execPath, [
   path.join(ROOT, 'node_modules', 'eslint', 'bin', 'eslint.js'),
-  'main.js', 'preload.js', 'lib/*.js', 'js/tools/*.js', 'js/*.js', 'js/auxwin/*.js',
+  'main.js', 'preload.js', 'lib/*.js', 'js/**/*.js', 'js/auxwin/*.js',
   '-f', 'json',
 ], { cwd: ROOT, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
 const out = String(r.stdout || '');
@@ -130,7 +130,7 @@ console.log('插入压制 ' + inserted + ' 条（一行合并）');
 /* ---- 4) 重新校验 ---- */
 const r2 = spawnSync(process.execPath, [
   path.join(ROOT, 'node_modules', 'eslint', 'bin', 'eslint.js'),
-  'main.js', 'preload.js', 'lib/*.js', 'js/tools/*.js', 'js/*.js', 'js/auxwin/*.js',
+  'main.js', 'preload.js', 'lib/*.js', 'js/**/*.js', 'js/auxwin/*.js',
 ], { cwd: ROOT, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
 const tailOut = String(r2.stdout || '') + String(r2.stderr || '');
 console.log(tailOut.split('\n').slice(-4).join('\n'));

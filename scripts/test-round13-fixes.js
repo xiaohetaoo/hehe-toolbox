@@ -1,7 +1,7 @@
 'use strict';
 /* 原脚本用 cases 收集 + 串行 for 循环，输出严格按注册顺序。
  * 这里显式指定 order:'sequential' 以保持迁移前的输出顺序不变。 */
-const { createSuite } = require('./lib/harness');
+const { createSuite, readTree } = require('./lib/harness');
 const { t, done } = createSuite({ order: 'sequential' });
 /* 本轮（第 13 轮全量审查）修复项的回归测试。
  *
@@ -628,7 +628,7 @@ t('15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧�
     '应记录截帧前已有的文件集合，只数新增的');
   assert.ok(/overwritten/.test(seg), '被覆盖的旧帧数要如实回报');
   /* 渲染层也得把它显示出来，否则主进程报了没人看 */
-  assert.ok(/overwritten/.test(read('js/tools/media.js')), '渲染层没有显示 overwritten');
+  assert.ok(/overwritten/.test(readTree('js/tools/media')), '渲染层没有显示 overwritten');
 });
 
 /* ==================== 16. 数值/展示边界（lib/target-size） ==================== */

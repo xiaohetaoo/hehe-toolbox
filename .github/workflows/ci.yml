@@ -59,11 +59,18 @@ jobs:
       - name: Verify version format
         run: npm run version:check
 
+      # 工具数统计：必须**递归**子目录。
+      # 任务 9 把 media.js 拆成了 js/tools/media/*.js（16 个工具进子目录），
+      # 原来的 `-Path js/tools/*.js` 只匹配顶层文件，会数成 84 个 ——
+      # 于是下面 `< 90` 那条判断直接 throw，CI 报「tool count regressed: 84」，
+      # 而实际一个工具都没少。Select-String 的 -Path 不展开通配符递归，
+      # 这里改用 Get-ChildItem -Recurse 显式给文件列表。
       - name: Verify tool registration count
         shell: pwsh
         run: |
-          $n = (Select-String -Path js/tools/*.js -Pattern "register\(\{" -AllMatches | Measure-Object).Count
-          Write-Host "registered tools: $n"
+          $files = Get-ChildItem -Path js/tools -Filter *.js -Recurse -File
+          $n = ($files | Select-String -Pattern "register\(\{" -AllMatches | Measure-Object).Count
+          Write-Host "registered tools: $n  (in $($files.Count) files)"
           if ($n -lt 90) { throw "tool count regressed: $n" }
 
       - name: Pure-function regression tests

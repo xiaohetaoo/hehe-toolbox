@@ -9,6 +9,10 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+/* 只借用 readTree（任务 9 把 media.js 拆成目录后，需要按目录拼源码）。
+ * 不接管本文件自己的 t()：它是行内箭头形式，输出格式与 harness 的
+ * deferred 版不同，换掉会改变这个脚本的输出形态。 */
+const { readTree } = require('./lib/harness');
 
 let pass = 0, fail = 0;
 const t = (n, f) => { try { f(); pass++; console.log('PASS  ' + n); } catch (e) { fail++; console.log('FAIL  ' + n + '  -> ' + e.message); } };
@@ -54,10 +58,13 @@ t('main.js 里所有 job id 前缀都在两份表里', () => {
 });
 
 t('渲染层用的正则前缀与表一致（抽查）', () => {
-  const files = ['js/tools/media.js', 'js/tools/file-tools.js', 'js/tools/target-size.js'];
+  const files = ['js/tools/media', 'js/tools/file-tools.js', 'js/tools/target-size.js'];
   const used = new Set();
   for (const f of files) {
-    const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    /* 任务 9 之后 'js/tools/media' 是**目录** —— 直接 readFileSync 会 EISDIR。
+     * 这条断言要的是「这些文件里出现的手写正则前缀」，与文件数无关，
+     * 所以目录走 readTree 拼起来（拼接顺序不影响正则扫描结果）。 */
+    const src = fs.statSync(path.join(ROOT, f)).isDirectory() ? readTree(f) : fs.readFileSync(path.join(ROOT, f), 'utf8');
     for (const m of src.matchAll(/\/(\^)?([a-z0-9]+)\\d\+/g)) used.add(m[2]);
   }
   const known = Object.keys(readRendererPrefixes());

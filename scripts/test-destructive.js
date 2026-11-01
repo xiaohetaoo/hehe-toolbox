@@ -1,5 +1,5 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readTree } = require('./lib/harness');
 /* 第五轮审查：破坏性 bug 的回归测试。
  *
  * 本轮的核心是「杜绝破坏性 bug」——用户数据被毁掉比功能失效严重得多。
@@ -13,6 +13,10 @@ const guard = require('../lib/path-guard');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+/* 任务 9 把 media.js 拆成了 js/tools/media/*.js，媒体相关的源码断言
+ * 一律改读整棵树 —— 断言的语义是「媒体工具里有这个实现」，
+ * 与它被拆成几个文件无关。 */
+const readMedia = () => readTree('js/tools/media');
 
 /* 取 main.js 中某个 handle 块的正文。
  *
@@ -168,14 +172,14 @@ t('P1 rec:stop 降级时保留分段目录', () => {
   assert.ok(rmIdx > guardIdx, '分段目录无条件被删');
 });
 t('P1 渲染层会显示 degraded', () => {
-  const s = read('js/tools/media.js');
+  const s = readMedia();
   assert.ok(s.includes('r.degraded'), '渲染层忽略了 degraded');
   assert.ok(s.includes('escapeHtml(r.degraded)'), 'degraded 没有转义就插入 HTML');
 });
 
 /* ================= P1：图片自我覆盖 ================= */
 t('P1 图片压缩输出一律取唯一名（既不盖原图也不盖已有输出）', () => {
-  const s = read('js/tools/media.js');
+  const s = readMedia();
   assert.ok(s.includes('function samePath'), '缺少 samePath 辅助函数（其它地方仍在用）');
   // 现在的做法比 samePath 更严：输出路径无条件过 unique-path，
   // 因此既防「输出==输入」，也防「输出与目录里已有文件同名」。
@@ -183,7 +187,7 @@ t('P1 图片压缩输出一律取唯一名（既不盖原图也不盖已有输�
     '压缩输出没有无条件唯一化');
 });
 t('P1 水印输出一律取唯一名', () => {
-  const s = read('js/tools/media.js');
+  const s = readMedia();
   assert.ok(/const outPath = await invoke\('fs:unique-path', outDir\.replace/.test(s),
     '水印输出没有无条件唯一化');
   assert.ok(s.includes('_wm.'), '没有水印命名逻辑');
@@ -432,7 +436,7 @@ t('P1 两处调用都用 alertBox(文本, 标题) 而不是配置对象', () => 
 
 /* P2-8 音频剪辑固定命名 */
 t('P2 音频剪辑输出名唯一化', () => {
-  const s = read('js/tools/media.js');
+  const s = readMedia();
   assert.ok(/fs:unique-path', src\.replace\(\/\\\.\\w\+\$\/, '_cut\./.test(s), '音频剪辑没有唯一化');
 });
 

@@ -48,10 +48,10 @@
 - `js/tools/launch.js:4` — 'fmtDate' is assigned a value but never used.
 - `js/tools/launch.js:45` — 'i' is assigned a value but never used.
 - `js/tools/life.js:4` — 'confirmBox' is assigned a value but never used.
-- `js/tools/media.js:45` — 'samePath' is defined but never used.
-- `js/tools/media.js:48` — 'pickPaths' is defined but never used.
-- `js/tools/media.js:1425` — 'paused' is assigned a value but never used.
-- `js/tools/media.js:1575` — 'base' is assigned a value but never used.
+- `js/tools/media/shared.js:52` — 'samePath' is defined but never used.
+- `js/tools/media/shared.js:56` — 'pickPaths' is defined but never used.
+- `js/tools/media/screen-rec.js:111` — 'paused' is assigned a value but never used.
+- `js/tools/media/video-frames.js:38` — 'base' is assigned a value but never used.
 - `js/tools/net-tools.js:91` — 'running' is assigned a value but never used.
 - `js/tools/office.js:4` — 'fmtBytes' is assigned a value but never used.
 - `js/tools/security.js:4` — 'renderTable' is assigned a value but never used.
@@ -88,7 +88,7 @@
 - `js/tools/launch.js:155` — 'items' is already declared in the upper scope on line 144 column 15.
 - `js/tools/life.js:293` — 'items' is already declared in the upper scope on line 287 column 15.
 - `js/tools/life.js:303` — 'items' is already declared in the upper scope on line 287 column 15.
-- `js/tools/media.js:1582` — 'r' is already declared in the upper scope on line 1578 column 15.
+- `js/tools/media/video-frames.js:46` — 'r' is already declared in the upper scope on line 1578 column 15.
 - `js/tools/net-tools.js:266` — 'r' is already declared in the upper scope on line 247 column 15.
 - `js/tools/net-tools.js:267` — 'r' is already declared in the upper scope on line 247 column 15.
 - `js/tools/net-tools.js:269` — 'r' is already declared in the upper scope on line 247 column 15.
@@ -105,7 +105,7 @@
 
 ### `no-async-promise-executor`（3 处）
 
-- `js/tools/media.js:14` — Promise executor functions should not be async.
+- `js/tools/media/shared.js:20` — Promise executor functions should not be async.
 - `js/tools/target-size.js:27` — Promise executor functions should not be async.
 - `main.js:3042` — Promise executor functions should not be async.
 
@@ -114,7 +114,7 @@
 | 位置 | 规则 | 问题 | 修法 |
 |---|---|---|---|
 | `js/tools/launch.js` | no-undef | `pickOne` 定义在第一个工具的作用域内，第二个工具（命令收藏）跨作用域引用 → 点「➕ 收藏命令」填完内容后直接 ReferenceError，选择执行环境的弹窗根本不出现 | 把 `pickOne` 提到模块顶层 |
-| `js/tools/media.js:445` | no-undef | `parseTiff` 定义在 `parseExif` 外面，却直接引用 `parseExif` 的形参 `buf` → **带 EXIF 的照片反而看不到参数**（异常被 catch 吞成「未找到 EXIF 信息」），没有 EXIF 的照片却正常 | `parseTiff(buf, start)` 显式传参 |
+| `js/tools/media/exif-view.js` | no-undef | `parseTiff` 定义在 `parseExif` 外面，却直接引用 `parseExif` 的形参 `buf` → **带 EXIF 的照片反而看不到参数**（异常被 catch 吞成「未找到 EXIF 信息」），没有 EXIF 的照片却正常 | `parseTiff(buf, start)` 显式传参（任务 9 拆文件后位于 exif-view.js） |
 
 > 这两处都是 ESLint 的 `no-undef` 抓出来的 —— 语法检查（`node --check`）与所有单元测试都看不见它们，
 > 因为出错路径只在特定输入（命令收藏页 / 带 EXIF 的照片）下才会走到。
@@ -123,7 +123,16 @@
 
 | 位置 | 原来的压制 | 为什么撤掉 |
 |---|---|---|
-| `js/tools/media.js:1432` | `no-shadow` | ESLint 报「Unused eslint-disable directive」：**那里根本没有遮蔽**。`js/tools/media.js:5` 解构出的 `on` 与录制页局部 `const on` 不在同一作用域链上，规则本来就不会触发。这条压制是早期批量加注释时顺手多挂的，它唯一的作用是让 baseline 的计数虚高。撤掉后 `no-shadow` 从 22 处降到 21 处，总计数 75 → 74。 |
+| `js/tools/media/screen-rec.js` | `no-shadow` | ESLint 报「Unused eslint-disable directive」：**那里根本没有遮蔽**。`window.api` 解构出的 `on` 与录制页局部 `const on` 不在同一作用域链上，规则本来就不会触发。这条压制是早期批量加注释时顺手多挂的，它唯一的作用是让 baseline 的计数虚高。撤掉后 `no-shadow` 从 22 处降到 21 处，总计数 75 → 74。
+
+## 任务 9 拆分后行号的位置变化
+
+`js/tools/media.js`（1803 行、16 个工具）已按 register 边界拆成
+`js/tools/media/*.js` 的 17 个文件。上面 6 条压制随代码一起搬到了新文件，
+**处数与规则都没变**（仍是 74 处），只是路径与行号换了。
+`gen-lint-baseline.js` 的文件清单同步改成了 `js/**/*.js`（递归） ——
+否则拆分后它会漏掉 `js/tools/media/` 下的文件，把 media 这 6 条当成
+「问题没了」，本文件就会被写少一截。
 
 ## 生成脚本自身的一道闸（不是压制，是防止文档被静默清空）
 

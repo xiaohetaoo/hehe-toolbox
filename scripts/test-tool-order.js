@@ -36,7 +36,18 @@ function readOrder() {
 /* 从各工具文件里收集注册的 id 与 module。 */
 function readTools() {
   const dir = path.join(ROOT, 'js', 'tools');
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
+  /* 【必须递归】任务 9 把 media.js 拆成了 js/tools/media/*.js 子目录。
+   * 只读顶层的话这 16 个工具会全部消失 —— 个数从 100 掉到 84，
+   * 而 ORDER 表里它们仍然登记着，于是「表里的 id 都能找到工具」那条会
+   * 报一堆「ORDER 登记了但找不到工具」。 */
+  const files = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory()) {
+      for (const n of fs.readdirSync(path.join(dir, e.name)).filter((x) => x.endsWith('.js'))) {
+        files.push(path.join(e.name, n));
+      }
+    } else if (e.name.endsWith('.js')) files.push(e.name);
+  }
   const tools = [];
   for (const f of files) {
     const s = fs.readFileSync(path.join(dir, f), 'utf8');

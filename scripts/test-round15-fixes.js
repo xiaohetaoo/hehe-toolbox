@@ -34,6 +34,10 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+/* 任务 9 把 media.js 拆成 js/tools/media/*.js。「全库扫 Math.max(...arr)」
+ * 关心的只是所有源码文本，与文件数无关，所以目录走 readTree 拼起来。 */
+const { readTree } = require('./lib/harness');
+const readAny = (p) => (p.endsWith('.js') ? read(p) : readTree(p));
 const mainSrc = read('main.js');
 const { stripComments, extractFn } = require(path.join(ROOT, 'lib', 'src-scan'));
 
@@ -509,10 +513,12 @@ t('14a 静态服务用 pipeline（或 res.on(close)) 保证销毁读流', () => 
 /* ==================== 15. Math.max(...arr) ==================== */
 t('15 全库不再用展开传参求极值', () => {
   const files = ['main.js', 'lib/target-size.js', 'lib/dir-move.js', 'lib/links.js',
-    'js/tools/media.js', 'js/tools/net-tools.js', 'js/tools/dev.js'];
+    'js/tools/net-tools.js', 'js/tools/dev.js'];
+  /* 任务 9 拆成 js/tools/media/*.js，这里补上整棵树 */
+  files.push('js/tools/media');
   const bad = [];
   for (const f of files) {
-    const code = stripComments(read(f));
+    const code = stripComments(readAny(f));
     for (const m of code.matchAll(/Math\.(max|min)\s*\(\s*\.\.\./g)) bad.push(f + ' -> ' + m[0]);
   }
   assert.deepStrictEqual(bad, [], '仍在用展开传参（数组一大就 RangeError: Maximum call stack size exceeded）');
