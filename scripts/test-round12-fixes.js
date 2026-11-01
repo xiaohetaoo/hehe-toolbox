@@ -184,9 +184,29 @@ t('③ 扫描开始就做快照，resolveTypes 只作用于快照', () => {
   assert.ok(/await resolveTypes\(snapshot\)/.test(code), 'resolveTypes 应作用于快照');
   assert.ok(/taskItems\.push\(it\)/.test(code), '结果归并应基于与任务一一对应的数组');
   assert.ok(!/const src = state\.items\[i\]/.test(code), '仍按下标从 state.items 取（会错位）');
-  /* 类型未知的条目必须跳过，不能默认按文件查 */
-  assert.ok(/typeof it\.isDir !== 'boolean'\) \{\n\s+\/\*[\s\S]{0,200}?skipped\.push\(it\)/.test(read('js/tools/file-unlock.js')),
-    '类型未知的条目应跳过并记 note，不能默认按文件查');
+  /* 类型未知的条目必须跳过，不能默认按文件查。
+   * 【不要用带换行/缩进的正则去匹配「代码长什么样」】
+   * 早期这里写的是
+   *   /typeof it\.isDir !== 'boolean'\) \{\n\s+\/*...*\/skipped\.push\(it\)/
+   * 它要求「if 后面紧跟注释、再紧跟 skipped.push」，中间多一行注释、
+   * 缩进变一格、注释内容改一句就匹配失败 —— 但代码其实完全正确。
+   * 这种断言守不住行为，只会让无害的改动把 CI 弄红（v0.3.6 就踩了一次）。
+   * 改成剥掉注释与空白后做语义断言：
+   *   ① 存在 `typeof it.isDir !== 'boolean'` 的判断
+   *   ② 该判断之后（下一个 for 迭代之前）确实出现 skipped.push(it) 和 continue
+   * 用「就近窗口」而不是精确版面。 */
+  const raw = read('js/tools/file-unlock.js');
+  const flat = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  /* 这个字符串在文件里出现两次：一次在 resolveTypes 里（筛出未知项去查类型），
+   * 一次在 scanOnce 的建任务循环里（跳过并记 note）。要断的是后者，
+   * 所以取最后一次出现。 */
+  const at = flat.lastIndexOf("typeof it.isDir !== 'boolean'");
+  assert.ok(at >= 0, '找不到「类型未知就跳过」的判断');
+  const win = flat.slice(at, at + 400);
+  assert.ok(/skipped\.push\(\s*it\s*\)/.test(win),
+    '类型未知的条目应记进 skipped（不能默认按文件查）：\n' + win.slice(0, 220));
+  assert.ok(/continue\b/.test(win),
+    '类型未知的条目应 continue 到下一个（不能继续走查询分支）');
   assert.ok(/选择在查询过程中发生了变化/.test(code), '选择变了应提示重扫');
 });
 
