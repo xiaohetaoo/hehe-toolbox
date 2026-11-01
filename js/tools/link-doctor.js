@@ -1,5 +1,6 @@
 /* 模块：文件处理 —— 链接体检（目录联接 / 符号链接） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量表（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, confirmBox, renderTable, guard } = window.ui;
   const { invoke } = window.api;
@@ -65,7 +66,7 @@
         if (!root) return toast('请先填写或选择目录', 'warn');
         resultBox.innerHTML = '<div class="card"><div class="field-hint">扫描中…</div></div>';
         try {
-          const r = await invoke('link:scan', root);
+          const r = await invoke(Channels.CHANNELS.ACL_LINKS.LINK_SCAN, root);
           state.root = root;
           state.result = r;
           render();
@@ -127,7 +128,7 @@
             });
             if (!ok) return;
             try {
-              const res = await invoke('link:remove', deads.map((x) => x.path));
+              const res = await invoke(Channels.CHANNELS.ACL_LINKS.LINK_REMOVE, deads.map((x) => x.path));
               toast(res.advice || '已清理', 'success');
               doScan();
             } catch (e) { toast(e.message, 'error'); }

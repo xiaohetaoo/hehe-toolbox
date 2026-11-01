@@ -21,6 +21,18 @@ function stripComments(s) {
 const mainSrc = read('main.js');
 const fsp = fs.promises;
 
+/* 【任务 6 之后 handle 有两种形态】这两个域的通道名换成了常量：
+ *   handle(dirMoveCh.DIR_MOVE.PRECHECK, ...)   ← 现在
+ *   handle('dir:move-precheck', ...)           ← 迁移前
+ * 所以切片定位不能只写字面量。下面两个小函数两种形态都认。 */
+function handlerPos(code, literal, expr) {
+  const a = code.indexOf("handle('" + literal + "'");
+  if (a >= 0) return a;
+  return code.indexOf("handle(" + expr + ",");
+}
+function precheckAt(code) { return handlerPos(code, "dir:move-precheck", "dirMoveCh.DIR_MOVE.PRECHECK"); }
+function moveAt(code) { return handlerPos(code, "dir:move", "dirMoveCh.DIR_MOVE.MOVE"); }
+
 function extract(name, isAsync) {
   const pat = (isAsync ? 'async function ' : 'function ') + name + '(';
   const start = mainSrc.indexOf(pat);
@@ -130,7 +142,7 @@ t('① 悬空链接仍按字面比较（归一失败不能漏判）', () => {
 
 t('① 预检的 innerLinkCount 用同一份判定', () => {
   const code = stripComments(mainSrc);
-  const seg = code.slice(code.indexOf("handle('dir:move-precheck'"), code.indexOf("handle('dir:move',"));
+  const seg = code.slice(precheckAt(code), moveAt(code));
   assert.ok(/isInsideTree\(linkTargetAbs\(l\), srcAbs\)/.test(seg),
     '预检应复用同一个 isInsideTree（否则界面数字和实际行为对不上）');
 });

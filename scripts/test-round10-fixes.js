@@ -33,6 +33,22 @@ const mainSrc = read('main.js');
 
 /* ================= ① 主体解析 ================= */
 
+/* 【任务 6 之后 handle 有两种形态】这两个域的通道名换成了常量：
+ *   handle(dirMoveCh.DIR_MOVE.PRECHECK, ...)  ← 现在
+ *   handle('dir:move-precheck', ...)      ← 迁移前
+ * 所以切片定位不能只写字面量。这里给出两个能匹配任一形态的正则，
+ * 在各用例里用 code.search(...) 取位置。 */
+/* 【任务 6 之后 handle 有两种形态】这两个域的通道名换成了常量：
+ *   handle(dirMoveCh.DIR_MOVE.PRECHECK, ...)   ← 现在
+ *   handle('dir:move-precheck', ...)           ← 迁移前
+ * 所以切片定位不能只写字面量。下面这两个小函数两种形态都认。 */
+function handlerPos(code, literal, expr) {
+  const a = code.indexOf("handle('" + literal + "'");
+  if (a >= 0) return a;
+  return code.indexOf("handle(" + expr + ",");
+}
+function precheckAt(code) { return handlerPos(code, "dir:move-precheck", "dirMoveCh.DIR_MOVE.PRECHECK"); }
+function moveAt(code) { return handlerPos(code, "dir:move", "dirMoveCh.DIR_MOVE.MOVE"); }
 t('① 单行 icacls：路径含空格 + 裸 SID 不再把路径吃进主体', () => {
   const A = require('../lib/acl-repair.js');
   const line = 'C:' + BS + 'my docs' + BS + 'a.txt S-1-4-500487088-111393684:(I)(W,D,DC)';
@@ -396,7 +412,7 @@ t('⑩ 重建链接时「文件」必须走符号链接分支（不能一律 jun
 
 t('⑩ 预检只走一遍全树（体积 + 链接同一次遍历）', () => {
   const code = stripComments(mainSrc);
-  const seg = code.slice(code.indexOf("handle('dir:move-precheck'"), code.indexOf("handle('dir:move',"));
+  const seg = code.slice(precheckAt(code), moveAt(code));
   assert.ok(/collectLinks\(srcAbs, \{ wantSize: true \}\)/.test(seg), '预检没有用一次遍历同时取体积与链接');
   assert.ok(!/links\.dirSize\(srcAbs\)/.test(seg), '预检里仍在走第二遍（dirSize）');
   assert.ok(/linkCount: treeLinks\.length/.test(seg), 'linkCount 应直接复用遍历结果');

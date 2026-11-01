@@ -10,8 +10,24 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
+/* 取某个通道的 handle 体。
+ *
+ * 【要认两种注册形态】任务 6 把两个域的通道名换成了常量：
+ *   handle('link:remove', ...)                    ← 迁移前
+ *   handle(dirMoveCh.ACL_LINKS.LINK_REMOVE, ...)  ← 迁移后
+ * 只认字面量的话，这两个域的用例会全部误报「找不到 handler」。
+ * 这里先用 lib/channels.js 的同一份表把通道名反查成常量表达式，再两种都试。
+ */
 function body(src, channel) {
-  const start = src.indexOf("handle('" + channel + "'");
+  let start = src.indexOf("handle('" + channel + "'");
+  if (start < 0) {
+    let expr = null;
+    try {
+      const table = require('../lib/channels').flatten();
+      for (const k of Object.keys(table)) if (table[k] === channel) { expr = 'dirMoveCh.' + k; break; }
+    } catch (e) { /* 表不可用时保持字面量行为 */ }
+    if (expr) start = src.indexOf('handle(' + expr + ',');
+  }
   assert.ok(start > 0, '找不到 handler: ' + channel);
   return src.slice(start, src.indexOf('\n});', start));
 }

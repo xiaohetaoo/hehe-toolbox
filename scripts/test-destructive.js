@@ -14,9 +14,21 @@ const guard = require('../lib/path-guard');
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
-/* 取 main.js 中某个 handle 块的正文 */
+/* 取 main.js 中某个 handle 块的正文。
+ *
+ * 【要认两种注册形态】任务 6 把两个域的通道名换成了常量（见 lib/channels.js），
+ * 所以 handle 可能是 handle('link:remove', ...) 也可能是
+ * handle(dirMoveCh.ACL_LINKS.LINK_REMOVE, ...)。后者用表反查后再试。 */
 function handlerBody(src, channel) {
-  const start = src.indexOf("handle('" + channel + "'");
+  let start = src.indexOf("handle('" + channel + "'");
+  if (start < 0) {
+    let expr = null;
+    try {
+      const table = require('../lib/channels').flatten();
+      for (const k of Object.keys(table)) if (table[k] === channel) { expr = 'dirMoveCh.' + k; break; }
+    } catch (e) { /* 表不可用时保持字面量行为 */ }
+    if (expr) start = src.indexOf('handle(' + expr + ',');
+  }
   assert.ok(start > 0, '找不到 handler: ' + channel);
   const end = src.indexOf('\n});', start);
   return src.slice(start, end);

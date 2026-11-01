@@ -1,5 +1,6 @@
 /* 模块：文件处理 —— 目录搬家（复制到新盘 + 在原位建目录联接） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量表（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, confirmBox, renderTable, guard } = window.ui;
   const { invoke } = window.api;
@@ -102,7 +103,7 @@
         if (!state.dst) return toast('请填写新位置', 'warn');
         precheckBox.innerHTML = '<div class="card"><div class="field-hint">校验中…</div></div>';
         try {
-          const r = await invoke('dir:move-precheck', { src: state.src, dst: state.dst });
+          const r = await invoke(Channels.CHANNELS.DIR_MOVE.PRECHECK, { src: state.src, dst: state.dst });
           state.precheck = r;
           state.steps = (r.plan || []).map((s) => Object.assign({}, s, { status: 'idle', note: '' }));
           renderPrecheck();
@@ -350,7 +351,7 @@
 
         let done = false;
         try {
-          const r = await invoke('dir:move', { src: state.src, dst: state.dst });
+          const r = await invoke(Channels.CHANNELS.DIR_MOVE.MOVE, { src: state.src, dst: state.dst });
           done = true;
           toast('搬家完成', 'success');
           stepsBox.appendChild(div('field-hint', { style: { padding: '8px 6px' } }, r.advice || ''));

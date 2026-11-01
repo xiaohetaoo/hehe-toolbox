@@ -1,5 +1,6 @@
 /* 模块：文件处理 —— 权限修复与取得所有权 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量表（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, confirmBox, renderTable, filePicker, guard } = window.ui;
   const { invoke } = window.api;
@@ -75,7 +76,7 @@
         if (!state.target) return toast('请先选择文件/目录，或填一个路径', 'warn');
         resultBox.innerHTML = '<div class="card"><div class="field-hint">诊断中…</div></div>';
         try {
-          const d = await invoke('acl:diagnose', state.target);
+          const d = await invoke(Channels.CHANNELS.ACL_LINKS.ACL_DIAGNOSE, state.target);
           state.diag = d;
           render();
         } catch (e) {
@@ -196,7 +197,7 @@
 
           runBtn.disabled = true;
           try {
-            const r = await invoke('acl:repair', { target: d.path, recursive: isRec });
+            const r = await invoke(Channels.CHANNELS.ACL_LINKS.ACL_REPAIR, { target: d.path, recursive: isRec });
             /* 先存结果，再重查 —— 顺序反了结果就会被抹掉（见 state.repair 的注释） */
             state.repair = r;
             renderRepairResult(r);

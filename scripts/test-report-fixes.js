@@ -16,6 +16,22 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
+/* 【任务 6 之后有两种写法】通道名换成常量后：
+ *   · 渲染层：invoke(Channels.CHANNELS.ACL_LINKS.WHO_LOCKS_DIR, ...)
+ *   · 主进程：handle(dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR, ...)
+ * 而迁移前是字面量 'file:who-locks-dir'。下面两个辅助两种都认，
+ * 断言只关心「有没有调用/注册这个语义通道」，不关心写成什么形式。 */
+function rendererUses(src, literal, expr) {
+  return src.includes("invoke('" + literal + "'") || src.includes(expr);
+}
+function handlerBlock(mainSrc, literal, expr) {
+  let i = mainSrc.indexOf("handle('" + literal + "'");
+  if (i < 0) i = mainSrc.indexOf('handle(' + expr + ',');
+  if (i < 0) return null;
+  const j = mainSrc.indexOf('\n});', i);
+  return mainSrc.slice(i, j > i ? j : i + 3000);
+}
+
 function strip(s) {
   return String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 }
@@ -43,13 +59,13 @@ t('file-unlock 查询前会 await 确认类型（不靠 undefined 猜）', () =>
    * 会落到两批不同对象上（目录被送进文件通道，Restart Manager 整批 ERR 5）。
    * 这里要守住的不变量自始至终是「发查询前必须等类型确认完」，与传什么无关。 */
   assert.ok(/await resolveTypes\([^)]*\)/.test(src), 'scan() 必须先 await 它');
-  assert.ok(/it\.isDir[\s\S]{0,80}invoke\('file:who-locks-dir'/.test(src),
+  assert.ok(/it\.isDir[\s\S]{0,120}(invoke\('file:who-locks-dir'|WHO_LOCKS_DIR)/.test(src),
     '目录应走 file:who-locks-dir 通道');
 });
 
 t('file-unlock 的目录通道真的有调用方（不是死分支）', () => {
   const src = strip(read('js/tools/file-unlock.js'));
-  assert.ok(src.includes("invoke('file:who-locks-dir'"),
+  assert.ok(rendererUses(src, 'file:who-locks-dir', 'ACL_LINKS.WHO_LOCKS_DIR'),
     'file:who-locks-dir 必须有调用方，否则删目录只能得到「没有占用」的错误结论');
 });
 
@@ -118,19 +134,19 @@ t('text:can-reencode 的 note 会区分原生支持与需要系统工具', () =>
  * 只会看到「Restart Manager 查询失败」。 */
 t('file:who-locks-dir 只注册普通文件（目录/链接会让整批查询失败）', () => {
   const main = strip(read('main.js'));
-  const fn = main.match(/handle\('file:who-locks-dir'[\s\S]*?\n\}\);/);
+  const fn = handlerBlock(main, 'file:who-locks-dir', 'dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR');
   assert.ok(fn, '找不到 file:who-locks-dir');
-  assert.ok(/readdir\(dir, \{ withFileTypes: true \}\)/.test(fn[0]),
+  assert.ok(/readdir\(dir, \{ withFileTypes: true \}\)/.test(fn),
     '应用 withFileTypes 拿 Dirent，避免额外 stat 且不跟随链接');
-  assert.ok(/if \(!ent\.isFile\(\)\)/.test(fn[0]),
+  assert.ok(/if \(!ent\.isFile\(\)\)/.test(fn),
     '必须只收普通文件 —— 目录和链接都会让整批查询 ERR 5');
-  assert.ok(/skipped/.test(fn[0]), '跳过的项要如实计数并说明，不假装扫过全部');
+  assert.ok(/skipped/.test(fn), '跳过的项要如实计数并说明，不假装扫过全部');
 });
 
 t('file:who-locks-dir 不再把子目录/链接拼进查询列表', () => {
   const main = strip(read('main.js'));
-  const fn = main.match(/handle\('file:who-locks-dir'[\s\S]*?\n\}\);/);
-  assert.ok(!/names\.slice\(0, 200\)|sample\.map/.test(fn[0]),
+  const fn = handlerBlock(main, 'file:who-locks-dir', 'dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR');
+  assert.ok(!/names\.slice\(0, 200\)|sample\.map/.test(fn),
     '不该再把整批 readdir 结果直接拼成查询列表');
 });
 

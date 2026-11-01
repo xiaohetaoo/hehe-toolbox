@@ -21,7 +21,18 @@ const MAIN = path.join(ROOT, 'main.js');
 /* 主进程注册的通道 */
 function registered() {
   const s = fs.readFileSync(MAIN, 'utf8');
-  return new Set([...s.matchAll(/handle\('([^']+)'/g)].map((m) => m[1]));
+  const set = new Set([...s.matchAll(/handle\('([^']+)'/g)].map((m) => m[1]));
+  /* 【常量化的通道也要算进来】任务 6 把两个域的通道名换成了
+   * handle(dirMoveCh.<组>.<键>, ...)。只扫字面量的话这 8 个通道会从
+   * "已注册"清单里消失 —— 注册总数从 164 掉到 156，而渲染层仍在用它们，
+   * 于是「渲染层引用了没注册的通道」那条会误报。
+   * 这里用 lib/channels.js 的同一份表把常量还原回通道名。 */
+  const chTable = require('../lib/channels').flatten();
+  for (const m of s.matchAll(/handle\(dirMoveCh\.([A-Z_]+)\.([A-Z_]+)\s*,/g)) {
+    const key = m[1] + '.' + m[2];
+    if (chTable[key]) set.add(chTable[key]);
+  }
+  return set;
 }
 
 /* 主进程**主动推送**到渲染层的事件通道（用 send()/webContents.send 发，
@@ -110,6 +121,30 @@ t('三个辅助窗口依赖的通道仍在注册', () => {
 t('注册通道总数仍在其量级（防止误删）', () => {
   assert.ok(reg.size >= 140, '注册通道只剩 ' + reg.size + ' 个，疑似批量误删');
   assert.ok(reg.size <= 200, '注册通道涨到 ' + reg.size + ' 个，疑似重复注册');
+});
+
+/* ---- 6. 常量表里的通道必须"双向都在"（任务 6 的升级）----
+ *
+ * 【这条比原来的文本差集硬得多】
+ * 上面几条是靠**扫源码文本**做差集的：如果主进程与渲染层错成同一个字符串，
+ * 差集为空、测试全绿，但运行时一定「No handler registered」。
+ * 这里改成"比对表"：
+ *   · lib/channels.js 里登记的每个通道，必须①在主进程注册了、
+ *     ②在渲染层有调用点；
+ *   · 并且渲染层用的常量表（js/channels.js）必须与主进程那份逐字一致
+ *     （那条在 scripts/test-channels-sync.js 里做得更细，这里只做一个交叉确认，
+ *      因为两份文件都可能被改坏，多一道闸不吃亏）。
+ */
+t('常量表里的通道：主进程注册 + 渲染层调用 双向都在', () => {
+  const chTable = require('../lib/channels').flatten();
+  const entries = Object.entries(chTable);
+  assert.ok(entries.length > 0, '通道常量表是空的 —— 迁移未生效？');
+  const noReg = entries.filter(([, ch]) => !reg.has(ch)).map(([k, ch]) => k + '→' + ch);
+  assert.deepStrictEqual(noReg, [],
+    '这些通道登记在常量表里但主进程没注册：' + noReg.join(', '));
+  const noCall = entries.filter(([, ch]) => !ref.has(ch)).map(([k, ch]) => k + '→' + ch);
+  assert.deepStrictEqual(noCall, [],
+    '这些通道登记在常量表里但渲染层没有调用点（登记了却没人用 = 未来误删风险）：' + noCall.join(', '));
 });
 
 console.log(`\n注册 ${reg.size} 个通道，渲染层引用 ${ref.size} 个，无人调用 ${[...reg].filter((c) => !ref.has(c)).length} 个`);

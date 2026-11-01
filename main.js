@@ -42,6 +42,9 @@ const lanScanLib = require('./lib/lan-scan');         // 局域网扫描：ARP �
 /* 临时产物命名的**唯一来源**：生成函数与清理白名单在同一个模块里，
  * 避免"新增一种产物忘了登记白名单"（.hehe-7zx-* 那次残留事故的根因）。 */
 const tempNames = require('./lib/temp-names');
+/* IPC 通道名的唯一来源（任务 6）。目前只迁移了目录搬家与权限/链接两个域，
+ * 其余仍是字符串字面量 —— 按 lib/channels.js 里的 TODO 逐轮推进。 */
+const dirMoveCh = require('./lib/channels').CHANNELS;
 bootMark('deps-loaded');
 
 const isMac = process.platform === 'darwin';
@@ -4627,7 +4630,7 @@ async function rmQueryLockers(paths) {
   return { paths: list, missing, lockers: uniq };
 }
 
-handle('file:who-locks', async (e, paths) => {
+handle(dirMoveCh.ACL_LINKS.WHO_LOCKS, async (e, paths) => {
   const r = await rmQueryLockers(paths);
   // 有占用进程时给一条可操作的建议，而不是只回一堆 pid
   if (!r.lockers.length) {
@@ -4641,7 +4644,7 @@ handle('file:who-locks', async (e, paths) => {
 
 /* 一次查多个文件时，也要能查「目录里所有被占用的文件」——
  * 删目录删不掉时最有用。这里只扫一层，避免大目录卡死。 */
-handle('file:who-locks-dir', async (e, dir) => {
+handle(dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR, async (e, dir) => {
   if (!(await pathExists(dir))) throw new Error('目录不存在：' + dir);
   const st = await fsp.stat(dir).catch(() => null);
   if (!st || !st.isDirectory()) throw new Error('不是目录：' + dir);
@@ -4777,7 +4780,7 @@ async function collectLinks(root, opts) {
   return { links: found, scanned, truncated, bytes, files, dirs };
 }
 
-handle('link:scan', async (e, root, opts = {}) => {
+handle(dirMoveCh.ACL_LINKS.LINK_SCAN, async (e, root, opts = {}) => {
   if (!(await pathExists(root))) throw new Error('目录不存在：' + root);
   const r0 = await fsp.stat(root).catch(() => null);
   if (!r0 || !r0.isDirectory()) throw new Error('不是目录：' + root);
@@ -4899,7 +4902,7 @@ handle('link:scan', async (e, root, opts = {}) => {
   };
 });
 
-handle('link:remove', async (e, paths, opts = {}) => {
+handle(dirMoveCh.ACL_LINKS.LINK_REMOVE, async (e, paths, opts = {}) => {
   /* 只允许清理僵尸链接。这一条必须在主进程强制 —— 前端过滤只是体验，
    * 渲染层完全可能构造任意路径调过来。 */
   const list = (Array.isArray(paths) ? paths : [paths]).filter((p) => typeof p === 'string' && p);
@@ -5395,7 +5398,7 @@ async function linkNatures(list) {
  * 高危能力（dir-move），默认关闭。流程见 lib/dir-move.js 顶部注释。
  * 每一步都通过 job:progress 回报，界面上逐步显示而不是一个转圈。
  */
-handle('dir:move-precheck', async (e, { src, dst } = {}) => {
+handle(dirMoveCh.DIR_MOVE.PRECHECK, async (e, { src, dst } = {}) => {
   if (!dirMove) throw new Error('内部错误：搬家模块未加载');
   const srcAbs = path.resolve(String(src || ''));
   const dstAbs = path.resolve(String(dst || ''));
@@ -5552,7 +5555,7 @@ let dirMoveBusy = false;
  *
  * 回报方式：通过 job:stream 逐条推送进度（界面上逐步显示，而不是转圈）。
  * 任何一步失败都会：① 执行回退 ② 把「数据现在在哪」如实告诉用户。 */
-handle('dir:move', async (e, { src, dst, jobId: clientJob } = {}) => {
+handle(dirMoveCh.DIR_MOVE.MOVE, async (e, { src, dst, jobId: clientJob } = {}) => {
   if (dirMoveBusy) throw new Error('已有搬家任务在进行，请等待它完成后再试（或重启应用）。');
   dirMoveBusy = true;
   try {
@@ -5953,7 +5956,7 @@ async function readAclFacts(target) {
   return out;
 }
 
-handle('acl:diagnose', async (e, target) => {
+handle(dirMoveCh.ACL_LINKS.ACL_DIAGNOSE, async (e, target) => {
   const p = String(target || '');
   if (!p) throw new Error('没有指定路径');
   const exists = await pathExists(p);
@@ -6004,7 +6007,7 @@ handle('acl:diagnose', async (e, target) => {
   }, diag);
 });
 
-handle('acl:repair', async (e, opts = {}) => {
+handle(dirMoveCh.ACL_LINKS.ACL_REPAIR, async (e, opts = {}) => {
   const target = String(opts.target || '');
   if (!target) throw new Error('没有指定路径');
   if (!(await pathExists(target))) throw new Error('路径不存在：' + target);

@@ -1,5 +1,6 @@
 /* 模块：文件处理 —— 文件占用解锁（查谁占着文件） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量表（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, confirmBox, filePicker, renderTable, guard } = window.ui;
   const { invoke } = window.api;
@@ -243,8 +244,8 @@
            * 目录那条更常用：删目录失败时，用户通常不知道是里面哪个文件被占。 */
           taskItems.push(it);
           tasks.push(it.isDir
-            ? invoke('file:who-locks-dir', it.path)
-            : invoke('file:who-locks', [it.path]));
+            ? invoke(Channels.CHANNELS.ACL_LINKS.WHO_LOCKS_DIR, it.path)
+            : invoke(Channels.CHANNELS.ACL_LINKS.WHO_LOCKS, [it.path]));
         }
 
         const notes = [];

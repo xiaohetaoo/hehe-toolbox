@@ -732,7 +732,17 @@ t('19 isRunningAsAdmin：查询失败不能永久缓存成 false', () => {
 });
 
 t('19b acl:repair：把「未知」和「确定不是管理员」分开提示', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('acl:repair'"), mainSrc.indexOf('/* ================= IPC: 7z 压缩包'));
+  /* 【任务 6 之后 handle 有两种形态】acl:repair 的通道名换成了常量：
+   *   handle(dirMoveCh.ACL_LINKS.ACL_REPAIR, ...)   ← 现在
+   *   handle('acl:repair', ...)                     ← 迁移前
+   * 只写 indexOf 字面量会拿到 -1，slice(-1, ...) 把几乎整段都吃进来，
+   * 断言就退化成"扫全文件"—— 恰好还能通过，但切片失去了意义。
+   * 这里两种形态都认。 */
+  const lit = mainSrc.indexOf("handle('acl:repair'");
+  const from = lit >= 0 ? lit : mainSrc.indexOf('handle(dirMoveCh.ACL_LINKS.ACL_REPAIR,');
+  assert.ok(from > 0, '找不到 acl:repair 的注册');
+  const to = mainSrc.indexOf('/* ================= IPC: 7z 压缩包');
+  const seg = mainSrc.slice(from, to > from ? to : from + 4000);
   assert.ok(/admin === false/.test(seg), '应显式区分 admin === false');
   assert.ok(/admin === null/.test(seg), '应显式处理 admin === null（查询失败）');
 });
