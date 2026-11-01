@@ -314,6 +314,7 @@
     desc: '大文件按大小拆分为分片，支持清单合并还原',
     keywords: ['分割', '合并', '分片', '拆分'],
     render(page) {
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let tab = 'split';
       const sp = div(''), mg = div('');
       const tabBtn1 = btn('分割文件', 'btn-sm btn-primary', () => switchT('split'));
@@ -830,6 +831,7 @@
     keywords: ['7z', '压缩', '解压', '密码', '分卷', 'rar'],
     render(page) {
       const engineLine = div('field-hint', '检测引擎…');
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let engines = null;
       invoke('seven:status').then((s) => {
         engines = s;

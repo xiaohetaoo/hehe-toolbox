@@ -44,6 +44,17 @@ jobs:
           for f in main.js preload.js lib/*.js js/*.js js/tools/*.js scripts/*.js; do node --check "$f"; done
           echo "syntax OK"
 
+      # ESLint 静态检查：抓 node --check 抓不到的「写成了但引用错」。
+      # 历史证据（都是语法检查与单元测试都看不见的真 bug）：
+      #   · js/app.js 的 finally 引用 try 块内 let dlId（no-undef）
+      #   · js/tools/life.js 的 countIn 创建后从未被读取（no-unused-vars）
+      #   · js/tools/launch.js 的 pickOne 跨作用域引用（no-undef，导致命令收藏页点添加无反应）
+      #   · js/tools/media.js 的 parseTiff 引用 parseExif 的形参 buf（no-undef，带 EXIF 的照片反而报错）
+      # 存量问题已用行级压制登记在 scripts/lint-baseline.md，
+      # 所以这一步的退出码必须是 0；哪天它红了，说明**新增**了问题（那正是要拦的）。
+      - name: Lint (ESLint)
+        run: npm run lint
+
       # 版本号规则：每段 0–9，满 10 进位（0.0.14 不合规，应写 0.1.4）
       - name: Verify version format
         run: npm run version:check

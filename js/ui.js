@@ -1,5 +1,6 @@
 /* UI 组件与工具函数库 */
 (function () {
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { invoke, on, isDesktop } = window.api;
 
   /* ---------- DOM 构建 ---------- */
@@ -174,6 +175,7 @@
      * 压成一长条，横着读几十个文件根本对不上号。confirmBox 里同样的处理。 */
     return modal({ title, body: (b) => b.appendChild(h('div', { style: { userSelect: 'text', whiteSpace: 'pre-wrap' } }, message)), foot: [h('button', { class: 'btn btn-primary', onclick: function () { this.closest('.modal-mask').remove(); } }, '知道了')] });
   }
+  /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
   function promptBox({ title, label = '', value = '', placeholder = '', okText }) {
     // 同 confirmBox：默认文案必须运行时取，否则切语言后不跟随
     if (okText == null) okText = TT('dialog.ok', '确定');
@@ -542,6 +544,7 @@
       /* 【不能 refresh()】refresh 会重建所有行，把各工具已经写进行里的
        * 进度、状态标签、体积对比全部清掉 —— 一锁一定就把「已完成」变回「待处理」。
        * 这里只把已有的删除按钮禁用/启用，并重画表头（表头里有「清空」按钮）。 */
+      /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
       for (const btn of el.querySelectorAll('.fl-del')) btn.disabled = locked;
       renderHead();
     }

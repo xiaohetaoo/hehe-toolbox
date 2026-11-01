@@ -1,9 +1,36 @@
 /* 模块：快捷启动 —— 快捷启动栏 / 命令收藏 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, confirmBox, promptBox, renderTable, fmtDate, nextId } = window.ui;
   const { invoke, isDesktop } = window.api;
   const MOD = 'launch';
+
+  /* 【选择弹窗的统一封装 —— 必须在模块顶层，不能放在某个工具里】
+   *
+   * 它原本定义在「快捷启动」那个 register 的 render() 作用域内，
+   * 而「命令收藏」（同文件第二个 register）的 add() 也调用了它 ——
+   * 那是**跨作用域引用，运行到那一行直接抛 ReferenceError: pickOne is not defined**。
+   * 表现：命令收藏页点「➕ 收藏命令」，填完名称与命令内容后没有任何反应
+   * （选择执行环境的弹窗根本不出现，异常被外层 try/catch 吞掉变成一句 toast）。
+   * 这是 ESLint 的 no-undef 抓出来的（任务 3），不是我看出来的。
+   *
+   * 【为什么要传 onClose】
+   * modal 只在「按钮」里 resolve；点右上角 × 或点遮罩走 close() → onClose()。
+   * 不传 onClose 时 Promise 永不 settle，调用方停在 await，后面的流程全不执行。
+   * 传了之后关闭等同于"取消"（resolve(null)），调用方判空返回即可。 */
+  function pickOne(title, options) {
+    return new Promise((resolve) => {
+      const btns = options.map(([val, label]) =>
+        btn(label, 'btn-secondary', () => { md.close(); resolve(val); }));
+      const md = window.ui.modal({
+        title,
+        body: (b) => { b.appendChild(div('form-row', ...btns)); },
+        foot: [],
+        onClose: () => resolve(null),
+      });
+    });
+  }
 
   register({
     id: 'quick-launch', name: '快捷启动栏', module: MOD, icon: 'zap',
@@ -16,6 +43,7 @@
         list.innerHTML = '';
         if (!items.length) { list.appendChild(div('empty-tip', '还没有快捷项，点「＋ 添加」创建一个')); return; }
         const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' } });
+        /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
         for (const [i, it] of items.entries()) {
           const card = div('tool-card');
           card.style.flexDirection = 'column';
@@ -61,19 +89,9 @@
        * close() → onClose && onClose()，没传就什么都不做。
        * 于是 Promise 永不 settle，add() 停在第一句 await，
        * 后面的输入框再也不出现；用户再点一次「添加」就会叠一个新弹窗。
-       * 现在 onClose 里 resolve(null)，并在 await 之后立刻判空返回。 */
-      function pickOne(title, options) {
-        return new Promise((resolve) => {
-          const btns = options.map(([val, label]) =>
-            btn(label, 'btn-secondary', () => { md.close(); resolve(val); }));
-          const md = window.ui.modal({
-            title,
-            body: (b) => { b.appendChild(div('form-row', ...btns)); },
-            foot: [],
-            onClose: () => resolve(null),
-          });
-        });
-      }
+       * 现在 onClose 里 resolve(null)，并在 await 之后立刻判空返回。
+       * 【注意】实体定义已提到本文件顶层（见文件开头的 pickOne）——
+       * 因为「命令收藏」那个 register 也要用它，跨作用域引用会直接抛 ReferenceError。 */
       async function add() {
         try {
           const type = await pickOne('添加快捷项 - 选择类型', [
@@ -136,6 +154,7 @@
             { key: 'act', title: '操作', width: '220px', render: (r, td) => {
                 td.appendChild(btn('▶ 执行', 'btn-sm btn-primary', () => run(r)));
                 td.appendChild(btn('删除', 'btn-sm btn-text', async () => {
+                  /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
                   const items = await invoke('store:get', 'commands', []);
                   const idx = items.findIndex(x => x.id === r.id);
                   // findIndex 未命中时返回 -1，splice(-1,1) 会误删最后一条，必须先挡住

@@ -201,6 +201,7 @@
       const kws = kwList.join(' ');
       const desc = norm(t.desc);
       const modDef = MODULES.find(m => m.id === t.module);
+      /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
       const modName = norm(modDef ? modDef.name : '');
       let total = 0;
       let ok = true;

@@ -1,5 +1,6 @@
 /* 应用外壳：导航、标签页、搜索、首页、状态栏、设置 */
 (function () {
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, icon, iconLg, toast, confirmBox, switchEl, fmtBytes, btn } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const R = window.Registry;
@@ -20,6 +21,7 @@
   /* ============ 高危功能 ============
      dangerousCaps: 已开启的高危能力 id 列表（来自主进程）
      toolDanger:    工具 id → { caps, enabled }，用于把高危工具卡片标红 */
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   let dangerousCaps = [];
   /* 能力 id → { name, desc }：部分锁的提示卡要复述「这个工具的哪一项被锁」，
    * 名字只能从 dangerous:list 拿（i18n 在主进程侧，见 main.js 的 cap 文案）。 */
@@ -146,6 +148,7 @@
     // 原地更新星标：不重建工具页，避免清空用户未保存的输入/结果
     const starBtn = document.querySelector('.tool-header .th-star');
     if (starBtn && state.view.type === 'tool' && state.view.toolId === toolId) {
+      /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
       const on = state.favorites.includes(toolId);
       starBtn.replaceChildren(icon('star'), on ? T('tool.favorited') : T('tool.favorite'));
     }
@@ -555,6 +558,7 @@
       const lock = div('tc-lock', icon('lock'));
       card.appendChild(lock);
     } else if (showStar) {
+      /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
       const on = state.favorites.includes(t.id);
       const star = div('tc-star' + (on ? ' on' : ''), icon('star'));
       star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(t.id); });

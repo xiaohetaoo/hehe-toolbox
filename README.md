@@ -53,6 +53,25 @@ js/
 - 配置与数据保存在 `%APPDATA%/hehe-toolbox/hehe-data.json`（收藏、最近使用、剪贴板历史、便签、快捷项、命令收藏），全部本地存储。
 - 所有联网功能（公网 IP、翻译、测速）仅在用户主动点击时发起。
 
+## 开发与质量
+
+```bash
+npm test        # 跑全部测试（当前 1106 条断言，约 150 秒）
+npm run lint    # ESLint 静态检查（退出码 0 = 通过）
+```
+
+- **测试骨架**：所有测试脚本共用 `scripts/lib/harness.js`（`t(name, fn)` + `done()`），
+  不要再在单个脚本里自己写一份 `t()`。异步用例直接传 `async` 函数，harness 会等待。
+- **测试断言怎么写**：能用行为断言（跑真实现、断言返回值）就不要写源码断言。
+  源码断言对字面敏感 —— 历史上 3 次 CI 中断都是「实现对了、字面变了」。
+  确实必须写源码断言时，按 `scripts/lib/harness.js` 顶部注释的三点要求写清理由。
+- **ESLint 存量问题**：`scripts/lint-baseline.md` 登记了本轮不修的既有问题（行级压制，
+  不是文件级 disable）。lint 现在是 0 错误 0 警告；**它哪天变红，说明新增了问题**。
+  规则集刻意只开能抓真实 bug 形态的那几条（`no-undef` / `no-unused-vars` /
+  `no-shadow` / `no-dupe-keys` / `no-unreachable` / `no-async-promise-executor` /
+  `eqeqeq` / `no-misleading-character-class`），没开代码风格类规则。
+- 想重新生成压制清单：`node scripts/gen-lint-baseline.js`（它会先还原到压制前状态再重新压制）。
+
 ## 打包发布
 
 ```bash

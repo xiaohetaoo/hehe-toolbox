@@ -1,6 +1,7 @@
 /* 模块：生活辅助 —— 番茄钟 / 日历农历 / 便签待办 / 屏幕标尺 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, confirmBox, promptBox, pad2, fmtDate } = window.ui;
   const { invoke, isDesktop } = window.api;
   const MOD = 'life';
@@ -290,6 +291,7 @@
         for (const it of [...items].sort((a, b) => (a.done - b.done) || (b.time - a.time))) {
           const cb = h('input', { type: 'checkbox', class: 'checkbox', checked: it.done });
           cb.addEventListener('change', async () => {
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             const items = await invoke('store:get', 'notes', []);
             const t = items.find(x => x.id === it.id);
             if (t) t.done = cb.checked;
@@ -300,6 +302,7 @@
             h('span', { style: { flex: '1', textDecoration: it.done ? 'line-through' : 'none', color: it.done ? 'var(--text-3)' : 'var(--text-1)', userSelect: 'text' } }, it.text),
             h('span', { class: 'field-hint' }, fmtDate(it.time, false)),
             btn('删除', 'btn-sm btn-text', async () => {
+              /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
               const items = await invoke('store:get', 'notes', []);
               const idx = items.findIndex(x => x.id === it.id);
               if (idx < 0) { load(); return; } // 重复点击时条目已删，避免 splice(-1) 误删末条

@@ -1,6 +1,7 @@
 /* 模块：文本与编码 —— 编解码转换系列 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { convertLayout, copyText, toast } = window.ui;
   const MOD = 'text';
 
@@ -32,6 +33,7 @@
         heads[1].firstChild.textContent = decodeMode ? '解码结果' : 'Base64';
         run(); // 用双向转换逻辑刷新，box.fire() 只会单向编码
       });
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       const origConvert = box.fire;
       const opts = div('form-row', swapBtn);
       page.appendChild(opts);

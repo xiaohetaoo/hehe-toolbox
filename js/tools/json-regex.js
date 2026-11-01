@@ -1,6 +1,7 @@
 /* 模块：开发调试 —— JSON 格式化 / 正则测试 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, renderTable } = window.ui;
 
   /* ---------- JSON 格式化 ---------- */
@@ -14,6 +15,7 @@
       const indentSel = h('select', { class: 'select input-sm' }, h('option', { value: '2' }, '2 空格'), h('option', { value: '4' }, '4 空格'), h('option', { value: '\t' }, 'Tab'));
       const sortChk = h('input', { type: 'checkbox', class: 'checkbox' });
       const status = h('span', { class: 'field-hint' }, '');
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let lastValid = null;
       function sortKey(v) {
         if (Array.isArray(v)) return v.map(sortKey);

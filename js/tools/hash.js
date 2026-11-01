@@ -1,6 +1,7 @@
 /* 模块：文件处理 —— 文件哈希校验 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, filePicker, fmtBytes, renderTable } = window.ui;
   const { on } = window.api;
 

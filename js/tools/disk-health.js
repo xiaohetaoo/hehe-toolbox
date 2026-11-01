@@ -1,6 +1,7 @@
 /* 模块：系统与硬件 —— 磁盘健康与寿命 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, renderTable, fmtBytes, guard } = window.ui;
   const { invoke } = window.api;
   const MOD = 'system';

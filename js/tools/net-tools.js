@@ -88,6 +88,7 @@
         if (unsubExit) try { unsubExit(); } catch (e) {}
         if (jobId) invoke('job:kill', jobId).catch(() => {});
       });
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let latencies = [], sent = 0, recv = 0, running = false;
       let unsubStream, unsubExit;
       const startBtn = btn('▶ 开始 Ping', 'btn-primary', start);
@@ -263,10 +264,14 @@
         const table = renderTable({
           columns: [
             { key: 'proto', title: '协议', width: '70px' },
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             { key: 'local', title: '本地地址', render: r => div('mono', null, r.local) },
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             { key: 'state', title: '状态', width: '110px', render: r => h('span', { class: r.state === 'LISTENING' ? 'tag tag-green' : 'tag tag-blue' }, r.state) },
             { key: 'pid', title: 'PID', width: '80px' },
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             { key: 'name', title: '进程', render: r => nameMap.get(r.pid) || '-' },
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             { key: 'act', title: '操作', width: '170px', render: (r, td) => {
                 const b1 = btn('任务管理器', 'btn-sm btn-text', () => invoke('exec:stream', { command: 'taskmgr.exe' }).catch(() => toast('启动失败', 'error')));
                 const b2 = btn('结束进程', 'btn-sm btn-danger-plain', async () => {

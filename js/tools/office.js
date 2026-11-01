@@ -1,6 +1,7 @@
 /* 模块：办公文档 —— PDF 处理 / 图片转PDF / PDF转图片 / 翻译 / 占位 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, filePicker, fmtBytes } = window.ui;
   const { invoke } = window.api;
   const MOD = 'office';
@@ -186,6 +187,7 @@
             const r = await invoke('fs:read-file-b64', f);
             const bytes = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
             const img = ext === 'png' ? await doc.embedPng(bytes) : await doc.embedJpg(bytes);
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             const page = doc.addPage([img.width, img.height]);
             page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
           }
@@ -240,6 +242,7 @@
           await invoke('fs:mkdir', outDir);
           const scale = parseFloat(scaleIn.value) || 2;
           for (let i = 1; i <= pdf.numPages; i++) {
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             const page = await pdf.getPage(i);
             const viewport = page.getViewport({ scale });
             const canvas = document.createElement('canvas');

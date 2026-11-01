@@ -14,6 +14,7 @@
 (function () {
   const { register } = window.Registry;
   const { div, btn, toast, filePicker, fmtBytes, progressEl } = window.ui;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { invoke, on, isDesktop } = window.api;
   const MOD = 'media';
 
@@ -24,6 +25,7 @@
   const isAv = (p) => AV_EXT.includes(extOf(p));
 
   function loadImg(path) {
+    /* eslint-disable-next-line no-async-promise-executor -- 历史写法：async 作 Promise executor。改成非 async 会变更异常传播路径，属行为改动，本轮不动 */
     return new Promise(async (resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
@@ -119,6 +121,7 @@
       let runJobId = null;
 
       /* 列表由 picker 渲染；这里只把后台事件映射回行上 */
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：定义了但未使用（删它需同步改测试断言，留给下一轮） */
       function refreshList() {
         files = picker.paths;
       }

@@ -153,6 +153,7 @@
         if (!window.OpenCC) return '⚠ OpenCC 库加载失败';
         try {
           if (!converter || converter._mode !== mode) {
+            /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
             const conf = mode === 's2t' ? 'Locale:zh-CN→zh-TW' : 'Locale:zh-TW→zh-CN';
             converter = window.OpenCC.Converter({ from: mode === 's2t' ? 'cn' : 't', to: mode === 's2t' ? 'tw' : 'cn' });
             converter._mode = mode;
@@ -493,6 +494,7 @@
             const p = await invoke('dialog:save', { defaultPath: 'speech.wav', filters: [{ name: 'WAV', extensions: ['wav'] }] });
             if (!p) return;
             status.textContent = '导出中…';
+            /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
             try { const r = await invoke('tts:wav', { text, out: p, voice: voiceSel.value, rate: +rateIn.value }); status.textContent = '✓ 已导出：' + p; toast('导出完成', 'success'); }
             catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
           }), status),

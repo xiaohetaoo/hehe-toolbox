@@ -14,6 +14,7 @@
   // 注意：必须待在本脚本块内。放在结束标签之后会被 HTML 解析器当正文文本，
   // 页面上直接显示源码，且函数根本没定义——render() 一进“已有选区”分支就抛
   // ReferenceError，选区遮罩/手柄/标注全都被跳过，用户框选时毫无反馈。
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：定义了但未使用（删它需同步改测试断言，留给下一轮） */
   function accentPrimary() {
     try {
       return getComputedStyle(document.documentElement).getPropertyValue('--aux-primary').trim() || '#165DFF';

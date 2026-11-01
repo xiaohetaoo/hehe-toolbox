@@ -1,6 +1,7 @@
 /* 模块：文本与编码/开发调试 —— 进制、时间戳、单位换算、科学计算器 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, fmtNum, pad2, fieldRow } = window.ui;
 
   /* ---------- 进制转换（支持大数 BigInt） ---------- */
@@ -86,6 +87,7 @@
         if (unit === 's') ms *= 1000;
         const d = new Date(ms);
         if (isNaN(d.getTime())) { outGrid.appendChild(div('field-err', '⚠ 无效时间戳')); return; }
+        /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
         const local = d.toLocaleString('zh-CN', { hour12: false });
         const rows = [
           ['本地时间', fmtD(new Date(ms - (useUTC ? 0 : 0)))],
@@ -245,6 +247,7 @@
         historyEl.innerHTML = '';
         if (!history.length) return;
         historyEl.appendChild(div('card-title', '历史记录'));
+        /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
         for (const [i, item] of history.slice(0, 10).entries()) {
           const row = div('form-row', h('span', { class: 'mono', style: { flex: '1', userSelect: 'text', fontSize: '12px', color: 'var(--text-2)' } }, `${item.expr} ${item.val}`),
             btn('填入', 'btn-sm btn-text', () => { input.value = item.expr; fire(); }));

@@ -1,6 +1,7 @@
 /* 模块：开发调试 —— 取色 / 坐标 / 随机生成 / HTTP / 本地服务器 / Markdown / 文档对比 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, fmtBytes, renderTable } = window.ui;
   const { invoke, isDesktop } = window.api;
   const MOD = 'dev';
@@ -13,6 +14,7 @@
     render(page) {
       const preview = h('div', { style: { width: '100%', height: '80px', borderRadius: '8px', border: '1px solid var(--border)' } });
       const inputs = {};
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       const rows = {};
       let updating = false;
       function hexToRgb(hex) {
@@ -291,6 +293,7 @@
             const cs = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
             const arr = new Uint32Array(len);
             const CHUNK = 16384;
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             for (let i = 0; i < len; i += CHUNK) {
               crypto.getRandomValues(arr.subarray(i, Math.min(i + CHUNK, len)));
             }
@@ -376,6 +379,7 @@
       const portIn = h('input', { class: 'input input-sm', type: 'number', value: '8128', style: { width: '100px' } });
       const statusEl = h('span', { class: 'field-hint' }, '未启动');
       const logEl = div('term', '');
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let running = false;
       const startBtn = btn('▶ 启动服务', 'btn-primary', start);
       const stopBtn = btn('■ 停止服务', 'btn-danger-plain', stop);

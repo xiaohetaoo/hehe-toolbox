@@ -11,6 +11,7 @@
   const IMG_FILTER = { name: '图片', extensions: IMG_EXT };
 
   function loadImg(path, blob) {
+    /* eslint-disable-next-line no-async-promise-executor -- 历史写法：async 作 Promise executor。改成非 async 会变更异常传播路径，属行为改动，本轮不动 */
     return new Promise(async (resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
@@ -42,9 +43,11 @@
     const joined = (drive || (abs ? '' : '')) + '/' + out.join('/');
     return joined.replace(/\/+$/, '').toLowerCase();
   }
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：定义了但未使用（删它需同步改测试断言，留给下一轮） */
   function samePath(a, b) {
     try { return normAbs(a) === normAbs(b); } catch (e) { return false; }
   }
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：定义了但未使用（删它需同步改测试断言，留给下一轮） */
   function pickPaths(multi = true) {
     return invoke('dialog:open', { properties: multi ? ['openFile', 'multiSelections'] : ['openFile'], filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] }] });
   }
@@ -434,7 +437,7 @@
             if (marker === 0xE1 && offset + 4 < buf.length) {
               // APP1 check Exif
               const head = String.fromCharCode(...buf.slice(offset + 4, offset + 10));
-              if (head === 'Exif\u0000') return parseTiff(offset + 10);
+              if (head === 'Exif\u0000') return parseTiff(buf, offset + 10);
             }
             if (marker === 0xDA) break; // SOS
             offset += 2 + size;
@@ -442,7 +445,15 @@
           return null;
         } catch (e) { return null; }
       }
-      function parseTiff(start) {
+      /* 【buf 必须作为参数传进来 —— 这是一个真实的 ReferenceError】
+       * parseTiff 定义在 parseExif **外面**（在 render() 的作用域里），
+       * 而 buf 是 parseExif 的形参。原来这里直接用裸 `buf`，走到
+       * 「JPEG 里有 Exif 段」这条分支时必然抛 ReferenceError: buf is not defined，
+       * 被外层 catch 吞掉 → EXIF 卡片上只剩「未找到 EXIF 信息」。
+       * 换句话说：带 EXIF 的照片（也就是绝大多数相机/手机原图）反而看不到参数，
+       * 而**没有** EXIF 的照片看起来正常 —— 表现极具迷惑性。
+       * 这是 ESLint 的 no-undef 抓出来的（任务 3）。 */
+      function parseTiff(buf, start) {
         // DataView 基于完整 buffer，配合 base 偏移读取
         const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
         const base = start;
@@ -1414,8 +1425,10 @@
       const resumeBtn = btn('▶ 继续', 'btn-secondary', () => ctl('rec:resume'));
       const stopBtn = btn('⏹ 停止并保存', 'btn-danger-plain', stop);
       pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let recording = false, paused = false, region = null;
       const camOn = () => {
+        /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
         const on = !!camSel.value;
         camPosSel.disabled = !on; camSizeSel.disabled = !on;
         if (!on) { stopPreview(); camPreviewHint.textContent = '选择摄像头后在此预览'; }
@@ -1564,6 +1577,7 @@
         const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { running = false; toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
         const src = picker.paths[0];
+        /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
         const base = src.split(/[\\/]/).pop().replace(/\.\w+$/, '');
         const outDir = src.replace(/[\\/][^\\/]+$/, '') + '/hehe-frames';
         try { await invoke('fs:mkdir', outDir); } catch (e) {}
@@ -1571,6 +1585,7 @@
         const finalDir = (r && r[0]) ? r[0] : outDir;
         goBtn.disabled = true; outLabel.textContent = '处理中…';
         try {
+          /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
           const r = await invoke('ffmpeg:frames', {
             input: src, outDir: finalDir, mode: modeSel.value,
             ss: timeIn.value.trim(), every: Math.max(1, +everyIn.value || 1),

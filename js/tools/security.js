@@ -1,6 +1,7 @@
 /* 模块：安全与密码 —— 密码生成 / 强度检测 / 剪贴板历史 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, renderTable, fmtDate, switchEl } = window.ui;
   const { invoke } = window.api;
   const MOD = 'security';
@@ -181,6 +182,7 @@
       }
       /* 按统一上限裁剪：**任何**被淘汰的条目（文本或图片）都先走 dropImages，
        * 再截断。这样「文本把图片挤出列表」时对应的 png 也会被回收。 */
+      /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
       async function trimHistory(list) {
         const cap = HISTORY_LIMIT;
         if (list.length <= cap) return list;
@@ -243,6 +245,7 @@
           .filter(x => !q || (x.type === 'text' && x.content.toLowerCase().includes(q)) || (x.type === 'image' && '图片 image 截图'.includes(q)))
           .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.time - a.time);
         if (!items.length) { list.appendChild(div('empty-tip', watching ? '暂无记录，复制点什么试试' : '开启上方开关开始记录剪贴板')); return; }
+        /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
         for (const [i, item] of items.entries()) {
           const card = div('card');
           card.style.padding = '12px';

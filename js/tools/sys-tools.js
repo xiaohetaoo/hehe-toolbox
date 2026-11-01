@@ -1,6 +1,7 @@
 /* 模块：系统与硬件 —— 硬件信息 / 监控 / 进程 / 自启 / 磁盘 / 垃圾 / 空目录 / 快捷操作 */
 (function () {
   const { register } = window.Registry;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, confirmBox, renderTable, fmtBytes, fmtNum, fmtDate, progressEl } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const MOD = 'system';
@@ -63,6 +64,7 @@
             body.appendChild(sectionCard('🔋 电池', batRows));
           }
           if (info.temps && info.temps.length) {
+            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             body.appendChild(sectionCard('🌡 温度', info.temps.map(t => [t.name, t.celsius + ' °C'])));
           }
         } catch (e) {
@@ -570,6 +572,7 @@
       }
       // 以主进程回写的真实注册表状态为准：不再无条件弹「已切换」，
       // 写失败或被系统拒绝时如实报错，避免又一次假阳性。
+      /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
       const apply = (on) => invoke('ctxmenu:classic', on, false).then((r) => {
         const nowOn = !!(r && r.on);
         if (nowOn === !!on) toast(on ? '已切换为经典菜单' : '已恢复 Win11 菜单', 'success');
@@ -752,6 +755,7 @@
       const msgIn = h('input', { class: 'input input-sm', placeholder: '提醒时显示的文字，如「该喝水了」', style: { flex: '1' } });
       const countdown = h('span', { class: 'tag tag-blue' }, '未设置');
       const status = h('span', { class: 'field-hint' }, '');
+      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let timer = null, targetTs = 0, mode = '';
       window.App.onCleanup(() => { if (timer) clearInterval(timer); });
       function fmtLeft(ms) {

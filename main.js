@@ -1965,6 +1965,7 @@ handle('zip:extract', async (e, zipPath, outDir) => {
  * 【实现已抽到 lib/power-gate.js】原因：这段判定原来只存在于本文件，
  * 单元测试为了测它把同样的正则抄了一份，导致 main.js 改动后测试仍全绿（假绿）。
  * 现在 main.js 与 test-powergate.js 都 require 同一个实现，改一处两边同步。 */
+/* eslint-disable-next-line no-unused-vars -- 历史遗留：定义了但未使用（删它需同步改测试断言，留给下一轮） */
 function isPowerCommand(cmd) {
   return powerGate.isPowerCommand(cmd);
 }
@@ -2030,6 +2031,7 @@ handle('exec:stream', (e, { command, args, cwd }) => {
 });
 handle('job:kill', (e, id) => { const j = jobs.get(id); if (j) j.cancel(); return true; });
 // 取消最近一次启动的可取消任务（扫描/测速等，renderer 拿不到 job id 时使用）
+/* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
 let latestCancelable = null;
 /* job:cancel-latest 已移除：全项目没有调用方 —— 渲染层的取消按钮一律走
  * job:kill <id>（带归属校验，不会误杀别人的任务）。
@@ -2692,6 +2694,7 @@ handle('sys:power', async (e, action) => {
   }
 });
 handle('sys:recycle-empty', async () => {
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const r = await ps(`Clear-RecycleBin -Force -ErrorAction Stop`, 20000);
   return true;
 });
@@ -2753,6 +2756,7 @@ handle('hosts:write', async (e, content) => {
     // 第一次那份（可能才是正确的）就没了。
     const name = `hosts-${new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23)}-${crypto.randomBytes(2).toString('hex')}.bak`;
     await fsp.copyFile(HOSTS_PATH, path.join(dir, name));
+    /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
     backedUp = true;
   } catch (err) {
     // 备份失败必须中止：没有退路时覆盖 hosts，一旦写入出问题用户无法恢复原文件。
@@ -2894,6 +2898,7 @@ handle('win:ruler:move', (e, x, y) => {
   const px = Math.round(Number(x) || 0), py = Math.round(Number(y) || 0);
   const disp = screen.getDisplayNearestPoint({ x: px + 20, y: py + 20 });
   const wa = disp.workArea;
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const [bw, bh] = rulerWin.getSize();
   const cx = Math.min(Math.max(px, wa.x - bw + 40), wa.x + wa.width - 40);
   const cy = Math.min(Math.max(py, wa.y), wa.y + wa.height - 40);
@@ -3039,6 +3044,7 @@ const FFMPEG_SOURCES = {
 };
 // 带断点续传与自动重试的下载（大文件在国内网络下易断连）
 function downloadToFile(url, dest, id, ctrl, label) {
+  /* eslint-disable-next-line no-async-promise-executor -- 历史写法：async 作 Promise executor。改成非 async 会变更异常传播路径，属行为改动，本轮不动 */
   return new Promise(async (resolve, reject) => {
     const MAX_RETRY = 6;
     /* 先写任务专属临时文件，校验通过后才原子改名为最终名。
@@ -5664,6 +5670,7 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
   }
 
   const bakPath = srcAbs + '.hehe-bak';
+  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const ctx = { srcPath: srcAbs, dstPath: dstAbs, bakPath, linkPath: srcAbs };
   emit('check', { ok: true });
 
@@ -6355,6 +6362,7 @@ function findSevenFull() {
  * 3) 解压结果先落到任务专属子目录，全部成功后再合并到目标目录，
  *    避免"解了一半失败"留下半成品（见 seven:extract）。
  */
+/* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
 const ARCHIVE_JOB_LIMITS = {
   cancelGraceMs: 5000 // 取消后 5 秒仍未退出则强杀
 };
@@ -6914,6 +6922,7 @@ async function updateApplyImpl(opts = {}) {
   const rollbackScript = path.join(scriptDir, 'rollback.ps1');
   const myPid = process.pid;
   // 注意：$PID 是 PowerShell 自动变量（只读），这里必须换个名字
+  /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
   const ps = [
     '$ErrorActionPreference = "Stop"',
     '$targetPid = ' + myPid,
