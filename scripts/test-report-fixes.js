@@ -1,4 +1,4 @@
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
 /* P1-3 / P2-3 / P3-1 的回归测试（渲染层行为的静态校验 + 真实现行为）。
  *
  * 这三条都是「看起来在跑、其实结论是错的」类缺陷：
@@ -25,8 +25,14 @@ function rendererUses(src, literal, expr) {
   return src.includes("invoke('" + literal + "'") || src.includes(expr);
 }
 function handlerBlock(mainSrc, literal, expr) {
+  /* 任务 5 把这两个域搬到了 ipc/acl-links.js，那里的常量别名是 CH，
+   * 而调用方传进来的是 readMain()（main.js + ipc/ 拼接）。
+   * 所以三种形态都要试：字面量 / dirMoveCh.<键> / CH.<键>。 */
   let i = mainSrc.indexOf("handle('" + literal + "'");
   if (i < 0) i = mainSrc.indexOf('handle(' + expr + ',');
+  if (i < 0 && expr.startsWith('dirMoveCh.')) {
+    i = mainSrc.indexOf('handle(CH.' + expr.slice('dirMoveCh.'.length) + ',');
+  }
   if (i < 0) return null;
   const j = mainSrc.indexOf('\n});', i);
   return mainSrc.slice(i, j > i ? j : i + 3000);
@@ -71,7 +77,7 @@ t('file-unlock 的目录通道真的有调用方（不是死分支）', () => {
 
 /* ---------- P2-3：乱码修复文件模式的编码名 ---------- */
 t('文件分支把候选补成 from/to 形状（保留 label/encodings）', () => {
-  const main = strip(read('main.js'));
+  const main = strip(readMain({ raw: true }));
   const fn = main.match(/handle\('text:detect-encoding'[\s\S]*?\n\}\);/);
   assert.ok(fn, '找不到 text:detect-encoding');
   assert.ok(/from:\s*'原始字节'/.test(fn[0]), '文件模式应给出 from = 原始字节');
@@ -119,7 +125,7 @@ t('GBK 不在 Node 原生编码器里 → 结论必须是「需要系统工具�
 });
 
 t('text:can-reencode 的 note 会区分原生支持与需要系统工具', () => {
-  const main = strip(read('main.js'));
+  const main = strip(readMain({ raw: true }));
   const fn = main.match(/handle\('text:can-reencode'[\s\S]*?\n\}\);/);
   assert.ok(fn, '找不到 text:can-reencode');
   assert.ok(/supported/.test(fn[0]), '应返回 supported 判据');
@@ -133,7 +139,7 @@ t('text:can-reencode 的 note 会区分原生支持与需要系统工具', () =>
  * 而用「目录搬家」搬过的目录里就有一个 junction，用户点「查占用」
  * 只会看到「Restart Manager 查询失败」。 */
 t('file:who-locks-dir 只注册普通文件（目录/链接会让整批查询失败）', () => {
-  const main = strip(read('main.js'));
+  const main = strip(readMain({ raw: true }));
   const fn = handlerBlock(main, 'file:who-locks-dir', 'dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR');
   assert.ok(fn, '找不到 file:who-locks-dir');
   assert.ok(/readdir\(dir, \{ withFileTypes: true \}\)/.test(fn),
@@ -144,7 +150,7 @@ t('file:who-locks-dir 只注册普通文件（目录/链接会让整批查询失
 });
 
 t('file:who-locks-dir 不再把子目录/链接拼进查询列表', () => {
-  const main = strip(read('main.js'));
+  const main = strip(readMain({ raw: true }));
   const fn = handlerBlock(main, 'file:who-locks-dir', 'dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR');
   assert.ok(!/names\.slice\(0, 200\)|sample\.map/.test(fn),
     '不该再把整批 readdir 结果直接拼成查询列表');

@@ -71,7 +71,12 @@ for (const f of ['main.js', 'preload.js', 'index.html', 'package.json']) {
   if (f === 'main.js') body += PROBE_PRE + PROBE;
   fs.writeFileSync(path.join(tmp, f), body);
 }
-for (const d of ['js', 'css', 'lib', 'assets']) {
+/* 【必须把 ipc/ 也拷过去】任务 5 把「目录搬家 + 权限/链接」两个域搬到了
+ * ipc/acl-links.js，main.js 里是 require('./ipc/acl-links')。
+ * 只拷 js/css/lib/assets 的话，临时目录里的应用启动时会直接
+ * MODULE_NOT_FOUND —— 而这个测试只在 SKIP 分支里打日志，
+ * 很容易被当成「环境受限」而不是「漏拷目录」。 */
+for (const d of ['js', 'css', 'lib', 'assets', 'ipc']) {
   try { fs.cpSync(path.join(ROOT, d), path.join(tmp, d), { recursive: true }); } catch (e) {}
 }
 let linked = true;
@@ -80,8 +85,11 @@ catch (e) { linked = false; }
 
 if (!linked) {
   console.log('SKIP 无法链接 node_modules');
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
+  /* 【这里不能读 pass/fail】任务 1 把自建 t() 换成了 harness 的 t/done，
+   * 计数在 harness 内部，这里拿不到（原来的 pass/fail 是旧 t() 的局部变量）。
+   * 而这条分支是「环境受限、主动放弃」，语义上不是失败 —— 直接 exit 0，
+   * 与迁移前 fail===0 时的行为一致。 */
+  process.exit(0);
 }
 
 const env = Object.assign({}, process.env);
@@ -96,8 +104,9 @@ catch (e) { raw = String(e.stdout || '') + String(e.stderr || ''); }
 if (!fs.existsSync(outFile)) {
   console.log('SKIP 探针未落盘（该环境启动真实应用受限）');
   console.log(String(raw).split(/\r?\n/).filter(Boolean).slice(-3).join('\n'));
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
+  /* 同上：pass/fail 是旧 t() 的局部变量，harness 迁移后这里拿不到。
+   * 这条是「环境受限」不是「断言失败」，exit 0。 */
+  process.exit(0);
 }
 
 const R = JSON.parse(fs.readFileSync(outFile, 'utf8'));

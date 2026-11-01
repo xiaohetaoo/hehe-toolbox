@@ -1,5 +1,5 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
 /* 权限修复的纯逻辑测试。
  *
  * 重点：判定要准（区分占用/权限/系统目录）、分寸要守住（只处理用户选中的目标）、
@@ -207,7 +207,8 @@ t('普通拒绝：给出「权限修复」的下一步', () => {
  *   acl:repair 修完复核 gained 恒 false，界面永远说「复核没读到完全控制」。
  * 这是「结论必错」，所以要钉死顺序与参数。 */
 t('readAclFacts 把当前用户名传给 parseIcacls（hasFull 才能正确）', () => {
-  const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  /* 任务 5 把 readAclFacts 搬到了 ipc/acl-links.js —— 这条断言要的是「主进程里有这个实现」，与文件无关，所以读主进程全部源码。 */
+  const mainSrc = readMain({ raw: true });
   const fn = mainSrc.match(/async function readAclFacts\(target\) \{[\s\S]*?\n\}/);
   assert.ok(fn, '找不到 readAclFacts');
   const code = fn[0].replace(/\/\*[\s\S]*?\*\//g, '');

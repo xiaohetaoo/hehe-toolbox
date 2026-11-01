@@ -1,5 +1,5 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
 /* round-12 回归测试。
  *
  *   ① isInsideTree 只比字符串：8.3 短名 / subst / 符号链接父目录等价写法认不出来
@@ -18,7 +18,10 @@ function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 function stripComments(s) {
   return String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 }
-const mainSrc = read('main.js');
+/* 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/acl-links.js：
+ * 这里读「主进程全部源码」（main.js 在前，ipc/ 下的文件按名排序在后）——
+ * 断言的语义是「主进程里有这个实现」，与它被放在哪个文件无关。 */
+const mainSrc = readMain();
 const fsp = fs.promises;
 
 /* 【任务 6 之后 handle 有两种形态】这两个域的通道名换成了常量：

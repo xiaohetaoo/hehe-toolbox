@@ -1,5 +1,5 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
 /* round-10 回归测试：一批「结论会错、门禁会漏」的问题。
  *
  * 编号与报告一致：
@@ -29,7 +29,10 @@ function stripComments(s) {
   return String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 }
 
-const mainSrc = read('main.js');
+/* 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/acl-links.js：
+ * 这里读「主进程全部源码」（main.js 在前，ipc/ 下的文件按名排序在后）——
+ * 断言的语义是「主进程里有这个实现」，与它被放在哪个文件无关。 */
+const mainSrc = readMain();
 
 /* ================= ① 主体解析 ================= */
 

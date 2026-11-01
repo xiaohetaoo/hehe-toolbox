@@ -18,19 +18,45 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const MAIN = path.join(ROOT, 'main.js');
 
-/* 主进程注册的通道 */
+/* 主进程注册的通道。
+ *
+ * 【任务 5 之后必须扫**整个主进程**，不能只读 main.js】
+ * 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/acl-links.js ——
+ * 那 8 个 handle(dirMoveCh.X.Y, ...) 现在不在 main.js 里了。
+ * 只读 main.js 的话，注册总数会从 164 掉到 156，而渲染层仍在用这 8 个通道，
+ * 于是「渲染层引用了没注册的通道」会误报 8 条 —— 看起来像功能被删了。
+ * （这个数字 164→156 在本轮真的出现过一次，就是搬迁刚完成时。）
+ *
+ * 所以这里扫「main.js 加上 ipc/ 目录下的所有 js」，把被搬走的注册也算回来。 */
+function mainProcSources() {
+  const files = [MAIN];
+  const ipcDir = path.join(ROOT, 'ipc');
+  if (fs.existsSync(ipcDir)) {
+    for (const e of fs.readdirSync(ipcDir, { withFileTypes: true })) {
+      if (e.isFile() && e.name.endsWith('.js')) files.push(path.join(ipcDir, e.name));
+    }
+  }
+  return files.map((f) => fs.readFileSync(f, 'utf8'));
+}
+
 function registered() {
-  const s = fs.readFileSync(MAIN, 'utf8');
-  const set = new Set([...s.matchAll(/handle\('([^']+)'/g)].map((m) => m[1]));
-  /* 【常量化的通道也要算进来】任务 6 把两个域的通道名换成了
-   * handle(dirMoveCh.<组>.<键>, ...)。只扫字面量的话这 8 个通道会从
-   * "已注册"清单里消失 —— 注册总数从 164 掉到 156，而渲染层仍在用它们，
-   * 于是「渲染层引用了没注册的通道」那条会误报。
-   * 这里用 lib/channels.js 的同一份表把常量还原回通道名。 */
+  const set = new Set();
   const chTable = require('../lib/channels').flatten();
-  for (const m of s.matchAll(/handle\(dirMoveCh\.([A-Z_]+)\.([A-Z_]+)\s*,/g)) {
-    const key = m[1] + '.' + m[2];
-    if (chTable[key]) set.add(chTable[key]);
+  for (const s of mainProcSources()) {
+    for (const m of s.matchAll(/handle\('([^']+)'/g)) set.add(m[1]);
+    /* 【常量化的通道也要算进来】任务 6 把两个域的通道名换成了
+     * handle(dirMoveCh.<组>.<键>, ...)。只扫字面量的话这 8 个通道会从
+     * "已注册"清单里消失，而渲染层仍在用它们，于是断言误报。
+     * 这里用 lib/channels.js 的同一份表把常量还原回通道名。 */
+    for (const m of s.matchAll(/handle\(dirMoveCh\.([A-Z_]+)\.([A-Z_]+)\s*,/g)) {
+      const key = m[1] + '.' + m[2];
+      if (chTable[key]) set.add(chTable[key]);
+    }
+    /* 搬出去的模块把 CHANNELS 做成了本地别名 CH：handle(CH.DIR_MOVE.MOVE, ...) */
+    for (const m of s.matchAll(/handle\(CH\.([A-Z_]+)\.([A-Z_]+)\s*,/g)) {
+      const key = m[1] + '.' + m[2];
+      if (chTable[key]) set.add(chTable[key]);
+    }
   }
   return set;
 }
@@ -38,10 +64,11 @@ function registered() {
 /* 主进程**主动推送**到渲染层的事件通道（用 send()/webContents.send 发，
  * 渲染层用 api.on() 订阅）。它们本来就不出现在 handle() 里，不算未注册。 */
 function pushedChannels() {
-  const s = fs.readFileSync(MAIN, 'utf8');
   const set = new Set();
   // send('x:y', …) / .send('x:y', …) / splashSend('x:y', …) 等任意 *Send( 调用
-  for (const m of s.matchAll(/(?:\bsend|\w*Send)\(\s*'([^']+)'/g)) set.add(m[1]);
+  for (const s of mainProcSources()) {
+    for (const m of s.matchAll(/(?:\bsend|\w*Send)\(\s*'([^']+)'/g)) set.add(m[1]);
+  }
   return set;
 }
 

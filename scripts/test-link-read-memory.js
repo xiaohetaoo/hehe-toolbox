@@ -1,6 +1,6 @@
 /* 原脚本用 cases 收集 + 串行 for 循环，输出严格按注册顺序。
  * 这里显式指定 order:'sequential' 以保持迁移前的输出顺序不变。 */
-const { createSuite } = require('./lib/harness');
+const { createSuite, readMain } = require('./lib/harness');
 const { t, done } = createSuite({ order: 'sequential' });
 /* P1-5 回归：验证「链接可读性检查」不会把整个文件读进内存。
  *
@@ -32,7 +32,8 @@ const path = require('path');
  * 这里改成 async 顺序执行，最后统一统计。 */
 
 const ROOT = path.resolve(__dirname, '..');
-const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+/* 任务 5 把搬家/权限域搬到 ipc/acl-links.js：读主进程全部源码。 */
+const mainSrc = readMain({ raw: true });
 
 function extract(name) {
   const start = mainSrc.indexOf('async function ' + name + '(');

@@ -26,6 +26,13 @@ const cp = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+/* 【这个脚本必须只读 main.js，不能改 readMain】
+ * 任务 5 把搬家/权限域搬去了 ipc/acl-links.js，但这个脚本的 extract() 与
+ * match() 依赖**单文件内的连续性**：函数体从 indexOf(pat) 开始配平花括号。
+ * 拼成「main.js + ipc/」之后，跨文件边界会让配平跑进下一个文件，
+ * 于是 11 条断言一起报「找不到 xxx」—— 本轮真的踩了。
+ * 这里要验的（runCmd / moveFile / normSchedule / sanitizeCmdError …）本来就
+ * 都留在 main.js 里，所以继续只读 main.js 是正确的边界。 */
 const mainSrc = read('main.js');
 
 function rmDir(dir) {
@@ -720,10 +727,28 @@ t('18 wifi:key：多行 netsh 输出里能取到密码与身份验证', () => {
 
 /* ==================== 19. isRunningAsAdmin 三态 ==================== */
 t('19 isRunningAsAdmin：查询失败不能永久缓存成 false', () => {
-  const i = mainSrc.indexOf('async function isRunningAsAdmin');
-  const j = mainSrc.indexOf('/* 读当前所有者与 ACL 摘要');
-  assert.ok(i > 0 && j > i, '找不到 isRunningAsAdmin');
-  const body = mainSrc.slice(i, j);
+  /* 【任务 5 之后这个函数在 ipc/acl-links.js】这里显式读那个文件，
+   * 而不是复用 mainSrc —— mainSrc 固定是 main.js（见文件头的说明），
+   * 拿它切片会报「找不到 isRunningAsAdmin」。 */
+  const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'acl-links.js'), 'utf8');
+  const i = movedSrc.indexOf('async function isRunningAsAdmin');
+  /* 【右边界用「下一个函数定义」而不是某段注释】
+   * 原来取的是 `/* 读当前所有者与 ACL 摘要` 那段说明注释 —— 搬文件时
+   * 那段长注释没有被一起带过去（它写在 main.js 里的位置被一并删掉了），
+   * 于是 indexOf 返回 -1、断言报「找不到 isRunningAsAdmin」。
+   * 改成配平花括号取整个函数体：与注释排布无关。 */
+  assert.ok(i > 0, '找不到 isRunningAsAdmin（应在 ipc/acl-links.js 里）');
+  let body = '';
+  {
+    const open = movedSrc.indexOf('{', i);
+    let depth = 0, k = open;
+    for (; k < movedSrc.length; k++) {
+      if (movedSrc[k] === '{') depth++;
+      else if (movedSrc[k] === '}') { depth--; if (depth === 0) { k++; break; } }
+    }
+    assert.ok(depth === 0, 'isRunningAsAdmin 括号不配平');
+    body = movedSrc.slice(i, k);
+  }
   assert.ok(!/catch \(err\) \{ _isAdminCache = false; \}/.test(body),
     'catch 里写死 false 并永久缓存 —— 一次瞬时失败会让这个进程余生都自认不是管理员');
   assert.ok(/return null/.test(body), '查询失败应返回 null（未知），由调用方区分处理');
@@ -732,17 +757,20 @@ t('19 isRunningAsAdmin：查询失败不能永久缓存成 false', () => {
 });
 
 t('19b acl:repair：把「未知」和「确定不是管理员」分开提示', () => {
-  /* 【任务 6 之后 handle 有两种形态】acl:repair 的通道名换成了常量：
-   *   handle(dirMoveCh.ACL_LINKS.ACL_REPAIR, ...)   ← 现在
-   *   handle('acl:repair', ...)                     ← 迁移前
-   * 只写 indexOf 字面量会拿到 -1，slice(-1, ...) 把几乎整段都吃进来，
-   * 断言就退化成"扫全文件"—— 恰好还能通过，但切片失去了意义。
-   * 这里两种形态都认。 */
-  const lit = mainSrc.indexOf("handle('acl:repair'");
-  const from = lit >= 0 ? lit : mainSrc.indexOf('handle(dirMoveCh.ACL_LINKS.ACL_REPAIR,');
-  assert.ok(from > 0, '找不到 acl:repair 的注册');
-  const to = mainSrc.indexOf('/* ================= IPC: 7z 压缩包');
-  const seg = mainSrc.slice(from, to > from ? to : from + 4000);
+  /* 【任务 5 之后这个 handler 在 ipc/acl-links.js，常量别名是 CH】
+   * 所以必须显式读那个文件 —— mainSrc 是 main.js。
+   * 三种形态都认：字面量 / dirMoveCh.<键> / CH.<键>。
+   * （只写字面量的话 indexOf 拿到 -1，slice(-1, …) 会把几乎整段吃进来，
+   *  断言退化成"扫全文件"—— 恰好还能过，但切片失去意义。） */
+  const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'acl-links.js'), 'utf8');
+  const lit = movedSrc.indexOf("handle('acl:repair'");
+  const from = lit >= 0 ? lit
+    : movedSrc.indexOf('handle(dirMoveCh.ACL_LINKS.ACL_REPAIR,');
+  assert.ok(from > 0, '找不到 acl:repair 的注册（应在 ipc/acl-links.js 里）');
+  /* 这个 handler 的右边界不取「下一个 handler」—— 那对排版太敏感。
+   * 用定长窗口即可：断言只在这个 handler 里找 admin === false / null 两处，
+   * 而它本身约 3.5k 字符。 */
+  const seg = movedSrc.slice(from, from + 4000);
   assert.ok(/admin === false/.test(seg), '应显式区分 admin === false');
   assert.ok(/admin === null/.test(seg), '应显式处理 admin === null（查询失败）');
 });

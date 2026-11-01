@@ -19,7 +19,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
 const ROOT = path.resolve(__dirname, '..');
 
 /* 主进程表：直接 require（lib/channels.js 是纯 CommonJS，无 DOM 依赖） */
@@ -54,26 +54,38 @@ t('6b 每个键对应的通道名逐字相同（值不同 = 调的不是同一�
     '同一个语义键在两份表里指向不同通道名：\n  ' + diff.join('\n  '));
 });
 
-t('6c 表里的每个通道都真的在 main.js 里注册了', () => {
+t('6c 表里的每个通道都真的在主进程里注册了', () => {
   /* 【这条比"两份表一致"更硬】
    * 两份表可能"一致地错"——都登记了一个并不存在的通道名，
    * 那时 6a/6b 都过，但运行时一定「No handler registered」。
    * 所以必须拿真实的注册清单做交叉验证。
    *
-   * 【注意注册形态有两种】迁移到常量之后，main.js 里写的是
+   * 【注意注册形态有四种】迁移到常量之后写的是
    *   handle(dirMoveCh.DIR_MOVE.MOVE, ...)
    * 而不是 handle('dir:move', ...) —— 所以不能只扫字面量。
-   * 这里解析所有 `handle(<表达式>`，把两种形态都还原成通道名：
-   *   · 字面量 'xxx' → 直接取值
-   *   · dirMoveCh.<组>.<键> → 用 lib/channels.js 的同一份表查出来 */
-  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+   * 任务 5 又把这两个域搬到了 ipc/acl-links.js，那里的常量别名是 CH：
+   *   handle(CH.ACL_LINKS.LINK_REMOVE, ...)
+   * 而且**代码已经不在 main.js 里** —— 只读 main.js 的话这 8 个通道会
+   * 全部报「没有对应注册」（本轮真的报过一次）。所以读「主进程全部源码」：
+   * main.js 在前，ipc/ 下的文件按文件名排序在后。
+   * 这里把三种形态都还原成通道名：
+   *   · 字面量 'xxx'        → 直接取值
+   *   · dirMoveCh.<组>.<键> → 用 lib/channels.js 的同一份表查出来
+   *   · CH.<组>.<键>        → 同上（ipc/acl-links.js 的别名） */
+  /* 【先剥注释再扫】注释里写着 `handle(CH.X.Y, ...)` 这种占位说明，
+   * 不剥的话正则会把 `CH.X.Y` 当成真实注册，还原出一个不存在的键 `X.Y`，
+   * 于是「用了表里不存在的常量键」这条会误报 —— 本轮真的踩了一次。
+   * 这正是 harness 顶部说的「注释不是代码」。 */
+  const mainSrc = require(path.join(ROOT, 'lib', 'src-scan')).stripComments(readMain({ raw: true }));
   const lib = libChannels().flatten();
 
   const registered = new Set();
   /* 1) 字面量注册 */
-  for (const m of mainSrc.matchAll(/handle\('([^']+)'/g)) registered.add(m[1]);
-  /* 2) 常量注册：dirMoveCh.<组>.<键>（后面跟逗号，不能把逗号写进正则的 ')'） */
-  for (const m of mainSrc.matchAll(/handle\(dirMoveCh\.([A-Z_]+)\.([A-Z_]+)\s*,/g)) {
+  const LITERAL = /handle\('([^']+)'/g;
+  for (const m of mainSrc.matchAll(LITERAL)) registered.add(m[1]);
+  /* 2) 常量注册：<别名>.<组>.<键>（后面跟逗号，不能把逗号写进正则的 ')'） */
+  const CONST = /handle\((?:dirMoveCh|CH)\.([A-Z_]+)\.([A-Z_]+)\s*,/g;
+  for (const m of mainSrc.matchAll(CONST)) {
     const key = m[1] + '.' + m[2];
     if (lib[key]) registered.add(lib[key]);
     else registered.add('(未登记常量: ' + key + ')');
@@ -82,12 +94,13 @@ t('6c 表里的每个通道都真的在 main.js 里注册了', () => {
   const missing = Object.entries(lib).filter(([, ch]) => !registered.has(ch))
     .map(([k, ch]) => k + ' → ' + ch);
   assert.deepStrictEqual(missing, [],
-    '这些通道登记在 channels.js 里，但 main.js 没有对应注册：\n  ' + missing.join('\n  '));
+    '这些通道登记在 channels.js 里，但主进程没有对应注册：\n  ' + missing.join('\n  '));
 
-  /* 顺带：不许出现"常量名对不上表"的写法（那种会被当成注册成功但实际无意义） */
+  /* 顺带：不许出现"常量名对不上表"的写法 */
   const bogus = [...registered].filter((x) => x.startsWith('(未登记常量'));
-  assert.deepStrictEqual(bogus, [], 'main.js 用了表里不存在的常量键：' + bogus.join(', '));
+  assert.deepStrictEqual(bogus, [], '主进程用了表里不存在的常量键：' + bogus.join(', '));
 });
+
 
 t('6d 表里的通道名格式合法（域:动作，且不含空格/大写）', () => {
   const lib = libChannels().flatten();

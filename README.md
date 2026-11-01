@@ -48,6 +48,10 @@ js/
   registry.js      工具注册表（插件化：新增工具一行注册，自动进导航+搜索）
   app.js           外壳：路由/标签页/收藏/最近使用/设置页
   tools/*.js       按模块分组的工具实现
+  tools/media/     多媒体工具（任务 9 从 media.js 拆成 17 个文件，shared.js 必须最先加载）
+ipc/
+  ctx.js           主进程闭包状态的显式上下文（窗口/任务表/任务序号/推送）
+  acl-links.js     目录搬家 + 权限/链接两个 IPC 域（任务 5 从 main.js 搬出）
 ```
 
 - 配置与数据保存在 `%APPDATA%/hehe-toolbox/hehe-data.json`（收藏、最近使用、剪贴板历史、便签、快捷项、命令收藏），全部本地存储。
@@ -56,8 +60,8 @@ js/
 ## 开发与质量
 
 ```bash
-npm test        # 跑全部测试（1106 条断言，约 147 秒）
-npm run test:unit  # 纯 node 的测试（不启 Electron、不 spawn 外部进程，约 10 秒）
+npm test        # 跑全部测试（1158 条断言，约 122 秒）
+npm run test:unit  # 纯 node 的测试（不启 Electron、不 spawn 外部进程，约 12 秒）
 npm run test:ui    # 启 Electron / 调外部命令的测试（约 137 秒）
 npm run lint    # ESLint 静态检查（退出码 0 = 通过）
 ```
@@ -71,6 +75,19 @@ npm run lint    # ESLint 静态检查（退出码 0 = 通过）
 - **测试断言怎么写**：能用行为断言（跑真实现、断言返回值）就不要写源码断言。
   源码断言对字面敏感 —— 历史上 3 次 CI 中断都是「实现对了、字面变了」。
   确实必须写源码断言时，按 `scripts/lib/harness.js` 顶部注释的三点要求写清理由。
+
+- **读源码用哪个入口**（拆文件之后这一点最容易踩）：
+
+  | 你要验的是… | 用 |
+  |---|---|
+  | 某个文件里确实有这段实现 | `readSrc('路径')` |
+  | 「一个逻辑单元拆成了多个文件」的整体 | `readTree('目录')`（媒体工具 → `readTree('js/tools/media')`） |
+  | 「主进程里有这个 handler / 函数」 | `readMain()`（main.js + ipc/ 自动拼接） |
+
+  **`readTree` / `readMain` 会破坏「A 出现在 B 之前」这类跨文件顺序断言** ——
+  那种情况必须按明确文件读，或者改成行为断言。`scripts/test-round13-fixes.js`
+  就因为从 `main.js` 改成 `readMain()` 一次性红了 11 条（`extract()` 的花括号配平
+  跨过了文件边界），最后退回只读 main.js。改这类断言前先确认它依赖不依赖单文件连续性。
 - **ESLint 存量问题**：`scripts/lint-baseline.md` 登记了本轮不修的既有问题（行级压制，
   不是文件级 disable）。lint 现在是 0 错误 0 警告；**它哪天变红，说明新增了问题**。
   规则集刻意只开能抓真实 bug 形态的那几条（`no-undef` / `no-unused-vars` /

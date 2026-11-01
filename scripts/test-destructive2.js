@@ -1,5 +1,5 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
 /* 第四轮审查（main.js 破坏性操作专项）的回归测试。
  * 重点覆盖：门禁绕过、系统进程保护、密码脱敏、字段缺失守卫。
  */
@@ -40,7 +40,9 @@ function stripComments(s) {
     .replace(/^\s*\/\/[^\n]*/gm, '');
 }
 
-const main = read('main.js');
+/* 任务 5 把搬家/权限两个域搬到 ipc/acl-links.js：这里读「主进程全部源码」
+ * （main.js + ipc/），断言的语义是「主进程里有这个实现」，与文件无关。 */
+const main = readMain();
 
 /* ---------- P0-1：exec:run 绕过 system-power 门禁 ---------- */
 t('P0 exec:run 对关机/重启命令要求 system-power 授权', () => {

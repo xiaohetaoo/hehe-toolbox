@@ -94,6 +94,34 @@ function readTree(relDir, opts) {
 }
 
 /**
+ * 读「主进程」全部源码：main.js + ipc/ 目录下所有文件，按固定顺序拼接。
+ *
+ * 【为什么需要它】任务 5 把「目录搬家 + 权限/链接」两个域从 main.js 搬到了
+ * ipc/acl-links.js。原来的测试都用 `readSrc('main.js')` 或
+ * `fs.readFileSync('main.js')` 去找 handler / 找函数实现，搬完之后统一报
+ * 「找不到 handler: link:remove」「找不到 rmQueryLockers」—— 而它们要验的
+ * 语义是「主进程里有没有这个实现」，与代码在哪个文件无关。
+ *
+ * 拼接顺序固定为：main.js 在前，ipc/ 下的文件按文件名排序在后。
+ * 这一点对**跨文件的顺序断言**仍然是坏消息 —— 原来断言「A 在 B 之前」，
+ * 现在 A、B 可能分属两个文件。遇到这种断言必须按明确文件读，或者改成
+ * 行为断言。scripts/test-ipc-channels.js 与 test-round10/12 的
+ * handlerPos 属于前一种，它们各自显式处理，不走这个入口。
+ */
+function readMain(opts) {
+  const mainAbs = path.join(ROOT, 'main.js');
+  const parts = [fs.readFileSync(mainAbs, 'utf8')];
+  const ipcDir = path.join(ROOT, 'ipc');
+  if (fs.existsSync(ipcDir)) {
+    for (const n of fs.readdirSync(ipcDir).filter((x) => x.endsWith('.js')).sort()) {
+      parts.push(fs.readFileSync(path.join(ipcDir, n), 'utf8'));
+    }
+  }
+  const joined = parts.join('\n/* ---- 文件分隔 ---- */\n');
+  return (opts && opts.raw) ? joined : srcScan.stripComments(joined);
+}
+
+/**
  * 造一个测试套件。
  * @param {object} [opts]
  * @param {string} [opts.failSep='  -> '] FAIL 与 message 之间的分隔符
@@ -171,12 +199,13 @@ const assert = require('assert');
 const helpers = {
   readSrc,
   readTree,
+  readMain,
   ROOT,
   stripComments: srcScan.stripComments,
   extractFn: srcScan.extractFn,
 };
 
-module.exports = Object.assign({ createSuite, readSrc, readTree }, helpers, { assert });
+module.exports = Object.assign({ createSuite, readSrc, readTree, readMain }, helpers, { assert });
 
 /* 便捷默认实例：绝大多数脚本直接用 `const { t, done } = require('./lib/harness')`。 */
 const defaultSuite = createSuite();

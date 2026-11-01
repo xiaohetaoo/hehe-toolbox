@@ -1,5 +1,5 @@
 'use strict';
-const { t, done, readTree } = require('./lib/harness');
+const { t, done, readTree, readMain } = require('./lib/harness');
 /* 第五轮审查：破坏性 bug 的回归测试。
  *
  * 本轮的核心是「杜绝破坏性 bug」——用户数据被毁掉比功能失效严重得多。
@@ -20,18 +20,28 @@ const readMedia = () => readTree('js/tools/media');
 
 /* 取 main.js 中某个 handle 块的正文。
  *
- * 【要认两种注册形态】任务 6 把两个域的通道名换成了常量（见 lib/channels.js），
- * 所以 handle 可能是 handle('link:remove', ...) 也可能是
- * handle(dirMoveCh.ACL_LINKS.LINK_REMOVE, ...)。后者用表反查后再试。 */
+ * 【要认三种注册形态】任务 6 把两个域的通道名换成了常量（见 lib/channels.js），
+ * 所以 handle 可能是 handle('link:remove', ...) ，也可能是
+ * handle(dirMoveCh.ACL_LINKS.LINK_REMOVE, ...)；而任务 5 把这两个域搬到了
+ * ipc/acl-links.js，那里的常量别名是 CH —— handle(CH.ACL_LINKS.LINK_REMOVE, ...)。
+ * 三种都要认，否则「找不到 handler」会误报（本轮真的出现过）。
+ *
+ * 前提是调用方传进来的是 readMain()（main.js + ipc/ 拼接），不是只有 main.js。 */
 function handlerBody(src, channel) {
   let start = src.indexOf("handle('" + channel + "'");
   if (start < 0) {
-    let expr = null;
+    let key = null;
     try {
       const table = require('../lib/channels').flatten();
-      for (const k of Object.keys(table)) if (table[k] === channel) { expr = 'dirMoveCh.' + k; break; }
+      for (const k of Object.keys(table)) if (table[k] === channel) { key = k; break; }
     } catch (e) { /* 表不可用时保持字面量行为 */ }
-    if (expr) start = src.indexOf('handle(' + expr + ',');
+    if (key) {
+      /* 两种常量别名都试：main.js 用 dirMoveCh，ipc/acl-links.js 用 CH */
+      for (const alias of ['dirMoveCh.', 'CH.']) {
+        const at = src.indexOf('handle(' + alias + key + ',');
+        if (at > 0) { start = at; break; }
+      }
+    }
   }
   assert.ok(start > 0, '找不到 handler: ' + channel);
   const end = src.indexOf('\n});', start);
@@ -48,12 +58,12 @@ function updateScriptBody(src) {
 
 /* ================= P0：fs:delete 无边界 ================= */
 t('P0 fs:delete 有路径闸门', () => {
-  const fn = handlerBody(read('main.js'), 'fs:delete');
+  const fn = handlerBody(readMain(), 'fs:delete');
   assert.ok(fn.includes('pathGuard.checkDeletable'), '没有调用删除闸门');
   assert.ok(fn.includes('pathGuard.err'), '闸门拒绝时没有返回结构化错误');
 });
 t('P0 fs:delete 不再是裸的 fsp.rm', () => {
-  const fn = handlerBody(read('main.js'), 'fs:delete');
+  const fn = handlerBody(readMain(), 'fs:delete');
   assert.ok(!/handle\('fs:delete'.*fsp\.rm\(p, \{ recursive: !!recursive, force: true \}\);/.test(fn),
     '仍是零校验的裸调用');
 });
@@ -81,7 +91,7 @@ t('P0 原子写有覆盖保护', () => {
 
 /* ================= P0：%TEMP% 清理越界 ================= */
 t('P0 fs:scan-junk 的临时项只扫本应用产物', () => {
-  const fn = handlerBody(read('main.js'), 'fs:scan-junk');
+  const fn = handlerBody(readMain(), 'fs:scan-junk');
   assert.ok(fn.includes('ownOnly'), '没有 ownOnly 标记');
   assert.ok(fn.includes('isOwnTempName'), '没有用白名单过滤');
   // 关键：temp 这一项不能把整个 os.tmpdir() 作为 target
@@ -91,7 +101,7 @@ t('P0 fs:scan-junk 的临时项只扫本应用产物', () => {
   assert.ok(!/targets: \[c\.path\]/.test(fn.match(/ownOnly[\s\S]*?continue;/)[0] || ''), 'ownOnly 分支仍用了整个目录');
 });
 t('P0 fs:clean-junk 拒绝清理 %TEMP% 里的非本应用产物', () => {
-  const fn = handlerBody(read('main.js'), 'fs:clean-junk');
+  const fn = handlerBody(readMain(), 'fs:clean-junk');
   assert.ok(fn.includes('tmpRoot'), '没有识别 %TEMP% 根');
   assert.ok(fn.includes('isOwnTempName'), '没有用白名单校验');
   assert.ok(fn.includes('checkDeletable'), '没有系统关键目录闸门');
@@ -153,19 +163,19 @@ t('P1 升级脚本启动失败时保留下载包', () => {
 
 /* ================= P1：hosts 写入 ================= */
 t('P1 hosts:write 备份失败时中止写入', () => {
-  const fn = handlerBody(read('main.js'), 'hosts:write');
+  const fn = handlerBody(readMain(), 'hosts:write');
   assert.ok(fn.includes('backedUp'), '没有记录备份是否成功');
   assert.ok(!/catch \(err\) \{ \/\* 备份失败不阻断/.test(fn), '备份失败仍然继续写入');
 });
 t('P1 hosts:write 不退化成非原子覆盖写', () => {
-  const fn = handlerBody(read('main.js'), 'hosts:write');
+  const fn = handlerBody(readMain(), 'hosts:write');
   assert.ok(!/fsp\.writeFile\(HOSTS_PATH, content/.test(fn), '仍有直接写系统 hosts 的路径');
   assert.ok(fn.includes('rename(tmp, HOSTS_PATH)'), '没有用 rename 原子替换');
 });
 
 /* ================= P1：录制降级 ================= */
 t('P1 rec:stop 降级时保留分段目录', () => {
-  const fn = handlerBody(read('main.js'), 'rec:stop');
+  const fn = handlerBody(readMain(), 'rec:stop');
   const rmIdx = fn.indexOf('fsp.rm(recSegDir');
   const guardIdx = fn.indexOf('if (!degraded)');
   assert.ok(guardIdx > 0, '没有按 degraded 判断是否清理');
@@ -196,7 +206,7 @@ t('P1 水印输出一律取唯一名', () => {
 
 /* ================= P1：proc:kill 自我保护 ================= */
 t('P1 proc:kill 不能杀自己', () => {
-  const fn = handlerBody(read('main.js'), 'proc:kill');
+  const fn = handlerBody(readMain(), 'proc:kill');
   assert.ok(fn.includes('process.pid'), '没有自我保护');
   assert.ok(/n === process\.pid/.test(fn), '没有比较自身 pid');
   assert.ok(fn.includes('Number.isInteger'), '没有校验 pid 合法性');
@@ -204,18 +214,18 @@ t('P1 proc:kill 不能杀自己', () => {
 
 /* ================= P1：merge-parts 路径穿越与覆盖 ================= */
 t('P1 fs:merge-parts 限制清单里的 name 在目录内', () => {
-  const fn = handlerBody(read('main.js'), 'fs:merge-parts');
+  const fn = handlerBody(readMain(), 'fs:merge-parts');
   assert.ok(fn.includes('resolveInside'), '没有限制 man.name 的路径');
 });
 t('P1 fs:merge-parts 指定输出路径时不覆盖已有文件', () => {
-  const fn = handlerBody(read('main.js'), 'fs:merge-parts');
+  const fn = handlerBody(readMain(), 'fs:merge-parts');
   assert.ok(fn.includes('checkOverwritable'), '没有覆盖保护');
   assert.ok(fn.includes('fs.existsSync(finalOut)'), '没有检查目标是否已存在');
 });
 
 /* ================= P1：zip 解压不覆盖 ================= */
 t('P1 zip:extract 同名不覆盖', () => {
-  const fn = handlerBody(read('main.js'), 'zip:extract');
+  const fn = handlerBody(readMain(), 'zip:extract');
   assert.ok(fn.includes('uniqueTarget'), '解压仍会覆盖同名文件');
 });
 t('P1 uniqueTarget 自身有穿越防护', () => {
