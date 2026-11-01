@@ -583,17 +583,14 @@
            （原来是 'dl2'，而 'dl' 是它的真前缀，`dl2123` 会被 FFmpeg 下载页
            误认为是自己的任务，已改成不等长的 dlg），
            监听里只认这个前缀 + 已知 id，别的事件一律忽略，避免被别的任务提前判完成。 */
-        let myPrefixSeen = null;
-        unsub = window.api.on('job:stream', (d) => {
+        /* 【myPrefixSeen 已删除】改用 JobPrefix.subscribe('dlg')，
+         * 它内部维护 claimedId，语义与原来的 "先认领前缀、之后严格比对" 完全一致；
+         * 外层这里只剩 jobId 的业务比对（jobId 是 invoke 返回后才有的，
+         * 用于「取消」时传 job:kill）。 */
+        unsub = window.JobPrefix.subscribe('dlg', (d) => {
           try {
             const j = JSON.parse(d.data);
-            // 还没拿到 jobId 时，只接受下载形态的 id；拿到之后严格比对
-            if (jobId) { if (d.id !== jobId) return; }
-            else {
-              if (!d.id || !/^dlg\d+$/.test(String(d.id))) return;
-              if (!myPrefixSeen) myPrefixSeen = d.id;
-              else if (d.id !== myPrefixSeen) return;
-            }
+            if (jobId && d.id !== jobId) return;
             if (j.pct != null) { prog.set(j.pct); status.textContent = `${(j.mb || 0).toFixed(1)} / ${(j.totalMB || 0).toFixed(1)} MB（${(j.pct || 0).toFixed(0)}%）`; }
             if (j.label && j.pct == null) status.textContent = j.label;
             if (j.done) {

@@ -278,12 +278,14 @@
             if (mode === 'ratio') ratio = parseFloat(String(tierSel.value).split(':')[1]) || 0.5;
             else targetBytes = Math.floor(parseFloat(mbIn.value) * 1000000);
 
-            let seenId = null;
-            const unsub = on('job:stream', (d) => {
+            /* 【seenId 已删除】用 JobPrefix.subscribe('tgt', ..., {mode:'loose'})。
+             * 原实现用的是「只要以 tgt 开头」的宽松前缀，再自己维护 seenId 严格比对；
+             * subscribe 的 loose 模式正是这个语义，claimedId 取代了 seenId。
+             * 保留 loose 而不是改成 strict：主进程的 tgt 任务 id 形态若变了
+             * （例如将来带横杠），strict 会静默失效。 */
+            const unsub = window.JobPrefix.subscribe('tgt', (d) => {
               try {
-                if (!d || !d.id) return;
-                if (runJobId) { if (d.id !== runJobId) return; }
-                else { if (!/^tgt/.test(String(d.id))) return; if (!seenId) seenId = d.id; else if (d.id !== seenId) return; }
+                if (runJobId && d.id !== runJobId) return;
                 const j = JSON.parse(d.data);
                 const idx = avs[j.i] ? files.indexOf(avs[j.i]) : -1;
                 if (idx < 0) return;

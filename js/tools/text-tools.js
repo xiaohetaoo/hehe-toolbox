@@ -459,14 +459,9 @@
         /* job:stream 是全局通道：别的任务（下载/媒体转换/卸载）结束时也会广播 {done:true}，
            不加过滤会把正在进行的朗读误判成「已结束」。主进程 tts 任务 id 以 'tts' 开头，
            拿到真实 jobId 之前先按前缀认领，拿到之后严格比对。 */
-        let seenId = null;
-        unsub = window.api.on('job:stream', (d) => {
+        unsub = window.JobPrefix.subscribe('tts', (d) => {
           try {
-            if (jobId) { if (d.id !== jobId) return; }
-            else {
-              if (!d.id || !/^tts/.test(String(d.id))) return;
-              if (!seenId) seenId = d.id; else if (d.id !== seenId) return;
-            }
+            if (jobId && d.id !== jobId) return;
             const j = JSON.parse(d.data);
             if (j.done) { speakBtn.disabled = false; stopBtn.disabled = true; jobId = null; status.textContent = '✓ 朗读结束'; }
           } catch (e) {}

@@ -2,7 +2,7 @@
 (function () {
   const { register } = window.Registry;
   const { div, btn, toast, copyText, filePicker, fmtBytes, progressEl } = window.ui;
-  const { invoke, on, isDesktop } = window.api;
+  const { invoke, isDesktop } = window.api;
   const MOD = 'media';
 
   /* 图片类工具的通用筛选：拖进来的非图片直接挡掉，而不是收下后处理时报错 */
@@ -579,11 +579,12 @@
         prog.show(); status.textContent = '';
         let unsub = null;
         try {
-          unsub = on('job:stream', (d) => {
-            // 【必须按 id 过滤】ffmpeg 下载任务 id 形如 dl<数字>（文件下载器是 dl2）。
-            // 不过滤的话，任何后台任务的 pct 都会被画进 FFmpeg 下载进度条 ——
-            // 用户看着进度条走到 100% 却发现没装上。
-            if (!/^dl\d+$/.test(String(d.id || ''))) return;
+          unsub = window.JobPrefix.subscribe('dl', (d) => {
+          /* 【必须按 id 过滤】ffmpeg 下载任务 id 形如 dl<数字>（通用下载器现在叫 dlg）。
+           * 不过滤的话，任何后台任务的 pct 都会被画进 FFmpeg 下载进度条 ——
+           * 用户看着进度条走到 100% 却发现没装上。
+           * 复用 JobPrefix.subscribe：'dl' 与 'dlg' 在表里是两个不同前缀，
+           * belongsTo 的「前缀+纯数字」判定天然不会把 dlg123 认成 dl 的任务。 */
             try {
               const j = JSON.parse(d.data);
               if (j.stage === 'extract') { status.textContent = '下载完成，正在解压…'; return; }
@@ -749,12 +750,12 @@
         // 会抓任意任务的第一个 id —— 别的标签页在跑哈希/下载时，
         // 本页拿到的 runJobId 其实是人家的任务，点「取消」杀错对象。
         // 本任务 id 形如 avc<数字>，只认这个前缀；认领之后只认那一个 id。
-        const unsub = on('job:stream', (d) => {
+        const unsub = window.JobPrefix.subscribe('avc', (d) => {
           const jid = String(d.id || '');
-          if (!runJobId) {
-            if (!/^avc\d+$/.test(jid)) return;
-            runJobId = jid;
-          } else if (jid !== runJobId) return;
+            /* 前缀认领已由 subscribe 完成；这里只同步 runJobId（job:kill 要传它）。
+             * runJobId 是业务状态（取消按钮用），与 subscribe 内部的 claimedId 用途不同，
+             * 两边都要维护。 */
+            if (!runJobId) runJobId = jid; else if (jid !== runJobId) return;
           try {
             const j = JSON.parse(d.data);
             const row = picker.list.rowAt(j.i);
@@ -1213,12 +1214,12 @@
         // job id 从流事件里取：invoke 要等全部压制结束才返回，那时已经来不及取消了
         // 【必须按前缀认领】本任务 id 形如 prs<数字>。原因同 av-convert：
         // 不校验归属会抓到别的标签页的任务 id，点「取消」杀错任务。
-        const unsub = on('job:stream', (d) => {
+        const unsub = window.JobPrefix.subscribe('prs', (d) => {
           const jid = String(d.id || '');
-          if (!runJobId) {
-            if (!/^prs\d+$/.test(jid)) return;
-            runJobId = jid;
-          } else if (jid !== runJobId) return;
+            /* 前缀认领已由 subscribe 完成；这里只同步 runJobId（job:kill 要传它）。
+             * runJobId 是业务状态（取消按钮用），与 subscribe 内部的 claimedId 用途不同，
+             * 两边都要维护。 */
+            if (!runJobId) runJobId = jid; else if (jid !== runJobId) return;
           try {
             const j = JSON.parse(d.data);
             const row = picker.list.rowAt(j.i);
