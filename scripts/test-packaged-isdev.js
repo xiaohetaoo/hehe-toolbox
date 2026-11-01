@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 验证打包态 preload 的 isDev 判定（报告二的核心）。
  *
  * 这里的判定是**纯逻辑**：读 process.argv 里的 --hehe-packaged=0/1，
@@ -17,12 +18,6 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const ZIP = process.argv[2] || null;
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* ---------- 1. 取待测源码：优先打包产物 ---------- */
 let preloadSrc, mainSrc, sourceLabel;
@@ -186,5 +181,4 @@ t('判定逻辑完全不引用 app（注入没有 app 的 electron 也不会抛�
   }
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

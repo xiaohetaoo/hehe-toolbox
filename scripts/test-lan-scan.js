@@ -1,14 +1,9 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 局域网扫描纯逻辑测试：ARP 解析、网段计算、结果合并。
  * ARP 输出用的是本机实测的真实格式。 */
 const assert = require('assert');
 const L = require('../lib/lan-scan');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* ---------- ARP 解析：真实格式 ---------- */
 const REAL_ARP = [
@@ -224,5 +219,4 @@ t('isPrivateIp 拒绝非私有段（172.32 不属 172.16/12）', () => {
   assert.strictEqual(L.isPrivateIp('203.0.113.5'), false);
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

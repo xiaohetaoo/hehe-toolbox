@@ -1,3 +1,7 @@
+/* 原脚本用 cases 收集 + 串行 for 循环，输出严格按注册顺序。
+ * 这里显式指定 order:'sequential' 以保持迁移前的输出顺序不变。 */
+const { createSuite } = require('./lib/harness');
+const { t, done } = createSuite({ order: 'sequential' });
 /* P1-5 回归：验证「链接可读性检查」不会把整个文件读进内存。
  *
  * 【这条测试为什么必须存在】
@@ -26,9 +30,6 @@ const path = require('path');
 /* t() 必须能等 async：这几条用例全是异步真 IO，
  * 用同步包装会「先打印 PASS 再让断言失败」，等于把所有失败都吞掉。
  * 这里改成 async 顺序执行，最后统一统计。 */
-let pass = 0, fail = 0;
-const cases = [];
-function t(name, fn) { cases.push([name, fn]); }
 
 const ROOT = path.resolve(__dirname, '..');
 const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
@@ -199,11 +200,4 @@ t('期望目标带 \\\\?\\ 长路径前缀时不应误判（两侧都 realpath �
   } finally { rmDir(root); }
 });
 
-(async () => {
-  for (const [name, fn] of cases) {
-    try { await fn(); pass++; console.log('PASS  ' + name); }
-    catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-  }
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-})();
+done();

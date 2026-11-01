@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* ① 的机制验证：证明「sub 收集 + shellCleanup 统一退订」这个模式真的不累积。
  *
  * 为什么不在 Electron 里直接数监听器：主进程 send 到渲染层的桥在测试环境里
@@ -11,12 +12,6 @@
  *  （它们共用同一个 sub/shellCleanup 实现，另有静态测试确认 9 处都走了 sub）。
  */
 const assert = require('assert');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* 假的事件总线：记录每个事件上还挂着几个回调 */
 function makeBus() {
@@ -106,5 +101,4 @@ t('cleanup 是幂等的（重复调用不会报错）', () => {
   for (const e of EVENTS) assert.strictEqual(bus.count(e), 0, e + ' 应已清空');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

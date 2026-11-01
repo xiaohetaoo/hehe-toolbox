@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* lib/archive-guard.js 的单元测试：恶意条目必须被拒，正常条目必须放行。
  * 用法：node scripts/test-archive-guard.js
  */
@@ -6,11 +7,6 @@ const assert = require('assert');
 const path = require('path');
 const guard = require('../lib/archive-guard');
 
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
 function expectCode(fn, code) {
   let got = null;
   try { fn(); } catch (e) { got = e.code || 'NO_CODE'; }
@@ -121,5 +117,4 @@ t('resolveTarget 正常路径通过', () => {
   assert.ok(tgt.startsWith(root + path.sep), '应落在 root 之内: ' + tgt);
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

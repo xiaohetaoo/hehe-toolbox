@@ -1,4 +1,8 @@
 'use strict';
+/* 原脚本用 cases 收集 + 串行 for 循环，输出严格按注册顺序。
+ * 这里显式指定 order:'sequential' 以保持迁移前的输出顺序不变。 */
+const { createSuite } = require('./lib/harness');
+const { t, done } = createSuite({ order: 'sequential' });
 /* 本轮 8 项修复的回归测试（对应外部报告 1..8 + 两个额外项）。
  *
  * 这些用例的共同特点是：**只测静态文本抓不住，必须测行为或配平**。
@@ -16,9 +20,6 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const mainSrc = read('main.js');
 const BS = String.fromCharCode(92);
 
-let pass = 0, fail = 0;
-const cases = [];
-function t(name, fn) { cases.push([name, fn]); }
 function stripComments(s) {
   return String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 }
@@ -363,11 +364,4 @@ t('额外项2：ownerIsMe 与 mine 共用同一个判定（principalEq）', () =
   assert.strictEqual(typeof A.principalEq, 'function', 'principalEq 应已导出');
 });
 
-(async () => {
-  for (const [name, fn] of cases) {
-    try { await fn(); pass++; console.log('PASS  ' + name); }
-    catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-  }
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-})();
+done();

@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 回归测试：锁死本轮修复的 5 个问题。
  * 每个用例都对应一个真实发生过的 bug —— 只断言“代码里有没有那段字符串”是不够的，
  * 尽量验证行为本身。
@@ -9,11 +10,6 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
 
 /* ---------- P0：snip.html 标注渲染 ----------
  * accentPrimary 曾落在 </script> 之后，被 HTML 解析器当正文：
@@ -195,5 +191,4 @@ t('P3 首页工具数不再硬编码', () => {
   assert.ok(/R\.all\.length/.test(s), '没有从注册表取真实数量');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

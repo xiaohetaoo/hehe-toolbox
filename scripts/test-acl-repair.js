@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 权限修复的纯逻辑测试。
  *
  * 重点：判定要准（区分占用/权限/系统目录）、分寸要守住（只处理用户选中的目标）、
@@ -8,12 +9,6 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const A = require('../lib/acl-repair');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* 以下几条用的都是**真实 icacls 输出格式**（本机实测抓的）：
  * 第一行是「路径 + 主体」，后续行只有主体；权限位前还有 (I) 继承标记。
@@ -279,5 +274,4 @@ t('ownerIsMe 为 true 时一切正常', () => {
   assert.deepStrictEqual(r.codes, [], '不该有任何 codes');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

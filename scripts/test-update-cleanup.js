@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 行为验证：update:cleanup 的判定逻辑（不能靠“代码里有 cmpVer”就算数）。
  * 复刻 main.js 里的取舍规则，在临时目录造出各种版本号的包，看谁被删、谁被留。
  */
@@ -6,12 +7,6 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
 
 function cmpVer(a, b) {
   const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
@@ -97,5 +92,4 @@ t('cmpVer 语义正确', () => {
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

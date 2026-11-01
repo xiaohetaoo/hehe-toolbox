@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 第五轮审查：破坏性 bug 的回归测试。
  *
  * 本轮的核心是「杜绝破坏性 bug」——用户数据被毁掉比功能失效严重得多。
@@ -12,11 +13,7 @@ const guard = require('../lib/path-guard');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
+
 /* 取 main.js 中某个 handle 块的正文 */
 function handlerBody(src, channel) {
   const start = src.indexOf("handle('" + channel + "'");
@@ -419,5 +416,4 @@ t('main.js 没有重复注册的 IPC 通道', () => {
     '重复注册会让应用启动即报 "Attempted to register a second handler" 并卡死');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

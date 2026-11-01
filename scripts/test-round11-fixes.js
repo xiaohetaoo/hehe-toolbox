@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* round-11 回归测试：五个问题各一组。
  *
  *   ① 源目录内部的链接搬家后变死链（必须改写目标）
@@ -22,20 +23,6 @@ function stripComments(s) {
 
 const mainSrc = read('main.js');
 const fsp = fs.promises;
-
-let pass = 0, fail = 0;
-const pending = [];
-function t(name, fn) {
-  try {
-    const r = fn();
-    if (r && typeof r.then === 'function') {
-      pending.push(r.then(
-        () => { pass++; console.log('PASS  ' + name); },
-        (e) => { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-      ));
-    } else { pass++; console.log('PASS  ' + name); }
-  } catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* 从 main.js 里抽出单个函数体（保持与真实实现同一份源码，不复刻逻辑） */
 function extract(name, isAsync) {
@@ -477,7 +464,4 @@ t('附带：link:scan 的类型查询失败不再全静默，且类型真的显�
   assert.ok(/key: 'linkType'/.test(ui), '一直在算 linkType 却没显示过（那条提示会变成空话）');
 });
 
-Promise.all(pending).then(() => {
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-});
+done();

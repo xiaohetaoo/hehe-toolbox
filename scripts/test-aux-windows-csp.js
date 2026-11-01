@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 三个辅助窗口的 CSP 收紧后，必须确认它们仍能正常工作（P3-4 的回归测试）。
  *
  * 检查三件事：
@@ -22,11 +23,6 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* 每个窗口有两个脚本块，都必须留在原位置（合并会破依赖 DOM 的那部分） */
 const WINDOWS = [
@@ -132,5 +128,4 @@ t('测试脚本不调用会弹可见窗口的通道', () => {
     '这些测试会弹出全屏/置顶窗口，必须改掉：\n  ' + offenders.join('\n  '));
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

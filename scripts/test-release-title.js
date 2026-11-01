@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* Release 标题钉死的回归测试。
  *
  * 背景：v0.2.6 发布时 Release 本体成功（draft=false、2 个资产都 uploaded），
@@ -21,12 +22,6 @@ const { spawn } = require('child_process');
 const SCRIPT = path.join(__dirname, 'fix-release-title.js');
 const TAG = 'v0.2.6';
 const WANT = '核核工具箱 v0.2.6';
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* 假 GitHub：记录每次请求；PATCH 只在 Content-Type 是 JSON 时真正改标题，
  * 否则模拟真实 GitHub 的行为——200 OK 但 name 保持不变。 */
@@ -249,6 +244,5 @@ function runScript(env, args) {
     });
   }
 
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
+done();
 })();

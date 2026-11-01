@@ -1,4 +1,8 @@
 'use strict';
+/* 原脚本用 cases 收集 + 串行 for 循环，输出严格按注册顺序。
+ * 这里显式指定 order:'sequential' 以保持迁移前的输出顺序不变。 */
+const { createSuite } = require('./lib/harness');
+const { t, done } = createSuite({ order: 'sequential' });
 /* 第 15 轮修复项的回归测试。
  *
  * 每一条都对应一个**先复现、再修**的真实缺陷。能跑真实现的都抽真函数跑；
@@ -33,9 +37,6 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const mainSrc = read('main.js');
 const { stripComments, extractFn } = require(path.join(ROOT, 'lib', 'src-scan'));
 
-let pass = 0, fail = 0;
-const cases = [];
-function t(name, fn) { cases.push([name, fn]); }
 function rmDir(dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {} }
 
 /* 从 main.js 抽出某个 handle(..., async (e, ...args) => { ... }) 的完整回调函数。
@@ -614,11 +615,4 @@ t('17c 行为：带/不带尾斜杠扫描同一个目录，根统计一致', asy
 });
 
 /* ==================== 执行 ==================== */
-(async () => {
-  for (const [name, fn] of cases) {
-    try { await fn(); pass++; console.log('PASS  ' + name); }
-    catch (e) { const m = e && e.message ? String(e.message).split('\n')[0] : String(e); fail++; console.log('FAIL  ' + name + '  -> ' + m); }
-  }
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-})();
+done();

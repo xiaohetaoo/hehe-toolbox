@@ -1,4 +1,8 @@
 'use strict';
+/* 原脚本用 cases 收集 + 串行 for 循环，输出严格按注册顺序。
+ * 这里显式指定 order:'sequential' 以保持迁移前的输出顺序不变。 */
+const { createSuite } = require('./lib/harness');
+const { t, done } = createSuite({ order: 'sequential' });
 /* 本轮（第 13 轮全量审查）修复项的回归测试。
  *
  * 每一项都对应一个**已经复现出来的真实缺陷**，所以测试的重点不是「代码长什么样」，
@@ -24,9 +28,6 @@ const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const mainSrc = read('main.js');
 
-let pass = 0, fail = 0;
-const cases = [];
-function t(name, fn) { cases.push([name, fn]); }
 function rmDir(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); }
   catch (e) { try { cp.execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', dir], { windowsHide: true }); } catch (e2) {} }
@@ -1037,11 +1038,4 @@ t('36 rec:stop：GIF 目标名不能因为文件名含点而跑偏', () => {
   assert.ok(/if \(!gifPreexisted\)/.test(seg), '删除必须被 gifPreexisted 守卫');
 });
 
-(async () => {
-  for (const [name, fn] of cases) {
-    try { await fn(); pass++; console.log('PASS  ' + name); }
-    catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-  }
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-})();
+done();

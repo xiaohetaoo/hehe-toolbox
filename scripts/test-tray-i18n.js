@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* ④b 的**行为**验证：托盘文案真的会随语言切换。
  *
  * 静态测试只能证明「源码里没有写死中文」，证明不了「切语言时真的重建了」。
@@ -18,16 +19,9 @@ const { execFileSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const ELECTRON = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
 
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
-
 if (!fs.existsSync(ELECTRON)) {
   console.log('SKIP 没有 electron.exe（静态部分已在 test-round8-fixes.js 覆盖）');
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
+done();
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'traylang-'));
@@ -69,7 +63,6 @@ const PROBE_PRE = `
 let uiLangBeforeProbe = null;
 app.whenReady().then(() => { setTimeout(() => { try { uiLangBeforeProbe = uiLang; } catch (e) {} }, 6000); });
 `;
-
 
 for (const f of ['main.js', 'preload.js', 'index.html', 'package.json']) {
   const src = path.join(ROOT, f);
@@ -140,5 +133,4 @@ t('渲染层启动时通过 app:set-lang 把语言传给了主进程', () => {
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

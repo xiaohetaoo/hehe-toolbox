@@ -1,15 +1,10 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 目录搬家的校验与状态机测试（纯逻辑，不碰真实磁盘）。
  * 搬家出错就是数据事故，所以这些规则必须逐条钉死。
  */
 const assert = require('assert');
 const D = require('../lib/dir-move');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 const OK = {
   src: 'C:\\Users\\u\\bigdir', dst: 'D:\\backup\\bigdir',
@@ -211,5 +206,4 @@ t('每个阶段都有明确的回退说明（不允许出现 no-op 的未知分�
   }
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

@@ -1,14 +1,9 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 磁盘健康库测试。重点验证「诚实处理缺失数据」这一点。
  */
 const assert = require('assert');
 const H = require('../lib/disk-health');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* ---------- 缺失数据：绝不填 0 ---------- */
 t('拿不到的字段保持 null，不会被填成 0', () => {
@@ -160,5 +155,4 @@ t('HealthStatus 为 Warning 时判 bad', () => {
   assert.strictEqual(r.disks[0].verdict.level, 'bad', 'Warning 必须判 bad');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

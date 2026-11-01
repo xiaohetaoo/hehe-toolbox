@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 第四轮审查（main.js 破坏性操作专项）的回归测试。
  * 重点覆盖：门禁绕过、系统进程保护、密码脱敏、字段缺失守卫。
  */
@@ -8,11 +9,7 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
+
 function body(src, channel) {
   const start = src.indexOf("handle('" + channel + "'");
   assert.ok(start > 0, '找不到 handler: ' + channel);
@@ -207,5 +204,4 @@ t('P2 hosts 备份名精确到毫秒且带随机后缀', () => {
   assert.ok(/hosts-\$\{new Date\(\)[\s\S]{0,120}crypto\.randomBytes\(2\)/.test(main), '没有随机后缀');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

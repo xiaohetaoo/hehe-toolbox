@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 乱码修复核心逻辑测试。
  *
  * 重点验证「能真正接到东西」而不是只返回空壳：
@@ -6,12 +7,6 @@
  */
 const assert = require('assert');
 const m = require('../lib/mojibake');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* ---- 1. 打分函数：好文本 vs 垃圾 ---- */
 t('自然中文比乱码得分高得多', () => {
@@ -126,5 +121,4 @@ t('锟斤拷输入会给出说明', () => {
   assert.ok(r.note.indexOf('锟斤拷') !== -1, '说明里应提到锟斤拷');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

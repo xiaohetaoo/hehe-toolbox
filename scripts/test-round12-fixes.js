@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* round-12 回归测试。
  *
  *   ① isInsideTree 只比字符串：8.3 短名 / subst / 符号链接父目录等价写法认不出来
@@ -19,20 +20,6 @@ function stripComments(s) {
 }
 const mainSrc = read('main.js');
 const fsp = fs.promises;
-
-let pass = 0, fail = 0;
-const pending = [];
-function t(name, fn) {
-  try {
-    const r = fn();
-    if (r && typeof r.then === 'function') {
-      pending.push(r.then(
-        () => { pass++; console.log('PASS  ' + name); },
-        (e) => { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-      ));
-    } else { pass++; console.log('PASS  ' + name); }
-  } catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 function extract(name, isAsync) {
   const pat = (isAsync ? 'async function ' : 'function ') + name + '(';
@@ -295,7 +282,4 @@ t('④ main.js 确实会以 SRC_IS_LINK 拒绝再搬一次（界面说法要对�
   assert.ok(/链接/.test(r.reason), '理由要提到链接：' + r.reason);
 });
 
-Promise.all(pending).then(() => {
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-});
+done();

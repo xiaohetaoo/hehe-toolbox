@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* round-10 回归测试：一批「结论会错、门禁会漏」的问题。
  *
  * 编号与报告一致：
@@ -26,20 +27,6 @@ const BS = String.fromCharCode(92);
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 function stripComments(s) {
   return String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-}
-
-let pass = 0, fail = 0;
-const pending = [];
-function t(name, fn) {
-  try {
-    const r = fn();
-    if (r && typeof r.then === 'function') {
-      pending.push(r.then(
-        () => { pass++; console.log('PASS  ' + name); },
-        (e) => { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-      ));
-    } else { pass++; console.log('PASS  ' + name); }
-  } catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
 }
 
 const mainSrc = read('main.js');
@@ -458,7 +445,4 @@ t('⑩ 锟斤拷这类字符串乱码现在能修（借 .NET 的 CP936 编码器
 });
 
 /* 等异步用例结束 */
-Promise.all(pending).then(() => {
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-});
+done();

@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* IPC 通道审计（P2-5 的回归测试）。
  *
  * 作用：对比「主进程注册的通道」与「渲染层实际调用的通道」，
@@ -16,12 +17,6 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const MAIN = path.join(ROOT, 'main.js');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 /* 主进程注册的通道 */
 function registered() {
@@ -118,5 +113,4 @@ t('注册通道总数仍在其量级（防止误删）', () => {
 });
 
 console.log(`\n注册 ${reg.size} 个通道，渲染层引用 ${ref.size} 个，无人调用 ${[...reg].filter((c) => !ref.has(c)).length} 个`);
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

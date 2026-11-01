@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 破坏性操作安全网测试（lib/path-guard.js）。
  *
  * 这些断言守护的是「用户数据被毁掉」的场景，比功能 bug 更严重。
@@ -7,12 +8,6 @@ const assert = require('assert');
 const path = require('path');
 const os = require('os');
 const guard = require('../lib/path-guard');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
 
 /* ---------- 文件名检查 ---------- */
 t('正常文件名通过', () => {
@@ -165,5 +160,4 @@ t('normalizeForCompare 归一化正确', () => {
   assert.strictEqual(guard.normalizeForCompare('C:\\A.\\B.'), 'c:\\a\\b');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

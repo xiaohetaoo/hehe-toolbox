@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* ① 防重入标志回归测试：不许再有「置 true 之后提前 return 却不复位」的分支。
  *
  * 背景：这类 bug 一共出现过 7 次，后果都一样 —— 按钮永久失去响应，
@@ -16,25 +17,8 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-let pass = 0, fail = 0;
-const pending = [];
 
 /* 支持异步用例：把 promise 收集起来，最后统一等待 */
-function t(name, fn) {
-  try {
-    const r = fn();
-    if (r && typeof r.then === 'function') {
-      pending.push(r.then(
-        () => { pass++; console.log('PASS  ' + name); },
-        (e) => { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-      ));
-    } else {
-      pass++; console.log('PASS  ' + name);
-    }
-  } catch (e) {
-    fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message));
-  }
-}
 
 /* ---------- 从 ui.js 抽出**真实** guard 实现（不复刻逻辑） ---------- */
 function loadGuard() {
@@ -273,7 +257,4 @@ t('guard 包装后并发双击只跑一次（新工具的防重入真的生效�
 });
 
 /* 等所有异步用例结束 */
-Promise.all(pending).then(() => {
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-});
+done();

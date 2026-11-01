@@ -1,13 +1,8 @@
+const { t, done } = require('./lib/harness');
 // 纯函数回归测试（不依赖 Electron），覆盖本轮修复的关键逻辑：
 // 进制转换负数、Unicode emoji 往返、JSON null 形态、密码破解时间分档、ping 行解析。
 // 用法：node scripts/test-lib.js
 const assert = require('assert');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
 
 /* ---- 1. convert.js 负数 + 进制 ---- */
 function toAll(val, from) {
@@ -100,5 +95,4 @@ t('ping 超时行不误判为成功', () => {
   assert.ok(!('请求超时。'.match(RE1) || '请求超时。'.match(RE2)));
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

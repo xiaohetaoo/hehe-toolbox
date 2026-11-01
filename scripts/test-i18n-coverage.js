@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 英文界面的设置页不能有中文残留（P1-2 的回归测试）。
  *
  * 做法：不启动 Electron，直接分析 js/app.js 的源文本——
@@ -16,12 +17,6 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const APP = path.join(ROOT, 'js', 'app.js');
 const I18N = path.join(__dirname, '..', 'js', 'i18n.js');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 const CJK = /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/;
 
@@ -332,5 +327,4 @@ t('regexAllowed：除号与正则要能分开', () => {
   assert.strictEqual(regexAllowed('typeof x '), false, 'typeof 后跟标识符，再之后是除号');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

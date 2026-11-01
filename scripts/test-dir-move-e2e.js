@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 目录搬家端到端实测：在真实目录上跑完整条链，验证每个后置条件。
  *
  * 这是本项目最危险的功能（最坏情况是「源目录删了、链接是坏的、数据在别处」），
@@ -17,20 +18,6 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const links = require('../lib/links');
 const D = require('../lib/dir-move');
-
-let pass = 0, fail = 0;
-const pending = [];
-function t(name, fn) {
-  try {
-    const r = fn();
-    if (r && typeof r.then === 'function') {
-      pending.push(r.then(
-        () => { pass++; console.log('PASS  ' + name); },
-        (e) => { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-      ));
-    } else { pass++; console.log('PASS  ' + name); }
-  } catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 function pickOtherDrive() {
   for (const L of ['D', 'E', 'F']) {
@@ -210,7 +197,4 @@ t('链接体检能正确分类真实链接', async () => {
   }
 });
 
-Promise.all(pending).then(() => {
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
-});
+done();

@@ -1,4 +1,11 @@
 'use strict';
+/* 【为什么要 sequential】原脚本的 t() 是同步的，但 ④a 那条用例返回 Promise ——
+ * 原版拿到 Promise 就立刻打 PASS（不等它），所以它在输出里排在 ④c 之前。
+ * 那是原版的**隐患**：异步断言失败时没人接，会静默通过。
+ * 这里用 order:'sequential' 保持迁移前的输出顺序，同时 harness 会**等待**
+ * 该 Promise —— 顺序与原版一致，而且异步失败现在能被抓住了。 */
+const { createSuite } = require('./lib/harness');
+const { t, done } = createSuite({ order: 'sequential' });
 /* 本轮四项的回归测试（其中两项是 v0.2.7 的遗留/回归）。
  *
  * ① 切语言后 9 个 IPC 订阅累积
@@ -19,11 +26,6 @@ const path = require('path');
 const os = require('os');
 
 const ROOT = path.join(__dirname, '..');
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 
 const appSrc = fs.readFileSync(path.join(ROOT, 'js', 'app.js'), 'utf8');
 const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
@@ -111,7 +113,17 @@ t('④a 升级备份有回收逻辑且保留最近几份', () => {
   assert.ok(/pruneExeBackups/.test(uc.slice(0, 2500)), 'update:cleanup 没有调用 pruneExeBackups');
 });
 
-/* 真实跑一遍 prune 的文件名排序逻辑（不依赖 Electron） */
+/* 真实跑一遍 prune 的文件名排序逻辑（不依赖 Electron）
+ *
+ * 【这条用例是异步的，输出位置因此与迁移前不同 —— 这是修好了一个隐患】
+ * 它返回 Promise。迁移前那份自建 t() 是**同步**的：
+ *     try { fn(); pass++; console.log('PASS  ' + name); } catch ...
+ * 于是它拿到 Promise 就当通过了，立刻打 PASS（所以原来这条排在第 7 位），
+ * **异步断言如果失败根本不会被记录**（Promise reject 时已经没人接了）。
+ * 公共骨架 scripts/lib/harness.js 的 t() 会识别 thenable 并等待，
+ * 因此这条现在落在结果行之前（最后一位），而且失败能被抓到了。
+ * 断言集合与原版完全一致（已逐条核对）。
+ */
 t('④a 时间戳备份按时间排序、只留最新的', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bakprune-'));
   const exe = 'hehe-toolbox-Portable-9.9.9.exe';
@@ -227,5 +239,4 @@ t('④b 定时任务通知的标题走 i18n', () => {
     '定时任务通知标题仍是写死的中文');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

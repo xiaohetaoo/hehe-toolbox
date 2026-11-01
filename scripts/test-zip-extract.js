@@ -1,4 +1,5 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 端到端验证：解压安全预检在真实压缩包上的行为。
  * 构造一个含「穿越条目」的 ZIP，确认 zip:extract 会拒绝且目标目录不被污染；
  * 再构造一个正常 ZIP，确认能正确解出。
@@ -13,11 +14,6 @@ const AdmZip = require('adm-zip');
 const guard = require('../lib/archive-guard');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ziptest-'));
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
 
 /* 复刻 main.js 中 zip:extract 的处理流程 */
 function extractGuarded(zipPath, outDir) {
@@ -121,5 +117,4 @@ t('目标目录已有同名文件时，预检仍保护目录外内容', () => {
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

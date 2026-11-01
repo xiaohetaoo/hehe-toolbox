@@ -1,3 +1,4 @@
+const { t, done } = require('./lib/harness');
 /* P1-3 / P2-3 / P3-1 的回归测试（渲染层行为的静态校验 + 真实现行为）。
  *
  * 这三条都是「看起来在跑、其实结论是错的」类缺陷：
@@ -15,11 +16,6 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + (e && e.message)); }
-}
 function strip(s) {
   return String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 }
@@ -138,5 +134,4 @@ t('file:who-locks-dir 不再把子目录/链接拼进查询列表', () => {
     '不该再把整批 readdir 结果直接拼成查询列表');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail ? 1 : 0);
+done();

@@ -1,14 +1,9 @@
 'use strict';
+const { t, done } = require('./lib/harness');
 /* 版本号进位规则：每段 0–9，满 10 向前进位。
  * 用户明确要求：以后版本号每过 10 都要向前进位。 */
 const assert = require('assert');
 const { normalize, isValid, parse, bump, fmt } = require('./version');
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-}
 
 t('合规版本号被接受', () => {
   for (const v of ['0.0.1', '0.1.4', '1.0.0', '9.9.9']) {
@@ -66,5 +61,4 @@ t('package.json 当前版本合规', () => {
   assert.ok(isValid(parse(v)), `package.json version=${v} 不合规，应按规则进位`);
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();
