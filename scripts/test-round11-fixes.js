@@ -391,8 +391,14 @@ t('④ main.js 两处都把 srcProtectedReason 传给 validateMove', () => {
 t('⑤ linkNatures 返回 {natures, error} 而不是裸 Map', () => {
   const code = stripComments(mainSrc);
   assert.ok(/return \{ natures: out, error: null \};/.test(code), '成功分支应返回结构');
-  assert.ok(/natures: out,\s*\n?\s*\/?\*?[\s\S]{0,400}?error: errors\.length/.test(mainSrc),
-    '失败分支应带上 error');
+  /* 失败分支：断言「同一个返回对象里既有 natures 又有 error」。
+   * 注意 `natures: out` 在文件里出现两次 —— 一次是成功分支的 return，
+   * 一次是失败分支的 return（后者才是要查的），所以取最后一次。 */
+  const at = code.lastIndexOf('natures: out');
+  assert.ok(at >= 0, '找不到 linkNatures 的返回值');
+  const win = code.slice(at, at + 500);
+  assert.ok(/error:\s*errors\.length/.test(win),
+    '失败分支应带上 error（且来自分批收集的 errors）：\n' + win.slice(0, 200));
   const hits = (code.match(/linkNatures\(/g) || []).length;
   assert.ok(hits >= 2, '两个调用点都要适配新返回值，实际 ' + hits + ' 处');
 });

@@ -268,8 +268,14 @@ t('③ 行为：stat 期间换选择 → 不会把目录送进文件通道', asy
 t('④ 搬完之后作废预检、按钮保持禁用，改路径才恢复', () => {
   const src = read('js/tools/dir-move.js');
   const code = stripComments(src);
-  assert.ok(/state\.precheck = null;\s*\n\s*state\.moved = true;/.test(code),
-    '成功分支必须作废预检并标记「已搬完」');
+  /* 成功分支必须同时做两件事：作废预检 + 标记「已搬完」。
+   * 注意 `state.precheck = null` 出现两次：
+   *   · invalidate() 里（那是「路径改了」，后面是 moved = false）
+   *   · 搬家成功分支（后面才是 moved = true）
+   * 所以要找「后面紧跟 moved = true」的那一处，即成功分支。 */
+  const re = /state\.precheck = null;(?:[^;]*?;){0,6}?\s*state\.moved = true/s;
+  assert.ok(re.test(code),
+    '成功分支必须同时标记「已搬完」（invalidate 里那句是 moved=false，不是它）');
   assert.ok(/goBtn\.disabled = done \? true : false/.test(code),
     '成功后不能无条件恢复按钮（失败才恢复）');
   assert.ok(/if \(!state\.precheck && !state\.moved\) return/.test(code),
