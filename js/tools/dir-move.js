@@ -17,6 +17,8 @@
         src: '',
         dst: '',
         precheck: null,
+        /* 刚搬完：预检已作废、绿卡换成「已搬完」，要等路径变化才恢复 */
+        moved: false,
         steps: [],      // { id, label, detail, status, note }
       };
 
@@ -41,8 +43,13 @@
        * 只靠执行前的比对还不够 —— 用户会长时间盯着一个「可以搬」的绿色结论
        * 却在操作一个完全不同的路径，必须让状态本身立刻变成「需重新校验」。 */
       const invalidate = () => {
-        if (!state.precheck) return;     // 本来就没校验过，不用刷屏
+        /* 【两个都要处理：校验过的结论、以及「已搬完」那张卡】
+         * 早期这里只判 state.precheck，而搬家成功后会把它置空 ——
+         * 于是改了路径，「已搬完」那张卡还挂在那儿，说的是另一个路径的事。
+         * 现在多一个 moved 标记，两种状态都会在路径变化时清掉。 */
+        if (!state.precheck && !state.moved) return;   // 本来就没结论，不用刷屏
         state.precheck = null;
+        state.moved = false;
         goBtn.disabled = true;
         precheckBox.innerHTML = '';
         precheckBox.appendChild(div('card',
@@ -134,14 +141,25 @@
           { k: '目标盘剩余', v: r.freeBytes != null ? fmtBytes(r.freeBytes) : '（未知）' },
         ];
         /* 【源目录里的链接必须提前告知】
-         * 搬家会把它们原样重建到新位置，用户若不知道，事后看到「多了一个链接」
-         * 会以为是 bug（甚至是「被塞了东西」）。这条数之前就返回了却没人显示，
-         * 等于白算了一遍全树遍历。 */
+         * 搬家会把它们重建到新位置，用户若不知道，事后看到「多了一个链接」
+         * 会以为是 bug（甚至是「被塞了东西」）。
+         *
+         * 【文案要区分「原样重建」与「改写目标」】
+         * 早期这里一律写「会原样重建到新位置」，但对目标落在**源目录树内部**
+         * 的链接（指向源自身、源内子目录、源内兄弟目录）必须把目标改写成
+         * 新位置里的对应路径 —— 否则它指向的旧路径会随 .hehe-bak 一起被删，
+         * 重建出来就是死链，而流程还显示「搬家完成」。
+         * 所以这两类要分开说，做的事和文案才对得上。 */
         if (r.linkCount) {
+          const parts = [];
+          const inner = Number(r.innerLinkCount) || 0;
+          const outer = r.linkCount - inner;
+          if (outer > 0) parts.push(outer + ' 个指向源目录之外，原样重建');
+          if (inner > 0) parts.push(inner + ' 个的目标在源目录内部，会改写成新位置的对应路径');
           rows.push({
             k: '源里的链接',
-            v: r.linkCount + ' 个（会原样重建到新位置）' +
-              (r.fileLinkCount ? '，其中 ' + r.fileLinkCount + ' 个是文件符号链接 —— ' +
+            v: r.linkCount + ' 个（' + parts.join('；') + '）' +
+              (r.fileLinkCount ? '。其中 ' + r.fileLinkCount + ' 个是文件符号链接 —— ' +
                 'Windows 创建符号链接需要特权，这一步可能失败' : ''),
           });
         }
@@ -149,6 +167,15 @@
          * 「查不到」不等于「没有占用」，两者混同会让用户反复重试。 */
         if (r.lockCheckError) {
           rows.push({ k: '占用检查', v: '查询失败：' + r.lockCheckError + '（这不代表没有占用）' });
+        }
+        /* 链接性质查询失败同理：查不到「目录还是文件」时重建会拒绝，
+         * 而 fileLinkCount 会漏算 —— 那不代表没有文件链接。 */
+        if (r.linkNaturesError) {
+          rows.push({
+            k: '链接性质',
+            v: '查询失败：' + r.linkNaturesError +
+              '（这不代表没有文件链接；目标在源目录内部的链接也可能因此没被查出）',
+          });
         }
         card.appendChild(renderTable({
           columns: [
@@ -270,15 +297,44 @@
           if (j.files != null) note = '校验通过：' + j.files + ' 个文件，抽样哈希 ' + (j.hashed || 0) + ' 个';
           if (j.sampled != null) note = '链接可读，抽查 ' + j.sampled + ' 个文件';
           if (j.restored === false) note = '⚠ 回退也失败了，请按提示手动恢复';
+          /* 链接重建：说清「改写了多少个目标」，这件事对用户是有后果的 ——
+           * 那些链接现在指向新位置，而不是它原来的绝对路径。 */
+          if (j.stage === 'copy' && j.ok === true && j.links != null) {
+            note = j.links + ' 个链接已重建';
+            if (j.innerRewritten) note += '（其中 ' + j.innerRewritten + ' 个的目标在源目录内部，已改写到新位置）';
+            if (j.fileLinks) note += '；含 ' + j.fileLinks + ' 个文件符号链接';
+          }
+          /* 链接性质查询失败：不是致命错，但必须让用户看见 ——
+           * 否则后面「无法判断这个链接指向目录还是文件」会显得莫名其妙。 */
+          if (j.linkNaturesError) note = '⚠ 链接性质查询失败：' + j.linkNaturesError + '（这不代表没有文件链接）';
           setStep(j.stage, status, note);
         });
 
+        let done = false;
         try {
           const r = await invoke('dir:move', { src: state.src, dst: state.dst });
+          done = true;
           toast('搬家完成', 'success');
           stepsBox.appendChild(div('field-hint', { style: { padding: '8px 6px' } }, r.advice || ''));
           for (const s of state.steps) if (s.status === 'running') s.status = 'ok';
           renderSteps();
+
+          /* 【搬完之后必须作废校验结论】
+           * 源路径此刻已经变成「指向新位置的联接」，不可能再搬一次 —— 主进程
+           * 会用 SRC_IS_LINK 拒掉。如果这里仍留着那张绿卡「可以搬」、
+           * 按钮还点得动，用户点下去就弹「源本身已经是链接」：
+           * 界面先说可以、再说不行，两个说法互相打脸。
+           * 所以作废预检、把卡片换成「已搬完」的说明，并在路径变化前保持禁用
+           * （invalidate() 已挂在两个输入框的 input 事件上，改路径就恢复）。 */
+          state.precheck = null;
+          state.moved = true;
+          state.steps = [];
+          precheckBox.innerHTML = '';
+          precheckBox.appendChild(div('card',
+            div('card-title', h('span', { class: 'tag tag-green', style: { marginRight: '8px' } }, '已搬完')),
+            div('field-hint', '源路径现在是一个指向新位置的目录联接，不能对同一路径再搬一次。'),
+            div('field-hint', { style: { marginTop: '4px', color: 'var(--text-3)' } },
+              '如果要搬别的目录，改一下上面的路径（或点「浏览…」）就会重新启用校验。')));
         } catch (e) {
           toast(e.message, 'error');
           stepsBox.appendChild(div('card',
@@ -286,7 +342,8 @@
             div('field-err', '✗ ' + e.message)));
         } finally {
           try { unsub && unsub(); } catch (err) {}
-          goBtn.disabled = false;
+          /* 成功时保持禁用（见上）；失败时才恢复可点，让用户能改完重试 */
+          goBtn.disabled = done ? true : false;
         }
       }
 

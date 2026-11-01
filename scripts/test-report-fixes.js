@@ -41,7 +41,12 @@ t('file-unlock 查询前会 await 确认类型（不靠 undefined 猜）', () =>
   const src = strip(read('js/tools/file-unlock.js'));
   assert.ok(/async function resolveTypes\(/.test(src), '应有查前确认类型的步骤');
   assert.ok(/await invoke\('fs:stat-multi'/.test(src), '应调用 fs:stat-multi 确认类型');
-  assert.ok(/await resolveTypes\(\);/.test(src), 'scan() 必须先 await 它');
+  /* 【断言的是「必须 await」，不是某个具体实参】
+   * round-12 把 resolveTypes 改成只作用于**当轮快照**（resolveTypes(snapshot)）：
+   * 原实现直接读 state.items，用户在 stat 返回前改选择时，补类型与发任务
+   * 会落到两批不同对象上（目录被送进文件通道，Restart Manager 整批 ERR 5）。
+   * 这里要守住的不变量自始至终是「发查询前必须等类型确认完」，与传什么无关。 */
+  assert.ok(/await resolveTypes\([^)]*\)/.test(src), 'scan() 必须先 await 它');
   assert.ok(/it\.isDir[\s\S]{0,80}invoke\('file:who-locks-dir'/.test(src),
     '目录应走 file:who-locks-dir 通道');
 });

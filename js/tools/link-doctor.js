@@ -105,6 +105,14 @@
           overview.appendChild(div('field-hint', { style: { marginTop: '6px' } },
             '⚠ 条目数超过上限，结果可能不完整。建议缩小扫描范围。'));
         }
+        /* 【类型查不出来时要说】
+         * 链接类型（junction / symlink）是展示字段，批量查询失败不影响判定结果，
+         * 但『类型那列是空的』必须说清原因 —— 否则用户会以为这些链接没有类型。
+         * 以前这条查询失败是全静默的（外层一个空 catch）。 */
+        if (r.typeQueryError) {
+          overview.appendChild(div('field-hint', { style: { marginTop: '6px', color: 'var(--warning)' } },
+            '⚠ 链接类型查询失败：' + r.typeQueryError + '（判定结果不受影响，只是「类型」那列会是空的）'));
+        }
 
         /* ---- 僵尸链接批量清理 ---- */
         const deads = (r.groups && r.groups.dead) || [];
@@ -155,6 +163,17 @@
                   style: { fontSize: '11px', wordBreak: 'break-all', userSelect: 'text', color: row.kind === 'dead' ? 'var(--text-3)' : '' },
                   title: row.target || '',
                 }, row.target || '（未知）'),
+              },
+              /* 【类型列】
+               * 主进程一直在算 linkType（junction / SymbolicLink），但界面从来没有
+               * 显示过它 —— 于是那条「类型那列会是空的」的提示就成了空话，
+               * 而且用户没法从界面上区分自己遇到的是目录联接还是符号链接
+               * （两者在跨机器拷贝、权限要求上完全不同）。
+               * 查不到时显示「未知」，不猜。 */
+              {
+                key: 'linkType', title: '类型', width: '110px',
+                render: (row) => h('span', { class: 'field-hint', style: { fontSize: '11px' } },
+                  row.linkType || '未知'),
               },
               {
                 key: 'reason', title: '判定',

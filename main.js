@@ -58,6 +58,8 @@ let storeData = { settings: {}, favorites: [], recents: [], quicklaunch: [], com
 // 记录 store 是否加载成功。损坏的 hehe-data.json 会让 loadStore 静默回退默认值，
 // 此时 clipHistory 是空的——若照常跑清扫，clip-img 里的所有图片都会被当孤儿删光。
 let storeLoadFailed = false;
+/* 加载失败时保存的原始损坏文件副本路径（供界面提示用户「原文件在这里」）。 */
+let storeCorruptCopy = null;
 let saveTimer = null;
 function loadStore() {
   try {
@@ -67,6 +69,26 @@ function loadStore() {
     if (e && e.code !== 'ENOENT') {
       storeLoadFailed = true;
       console.error('[store] 读取失败，本次禁用依赖 store 的清扫：', e.message);
+      /* 【关键：先留原始副本，再让内存回退默认值】
+       * loadStore 失败后 storeData 停在默认值（笔记、收藏、剪贴板历史全空）。
+       * 而 storeSet 是**任何**一次设置变更都会走的路（拨一个开关、自动记一条
+       * 剪贴板、加一条待办…），saveStore 200ms 后就把这份「空数据」原子改名
+       * 落到 hehe-data.json 上 —— 原文件当场被覆盖，且没有任何备份。
+       * 实测复现：文件尾部被截断（断电典型形态）→ 拨一下「关闭到托盘」开关
+       * → 100 篇笔记永久消失。
+       * 解析失败的 JSON 往往**大部分内容是完好的**（只是尾部截断/多了一个逗号），
+       * 用户/我们可以用编辑器手工救回来。所以这里原样复制一份带时间戳的副本，
+       * 让「救得回来」这件事至少成立；文件名也记下来，界面上能告诉用户去哪找。 */
+      try {
+        const raw = fs.readFileSync(storeFile());
+        const stamp = new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23);
+        const bak = storeFile() + '.corrupt-' + stamp + '.json';
+        fs.writeFileSync(bak, raw);
+        storeCorruptCopy = bak;
+        console.error('[store] 原文件已另存为', bak);
+      } catch (e2) {
+        console.error('[store] 另存损坏文件失败（原文件仍在原位）：', e2.message);
+      }
     }
   }
 }
@@ -118,6 +140,21 @@ const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
     return { ok: false, error: payload.message, code: payload.code, advice: payload.advice };
   }
 });
+/* 执行外部命令的通用入口。
+ *
+ * 【退出码语义：默认「非零不抛」，需要抛时必须显式 opts.throwOnNonZero】
+ * execFile 的回调里 `err` 同时表示「进程起不来」和「退出码非零」。默认路径
+ * 只在 `err && !stdout` 时 reject —— 也就是**有输出的非零退出码会被静默当成成功**，
+ * 调用方拿到的是 `{code: 1, stdout:'...'}`，必须自己检查 code。
+ *
+ * 这个设计有它的理由（很多命令用非零码表达「没查到」，比如 reg query 查一个
+ * 不存在的键、tasklist 过滤无结果），全项目几十处调用都依赖它，不能一刀切改成抛。
+ * 但它同时也是好几个真实缺陷的根因，因为写调用方的人很容易默认「没抛就是成功」：
+ *   · office:status 里 `...; catch{exit 1}` 完全不起作用 → 恒返回 office:true
+ *   · ffmpeg:pick 把任意能响应 -version 的 exe 当成 ffmpeg
+ * 所以新增 throwOnNonZero：需要「失败必须抛」的地方显式打开，
+ * 不用逐个去猜调用点。
+ */
 function runCmd(cmd, args, opts = {}) {
   const enc = opts.encoding || 'utf8';
   return new Promise((resolve, reject) => {
@@ -127,7 +164,10 @@ function runCmd(cmd, args, opts = {}) {
         stdout = dec.decode(stdout || Buffer.alloc(0));
         stderr = dec.decode(stderr || Buffer.alloc(0));
       }
-      if (err && !stdout) reject(sanitizeCmdError(err, args)); else resolve({ stdout: stdout || '', stderr: stderr || '', code: err ? err.code || 1 : 0 });
+      const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+      if (opts.throwOnNonZero && err) { reject(sanitizeCmdError(err, args)); return; }
+      if (err && !stdout) reject(sanitizeCmdError(err, args));
+      else resolve({ stdout: stdout || '', stderr: stderr || '', code });
     });
   });
 }
@@ -138,20 +178,46 @@ function runCmd(cmd, args, opts = {}) {
  * 这里统一把 -p<非空白> 与 password= / token= 之类抹成 ***。 */
 function sanitizeCmdError(err, args) {
   const msg = String((err && err.message) || err || '');
-  let clean = msg
-    .replace(/\s-p\S+/g, ' -p***')                       // 7z 密码
-    .replace(/\s--password[=\s]\S+/gi, ' --password=***')
-    .replace(/(password|passwd|token|secret|apikey|api_key)\s*[=:]\s*\S+/gi, '$1=***');
-  // 参数里若有长字符串（>=6 位）也抹掉，防止未命中上面模式的传递方式
-  for (const a of (args || [])) {
-    const s = String(a);
-    if (s.length >= 6 && /^[A-Za-z0-9!@#$%^&*()_+\-=\[\]{};:'",.<>\/?\\|`~]{6,}$/.test(s) && clean.includes(s)) {
-      clean = clean.split(s).join('***');
+  /* 脱敏规则收成一个函数：message 与 stack 都要过一遍。
+   * 【为什么 stack 也必须过】execFile 的 err.stack 第一行就是 err.message
+   * （实测：`Error: Command failed: ... -pmy secret pass`）。原实现只清理了
+   * message，然后把**未清理的** err.stack 原样赋给新错误 ——
+   * lib/errors.js 的 toPayload 会把 err.stack 塞进 detail 字段（注释写的是
+   * 「可展开技术详情用于排查」）。今天 detail 还没回传到界面，但这是一颗
+   * 埋着的雷：谁把 detail 接出去，密码就跟着出去了。既然清理只要一行，就别留。 */
+  const mask = (text) => {
+    let s = String(text == null ? '' : text);
+    /* 【顺序是硬的：先按 args 原文精确替换，再跑正则】
+     * 反过来的话，`\s-p\S+` 会先把 `-pmy secret pass` 啃成 `-p*** secret pass`，
+     * 之后 `s.includes('-pmy secret pass')` 永远为假 —— 补丁看着写了、实际无效。
+     * 实测踩过这个坑（改完仍泄漏后半个密码）。 */
+    for (const a of (args || [])) {
+      const v = String(a);
+      if (v.length <= 2) continue;
+      if (/^-p./i.test(v)) {
+        if (s.includes(v)) s = s.split(v).join('-p***');
+        continue;
+      }
+      const mPwd = /^(--pass(?:word)?=)(.+)$/i.exec(v);
+      if (mPwd && mPwd[2] && s.includes(v)) s = s.split(v).join(mPwd[1] + '***');
     }
-  }
+    s = s
+      .replace(/\s-p\S+/g, ' -p***')                       // 7z 密码
+      .replace(/\s--password[=\s]\S+/gi, ' --password=***')
+      .replace(/(password|passwd|token|secret|apikey|api_key)\s*[=:]\s*\S+/gi, '$1=***');
+    // 参数里若有长字符串（>=6 位）也抹掉，防止未命中上面模式的传递方式
+    for (const a of (args || [])) {
+      const v = String(a);
+      if (v.length >= 6 && /^[A-Za-z0-9!@#$%^&*()_+\-=\[\]{};:'",.<>\/?\\|`~]{6,}$/.test(v) && s.includes(v)) {
+        s = s.split(v).join('***');
+      }
+    }
+    return s;
+  };
+  const clean = mask(msg);
   const e = new Error(clean);
   e.code = (err && err.code) || 'CMD_FAILED';
-  if (err && err.stack) e.stack = err.stack;
+  if (err && err.stack) e.stack = mask(err.stack);
   return e;
 }
 // Windows PowerShell 输出默认是 OEM 代码页（GBK），强制其以 UTF-8 输出，避免中文乱码
@@ -181,6 +247,41 @@ async function uniqueTarget(root, relName) {
   throw new Error('无法生成不重名的目标路径：' + relName);
 }
 
+/* 把文件「搬」到目标路径，跨卷时自动退回「复制 + 删除源」。
+ *
+ * 【为什么需要它】Windows 上 fsp.rename 跨卷直接抛 EXDEV（跨设备链接不允许）。
+ * 本应用大量流程是「在 %TEMP% 里生成成品 → 提交到用户选的输出目录」，
+ * 而输出目录经常在 D:/E:（系统盘之外正是「处理大文件」最需要的地方）。
+ * 用裸 rename 的话，这类流程在最后一步、成果已经生成完的时候才失败 ——
+ * 既白等了整轮处理，失败路径还常常顺手把临时目录删掉，连成果一起没了。
+ *
+ * 只在 EXDEV 时复制；其它错误（权限、占用、目标已存在）照旧抛，
+ * 不掩盖真正的原因。复制成功后才删源，避免「源删了、目标没写成」。
+ *
+ * @param {string} src 现有文件
+ * @param {string} dst 目标路径（调用方负责保证不覆盖）
+ */
+async function moveFile(src, dst) {
+  try {
+    await fsp.rename(src, dst);
+    return { moved: true, copied: false };
+  } catch (err) {
+    if (err && err.code === 'EXDEV') {
+      const st = await fsp.stat(src);
+      await fsp.copyFile(src, dst);
+      const dstSt = await fsp.stat(dst).catch(() => null);
+      if (!dstSt || dstSt.size !== st.size) {
+        // 复制不完整：删掉半成品，源保持不动，让调用方看到真实失败
+        await fsp.rm(dst, { force: true }).catch(() => {});
+        throw new Error('跨盘搬运失败：复制后大小不符（源 ' + st.size + ' / 目标 ' + (dstSt ? dstSt.size : 0) + '）');
+      }
+      await fsp.rm(src, { force: true }).catch(() => {});
+      return { moved: true, copied: true };
+    }
+    throw err;
+  }
+}
+
 /* 本应用在系统临时目录里创建的临时产物（统一 hehe- 前缀）。
    自动清理只允许碰这些文件，绝不能整目录清空——%TEMP% 是全机器共享的，
    里面还有别的程序正在使用的文件，整目录删除会导致它们崩溃或丢数据。
@@ -190,7 +291,15 @@ async function uniqueTarget(root, relName) {
      - 登记太宽 -> 把别人的东西也清了
    新增临时产物目录时，记得在这里加一条。 */
 const OWN_TEMP_PATTERNS = [
-  /^hehe-snip-\d+\.png$/i,       // 区域截图临时图
+  /* 截图临时图。末尾的随机后缀是后加的（原先是纯 Date.now()，同一毫秒内
+   * 两次截图会撞名），白名单必须跟着放宽，否则所有带后缀的截图都落在白名单外，
+   * 自动清理永远扫不到 —— 而这张图是全屏 PNG，一张就好几 MB。
+   * 用 (-[0-9a-f]+)? 兼容老版本留下的无后缀文件。 */
+  /^hehe-snip-\d+(-[0-9a-f]+)?\.png$/i,   // 区域截图临时图
+  /* 下载中断残留的 .part 文件：dest 名 + '.part-<ts>-<hex>'。
+   * 下载取消时可能因句柄未释放而删不掉（Windows），这些文件同样只能是
+   * 本应用产生的，登记进来才能被启动清扫回收。 */
+  /^hehe-.*\.part-\d+-[0-9a-f]+$/i,       // 下载未完成的临时文件
   /^hehe-rec-\d+$/i,             // 录制分段目录
   /^hehe-ffmpeg-.*\.zip$/i,      // FFmpeg 下载包
   /^hehe-ffmpeg-win.*\.gz$/i,    // FFmpeg 压缩包
@@ -202,6 +311,19 @@ const OWN_TEMP_PATTERNS = [
   /^\.?hehe-w-.+/i               // 原子写入的临时文件（实际名带前导点）
 ];
 function isOwnTempName(name) { return OWN_TEMP_PATTERNS.some(re => re.test(name)); }
+
+/* 批量 PowerShell 查询的分块大小（公共常量，放在文件靠前处）。
+ *
+ * 【为什么必须分块】把几百个路径拼成一个数组字面量一次传进去会撞上
+ * Windows 命令行上限（约 32767 字符），Node 直接抛 spawn ENAMETOOLONG，
+ * PowerShell 根本没启动。实测：单路径 91 字符时，500 个就超限。
+ * 每块 60 个路径：即便单个路径 200 字符也只占 1.2 万字符，留足余量。
+ *
+ * 使用者：link:scan（取 LinkType）、linkNatures（判链接性质）、
+ * rmQueryLockers（Restart Manager 查占用 —— 这条曾经漏了分块，
+ * 200 个深路径直接 ENAMETOOLONG，占用查询整个失效）。 */
+const PS_PATH_BATCH = 60;
+
 
 /* ---------------- 高危功能开关 ----------------
    高危 = 可能造成数据丢失或系统级不可逆影响（删文件、清空回收站、杀进程、
@@ -667,6 +789,15 @@ setInterval(() => {
 handle('win:minimize', () => { win && win.minimize(); });
 handle('win:maximize', () => { if (!win) return; win.isMaximized() ? win.unmaximize() : win.maximize(); });
 handle('win:close', () => { win && win.close(); });
+/* 让渲染层知道「这次是从默认值起来的」。
+ * 不加这条的话，用户只会看到笔记/收藏/剪贴板历史全空了，却不知道
+ * 是数据文件损坏、也不知道原文件已被另存到哪 —— 只会以为程序把数据弄丢了。
+ * 正常启动时 storeLoadFailed 为 false，界面不受任何影响。 */
+handle('store:health', () => ({
+  ok: !storeLoadFailed,
+  corruptCopy: storeCorruptCopy,
+  file: storeFile(),
+}));
 handle('app:get-info', () => ({
   appVersion: app.getVersion(),
   electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome,
@@ -1278,7 +1409,14 @@ async function cryptStream(p, outPath, password, decrypt) {
     cipher = crypto.createCipheriv('aes-256-cbc', deriveKey(password, salt), iv);
   } else {
     // 先读取 40 字节文件头，再从第 40 字节起进入解密管道
-    if (st.size < 64) throw new Error('文件不完整：加密文件至少应有 64 字节（当前 ' + st.size + ' 字节），可能下载或复制时被截断');
+    /* 【最小合法长度是 40 + 16 = 56，不是 64】
+     * 文件头固定 40 字节（8 魔数 + 16 salt + 16 iv），其后是一个 AES-CBC 密文。
+     * PKCS#7 一定会补齐，所以哪怕原文是空文件（0 字节）也会产出整整一个 16 字节块。
+     * 早期这里写死 64，于是「加密 0~15 字节的文件」得到的 56 字节密文被判成
+     * 「文件不完整，可能下载时被截断」—— 加密是成功的，解密却永远拒绝，
+     * 用户会以为文件坏了、转而去找别的工具重下。实测 15 字节以内全部复现。 */
+    const MIN_ENC_SIZE = 40 + 16;
+    if (st.size < MIN_ENC_SIZE) throw new Error('文件不完整：加密文件至少应有 ' + MIN_ENC_SIZE + ' 字节（当前 ' + st.size + ' 字节），可能下载或复制时被截断');
     const fh = await fsp.open(p, 'r');
     const head = Buffer.alloc(40);
     try {
@@ -1579,11 +1717,27 @@ handle('zip:compress', async (e, paths, outZip) => {
   if (bad) throw pathGuard.err(bad.code, bad.reason);
   if (fs.existsSync(outZip)) throw new Error('输出文件已存在，为避免覆盖已拒绝：' + outZip);
   const zip = new AdmZip();
+  /* 【目录也要做重名编号，不能只给文件编号】
+   * 早期目录直接用 `zip.addLocalFolder(p, path.basename(p))`：把
+   *   D:\项目A\docs  和  E:\项目B\docs
+   * 一起拖进来时，两者的条目前缀都是 `docs/`，adm-zip 会按条目名合并，
+   * 于是其中一份 docs\x.txt 被另一份同名文件覆盖 —— 实测压完只剩一份，
+   * 返回结果还报「压缩完成」，属于静默丢数据。文件那条支路早就加了 used
+   * 去重，目录这条漏了。这里对顶层目录名用同一套 used 集合编号。 */
   const used = new Set();
+  const uniqEntryDir = (base) => {
+    if (!used.has(base.toLowerCase())) { used.add(base.toLowerCase()); return base; }
+    for (let i = 1; i < 10000; i++) {
+      const cand = `${base}(${i})`;
+      if (!used.has(cand.toLowerCase())) { used.add(cand.toLowerCase()); return cand; }
+    }
+    return base + '(' + Date.now() + ')';
+  };
   for (const p of paths) {
     const st = await fsp.stat(p);
-    if (st.isDirectory()) zip.addLocalFolder(p, path.basename(p));
-    else {
+    if (st.isDirectory()) {
+      zip.addLocalFolder(p, uniqEntryDir(path.basename(p)));
+    } else {
       // addLocalFile 不传 zipPath 时条目名 = basename。两个不同目录下的同名文件
       // 会命中同一个条目名，adm-zip 直接覆盖前一个 —— 压缩完只剩一份，静默丢数据。
       // 这里重名时自动加序号，保证每个源文件都有条目。
@@ -1688,9 +1842,19 @@ function assertPowerAllowed(cmd) {
   }
 }
 handle('exec:run', async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
-  // 关机/重启/休眠必须先在设置里开启「系统电源操作」
-  assertPowerAllowed(cmd);
-  if (args && args.length) assertPowerAllowed(args.join(' '));
+  /* 关机/重启/休眠必须先在设置里开启「系统电源操作」。
+   * 【必须拿「整条命令」判，不能把 cmd 与 args 分开判】
+   * power-gate 的剥离逻辑是按整条命令行做的：`cmd.exe` 自己不是危险词，
+   * `/c shutdown /s /t 0` 单独看也只是个参数串，两者拼起来才是关机命令。
+   * 早期分开判，于是下面这些全部穿门禁（已实测 isPowerCommand 单判皆 false、
+   * 整条拼接皆为 true）：
+   *   exec:run { cmd:'cmd.exe', args:['/c','shutdown','/s','/t','0'] }
+   *   exec:run { cmd:'powershell.exe', args:['-Command','Stop-Computer'] }
+   *   exec:stream 同理
+   * 而「定时关机」工具正是走 exec:run + shellType:'cmd'，
+   * 这条门禁存在的唯一理由就是拦住它。 */
+  const flatArgs = Array.isArray(args) ? args.map((a) => String(a == null ? '' : a)) : [];
+  assertPowerAllowed([String(cmd == null ? '' : cmd), ...flatArgs].join(' '));
   if (shellType === 'ps') return await ps(cmd, timeoutMs || 30000, cwd);
   if (shellType === 'cmd') {
     return await runCmd('cmd.exe', ['/c', cmd], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk' });
@@ -1698,13 +1862,22 @@ handle('exec:run', async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
   return await runCmd(cmd, args || [], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk' });
 });
 handle('exec:stream', (e, { command, args, cwd }) => {
-  // 流式通道同样要过电源门禁
-  assertPowerAllowed(command);
-  if (args && args.length) assertPowerAllowed(args.join(' '));
+  // 流式通道同样要过电源门禁（理由见 exec:run 上方注释：必须整条判）
+  const flatArgs = Array.isArray(args) ? args.map((a) => String(a == null ? '' : a)) : [];
+  assertPowerAllowed([String(command == null ? '' : command), ...flatArgs].join(' '));
   const id = 'job' + (++jobSeq);
   const proc = spawn(command, args || [], { windowsHide: true, cwd });
   jobs.set(id, {
-    cancel: () => { try { if (isWin) spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true }); else proc.kill('SIGKILL'); } catch (err) {} }
+    /* proc.pid 在 spawn 失败（ENOENT）时是 undefined，`String(undefined)` 会让
+     * taskkill 报「找不到进程 undefined」并被空 catch 吞掉 —— 用户以为取消了，
+     * 进程却还在跑。pid 拿不到时退回 proc.kill()。 */
+    cancel: () => {
+      try {
+        if (!proc.pid) { try { proc.kill(); } catch (e2) {} return; }
+        if (isWin) spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true });
+        else proc.kill('SIGKILL');
+      } catch (err) {}
+    }
   });
   // 每个任务持有自己的解码器（stream:true 保留跨块的多字节字符）
   let outDec, errDec;
@@ -1774,20 +1947,30 @@ handle('proc:kill', async (e, pid) => {
   // 不能杀自己：主进程被杀会导致正在进行的录制/下载/写盘中断，
   // flushStore 没机会执行，hehe-data.json 会停留在旧状态（最坏丢一次改动）。
   if (n === process.pid) throw new Error('不能结束本程序自身的进程');
-  // 查进程名，命中系统关键进程直接拒绝。注意 taskkill 的 /f 对 lsass 这类
-  // 受保护进程会触发系统强制重启（蓝屏），是不可逆破坏。
+  /* 查进程名，命中系统关键进程直接拒绝。注意 taskkill 的 /f 对 lsass 这类
+   * 受保护进程会触发系统强制重启（蓝屏），是不可逆破坏。
+   *
+   * 【必须区分「进程已退出」与「查询本身失败」】
+   * 原实现用一个 try 包住保护判定，catch 里靠 `/拒绝结束/` 文本匹配决定是否
+   * 重新抛出 —— 也就是说 PowerShell 查询本身失败（策略禁用、超时、无输出）时，
+   * 保护性检查被整体跳过，只要 PID > 1000 就直接 /f 强杀。
+   * 而「查询失败」与「进程不存在」是两件完全不同的事：前者说明我们**没能**
+   * 确认它是不是关键进程，此时应当拒绝，而不是放行。
+   * （注释原本写的是「查不到进程名时放行（进程可能已退出）」，那是有意为之；
+   *  但只有 stdout 为空才代表「进程不存在」，抛异常代表查询机制坏了。） */
+  let pname = '';
   try {
     const r = await ps(`try{(Get-Process -Id ${n} -ErrorAction Stop).ProcessName}catch{''}`, 10000);
-    const pname = String(r.stdout || '').trim().toLowerCase();
-    if (pname && PROTECTED_PROC_NAMES.has(pname)) {
-      throw new Error(`拒绝结束系统关键进程：${pname}（ID ${n}）。结束它会导致系统蓝屏或强制重启。`);
-    }
-    if (n <= PROTECTED_PROC_PID_MAX) {
-      throw new Error(`拒绝结束 PID ${n}：低 PID 区（≤${PROTECTED_PROC_PID_MAX}）通常是系统进程，误杀会造成不可逆损坏。如确认无误请用任务管理器操作。`);
-    }
+    pname = String(r.stdout || '').trim().toLowerCase();
   } catch (err) {
-    // 查不到进程名时放行（进程可能已退出），但低 PID 拦截仍然生效
-    if (/拒绝结束/.test(String(err.message))) throw err;
+    throw new Error('无法确认 PID ' + n + ' 是不是系统关键进程（进程查询失败：' + fmtErr(err) +
+      '），已拒绝结束它。请用任务管理器确认后再操作。');
+  }
+  if (pname && PROTECTED_PROC_NAMES.has(pname)) {
+    throw new Error(`拒绝结束系统关键进程：${pname}（ID ${n}）。结束它会导致系统蓝屏或强制重启。`);
+  }
+  if (n <= PROTECTED_PROC_PID_MAX) {
+    throw new Error(`拒绝结束 PID ${n}：低 PID 区（≤${PROTECTED_PROC_PID_MAX}）通常是系统进程，误杀会造成不可逆损坏。如确认无误请用任务管理器操作。`);
   }
   await runCmd('taskkill', ['/pid', String(n), '/f'], { timeout: 10000 });
   return true;
@@ -2608,13 +2791,31 @@ handle('ffmpeg:pick', async (e) => {
     }
   }
   if (!copied.includes('ffmpeg.exe')) {
-    // 用户可能选了任意名字的 ffmpeg，按主程序判断：能执行 -version 的当作 ffmpeg
+    /* 用户可能把 ffmpeg 存成了别的名字（如 ffmpeg-6.1.exe）。
+     * 【判据必须是「输出里真的有 ffmpeg version」，不能只看进程能不能跑】
+     * 原实现是 `await runCmd(first, ['-version'])` —— runCmd 默认对非零退出码
+     * 不抛异常，而且任何程序响应 -version 都能"成功"，于是用户在同一个对话框里
+     * 先选了 ffprobe.exe（或随便一个会打印版本号的 exe）且没有任何一项 basename
+     * 恰好是 ffmpeg.exe 时，那个文件会被复制成 bin/ffmpeg.exe，
+     * **覆盖掉原本可用的 ffmpeg**。之后所有转码全部失败，且用户不知道是这一步造成的。
+     * 现在：① 要求退出码为 0；② 要求 stdout/stderr 里出现 'ffmpeg version'；
+     * ③ 已经在 bin 里有可用 ffmpeg 时不覆盖，只提示。 */
     const first = picked.filePaths[0];
     try {
-      await runCmd(first, ['-version'], { timeout: 8000 });
-      await fsp.copyFile(first, path.join(binDir(), 'ffmpeg.exe'));
+      const r = await runCmd(first, ['-version'], { timeout: 8000, throwOnNonZero: true });
+      const ver = String(r.stdout || '') + String(r.stderr || '');
+      if (!/ffmpeg version/i.test(ver)) throw new Error('输出里没有 ffmpeg version，不是 ffmpeg');
+      const dest = path.join(binDir(), 'ffmpeg.exe');
+      if (fs.existsSync(dest)) {
+        const old = await runCmd(dest, ['-version'], { timeout: 8000 }).catch(() => null);
+        if (old && /ffmpeg version/i.test(String(old.stdout || ''))) {
+          // 已有可用的 ffmpeg，不覆盖：静默替换是破坏性的，且用户没要求
+          return { picked: copied, binDir: binDir(), skipped: '已有可用的 ffmpeg，未覆盖' };
+        }
+      }
+      await fsp.copyFile(first, dest);
       copied.push('ffmpeg.exe');
-    } catch (err) {}
+    } catch (err) { /* 不是 ffmpeg：保持原状，不复制 */ }
   }
   return { picked: copied, binDir: binDir() };
 });
@@ -2632,7 +2833,23 @@ function downloadToFile(url, dest, id, ctrl, label) {
        用户以为下好了（尤其 .exe），要等运行才发现损坏。
        现在失败/取消一律删临时文件，dest 要么不存在、要么是完整内容。 */
     const tmp = dest + '.part-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
-    const cleanup = () => { try { fs.rmSync(tmp, { force: true }); } catch (e) {} };
+    /* 【取消路径上删除可能失败，必须重试】
+     * 取消时 `ws.destroy()` 是异步的，写流句柄还没释放就调 rmSync ——
+     * Windows 上会抛 EPERM。原实现 catch 里什么都不做，于是每次取消下载
+     * （59MB 的 ffmpeg 包很常见）都在 %TEMP% 留一个几十 MB 的 .part 文件；
+     * 而且它有 dest 前缀（不是 hehe- 开头），不在本应用临时产物白名单里，
+     * 自动清理永远扫不到 —— 只能用户自己去 %TEMP% 挖。
+     * 现在：先等一小会再删，失败则登记到一个延迟清理队列，进程退出前再试一次。 */
+    const cleanup = () => {
+      try { fs.rmSync(tmp, { force: true }); return; } catch (e) { /* 句柄可能还没释放 */ }
+      const tryLater = (left) => {
+        setTimeout(() => {
+          try { fs.rmSync(tmp, { force: true }); }
+          catch (e2) { if (left > 1) tryLater(left - 1); }
+        }, 200);
+      };
+      tryLater(5);
+    };
     let attempt = 0, got = 0, total = 0, lastEmit = 0;
     const emit = (force) => {
       const now = Date.now();
@@ -2647,7 +2864,17 @@ function downloadToFile(url, dest, id, ctrl, label) {
       const headers = {};
       if (got > 0 && total > 0) headers.Range = 'bytes=' + got + '-';
       fetch(url, { signal: ctrl.signal, redirect: 'follow', headers }).then(async (r) => {
-        if (r.status === 416) { res(); return; } // 已下载完整
+        /* 416 = 请求的 Range 超出资源范围。原实现直接 res() 当成「已下载完整」，
+         * 但如果本地文件其实比 got/total 记的少（写流被截断过），下一轮体积校验
+         * 必然失败 → attempt++ 重试 → got 仍是旧值、header 仍是非法 Range →
+         * 又 416 → 每一轮都失败，直到耗尽 6 次重试报「下载校验失败」。
+         * 一个「重头下就能好」的故障被拖成必定失败。
+         * 正确做法：把断点清零，下一轮从头下。 */
+        if (r.status === 416) {
+          got = 0; total = 0;
+          rej(new Error('服务器拒绝续传（416），将从零重新下载'));
+          return;
+        }
         if (!r.ok) { rej(new Error('下载源响应 ' + r.status)); return; }
         if (r.status === 200) got = 0; // 服务器不支持续传，重头下
         if (r.headers.get('content-length')) total = got + (Number(r.headers.get('content-length')) || 0);
@@ -2818,7 +3045,20 @@ handle('target:compress-av', async (e, { items, outDir, targetBytes, mode, ratio
     for (let i = 0; i < items.length; i++) {
       if (state.cancel) break;
       const input = items[i];
-      const srcSize = (await fsp.stat(input)).size;
+      /* 【单个文件读不到不能中断整批】
+       * 批量压缩时用户很可能在资源管理器里删/改队列里的文件。原实现直接
+       * `await fsp.stat(input)`，ENOENT 一路冒到外层 finally —— 整批中断，
+       * 而函数是「抛异常」而不是「返回 results」，前面已经压好的若干条记录
+       * 随返回值一起消失，用户既拿不到成果清单，也不知道哪几个已完成。
+       * 这里降级成「这一条失败，记下来，继续下一个」。 */
+      let srcSize = 0;
+      try {
+        srcSize = (await fsp.stat(input)).size;
+      } catch (err) {
+        results.push({ input, out: null, ok: false, srcSize: 0, target: 0, err: '无法读取源文件：' + fmtErr(err) });
+        send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(String(input || '')), pct: 100, done: true, ok: false, error: '无法读取源文件' }) });
+        continue;
+      }
       const want = mode === 'ratio'
         ? targetSize.tierTargetBytes(srcSize, ratio)
         : Math.floor(targetBytes);
@@ -2932,9 +3172,15 @@ handle('target:compress-av', async (e, { items, outDir, targetBytes, mode, ratio
         }
 
         if (finalOut) {
-          // 校验通过才提交：改成最终名（同名自动编号，不覆盖已有文件）
+          /* 校验通过才提交：改成最终名（同名自动编号，不覆盖已有文件）。
+           * 【跨卷必须退回「复制 + 删除」】临时目录在 %TEMP%（通常 C:），
+           * 而输出目录完全可能被用户选到 D:/E:。Windows 上 rename 跨卷
+           * 抛 EXDEV —— 八轮编码全部达标、成果就在 finalOut，却在最后一步
+           * 失败，异常冒泡让 results 里连一条记录都没有，而 finally 还会把
+           * tmpDir 整个删掉（成果一起没了）。项目在 7z 解压那边已经为同一个
+           * EXDEV 坑写过注释，这里是同一类问题。 */
           const dst = await uniqueTarget(outDir, base + '.mp4');
-          await fsp.rename(finalOut.file, dst);
+          await moveFile(finalOut.file, dst);
           results.push({ input, out: dst, ok: true, srcSize, outSize: finalOut.size, target: want, rounds: usedRounds });
           send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: true }) });
         } else {
@@ -2991,7 +3237,15 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
       if (opts.ss) args.push('-ss', String(opts.ss));
       args.push('-i', input);
       if (opts.to) args.push('-t', String(opts.to));
-      if (opts.format === 'mp3' || opts.format === 'm4a' || opts.mute) args.push('-vn');
+      /* 【纯音频容器必须先算出来，不能只列 mp3/m4a】
+       * 下面 3180 行用 isAudioOut 判断「不加 -c:v」，包含 wav/flac；
+       * 而这一行的 -vn 列表只有 mp3/m4a/mute —— 于是选 WAV/FLAC 且没勾静音时，
+       * 既不 -vn（视频流还在）也不 -c:v（没有视频编码器），ffmpeg 试图把
+       * 源视频流塞进 wav 容器 → 直接失败；失败分支还会 rm(out) 删掉半成品，
+       * 用户只看到「转换失败」，看不到真正原因。
+       * 统一用同一个判据，避免两份列表各写各的。 */
+      const isAudioOut = ['mp3', 'm4a', 'wav', 'flac'].includes(opts.format);
+      if (isAudioOut || opts.mute) args.push('-vn');
       if (opts.mute) { args.push('-an'); }
       else {
         // 音频编码按容器选择：wav→PCM、flac→无损 flac（aac 进这两个容器会被拒绝/非标）
@@ -3001,7 +3255,6 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
         if (ac === 'libmp3lame') args.push('-q:a', '2');
         if (ac === 'libopus') args.push('-b:a', '128k');
       }
-      const isAudioOut = ['mp3', 'm4a', 'wav', 'flac'].includes(opts.format);
       if (!isAudioOut) {
         if (opts.vcodec === 'copy') args.push('-c:v', 'copy');
         else if (opts.format === 'webm') { args.push('-c:v', 'libvpx-vp9', '-crf', String(opts.crf || 34), '-b:v', '0', '-row-mt', '1'); }
@@ -3132,11 +3385,27 @@ handle('ffmpeg:frames', async (e, { input, outDir, mode, ss, every, count, width
     out = path.join(outDir, `${base}_%03d.jpg`);
     args.push(out);
   }
+  /* 【先记下已有的帧文件，截完只数「本次新增的」】
+   * 原实现是截完之后 readdir 统计所有 `base_*.jpg`。对同一个视频重复截帧
+   * （上次 20 张，这次 5 张）时，统计会得到 20+，界面显示的帧数与实际不符；
+   * 而且 ffmpeg 带 -y 会把 base_001.jpg … 覆盖掉，用户上次的帧就没了 ——
+   * 这一条靠「只统计新增」看不出来，所以要单独确认覆盖行为。
+   * 这里用「截帧前后的文件集合差」统计，并把被覆盖的旧文件数如实报出来。 */
+  let before = new Set();
+  try { before = new Set(await fsp.readdir(outDir)); } catch (e) { before = new Set(); }
   const r = await runCmd(ffmpeg, args, { timeout: 300000 });
   if (r.code !== 0) throw new Error('截帧失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
-  let n = 0;
-  try { n = (await fsp.readdir(outDir)).filter(f => f.startsWith(base + '_') && f.endsWith('.jpg')).length; } catch (e) {}
-  return { outDir, count: n, first: path.join(outDir, mode === 'single' ? `${base}_frame.jpg` : `${base}_001.jpg`) };
+  let n = 0, overwritten = 0;
+  try {
+    const after = await fsp.readdir(outDir);
+    const mine = after.filter((f) => f.startsWith(base + '_') && f.endsWith('.jpg'));
+    n = mine.filter((f) => !before.has(f)).length;
+    overwritten = mine.length - n;
+  } catch (e) { /* 目录读不到就报 0，不编数字 */ }
+  return {
+    outDir, count: n, overwritten,
+    first: path.join(outDir, mode === 'single' ? `${base}_frame.jpg` : `${base}_001.jpg`),
+  };
 });
 
 /* 音频剪辑：截取 + 淡入淡出 + 增益 */
@@ -3198,8 +3467,18 @@ function findSoffice() {
 }
 handle('office:status', async () => {
   const soffice = findSoffice();
+  /* 【必须用 throwOnNonZero，否则恒为 true】
+   * 原写法靠 PowerShell 里 `catch{exit 1}` 表达「没装 Office」，但 runCmd 默认
+   * 对非零退出码**不抛异常**（只要进程有输出），于是 try 永远成功、office 恒 true ——
+   * 没装 Office 的机器上「Office 可用」是错的，用户随后选 COM 引擎转换全失败。
+   * 这里打开 throwOnNonZero，让退出码真正变成异常。 */
   let office = false;
-  try { await runCmd('powershell.exe', ['-NoProfile', '-Command', 'try{$w=New-Object -ComObject Word.Application;$w.Quit();exit 0}catch{exit 1}'], { timeout: 20000 }); office = true; } catch (err) {}
+  try {
+    await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      'try{$w=New-Object -ComObject Word.Application;$w.Quit();exit 0}catch{exit 1}'],
+    { timeout: 20000, throwOnNonZero: true });
+    office = true;
+  } catch (err) { office = false; }
   return { soffice, office };
 });
 handle('office:convert', async (e, { files, target, outDir }) => {
@@ -3215,15 +3494,48 @@ handle('office:convert', async (e, { files, target, outDir }) => {
       const stage = path.join(app.getPath('temp'), 'hehe-uniq-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
       try {
         await fsp.mkdir(stage, { recursive: true });
-        await runCmd(soffice, ['--headless', '--norestore', '--convert-to', target, '--outdir', stage, f], { timeout: 180000 });
-        const produced = path.join(stage, path.basename(f).replace(/\.[^.]+$/, '') + '.' + target);
+        /* 保留退出码：soffice 转换失败时退出码非零，而 runCmd 默认不抛 */
+        const conv = await runCmd(soffice, ['--headless', '--norestore', '--convert-to', target, '--outdir', stage, f], { timeout: 180000 });
+        /* 【不要按「源基名.扩展名」猜产出文件名】
+         * soffice 的输出名由它自己决定，实测有几种对不上的情况：
+         *   · 源名含多个点（合同.v2.docx）—— 我们猜「合同.v2.docx → 合同.v2.pdf」，
+         *     多数版本确实如此，但带宏/模板的文档可能改成别的；
+         *   · target 大小写、以及 `.docx` → `.docx` 这类同格式转换；
+         *   · soffice 已在跑（--headless 会复用同一 user profile）时可能直接返回、
+         *     把文件写到**别的** outdir 或干脆没产出。
+         * 猜错时 pathExists(produced) 恒 false → 每个文件都报「转换未产出文件」，
+         * 而真正转好的文件就躺在 stage 里，被 finally 的 rm(stage) 删掉。
+         * 改成：先按预期名找；找不到就在 stage 里找唯一的产出文件（排除源文件本身）。 */
+        let produced = path.join(stage, path.basename(f).replace(/\.[^.]+$/, '') + '.' + target);
         if (!(await pathExists(produced))) {
-          results.push({ input: f, out: null, ok: false, err: '转换未产出文件（格式可能不支持）' });
+          let cands = [];
+          try {
+            const names = await fsp.readdir(stage);
+            const srcName = path.basename(f).toLowerCase();
+            cands = names
+              .filter((n) => n.toLowerCase() !== srcName)              // 排除被复制进来的源文件
+              .map((n) => path.join(stage, n));
+          } catch (e) { cands = []; }
+          if (cands.length === 1) produced = cands[0];
+          else if (cands.length > 1) {
+            // 多个产出：优先挑与 target 扩展名相同的
+            const hit = cands.find((c) => path.extname(c).toLowerCase() === '.' + String(target).toLowerCase());
+            if (hit) produced = hit;
+          }
+        }
+        if (!(await pathExists(produced))) {
+          const tail = (conv.stderr || conv.stdout || '').split(/\r?\n/).filter((l) => l.trim()).slice(-2).join(' ');
+          results.push({
+            input: f, out: null, ok: false,
+            err: '转换未产出文件' + (conv.code ? '（soffice 退出码 ' + conv.code + '）' : '') +
+              (tail ? '：' + tail : '（格式可能不支持）'),
+          });
           continue;
         }
         const out = await uniqueTarget(outDir, path.basename(produced));
         await fsp.mkdir(path.dirname(out), { recursive: true });
-        await fsp.rename(produced, out);
+        /* 跨盘同样不能裸 rename（stage 在 %TEMP%，outDir 可能在别的盘） */
+        await moveFile(produced, out);
         results.push({ input: f, out, ok: true, err: '' });
       } catch (err) {
         results.push({ input: f, out: null, ok: false, err: fmtErr(err) });
@@ -3779,7 +4091,33 @@ handle('rec:stop', async (e, makeGif) => {
     }
     let gifOut = null;
     if (makeGif) {
-      const gifTarget = recOut.replace(/\.mp4$/i, '.gif');
+      /* 【GIF 目标名的两个坑】
+       * 1) 用户走 dialog:save，文件名可以是任意东西。原来用
+       *    `/\.mp4$/i` 只认 mp4 —— 存成 .mkv/.avi 时替换不生效，
+       *    gifTarget === recOut，ffmpeg 一边读一边 `-y` 写同一个文件。
+       * 2) 改成「剥掉最后一个扩展名再加 .gif」仍有坑：
+       *    录成 `D:\rec\v1.2`（无扩展名但含点）→ 得到 `D:\rec\v1.gif`；
+       *    录成 `D:\rec\.hidden` → 整个文件名被当成扩展名，结果跑到
+       *    **父目录** `D:\rec.gif`。
+       * 两种情况下，失败分支里的 `rm(gifTarget)` 删掉的是与本次录制
+       * 毫不相干的用户既有文件。
+       * 现在：只在确实是已知视频扩展名时才剥离，否则直接拼 `.gif`；
+       * 并且**只在文件是我们这次新建时才删**（先记下它原本是否存在）。 */
+      const REC_VIDEO_EXT = /^\.(mp4|mkv|avi|mov|webm|m4v|flv|wmv|ts)$/i;
+      const recExt = path.extname(recOut);
+      let gifTarget = REC_VIDEO_EXT.test(recExt)
+        ? recOut.slice(0, -recExt.length) + '.gif'
+        : recOut + '.gif';
+      if (path.resolve(gifTarget).toLowerCase() === path.resolve(recOut).toLowerCase()) {
+        gifTarget = recOut + '.gif';   // 兜底：绝不能与录像同路径
+      }
+      /* 目标已存在 → 不覆盖、不改名去猜，直接换一个不冲突的名字，
+       * 这样失败清理绝不会误删用户原有的 gif。 */
+      const gifPreexisted = await pathExists(gifTarget);
+      if (gifPreexisted) {
+        const stem = gifTarget.slice(0, -'.gif'.length);
+        for (let i = 1; i < 1000 && await pathExists(gifTarget); i++) gifTarget = `${stem}(${i}).gif`;
+      }
       try {
         const ffmpeg = findFfmpeg();
         const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-i', recOut, '-vf', 'fps=10,scale=480:-2:flags=lanczos', gifTarget], { timeout: 300000 });
@@ -3788,7 +4126,8 @@ handle('rec:stop', async (e, makeGif) => {
       } catch (err) {
         // 失败时 ffmpeg 会留下体积不足的残缺 .gif，必须删掉，
         // 否则用户看到「录制完成」却发现目录里多了一个打不开的文件。
-        await fsp.rm(gifTarget, { force: true }).catch(() => {});
+        // 但**只删我们自己新建的**：万一目标名撞上了用户既有文件，删了就是毁数据。
+        if (!gifPreexisted) await fsp.rm(gifTarget, { force: true }).catch(() => {});
         gifOut = null;
       }
     }
@@ -3954,24 +4293,54 @@ async function rmQueryLockers(paths) {
 
   // 单引号转义（PowerShell 里 '' 表示一个字面单引号）
   const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
-  const arr = list.map(q).join(',');
   /* 无条件带上 Add-Type：每次 ps() 都是新进程，类型不会跨进程留存 */
   const addType = `Add-Type -TypeDefinition @'\n${rmLockers.FILES_CS}\n'@\n`;
-  const r = await ps(`${addType}[HeheFiles.Util]::Lockers(@(${arr}))`, 45000);
 
-  const out = String(r.stdout || '');
-  if (/^ERR\t/m.test(out)) {
-    const parts = out.trim().split('\t');
-    throw new Error('Restart Manager 查询失败（' + parts[1] + '，错误码 ' + parts[2] + '）');
-  }
-
+  /* 【必须分块，否则深路径必然 spawn ENAMETOOLONG】
+   * 早期这里把 list 全部拼成一个数组字面量。file:who-locks-dir 允许注册
+   * 200 个文件（见上面 `files.length >= 200` 的上限），而 Windows 命令行
+   * 上限约 32767 字符：200 个 200 字符的路径拼出来接近 4 万字符，
+   * execFile 直接抛 ENAMETOOLONG，PowerShell 根本没启动 ——
+   * 用户看到的是一个 spawn 错误，而不是占用列表。
+   * 同一文件的 link:scan / linkNatures 早就为此做了 PS_PATH_BATCH 分块，
+   * 这里保持一致；每块单独起一次 ps，结果合并。
+   *
+   * 【分块不能改变结论】RM 是「整批注册再取进程列表」，分块后每块各自
+   * 给出该块内文件被谁占用；把各块的 lockers 按 pid+type 去重合并即可，
+   * 与整批查询的语义等价（我们本来也无法把进程一一对应到具体文件）。 */
   const rows = [];
-  for (const line of out.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    const p = line.split('\t');
-    const pid = parseInt(p[0], 10);
-    if (!Number.isFinite(pid) || pid <= 0) continue;
-    rows.push({ pid, name: p[1] || '', type: p[2] || 'app' });
+  const blockErrors = [];
+  for (let i = 0; i < list.length; i += PS_PATH_BATCH) {
+    const chunk = list.slice(i, i + PS_PATH_BATCH);
+    const arr = chunk.map(q).join(',');
+    let r;
+    try {
+      r = await ps(`${addType}[HeheFiles.Util]::Lockers(@(${arr}))`, 45000);
+    } catch (err) {
+      blockErrors.push(shortErr(err));
+      continue;
+    }
+    const out = String(r.stdout || '');
+    if (/^ERR\t/m.test(out)) {
+      const parts = out.trim().split('\t');
+      const code = parts[2];
+      /* 某一块的 RM 失败（例如混进了目录/链接导致整批 ERR 5）不应该
+       * 让整次查询作废 —— 其余块的结果仍然有效，如实记下这一块失败即可。 */
+      blockErrors.push('错误码 ' + code);
+      continue;
+    }
+    for (const line of out.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const p = line.split('\t');
+      const pid = parseInt(p[0], 10);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      rows.push({ pid, name: p[1] || '', type: p[2] || 'app' });
+    }
+  }
+  /* 一块都没成功、且确实有分块 → 说明查询整体不可用（不是「没有占用」）。
+   * 必须抛出去，否则会被当成「查了，没占用」。 */
+  if (blockErrors.length && blockErrors.length === Math.ceil(list.length / PS_PATH_BATCH) && !rows.length) {
+    throw new Error('Restart Manager 查询失败（' + blockErrors.slice(0, 2).join('；') + '）');
   }
 
   /* 补上进程的可执行路径与启动时间，方便用户判断「这是不是我自己开的」。
@@ -4087,6 +4456,33 @@ handle('file:who-locks-dir', async (e, dir) => {
   });
 });
 
+/* 批量 PowerShell 查询的分块大小。
+ *
+ * 【为什么必须分块】把几百个路径拼成一个数组字面量一次传进去会撞上
+ * Windows 命令行上限（约 32767 字符），Node 直接抛 spawn ENAMETOOLONG，
+ * PowerShell 根本没启动。实测：单路径 91 字符时，500 个就超限。
+ * 每块 60 个路径：即便单个路径 200 字符也只占 1.2 万字符，留足余量。
+ *
+ * 【位置说明】这个常量最早定义在文件靠后处，而 link:scan / linkNatures /
+ * rmQueryLockers 都在它之前就用到它。虽然 handler 是启动后才调用的（那时
+ * const 早已初始化），但依赖「声明顺序」的代码一旦被提到模块顶层就会 TDZ 崩，
+ * 所以现在统一放在文件靠前的公共常量区（见前面 PS_PATH_BATCH 的定义）。 */
+
+/**
+ * 把错误压成一句人话。
+ * Node 的 spawn 失败会把**整条命令行**塞进 message（几千字符），
+ * 直接显示在界面上等于没给信息。这里保留错误码 + 前一段文字。
+ *
+ * @param {Error} err
+ * @returns {string}
+ */
+function shortErr(err) {
+  const code = String((err && err.code) || '').trim();
+  const msg = String((err && err.message) || err || '').replace(/\s+/g, ' ').trim();
+  const head = msg.length > 100 ? msg.slice(0, 100) + '…' : msg;
+  return code && msg.indexOf(code) === -1 ? code + ' ' + head : head;
+}
+
 /* ================= IPC: 链接体检与清理（reparse point） =================
  * 只读为主：枚举 reparse point、逐个判定，僵尸链接可批量清理，
  * 其余类型只提示不动手。
@@ -4183,26 +4579,39 @@ handle('link:scan', async (e, root, opts = {}) => {
    *   - readlink 得到的 target 若是目录且能在盘符内解析 → 极可能是 junction；
    *   - 但真正的 LinkType 交给 PowerShell 批量取，取不到就留空（只是展示信息）。
    * 注意：targetByName 已经有了 readlink 的结果，这里只用它兜底。 */
+  let typeQueryError = null;
   try {
-    if (found.length) {
-      const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
-      /* 只取这些具体的链接，不再递归整个目录 */
-      const arr = found.map(q).join(',');
-      const r = await ps(
-        `Get-Item -LiteralPath @(${arr}) -Force -ErrorAction SilentlyContinue | ` +
-        `ForEach-Object { @($_.FullName, [string]$_.LinkType, [string]$_.Target) -join [char]9 }`,
-        Math.max(15000, found.length * 300));
-      for (const line of String(r.stdout || '').split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        const seg = line.split('\t');
-        if (seg.length < 2) continue;
-        const key = seg[0].toLowerCase();
-        typeByName.set(key, seg[1] || '');
-        /* PowerShell 的 Target 只在 readlink 失败时作为兜底 */
-        if (!targetByName.get(key) && seg[2]) targetByName.set(key, seg.slice(2).join('\t'));
+    const q = (x) => "'" + String(x).replace(/'/g, "''") + "'";
+    /* 【必须分块】几百个路径拼成一条会撞命令行上限（spawn ENAMETOOLONG），
+     * 那时整趟查询作废、所有链接的 LinkType 都空着（只是展示信息，
+     * 但用户会以为「这些链接没类型」，而真相是查询根本没跑起来）。 */
+    for (let i = 0; i < found.length; i += PS_PATH_BATCH) {
+      const chunk = found.slice(i, i + PS_PATH_BATCH);
+      try {
+        const arr = chunk.map(q).join(',');
+        const r = await ps(
+          /* 结尾的 exit 0：悬空链接（Get-Item 拿不到）本来就会让 PowerShell
+           * 返回非零，而那是**正常状态**，不该被算成「查询失败」。 */
+          `Get-Item -LiteralPath @(${arr}) -Force -ErrorAction SilentlyContinue | ` +
+          `ForEach-Object { @($_.FullName, [string]$_.LinkType, [string]$_.Target) -join [char]9 }; exit 0`,
+          Math.max(15000, chunk.length * 300));
+        for (const line of String(r.stdout || '').split(/\r?\n/)) {
+          if (!line.trim()) continue;
+          const seg = line.split('\t');
+          if (seg.length < 2) continue;
+          const key = seg[0].toLowerCase();
+          typeByName.set(key, seg[1] || '');
+          /* PowerShell 的 Target 只在 readlink 失败时作为兜底 */
+          if (!targetByName.get(key) && seg[2]) targetByName.set(key, seg.slice(2).join('\t'));
+        }
+      } catch (err) {
+        /* 单块失败不影响其它块，但要记下来如实告知（不能再全静默）。
+         * 截断：err.message 里通常带着整条命令行（几千字符），
+         * 原样塞进界面没人读得下去；错误码才是关键信息。 */
+        typeQueryError = (typeQueryError ? typeQueryError + '；' : '') + shortErr(err);
       }
     }
-  } catch (err) { /* 批量取类型失败不影响主结果 */ }
+  } catch (err) { typeQueryError = err.message; }
 
   const items = [];
   for (const p of found) {
@@ -4241,6 +4650,9 @@ handle('link:scan', async (e, root, opts = {}) => {
     counts,
     groups,
     kinds: links.LINK_KINDS,
+    /* 链接类型（junction / symlink）是**展示**字段，查询失败不影响判定结果，
+     * 但必须让用户知道「类型那列是空的」是因为查询失败，而不是真的没有类型。 */
+    typeQueryError,
     advice: items.length
       ? '共 ' + items.length + ' 个链接：' +
         Object.entries(counts).filter(([, n]) => n).map(([k, n]) => links.LINK_KINDS[k].label + ' ' + n).join('、')
@@ -4372,19 +4784,52 @@ async function copyTreeExcludingLinks(srcAbs, dstAbs, linkList) {
  */
 async function restoreLinksIntoTarget(srcAbs, dstAbs, linkList, natures) {
   const nat = natures || new Map();
-  const created = { count: 0, failed: [], fileLinks: 0 };
+  const created = { count: 0, failed: [], fileLinks: 0, innerRewritten: 0, srcReadableLinks: [] };
   for (const l of linkList) {
     const rel = relKey(srcAbs, l);
     try {
-      const target = fs.readlinkSync(l);
-      /* junction 的目标必须是绝对路径；这里统一解析一次 */
-      const absTarget = path.resolve(target);
+      /* 【目标落在源目录树内部时必须改写】
+       * 搬家第 3 步把源目录改名成 .hehe-bak、第 6 步删掉它。所以任何
+       * 「目标在源树内部」的链接（指向源自身、源内子目录、源内兄弟目录）
+       * 如果照抄旧的绝对目标，重建出来的链接指向的是一个**马上就会消失**
+       * 的路径 —— 搬家全程不报错、界面说「搬家完成」，目标侧那个链接却是死的。
+       * 这类链接的正确目标是「新位置里的对应路径」：src\sub → dst\sub。
+       * 目标在源树之外的（别的盘、别的目录）才保持原样。 */
+      let absTarget = linkTargetAbs(l);
+      if (isInsideTree(absTarget, srcAbs)) {
+        /* 【相对路径必须用**归一后**的两端算】
+         * 只把 isInsideTree 改成归一比较还不够：这里若拿原始字面量算
+         * path.relative，8.3 短名的目标（...\VERYLO~1\sub）会算成
+         * '..\VERYLO~1\sub'，path.join 出来的是一条指回旧位置的怪路径 ——
+         * 链接建得成功、源一改名就成死链（实测：readlink 仍是短名旧路径）。
+         * 两端都过 normalizeForComparePath，relative 才知道它们同源。 */
+        const srcNorm = normalizeForComparePath(srcAbs);
+        const tgtNorm = normalizeForComparePath(absTarget);
+        absTarget = path.join(dstAbs, path.relative(srcNorm, tgtNorm));
+        created.innerRewritten++;
+      }
       const dstChild = path.join(dstAbs, ...rel.split('/'));
       await fsp.mkdir(path.dirname(dstChild), { recursive: true });
       /* 若目标侧同名项已存在（理论上不会，因为上面刚建好目录树），先清掉 */
       if (await pathExists(dstChild)) {
         try { fs.unlinkSync(dstChild); } catch (e) { /* 忽略 */ }
       }
+      /* 源侧这个链接本来是活的吗？两个用途：
+       *   1) 建完自检（见下）只对活的做要求；
+       *   2) 把「源侧可读」的链接收集起来回传给调用方 —— 源目录改名之后，
+       *      这些链接在目标侧也必须可读（那时才看得出「照抄旧路径」的坏链）。
+       *
+       * 【判据必须是 stat，不能用 access/readdir 组合】
+       * 实测（本机）：一个目标已被删的悬空 junction，
+       *   lstat → ok   access → ok   readdir → ENOENT   stat → ENOENT
+       * access 判的是「这个**条目**能不能访问」，悬空链接的条目当然在，
+       * 于是它一路返回成功 —— 拿它当「活得成」的判据会把悬空链接当成活的。
+       * stat 会跟随链接、目标不在就抛 ENOENT，这才是「能不能读到东西」。
+       * readdir 也能判，但它对**文件**链接无效（不是目录），
+       * 所以统一用 stat。 */
+      const isLive = (p) => { try { fs.statSync(p); return true; } catch (e) { return false; } };
+      const srcReadable = isLive(l);
+      if (srcReadable) created.srcReadableLinks.push(l);
       const kind = nat.get(l.toLowerCase()) || linkNature(l);
       if (kind === 'dir') {
         await fsp.symlink(absTarget, dstChild, 'junction');
@@ -4399,12 +4844,101 @@ async function restoreLinksIntoTarget(srcAbs, dstAbs, linkList, natures) {
          * 「搬家成功但链接打不开」这种最难排查的形态。 */
         throw new Error('无法判断这个链接指向目录还是文件，拒绝重建（避免造出打不开的链接）');
       }
+      /* 【建完当场验一次：源侧可读的，目标侧也必须可读】
+       * 这一层抓的是「链接建出来了，但它指向的东西此刻就不存在」——
+       * 典型是目标盘的对应目录没被复制过去，或者目标路径拼错。
+       * 这类失败很隐蔽：symlink 调用本身会成功（Windows 允许悬空 junction），
+       * 不做自检的话 created 会 +1，一路「成功」到界面上。
+       *
+       * 【它抓不到「内部链接照抄旧路径」那个 bug，说清楚免得误以为有保险】
+       * 那种情况下，链接目标此刻（源目录还没改名）完全有效，readdir 会成功；
+       * 链接是等到第 3 步源目录改名 .hehe-bak 之后才变死的。
+       * 那个 bug 由**目标改写**（上面的 isInsideTree 分支）解决，
+       * 不是靠这里兜住的 —— 真正的兜底是最后 verifyLinkReadable 之后
+       * 对目标侧整树链接的抽查（那时源已经改名，坏链会露出来）。
+       *
+       * 只对源侧本来可读的链接做要求：源侧本来就悬空的，重建出来悬空是
+       * 「保持现状」，不该判失败。 */
+      if (srcReadable && !isLive(dstChild)) {
+        throw new Error('重建后的链接打不开（源侧是可读的）：' + dstChild);
+      }
       created.count++;
     } catch (err) {
       created.failed.push({ link: l, error: err.message });
     }
   }
-  return { created: created.count, failed: created.failed, fileLinks: created.fileLinks };
+  return {
+    created: created.count, failed: created.failed, fileLinks: created.fileLinks,
+    innerRewritten: created.innerRewritten, srcReadableLinks: created.srcReadableLinks,
+  };
+}
+
+/**
+ * 链接声明的目标，绝对化。
+ *
+ * 【相对目标必须按链接所在目录解析】path.resolve(target) 是按**当前工作目录**
+ * 解析的 —— 对一个目标写成相对路径的符号链接，算出来的位置和它真正的指向
+ * 可以完全无关（进程 cwd 是什么就是什么）。这里显式用链接所在目录。
+ *
+ * @param {string} linkPath 链接自身路径
+ * @returns {string} 绝对目标路径
+ */
+function linkTargetAbs(linkPath) {
+  const raw = String(fs.readlinkSync(linkPath));
+  return path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(path.dirname(linkPath), raw);
+}
+
+/**
+ * 供比较用的路径归一：把 8.3 短名、subst 虚拟盘、经由符号链接父目录写出的
+ * 路径都解析成同一种字面量，再比较。
+ *
+ * 【为什么不能直接比字符串】fs.readlinkSync 返回的是链接**声明的原始字符串**。
+ * 它可能是：
+ *   - 8.3 短名：C:\...\VERYLO~1\sub（实测本机 Temp 下必然出现）
+ *   - subst 出来的虚拟盘：X:\sub
+ *   - 经由符号链接父目录写出的路径
+ * 这些写法都不是源目录字面量的「扩展」，path.relative 判不出来 ——
+ * 于是「目标在源树内部」的链接被照抄，源改名后变成死链。
+ * 实测：源 C:\...\VeryLongSourceDirectoryName，用短名建的 junction
+ * readlink 返回 ...\VERYLO~1\sub，纯字符串比较判成 false。
+ *
+ * 解析失败（悬空链接、无权限）时退回 path.resolve —— 保持原来的字面比较行为，
+ * 不能因为解析不了就把「悬空内链」漏判掉。
+ *
+ * @param {string} p
+ * @returns {string} 归一后的绝对路径
+ */
+function normalizeForComparePath(p) {
+  let abs;
+  try { abs = path.resolve(String(p || '')); } catch (e) { return String(p || ''); }
+  try {
+    return fs.realpathSync.native(abs);
+  } catch (e) {
+    /* 目标本身不存在时，至少把**父目录**解析掉：
+     * C:\...\VERYLO~1\sub（sub 还不存在）也能归一到长名形态。
+     * 这是重建链接时最常见的状态 —— 目标此刻可能还没被复制过去。 */
+    try {
+      const dir = path.dirname(abs);
+      const base = path.basename(abs);
+      return path.join(fs.realpathSync.native(dir), base);
+    } catch (e2) { return abs; }
+  }
+}
+
+/**
+ * 目标是否落在源目录树内部（含源目录自身）。
+ * 两侧都先过 normalizeForComparePath，再交给 path.relative 判前缀关系
+ * （Windows 上大小写不敏感，且不会被「同前缀」骗过：C:\a\b 与
+ *  C:\a\bc 是两回事）。
+ *
+ * @param {string} absPath
+ * @param {string} rootAbs
+ * @returns {boolean}
+ */
+function isInsideTree(absPath, rootAbs) {
+  const rel = path.relative(normalizeForComparePath(rootAbs), normalizeForComparePath(absPath));
+  if (!rel) return true;                                  // 就是源目录自身
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 /* 收集「可以安全注册给 Restart Manager」的探测路径。
@@ -4466,22 +5000,42 @@ async function linkNatures(list) {
     if (n === 'unknown') unknown.push(l);
     else out.set(l.toLowerCase(), n);
   }
-  if (!unknown.length) return out;
-  try {
-    const q = (x) => "'" + String(x).replace(/'/g, "''") + "'";
-    const arr = unknown.map(q).join(',');
-    const r = await ps(
-      `Get-Item -LiteralPath @(${arr}) -Force -ErrorAction SilentlyContinue | ` +
-      `ForEach-Object { @($_.FullName, ('' + $_.Attributes)) -join [char]9 }`,
-      Math.max(15000, unknown.length * 300));
-    for (const line of String(r.stdout || '').split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const seg = line.split('\t');
-      if (seg.length < 2) continue;
-      out.set(seg[0].trim().toLowerCase(), /Directory/i.test(seg.slice(1).join('\t')) ? 'dir' : 'file');
+  if (!unknown.length) return { natures: out, error: null };
+
+  /* 【分批查 + 如实上报失败】
+   * 早期这里把全部路径拼成一条命令、并用一个空 catch 吞掉所有异常：
+   *   - 路径一多就 spawn ENAMETOOLONG（命令行超限），整趟查询根本没跑；
+   *   - 失败与「个别链接查不到」被抹成同一个状态，调用方无从区分，
+   *     而「查不到性质」会让重建直接拒绝 —— 于是源目录里链接一多，
+   *     这个目录就永远搬不动，界面只说「无法判断这个链接指向目录还是文件」。
+   * 现在按 PS_PATH_BATCH 分批，失败的批次记进 error 由调用方展示。 */
+  const errors = [];
+  for (let i = 0; i < unknown.length; i += PS_PATH_BATCH) {
+    const chunk = unknown.slice(i, i + PS_PATH_BATCH);
+    try {
+      const q = (x) => "'" + String(x).replace(/'/g, "''") + "'";
+      const arr = chunk.map(q).join(',');
+      const r = await ps(
+        /* 结尾的 exit 0：悬空链接会让 PowerShell 返回非零，而那是正常状态
+         * （搬到别处的目录里本来就可能留着指向已消失目标的链接）。 */
+        `Get-Item -LiteralPath @(${arr}) -Force -ErrorAction SilentlyContinue | ` +
+        `ForEach-Object { @($_.FullName, ('' + $_.Attributes)) -join [char]9 }; exit 0`,
+        Math.max(15000, chunk.length * 300));
+      for (const line of String(r.stdout || '').split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const seg = line.split('\t');
+        if (seg.length < 2) continue;
+        out.set(seg[0].trim().toLowerCase(), /Directory/i.test(seg.slice(1).join('\t')) ? 'dir' : 'file');
+      }
+    } catch (err) {
+      errors.push(shortErr(err));
     }
-  } catch (err) { /* 取不到就保持未知：重建时会如实报失败，不猜 */ }
-  return out;
+  }
+  return {
+    natures: out,
+    /* 部分批次失败时也带上：调用方要能说清「这不代表没有文件链接」 */
+    error: errors.length ? (errors.length + ' 批链接性质查询失败：' + errors.slice(0, 2).join('；')) : null,
+  };
 }
 
 /* ================= IPC: 目录搬家（建链接替身） =================
@@ -4536,12 +5090,24 @@ handle('dir:move-precheck', async (e, { src, dst } = {}) => {
   }
   /* 其中有多少是「文件符号链接」：这类在目标侧必须重建为符号链接，
    * 而 Windows 创建符号链接需要特权 —— 提前告诉用户，
-   * 免得搬家在这一步失败（失败会回退，但白等一次完整拷贝）。 */
+   * 免得搬家在这一步失败（失败会回退，但白等一次完整拷贝）。
+   * 【性质查询失败要如实说】否则 fileLinkCount 恒 0，
+   * 把一个「可能失败」的操作显示成「没有文件链接、应该没问题」。 */
   let fileLinkCount = 0;
+  let linkNaturesError = null;
   try {
-    const natures = await linkNatures(treeLinks);
-    for (const [, n] of natures) if (n === 'file') fileLinkCount++;
-  } catch (err) { fileLinkCount = 0; }
+    const ln = await linkNatures(treeLinks);
+    linkNaturesError = ln.error;
+    for (const [, n] of ln.natures) if (n === 'file') fileLinkCount++;
+  } catch (err) { linkNaturesError = err.message; }
+
+  /* 有多少链接的目标落在源目录树内部 —— 这些会被**改写**成新位置的对应路径
+   * （照抄旧路径的话，旧路径随 .bak 一起被删，重建出来的就是死链）。
+   * 提前告诉用户，界面文案才和实际行为对得上。 */
+  let innerLinkCount = 0;
+  for (const l of treeLinks) {
+    try { if (isInsideTree(linkTargetAbs(l), srcAbs)) innerLinkCount++; } catch (err) { /* 读不到的链接不计数 */ }
+  }
 
   /* 占用检查：只看顶层**普通文件**，查得快且覆盖绝大多数情况。
    *
@@ -4583,6 +5149,9 @@ handle('dir:move-precheck', async (e, { src, dst } = {}) => {
   const verdict = dirMove.validateMove({
     src: srcAbs, dst: dstAbs,
     srcExists, srcIsDir, srcIsLink: lst.isLink, srcIsRoot, srcIsCritical,
+    /* 把「为什么受保护」的原因交给 validateMove 拼进 reason（与目标侧对齐） */
+    srcProtectedReason: protectedMod.protected ? protectedMod.reason : '',
+    srcProtectedKind: protectedMod.protected ? protectedMod.kind : '',
     dstExists, needBytes: needBytes || 0, freeBytes, lockedPaths,
     allowSameVolume: false,
     bakExists: await pathExists(srcAbs + '.hehe-bak'),
@@ -4608,6 +5177,8 @@ handle('dir:move-precheck', async (e, { src, dst } = {}) => {
      * 用的是上面那次遍历的结果，不再走第二遍。 */
     linkCount: treeLinks.length,
     fileLinkCount,
+    innerLinkCount,
+    linkNaturesError,
     dstExists, needBytes, freeBytes, lockedPaths,
     plan: dirMove.movePlan(srcAbs, dstAbs),
   });
@@ -4648,6 +5219,22 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
 
   const emit = (stage, extra) => {
     try { send('job:stream', { id, data: JSON.stringify(Object.assign({ stage }, extra || {})) }); } catch (err) {}
+  };
+
+  /* 源侧可读的链接清单（复制阶段填，第 5 步用来抽查目标侧）。
+   * 提到函数作用域是因为它跨越「复制」和「验证链接」两个阶段。 */
+  let innerLinkCheckList = [];
+
+  /* 【目标目录的所有权标记】
+   * 只有当我们确认「目标原本不存在，是我们复制出来的」之后，才允许在失败时
+   * 回滚删除它。没有这个标记，任何在「目标已存在」处抛出的错误都会被
+   * catch 里的回滚当成「删掉半成品」，把用户原有目录递归删光。
+   * 两个阶段（复制 / 校验 / 改名）的失败回滚都必须过这一层。 */
+  let dstOwned = false;
+  const rollbackDst = async () => {
+    if (!dstOwned) return;      // 不是我们建的，绝不删
+    dstOwned = false;
+    try { await fsp.rm(dstAbs, { recursive: true, force: true }); } catch (e2) {}
   };
 
   // 前置校验必须在主进程重做一遍：渲染层的历史结论不能当授权依据。
@@ -4696,8 +5283,11 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
       src: srcAbs, dst: dstAbs,
       srcExists: !!sst, srcIsDir: !!sst && sst.isDirectory(),
       srcIsLink: lst.isLink, srcIsRoot: links.isVolumeRootOnly(srcAbs),
-      /* 与预检用同一判据（isProtectedForModify），保证两阶段说法一致 */
+      /* 与预检用同一判据（isProtectedForModify），保证两阶段说法一致。
+       * 原因也要带上：SRC_CRITICAL 的笼统文案对用户没有指导意义。 */
       srcIsCritical: pathGuard.isProtectedForModify(srcAbs).protected,
+      srcProtectedReason: pathGuard.isProtectedForModify(srcAbs).reason || '',
+      srcProtectedKind: pathGuard.isProtectedForModify(srcAbs).kind || '',
       dstExists, needBytes, freeBytes, lockedPaths,
       allowSameVolume: false,
       bakExists: await pathExists(srcAbs + '.hehe-bak'),
@@ -4728,7 +5318,18 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
      * 这里再兜一次，防并发），cp 只负责「往不存在的路径写」。
      * 去掉 errorOnExist 后，目标若意外存在会被 cp 合并写入 ——
      * 但那已经被前置的 EEXIST 检查挡住了，不会走到这里。 */
-    if (await pathExists(dstAbs)) throw new Error('目标位置已存在，为避免覆盖已拒绝：' + dstAbs);
+    /* 【这道防覆盖检查必须在「标记已创建」之前，且不能进回滚范围】
+     * 原来它就写在这个 try 的第一行：预检通过后、执行前若目标路径上冒出了
+     * 东西（用户在预检后自己建了 D:\backup\photos，或两个请求抢同一个 dst），
+     * 这里抛异常 → 立刻被同一 try 的 catch 接住 → catch 第一件事是
+     *   fsp.rm(dstAbs, { recursive: true, force: true })
+     * 于是「为避免覆盖已拒绝」变成了「把那个已存在的目录整个删掉」，
+     * 用户目标侧的数据当场消失，报错还写着「源目录未受影响」。
+     * 现在用 dstOwned 记录「这个目标是我们自己建的」，只有它为 true 才回滚删除。 */
+    if (await pathExists(dstAbs)) {
+      throw new Error('目标位置已存在，为避免覆盖已拒绝：' + dstAbs);
+    }
+    dstOwned = true;   // 从这里往下，dstAbs 才可能是我们创建的
 
     /* 【必须先找出源目录树里的链接，复制时把它们排除掉】
      * fs.cp 对 reparse point 默认按符号链接处理，要调用 symlink() 重建，
@@ -4748,8 +5349,13 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
     /* 链接不在 cp 的范围里了，所以 cp 不会再碰 symlink()，EPERM 消失。
      * 重建前先判定每个链接指向目录还是文件 —— 目录用 junction（免特权），
      * 文件用符号链接（用 junction 会造出打不开的坏链接且不报错）。 */
-    const natures = await linkNatures(treeLinks.links);
-    const linkRestore = await restoreLinksIntoTarget(srcAbs, dstAbs, treeLinks.links, natures);
+    const ln = await linkNatures(treeLinks.links);
+    /* 性质查询失败不阻断搬家（受限的都是「重建时会不会被判成性质不明」），
+     * 但必须报出来：否则用户只会看到「无法判断这个链接指向目录还是文件」。 */
+    if (ln.error) emit('check', { ok: true, linkNaturesError: ln.error });
+    const linkRestore = await restoreLinksIntoTarget(srcAbs, dstAbs, treeLinks.links, ln.natures);
+    /* 留给第 5 步：源改名之后要按这份清单抽查目标侧的链接 */
+    innerLinkCheckList = linkRestore.srcReadableLinks || [];
     /* 【重建失败必须报出来，不能静默】
      * 若某个链接没建起来，目标侧就少一个条目，而源侧还有 ——
      * 这会让「校验」步骤觉得文件对不上，也可能让用户以为搬家成功但
@@ -4759,10 +5365,11 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
       throw new Error('目标侧重建链接失败（' + linkRestore.failed.length + ' 个）：' +
         path.basename(first.link) + ' —— ' + first.error);
     }
-    emit('copy', { ok: true, links: treeLinks.links.length, fileLinks: linkRestore.fileLinks });
+    emit('copy', { ok: true, links: treeLinks.links.length, fileLinks: linkRestore.fileLinks,
+      innerRewritten: linkRestore.innerRewritten });
   } catch (err) {
-    // 源完好，只需要删掉拷了一半的目标
-    try { await fsp.rm(dstAbs, { recursive: true, force: true }); } catch (e2) {}
+    // 源完好，只需要删掉拷了一半的目标（且只在目标确实是本进程创建时才删）
+    await rollbackDst();
     emit('copy', { ok: false, error: err.message });
     throw new Error('复制失败（源目录未受影响）：' + err.message);
   }
@@ -4778,7 +5385,7 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
     if (!vr.ok) throw new Error(vr.reason);
     emit('verify', { ok: true, files: vr.files, hashed: vr.hashed, bytes: vr.bytes });
   } catch (err) {
-    try { await fsp.rm(dstAbs, { recursive: true, force: true }); } catch (e2) {}
+    await rollbackDst();
     emit('verify', { ok: false, error: err.message });
     throw new Error('校验失败（已删除目标副本，源目录未受影响）：' + err.message);
   }
@@ -4789,7 +5396,7 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
     await fsp.rename(srcAbs, bakPath);
     emit('rename', { ok: true });
   } catch (err) {
-    try { await fsp.rm(dstAbs, { recursive: true, force: true }); } catch (e2) {}
+    await rollbackDst();
     emit('rename', { ok: false, error: err.message });
     throw new Error('源目录改名失败（已删除目标副本，源目录未变）：' + err.message);
   }
@@ -4822,12 +5429,21 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
   }
 
   /* ---------- 5) 验证链接真的可读 ----------
-   * 建了链接不代表链接是好的：要真的读一遍其中的文件。 */
+   * 建了链接不代表链接是好的：要真的读一遍其中的文件。
+   *
+   * 【这里才是「树内部的链接」真正的兜底】
+   * 到这一步源目录已经改名成 .hehe-bak，所以任何「照抄旧绝对路径」
+   * 重建出来的链接此刻都是死的 —— 而 verifyLinkReadable 只看顶层那个链接，
+   * 树内部的坏链它一个都看不到（那正是问题 1 能一路「搬家完成」的原因）。
+   * 所以再抽验一遍**目标树里的链接**：源侧可读的，搬到目标侧后也必须可读。
+   * 这一步排在源改名之后，才具有判据意义。 */
   try {
     emit('linkcheck', { ok: null, started: true });
     const r = await verifyLinkReadable(srcAbs, dstAbs);
     if (!r.ok) throw new Error(r.reason);
-    emit('linkcheck', { ok: true, sampled: r.sampled });
+    const inner = await verifyInnerLinksReadable(dstAbs, srcAbs, innerLinkCheckList);
+    if (!inner.ok) throw new Error(inner.reason);
+    emit('linkcheck', { ok: true, sampled: r.sampled, innerSampled: inner.sampled });
   } catch (err) {
     /* 回退：先拆链接（必须用「只删链接」的安全入口），再把 .bak 改回原名 */
     let linkRemoved = false;
@@ -4875,7 +5491,18 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
  * （系统关键目录除外 —— 那些不该引导用户去改权限）。
  */
 
-/* 是否以管理员身份运行。用 PowerShell 查 WindowsPrincipal，比 fs 探测可靠。 */
+/* 是否以管理员身份运行。用 PowerShell 查 WindowsPrincipal，比 fs 探测可靠。
+ *
+ * 【返回三态：true / false / null（未知）】
+ * 原实现 catch 里写死 `_isAdminCache = false`，而 _isAdminCache 是模块级变量、
+ * 永不失效 —— 首次调用时 PowerShell 只要出一次瞬时问题（超时、被杀软拦、
+ * 组策略覆盖了 ExecutionPolicy），这个进程余下的整个生命周期都认定
+ * 「不是管理员」，于是 acl:repair 一直报「修复权限需要管理员权限」，
+ * 直到用户重启应用。用户明明是管理员却被告知不是，没有任何办法自证。
+ *
+ * 这与本文件反复强调的原则（读不到就说读不到，不要编造）正好相反。
+ * 现在：只有**真的拿到了明确的 '0'/'1'** 才缓存；查询失败返回 null 且不缓存，
+ * 下次调用会重新尝试。调用方把 null 当作「未知」处理（不要当成 false 去拦人）。 */
 let _isAdminCache = null;
 async function isRunningAsAdmin() {
   if (_isAdminCache != null) return _isAdminCache;
@@ -4883,9 +5510,10 @@ async function isRunningAsAdmin() {
     const r = await ps(`$id=[Security.Principal.WindowsIdentity]::GetCurrent();` +
       `$p=New-Object Security.Principal.WindowsPrincipal($id);` +
       `if($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'1'}else{'0'}`, 15000);
-    _isAdminCache = String(r.stdout || '').trim() === '1';
-  } catch (err) { _isAdminCache = false; }
-  return _isAdminCache;
+    const v = String(r.stdout || '').trim();
+    if (v === '1' || v === '0') { _isAdminCache = (v === '1'); return _isAdminCache; }
+    return null;   // 输出不是预期的 0/1：当作未知，不缓存
+  } catch (err) { return null; }
 }
 
 /* 读当前所有者与 ACL 摘要。读不到就如实返回 null，不编造。
@@ -5030,9 +5658,16 @@ handle('acl:repair', async (e, opts = {}) => {
   const recursive = !!opts.recursive && isDir;
 
   const admin = await isRunningAsAdmin();
-  if (!admin) {
+  /* admin 是三态：true / false / null（查询失败，见 isRunningAsAdmin 注释）。
+   * 只有确定**不是**管理员时才说「请以管理员身份运行」——那是可执行的建议；
+   * 查询失败时说这句等于让用户去重装/重开一遍也没用，得如实说「没查出来」。 */
+  if (admin === false) {
     throw new Error('修复权限需要管理员权限。请右键「以管理员身份运行」核核工具箱后重试。' +
       '（改所有者 takeown 这一步普通权限做不了）');
+  }
+  if (admin === null) {
+    throw new Error('无法确认当前是否以管理员身份运行（权限查询失败），已拒绝执行以免白跑一趟。' +
+      '请确认核核工具箱是「以管理员身份运行」后重试；若反复失败，可能是 PowerShell 被安全策略限制。');
   }
 
   const me = (await ps(`[Security.Principal.WindowsIdentity]::GetCurrent().Name`, 10000)
@@ -5149,6 +5784,50 @@ function hashFile(p) {
 
 /* 验证「链接可读」：真的从原路径读一遍文件，而不是只看链接存不存在。
  * 这一步能抓住「链接建立了但指向空/指向错地方」的情况。 */
+/**
+ * 抽验目标树里的链接是不是都能打开。
+ *
+ * 【为什么需要它】verifyLinkReadable 只看「原路径那个链接」，
+ * 而搬家搬的是一整棵树，树里可能还嵌着别的链接。这些链接在复制阶段
+ * 是跳过、在 restoreLinksIntoTarget 里重建的 —— 一旦重建时目标算错
+ * （例如照抄了源侧的旧绝对路径，而源目录随后改名成 .hehe-bak），
+ * 它们就会指向一个已经不存在的位置。此时流程其余步骤全都看不出问题：
+ * verifyCopy 跳过链接、verifyLinkReadable 只看顶层，界面最后显示「搬家完成」。
+ *
+ * 调用时机必须是**源目录改名之后**（否则旧路径仍然有效，坏链看不出来）。
+ *
+ * 【只要求「源侧本来就可读」的那些】
+ * 源侧本来就悬空的链接（目标盘没插、目标已被删）在搬家前就是坏的，
+ * 搬家把它原样保留，不该因此判这次搬家失败。哪些链接源侧可读，
+ * 由 restoreLinksIntoTarget 在重建时逐个探好并回传，这里直接用。
+ *
+ * @param {string} dstRoot 目标根目录（源已改名，这里只剩新位置）
+ * @param {string[]} srcReadableLinks 源侧可读的链接（源侧路径，用来在目标侧定位与报错）
+ * @returns {Promise<{ok:boolean, reason:string, sampled:number, checked:number}>}
+ */
+async function verifyInnerLinksReadable(dstRoot, srcAbs, srcReadableLinks) {
+  const list = Array.isArray(srcReadableLinks) ? srcReadableLinks : [];
+  if (!list.length) return { ok: true, reason: '', sampled: 0, checked: 0 };
+
+  /* 【判据用 stat，不用 access / readdir】见 restoreLinksIntoTarget 里的实测：
+   * 悬空链接的 access 是成功的（条目本身可访问），readdir 对文件链接无效。
+   * stat 跟随链接、目标不在就 ENOENT —— 这才是「能不能读到东西」。 */
+  const canRead = (p) => { try { fs.statSync(p); return true; } catch (e) { return false; } };
+  for (const l of list) {
+    const dstChild = path.join(dstRoot, ...relKey(srcAbs, l).split('/'));
+    if (!canRead(dstChild)) {
+      let tgt = '未知目标';
+      try { tgt = fs.readlinkSync(dstChild); } catch (e) { /* 读不到就保持「未知目标」 */ }
+      return {
+        ok: false,
+        reason: '目标树里的链接打不开：' + dstChild + '（它指向 ' + tgt + '）',
+        sampled: 0, checked: list.length,
+      };
+    }
+  }
+  return { ok: true, reason: '', sampled: list.length, checked: list.length };
+}
+
 async function verifyLinkReadable(linkPath, expectTarget) {
   const st = await fsp.lstat(linkPath).catch(() => null);
   if (!st || !st.isSymbolicLink()) return { ok: false, reason: '原路径不是链接' };
@@ -5362,9 +6041,22 @@ handle('seven:extract', async (e, { archive, outDir, password }) => {
     }
     return { outDir, entries: moved };
   } catch (err) {
-    // 合并阶段失败：把已经搬出去的条目撤回去，让 outDir 不留半成品
+    /* 合并阶段失败：把已经搬出去的条目**搬回 staging**，让 outDir 不留半成品。
+     * 【为什么是「搬回」而不是「删掉」】
+     * 原实现直接 fsp.rm(dst)。dst 是 uniqueTarget 生成的新名字，正常情况下
+     * 删掉它就是删掉我们刚解出来的那份，没问题。但「正常情况下」这个前提
+     * 一旦不成立（uniqueTarget 的存在性判断因权限/瞬时错误返回了「不存在」，
+     * 而文件其实在），rm 删掉的就是**用户原有的文件** —— 解压失败不但没保护
+     * 现场，反而毁数据。搬回 staging 则两种情形都安全：是我们的就还给 staging
+     * 由 finally 清掉，是用户的就物归原位（改名回去，内容不动）。
+     * 失败也只影响这一次清理，不影响已经抛出去的原始错误。 */
     for (const dst of movedTo.reverse()) {
-      try { await fsp.rm(dst, { force: true }); } catch (e) {}
+      try {
+        const back = path.join(staging, path.basename(dst));
+        await fsp.rename(dst, back);
+      } catch (e) {
+        /* 搬不回去（被占用）就保持原样：宁可多留一份，也不误删。 */
+      }
     }
     throw err;
   } finally {
@@ -5386,9 +6078,22 @@ handle('wifi:profiles', async () => {
 handle('wifi:key', async (e, name) => {
   const r = await runCmd('netsh', ['wlan', 'show', 'profile', 'name=' + name, 'key=clear'], { timeout: 15000, encoding: 'gbk' });
   const out = r.stdout;
-  const key = (out.match(/(?:关键内容|Key Content)\s*:\s*(.*)$/) || [])[1];
-  const auth = (out.match(/(?:身份验证|Authentication)\s*:\s*(.*)$/) || [])[1];
-  return { key: key ? key.trim() : '', auth: auth ? auth.trim() : '', raw: out };
+  /* 【必须逐行取，不能对整段跑 /...$/】
+   * netsh 的输出是**多行**文本（配置信息 / 连接性设置 / 安全设置 / 安全密钥 几节）。
+   * 没有 /m 标志时，`$` 只匹配整个字符串的末尾，而 stdout 结尾是换行符 ——
+   * 于是 `关键内容 : P@ssw0rd123` 永远匹配不上，key 恒为 undefined。
+   * 渲染层拿到空字符串后显示「（开放网络无密码）」，也就是**所有加密 WiFi
+   * 都会被报成开放网络**：不是报错，而是一个确定的错误结论。
+   * 同文件的 wifi:profiles 就是按行 split 的，两处写法不一致印证这是遗漏。
+   * 用逐行 + 冒号（中英文）取值，比加 /m 更稳：还能避开行尾 \r。 */
+  const kvOf = (re) => {
+    const line = String(out || '').split(/\r?\n/).find((l) => re.test(l)) || '';
+    const m = line.match(/[:：]\s*(.*)$/);
+    return m ? m[1].trim() : '';
+  };
+  const key = kvOf(/关键内容|Key Content/i);
+  const auth = kvOf(/身份验证|Authentication/i);
+  return { key, auth, raw: out };
 });
 
 /* ================= IPC: 文本朗读（System.Speech 本地 TTS） ================= */
@@ -5459,7 +6164,26 @@ handle('svc:action', async (e, name, action) => {
     throw new Error(`拒绝停止系统关键服务：${name}。停止它会导致系统功能异常（网络/DNS/更新/安全组件等），且难以察觉。`);
   }
   const r = await runCmd('sc.exe', [action, name], { timeout: 30000, encoding: 'gbk' });
-  if (r.code !== 0) throw new Error((r.stderr || r.stdout || '').split(/\r?\n/).filter(l => l.trim()).slice(-1).join(' ') || '操作失败（启动/停止服务通常需要管理员权限）');
+  /* 【sc.exe 的失败信息会走 stdout，不能只看 stderr】
+   * `sc.exe stop X` 出错时打印的是
+   *   [SC] OpenService 失败 5:
+   *   拒绝访问。
+   * 而这类文本在 Windows 上常常出现在 **stdout** 里。原实现写的是
+   * `(r.stderr || r.stdout)` —— stderr 非空时**只取 stderr**，stdout 里的
+   * 真正原因被丢掉，用户看到一句不相干的话（或「操作失败」）。
+   * 另外 sc.exe 对「服务尚未启动」等情况会给出非零码 + 明确文案，
+   * 直接把两路合并再取最后几行，比猜哪一路有内容可靠。 */
+  const text = [String(r.stdout || ''), String(r.stderr || '')].filter((s) => s.trim()).join('\n');
+  if (r.code !== 0) {
+    const tail = text.split(/\r?\n/).filter((l) => l.trim()).slice(-3).join(' ');
+    throw new Error(tail || '操作失败（启动/停止服务通常需要管理员权限）');
+  }
+  /* 退出码为 0 但输出里带「失败」的情形（少见但确实有过）也算失败，
+   * 否则界面会 toast「已停止」而服务其实没动。 */
+  if (/失败\s*\d+|FAILED\s+\d+/i.test(text)) {
+    const tail = text.split(/\r?\n/).filter((l) => l.trim()).slice(-3).join(' ');
+    throw new Error(tail);
+  }
   return true;
 });
 handle('power:list', async () => {
@@ -5486,7 +6210,7 @@ handle('net:download', (e, { url, out }) => {
   const bad = pathGuard.checkOverwritable(out);
   if (bad) throw pathGuard.err(bad.code, bad.reason, '请换一个保存路径');
   if (fs.existsSync(out)) throw new Error('目标文件已存在，为避免覆盖已拒绝：' + out);
-  const id = 'dl2' + (++jobSeq);
+  const id = 'dlg' + (++jobSeq);
   const ctrl = new AbortController();
   jobs.set(id, { cancel: () => ctrl.abort() });
   latestCancelable = () => ctrl.abort();
@@ -5503,7 +6227,21 @@ handle('net:download', (e, { url, out }) => {
 
 /* ================= IPC: 区域截图 + 标注（snip.html 全屏覆盖窗） ================= */
 let snipWin = null;
-const snipTmp = () => path.join(app.getPath('temp'), 'hehe-snip-' + Date.now() + '.png');
+/* 当前截图窗用的临时 PNG（全屏原图，4K 屏约 5~15MB）。
+ * 【必须记下来并在窗口关闭时删掉】
+ * 原实现只把路径塞进 URL query，之后再也不管：`snip:finish` 的 cancel 分支
+ * 直接 return，`snipWin.on('closed')` 只把变量置空。于是按一次快捷键、
+ * 随手按 Esc 取消，就在 %TEMP% 留下一张全屏 PNG；用户一天截几十次就是几百 MB。
+ * 启动清扫虽然会按 24 小时清理，但前提是「下次启动」，且期间一直占着盘。
+ * 这里在窗口关闭时统一收口 —— 无论用户是取消、完成、还是直接点窗口关闭。 */
+let snipSrcFile = null;
+const snipTmp = () => path.join(app.getPath('temp'), 'hehe-snip-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex') + '.png');
+async function dropSnipSrc() {
+  const f = snipSrcFile;
+  snipSrcFile = null;
+  if (!f) return;
+  try { await fsp.rm(f, { force: true }); } catch (e) { /* 被占用就留给启动清扫 */ }
+}
 async function captureDisplay(display) {
   const size = { width: Math.round(display.size.width * display.scaleFactor), height: Math.round(display.size.height * display.scaleFactor) };
   let lastErr = null;
@@ -5523,11 +6261,13 @@ async function captureDisplay(display) {
 }
 async function snipStart(mode) {
   if (snipWin && !snipWin.isDestroyed()) { snipWin.close(); snipWin = null; }
+  await dropSnipSrc();   // 上一张没清掉的，先收口
   const pt = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(pt);
   const img = await captureDisplay(display);
   const file = snipTmp();
   await fsp.writeFile(file, img.toPNG());
+  snipSrcFile = file;
   snipWin = new BrowserWindow({
     x: display.bounds.x, y: display.bounds.y, width: display.bounds.width, height: display.bounds.height,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false, skipTaskbar: true, hasShadow: false,
@@ -5536,7 +6276,9 @@ async function snipStart(mode) {
   });
   snipWin.setAlwaysOnTop(true, 'screen-saver');
   snipWin.setFullScreen(true);
-  snipWin.on('closed', () => { snipWin = null; });
+  /* 关窗即清临时图。走到这里说明截图源图已经没用了
+   * （pin/save/ocr 分支会各自另存一份新文件，不复用这张）。 */
+  snipWin.on('closed', () => { snipWin = null; dropSnipSrc(); });
   await snipWin.loadFile('snip.html', { query: {
     src: file, mode: mode === 'region' ? 'region' : 'annotate',
     dx: String(display.bounds.x), dy: String(display.bounds.y),
@@ -5570,12 +6312,22 @@ handle('snip:finish', async (e, { action, dataUrl, rect }) => {
   if (action === 'ocr') { send('snip:ocr', file); return { ok: true, path: file }; }
   if (action === 'save') {
     const p = await dialog.showSaveDialog(win || null, { defaultPath: '截图-' + Date.now() + '.png', filters: [{ name: 'PNG', extensions: ['png'] }] });
-    if (!p.canceled && p.filePath) {
-      fs.copyFileSync(file, p.filePath);
-      return { ok: true, path: p.filePath };
+    try {
+      if (!p.canceled && p.filePath) {
+        fs.copyFileSync(file, p.filePath);
+        return { ok: true, path: p.filePath };
+      }
+      return { ok: false };
+    } finally {
+      /* 【"另存为"这条路必须自己收尾】
+       * 上面那张 file 是为「落盘」临时写的；用户点了保存/取消之后它就没用了。
+       * 原实现不删，于是每执行一次「保存截图」都在 %TEMP% 留一张：
+       * 保存成功留一张（和用户要的那份重复）、取消也留一张（纯垃圾）。 */
+      try { fs.rmSync(file, { force: true }); } catch (e) {}
     }
-    return { ok: false };
   }
+  /* 走到这里说明 action 不认识：刚写的临时文件同样要清掉 */
+  try { fs.rmSync(file, { force: true }); } catch (e) {}
   return { ok: false };
 });
 // 贴剪贴板图片（托盘/工具用）
@@ -5671,7 +6423,29 @@ handle('update:check', async (e, opts = {}) => {
 // 便携版无静默自升级能力（electron-builder portable 每次启动都解压到临时目录），
 // 只能在进程退出后用外部脚本完成替换，因此走 PowerShell 脚本 + app.exit()。
 function psSingleQuote(s) { return "'" + String(s).replace(/'/g, "''") + "'"; }
+/* 【升级应用必须单飞】
+ * 这个 handler 的结尾会 spawn 一个替换脚本、1 秒后 app.exit()。
+ * 渲染层那个「立即重启升级」按钮在拿到返回值之前是可以连点的（它当时还没被
+ * disable），两次 IPC 会在那 1 秒窗口里都走到 spawn —— 两个 PowerShell 脚本
+ * 同时 Copy-Item 同一个 target.exe，各自先写 target.bak.<时间戳>，
+ * 中途可能读到半个 exe 触发「替换后大小不符」，回滚用的又是对方刚写了一半的
+ * 备份。最坏结果是 target.exe 变成半截，用户再也打不开。
+ * 用一个模块级标志挡住第二次即可 —— 升级本来就不可能并行。 */
+let updateApplying = false;
+let updateApplyingCommitted = false;
 handle('update:apply', async (e, opts = {}) => {
+  if (updateApplying) throw new Error('升级已经在进行中，请稍候（应用即将自动重启）。');
+  updateApplying = true;
+  try {
+    return await updateApplyImpl(opts);
+  } catch (err) {
+    /* 校验失败等「还没开始替换」的错误要把标志放开，让用户能重试；
+     * 一旦走到 spawn 脚本那一步，进程 1 秒后就退出了，放不放开都无所谓。 */
+    if (!updateApplyingCommitted) updateApplying = false;
+    throw err;
+  }
+});
+async function updateApplyImpl(opts = {}) {
   const newExe = opts && opts.newExe;
   if (!newExe || !fs.existsSync(newExe)) throw new Error('新版文件不存在，请先完成下载');
   /* 完整性校验：update:check 从 Release 资产里取到的 sha256 记在这里。
@@ -5780,10 +6554,12 @@ handle('update:apply', async (e, opts = {}) => {
     return { ok: true, dryRun: true, script, rollbackScript, target, newExe, backup, args: spawnArgs };
   }
   spawn('powershell.exe', spawnArgs, { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
+  /* 替换脚本已经起来了：此后不再允许第二次 apply（标志也就不必再放开） */
+  updateApplyingCommitted = true;
   // 给脚本 ~1 秒启动时间后退出，脚本会等待本进程消失再替换
   setTimeout(() => { try { isQuitting = true; app.exit(0); } catch (err) { app.quit(); } }, 1000);
   return { ok: true, target, newExe, backup, rollbackScript, script };
-});
+}
 // 清理 update 下载目录里「已经应用过」的旧安装包。
 // 关键：刚下载、还没安装的新包绝不能删——它正是接下来 update:apply 要用的文件。
 // 原实现把该目录下所有 hehe-toolbox-Portable-*.exe 一律删光，于是“下载完切走再回关于页”
@@ -5868,11 +6644,40 @@ handle('update:mark-pending', (e, name) => {
   updateCacheSet({ pendingName: name ? String(name) : null });
   return true;
 });
+/* 版本号比较：只比前三段数字，返回 -1 / 0 / 1。
+ *
+ * 【必须剥掉预发布后缀，且不能让 NaN 参与运算】
+ * 原实现是 `String(a).split('.').map(Number)`，然后 `pa[i] || 0`。
+ * 遇到 `0.3.5-beta` 这种（GitHub Release 上很常见：rc / beta / hotfix 标记），
+ * 第三段 parse 成 NaN，而 `NaN || 0` 得 0 —— 于是
+ *   cmpVer('0.3.5-beta', '0.3.4') === -4
+ * 把「比上一版新」判成了「比上一版旧」，检查更新的结论直接反过来。
+ * 另外 `x - y` 返回的是差值而不是 -1/1，浮点/特殊值下调用方若写 `=== 1`
+ * 就永远不成立；统一收成三态更安全。
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} a>b 返回 1，a<b 返回 -1，相等返回 0
+ */
 function cmpVer(a, b) {
-  const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
+  const seg = (v) => String(v == null ? '' : v)
+    .trim()
+    .replace(/^v/i, '')            // 容忍 'v0.3.5'
+    .split('.')
+    .slice(0, 3)
+    /* 【真正挡住 -beta 的是 parseInt，不是 split】
+     * `parseInt('5-beta', 10)` 得 5（它读到非数字就停），所以后缀天生被忽略。
+     * 早期写法 `.map(Number)` 才是根因：Number('5-beta') 是 NaN，而 `NaN || 0`
+     * 得 0 —— 于是 `0.3.5-beta` 被当成 `0.3.0`，比 `0.3.4` 还旧。
+     * 别再往这里加 split(/[-+]/) 之类的预处理：实测它一行结果都改不了，
+     * 只是把「为什么对」说得更绕。（反向验证时确认过它是死代码。） */
+    .map((s) => {
+      const n = parseInt(s, 10);
+      return Number.isFinite(n) ? n : 0;
+    });
+  const pa = seg(a), pb = seg(b);
   for (let i = 0; i < 3; i++) {
     const x = pa[i] || 0, y = pb[i] || 0;
-    if (x !== y) return x - y;
+    if (x !== y) return x > y ? 1 : -1;
   }
   return 0;
 }
@@ -5958,7 +6763,14 @@ function normSchedule(s) {
     const mins = Math.floor(n);
     if (mins < SCHED_MIN_EVERY_MIN) throw new Error(`循环间隔不能小于 ${SCHED_MIN_EVERY_MIN} 分钟`);
     out.everyMin = Math.min(mins, SCHED_MAX_EVERY_MIN);
-  } else if (s.type === 'daily') {
+  } else if (s.type === 'daily' || s.type === 'clean') {
+    /* 【clean 也必须保留 hhmm】armSchedule 对非 loop 类型一律按 `s.hhmm` 算
+     * 「下一次几点」，缺了就退回默认 '09:00'。早期这里只给 daily 走时间分支，
+     * clean 的 hhmm 被直接丢掉，后果有两个且都不会报错：
+     *   ① 用户在「每天自动清理」里选的 03:00 静默变成 09:00（凌晨清理 ← 上班时间清理）；
+     *   ② 周期任务列表的文案是 `每天 ${s.hhmm} 自动清理…`，于是显示成
+     *      「每天 undefined 自动清理本应用临时文件」。
+     * 两者都是「看起来设置成功了，实际没生效」。 */
     const m = String(s.hhmm || '').match(/^(\d{1,2}):(\d{2})$/);
     if (!m) throw new Error('时间格式应为 HH:MM');
     const hh = +m[1], mm = +m[2];
@@ -6220,7 +7032,21 @@ if (!gotLock) {
         .catch(() => {});
     }, 4000);
     applyHotkey(storeGet('settings.hotkey', 'Alt+Shift+H'));
-    armAllSchedules(); // 周期任务（每日提醒/循环提醒/自动清理）
+    /* 周期任务（每日提醒/循环提醒/自动清理）。
+     * 【必须等渲染层加载完再武装 loop 任务】
+     * armSchedule(s, false) 会对 loop 类型立即 schedFire(s) 一次，作为
+     * 「设置生效了」的确认提示；而 schedFire → send('sched:fire', …) 只检查
+     * win 是否存在，不检查页面是否已加载完。
+     * 这里被调用时 createWindow() 里的 loadFile 还在异步进行 —— 那条确认提示
+     * 发出去时渲染层还没有订阅 sched:fire，用户永远看不到。
+     * 表现为「添加了循环提醒，重启后没有任何反馈」，像是没生效。
+     * 改成等 did-finish-load 之后再武装；若已经加载完（从托盘重建窗口等），
+     * 直接武装。 */
+    if (win && !win.webContents.isLoading()) {
+      armAllSchedules();
+    } else if (win) {
+      win.webContents.once('did-finish-load', () => { try { armAllSchedules(); } catch (e) {} });
+    }
 // 冒烟测试：遍历全部工具页 + 非工具视图，捕获渲染异常 + 校验关键布局。
 // 注意：主窗启动时 show:false，隐藏窗口里 requestAnimationFrame 不触发，
 // 所以这里用 setTimeout(0) 让出事件循环（渲染同步完成，无需长等待）。

@@ -236,9 +236,14 @@ t('问题5（行为）：源目录含 junction 时，复制 + 重建能完成', 
     return mainSrc.slice(start, i);
   }
   const pathExists = async (p) => { try { await fsp.access(p); return true; } catch (e) { return false; } };
+  /* 沙箱要跟上 main.js 的实现：restoreLinksIntoTarget 现在依赖
+   * linkTargetAbs / isInsideTree（内部链接改写），缺了会直接报未定义。 */
   const mod = new Function('fsp', 'path', 'fs', 'pathExists',
     extract('relKey', false) + '\n' + extract('buildLinkKeySet', false) + '\n'
     + extract('linkNature', false) + '\n'
+    + extract('linkTargetAbs', false) + '\n'
+    + extract('normalizeForComparePath', false) + '\n'
+    + extract('isInsideTree', false) + '\n'
     + extract('copyTreeExcludingLinks', true) + '\n' + extract('restoreLinksIntoTarget', true) + '\n'
     + 'return { copyTreeExcludingLinks, restoreLinksIntoTarget, linkNature };')(fsp, path, fs, pathExists);
 

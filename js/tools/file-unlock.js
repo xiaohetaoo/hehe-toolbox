@@ -172,17 +172,28 @@
        *    由 file:who-locks 的 missing 分支如实报「路径不存在」，
        *    这比静默当成文件查询更诚实。
        * 不做「先查文件再补查目录」：那会给出两份互相矛盾的结论。 */
-      async function resolveTypes() {
-        const unknown = state.items.filter((it) => typeof it.isDir !== 'boolean');
+      /* 【只在快照上补类型，绝不默认「按文件查」】
+       * 早期这里对 state.items 里的对象原地赋值 isDir，而 onChange 会用
+       * state.items = items.map(...) **整体换掉数组与对象** ——
+       * 用户在 fs:stat-multi 返回前动一下选择，回来补的就补到了已经被丢弃的
+       * 旧对象上，新一轮的条目 isDir 仍是 undefined。
+       * 而 undefined 是假值，于是目录被送进 file:who-locks（单文件通道），
+       * Restart Manager 注册目录会整批返回 ERR list 5，整个扫描作废。
+       *
+       * 现在：调用方传入要处理的**同批对象**，只改这一批；
+       * 查不到类型的（stat 失败 / 路径已消失）保持 undefined，
+       * 由 scanOnce 跳过并记一条 note —— 不猜「它是文件」。 */
+      async function resolveTypes(batch) {
+        const list = Array.isArray(batch) ? batch : [];
+        const unknown = list.filter((it) => typeof it.isDir !== 'boolean');
         if (!unknown.length) return;
         let stats = null;
         try { stats = await invoke('fs:stat-multi', unknown.map((it) => it.path)); }
         catch (e) { stats = null; }
         unknown.forEach((it, k) => {
           const st = stats && stats[k];
-          /* 查不到就定成 false（按文件查），不是因为「相信它是文件」，
-           * 而是让上面的 missing 分支把「路径不存在」如实报出来 */
-          it.isDir = !!(st && st.isDir);
+          /* 查到就记下真实类型；查不到**保持 undefined**（见上面的注释） */
+          if (st && typeof st.isDir === 'boolean') it.isDir = st.isDir;
         });
       }
 
@@ -194,48 +205,102 @@
        * （scan 的调用点有两处：按钮，以及解锁成功后自动重查。） */
       async function scanOnce() {
         if (!state.items.length) return toast('请先选择文件或目录', 'warn');
-        await resolveTypes();
-        /* 清空放在 resolveTypes 之后：await 期间用户可能又改了选择，
-         * 那句 onChange 会先渲染一次，这里再清一次保证从空白开始 */
+
+        /* 【整轮扫描只认这一份快照】
+         * resolveTypes 有 await，期间用户完全可能又改了选择（onChange 会整体
+         * 替换 state.items 的数组与对象）。一旦「补类型的对象」和「发任务的
+         * 对象」不是同一批，就会把目录当文件查（见 resolveTypes 的注释）。
+         * 所以先切片，之后类型、任务、结果归并全部基于快照；和最新选择不一致
+         * 时只说一句「选择已变，请重扫」，不去猜用户想查哪一批。 */
+        const snapshot = state.items.slice();
+        await resolveTypes(snapshot);
+
+        const changed = state.items.length !== snapshot.length
+          || state.items.some((it, i) => !snapshot[i] || it.path !== snapshot[i].path);
+        if (changed) {
+          resultBox.innerHTML = '';
+          state.lockers = [];
+          state.notes = ['选择在查询过程中发生了变化，请重新点「查出占用它的进程」。'];
+          renderResult();
+          return;
+        }
+
+        /* 清空放在 resolveTypes 之后：await 期间可能已经渲染过一次 */
         resultBox.innerHTML = '';
+
         const tasks = [];
-        for (const it of state.items) {
+        const taskItems = [];        // 与 tasks 一一对应（下面归并结果要用）
+        const skipped = [];
+        for (const it of snapshot) {
+          if (typeof it.isDir !== 'boolean') {
+            /* 类型查不出来的**不猜**。按文件查会让目录走错通道
+             * （Restart Manager 注册目录会整批 ERR 5），按目录查则会把
+             * 文件当成目录。宁可跳过并如实说明。 */
+            skipped.push(it);
+            continue;
+          }
           /* 目录走专门通道（扫目录内一层文件）；文件走批量查询。
            * 目录那条更常用：删目录失败时，用户通常不知道是里面哪个文件被占。 */
+          taskItems.push(it);
           tasks.push(it.isDir
             ? invoke('file:who-locks-dir', it.path)
             : invoke('file:who-locks', [it.path]));
         }
 
-        try {
-          const results = await Promise.all(tasks);
-
-          /* 同一个进程占用多个文件时按 pid 归并，展示更清爽 */
-          const byPid = new Map();
-          const notes = [];
-          for (let i = 0; i < results.length; i++) {
-            const r = results[i] || {};
-            const src = state.items[i];
-            for (const l of (r.lockers || [])) {
-              if (!byPid.has(l.pid)) {
-                byPid.set(l.pid, Object.assign({}, l, { files: [] }));
-              }
-              byPid.get(l.pid).files.push(src.path);
-            }
-            if (r.missing && r.missing.length) notes.push('路径不存在：' + r.missing.join('、'));
-            if (r.scanned != null && r.total != null) notes.push('目录扫描 ' + r.scanned + '/' + r.total + ' 项');
-            if (r.advice) notes.push(r.advice);
-          }
-
-          state.lockers = [...byPid.values()];
+        const notes = [];
+        if (skipped.length) {
+          notes.push('有 ' + skipped.length + ' 个条目查不出是文件还是目录（可能已被移走或没有访问权限），已跳过：'
+            + skipped.slice(0, 5).map((it) => it.name || it.path).join('、')
+            + (skipped.length > 5 ? ' 等' : ''));
+        }
+        if (!tasks.length) {
+          state.lockers = [];
           state.notes = notes;
           renderResult();
-        } catch (e) {
-          state.lockers = [];
-          state.notes = ['✗ ' + e.message];
-          renderResult();
-          toast(e.message, 'error');
+          return;
         }
+
+        /* 【逐条 settled：一个条目失败不许拖垮其余所有结论】
+         * 早期是 Promise.all：20 个条目里只要有 1 个被别的程序删掉、
+         * 或者没有列目录权限（这两个通道遇到那种情况会 reject），
+         * 另外 19 个已经查到的结果全部丢掉，界面只剩一行「✗ 读取目录失败」。
+         * 用户看到的是「功能坏了」，而不是「这 19 个没问题、那 1 个查不了」。 */
+        const settled = await Promise.all(tasks.map((p) => p.then(
+          (r) => ({ ok: true, r }),
+          (e) => ({ ok: false, e })
+        )));
+
+        /* 同一个进程占用多个文件时按 pid 归并，展示更清爽 */
+        const byPid = new Map();
+        const failed = [];
+        for (let i = 0; i < settled.length; i++) {
+          const one = settled[i];
+          const src = taskItems[i];
+          if (!one.ok) {
+            failed.push({ name: (src && (src.name || src.path)) || '（未知条目）', msg: one.e && one.e.message });
+            continue;
+          }
+          const r = one.r || {};
+          for (const l of (r.lockers || [])) {
+            if (!byPid.has(l.pid)) {
+              byPid.set(l.pid, Object.assign({}, l, { files: [] }));
+            }
+            byPid.get(l.pid).files.push(src ? src.path : '');
+          }
+          if (r.missing && r.missing.length) notes.push('路径不存在：' + r.missing.join('、'));
+          if (r.scanned != null && r.total != null) notes.push('目录扫描 ' + r.scanned + '/' + r.total + ' 项');
+          if (r.advice) notes.push(r.advice);
+        }
+        if (failed.length) {
+          notes.push(failed.length + ' 个条目查询失败：'
+            + failed.slice(0, 5).map((f) => f.name + (f.msg ? '（' + String(f.msg).slice(0, 60) + '）' : '')).join('；')
+            + (failed.length > 5 ? ' 等' : '')
+            + '。其余 ' + (settled.length - failed.length) + ' 个条目已查询，结果见上。');
+        }
+
+        state.lockers = [...byPid.values()];
+        state.notes = notes;
+        renderResult();
       }
 
       const scan = guard(scanOnce);

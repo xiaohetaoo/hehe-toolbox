@@ -1548,7 +1548,10 @@
           });
           outLabel.textContent = modeSel.value === 'single'
             ? `✓ 已导出：${r.first}`
-            : `✓ 帧序列 ${r.count} 张已导出到 ${r.outDir}`;
+            : `✓ 帧序列 ${r.count} 张已导出到 ${r.outDir}` +
+              /* 上次的帧被同名覆盖时必须说出来 —— 用户会以为那是「追加」，
+                 实际旧的那几张已经没了。 */
+              (r.overwritten ? `（另有 ${r.overwritten} 张上次导出的同名帧被覆盖）` : '');
           toast('截帧完成', 'success');
         } catch (e) { outLabel.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
         finally { goBtn.disabled = false; running = false; }

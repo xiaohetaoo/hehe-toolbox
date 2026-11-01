@@ -554,7 +554,9 @@
         startBtn.disabled = true; stopBtn.disabled = false;
         /* job:stream 是全局通道，TTS/卸载/媒体转换等任务结束时都会广播 {done:true}。
            而 net:download 的 id 要等 invoke 返回才有，注册监听时还拿不到 ——
-           所以先记下「本次下载的 id 前缀」：主进程用 'dl2' 前缀生成下载任务 id，
+           所以先记下「本次下载的 id 前缀」：主进程用 'dlg' 前缀生成下载任务 id
+           （原来是 'dl2'，而 'dl' 是它的真前缀，`dl2123` 会被 FFmpeg 下载页
+           误认为是自己的任务，已改成不等长的 dlg），
            监听里只认这个前缀 + 已知 id，别的事件一律忽略，避免被别的任务提前判完成。 */
         let myPrefixSeen = null;
         unsub = window.api.on('job:stream', (d) => {
@@ -563,7 +565,7 @@
             // 还没拿到 jobId 时，只接受下载形态的 id；拿到之后严格比对
             if (jobId) { if (d.id !== jobId) return; }
             else {
-              if (!d.id || !/^dl2/.test(String(d.id))) return;
+              if (!d.id || !/^dlg\d+$/.test(String(d.id))) return;
               if (!myPrefixSeen) myPrefixSeen = d.id;
               else if (d.id !== myPrefixSeen) return;
             }

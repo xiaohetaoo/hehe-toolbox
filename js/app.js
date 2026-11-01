@@ -1407,6 +1407,20 @@
     await loadDangerousState();
     render();
 
+    /* 数据文件损坏时必须主动告知。
+     * 主进程在 loadStore 解析失败时会禁用清扫并另存一份原文件，
+     * 但用户看到的现象只是「笔记/收藏/剪贴板全空了」—— 不说清楚的话，
+     * 只会以为程序把数据弄丢了，然后继续用空数据把原文件覆盖掉。
+     * 正常启动时 storeLoadFailed 为 false，这里什么都不做。 */
+    try {
+      const health = await invoke('store:health');
+      if (health && health.ok === false) {
+        toast('数据文件损坏，已从默认值启动；原文件已另存为 ' +
+          (health.corruptCopy ? health.corruptCopy.split(/[\\/]/).pop() : '同目录备份'), 'error', 12000);
+        console.error('[store] 数据文件损坏。原文件副本：', health.corruptCopy || '(另存失败)', '当前数据文件：', health.file);
+      }
+    } catch (e) { /* 老版本主进程没有这条通道，忽略 */ }
+
     let savedLang = null;
     try { savedLang = await invoke('store:get', 'settings.lang', null); } catch (e) {}
     if (savedLang && savedLang !== lang && (window.i18n ? window.i18n.normalize(savedLang) : savedLang)) {
