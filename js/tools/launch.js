@@ -56,35 +56,53 @@
           toast('已打开：' + it.name, 'success', 1200);
         } catch (e) { toast(e.message, 'error'); }
       }
-      async function add() {
-        const type = await new Promise((resolve) => {
-          const b1 = btn('软件 / 文件', 'btn-secondary', () => { md.close(); resolve('app'); });
-          const b2 = btn('文件夹', 'btn-secondary', () => { md.close(); resolve('dir'); });
-          const b3 = btn('网址', 'btn-secondary', () => { md.close(); resolve('url'); });
+      /* 【选择弹窗必须传 onClose —— 否则关掉窗口后 add() 永久挂起】
+       * modal 只在「按钮解决」时 resolve；点右上角 × 或点遮罩走的是
+       * close() → onClose && onClose()，没传就什么都不做。
+       * 于是 Promise 永不 settle，add() 停在第一句 await，
+       * 后面的输入框再也不出现；用户再点一次「添加」就会叠一个新弹窗。
+       * 现在 onClose 里 resolve(null)，并在 await 之后立刻判空返回。 */
+      function pickOne(title, options) {
+        return new Promise((resolve) => {
+          const btns = options.map(([val, label]) =>
+            btn(label, 'btn-secondary', () => { md.close(); resolve(val); }));
           const md = window.ui.modal({
-            title: '添加快捷项 - 选择类型',
-            body: (b) => { b.appendChild(div('form-row', b1, b2, b3)); },
-            foot: []
+            title,
+            body: (b) => { b.appendChild(div('form-row', ...btns)); },
+            foot: [],
+            onClose: () => resolve(null),
           });
         });
-        let target = '';
-        if (type === 'url') {
-          target = await promptBox({ title: '添加网址', label: '网址：', placeholder: 'https://' });
-          target = String(target || '').trim();
-          // 提前校验协议，避免存进去之后点击「打开」才报错
-          if (target && !/^https?:\/\//i.test(target)) { toast('网址需以 http:// 或 https:// 开头', 'error'); return; }
-        } else {
-          const p = await invoke('dialog:open', { properties: type === 'dir' ? ['openDirectory'] : ['openFile'] });
-          target = p && p[0];
+      }
+      async function add() {
+        try {
+          const type = await pickOne('添加快捷项 - 选择类型', [
+            ['app', '软件 / 文件'], ['dir', '文件夹'], ['url', '网址'],
+          ]);
+          if (!type) return;   // 用户关掉了弹窗
+          let target = '';
+          if (type === 'url') {
+            target = await promptBox({ title: '添加网址', label: '网址：', placeholder: 'https://' });
+            target = String(target || '').trim();
+            // 提前校验协议，避免存进去之后点击「打开」才报错
+            if (target && !/^https?:\/\//i.test(target)) { toast('网址需以 http:// 或 https:// 开头', 'error'); return; }
+          } else {
+            const p = await invoke('dialog:open', { properties: type === 'dir' ? ['openDirectory'] : ['openFile'] });
+            target = p && p[0];
+          }
+          if (!target) return;
+          const name = await promptBox({ title: '命名', label: '显示名称：', value: String(target).split(/[\\/]/).pop().replace(/\\.\\w+$/, '') || '快捷项' });
+          if (!name) return;
+          const items = await invoke('store:get', 'quicklaunch', []);
+          items.push({ id: nextId('ql'), name, target, type });
+          await invoke('store:set', 'quicklaunch', items);
+          toast('已添加', 'success');
+          load();
+        } catch (e) {
+          /* 外层兜底：invoke 失败曾经完全没有提示（add 里没有 try/catch），
+           * 用户点「添加」后只有「什么都没发生」。 */
+          toast('添加失败：' + ((e && e.message) || String(e)), 'error');
         }
-        if (!target) return;
-        const name = await promptBox({ title: '命名', label: '显示名称：', value: String(target).split(/[\\/]/).pop().replace(/\.\w+$/, '') || '快捷项' });
-        if (!name) return;
-        const items = await invoke('store:get', 'quicklaunch', []);
-        items.push({ id: nextId('ql'), name, target, type });
-        await invoke('store:set', 'quicklaunch', items);
-        toast('已添加', 'success');
-        load();
       }
       page.appendChild(div('card', div('card-title', '我的快捷启动', btn('➕ 添加', 'btn-primary', add, 'plus'))));
       page.appendChild(div('card', list));
@@ -152,20 +170,21 @@
         } catch (e) { toast(e.message, 'error'); }
       }
       async function add() {
-        const name = await promptBox({ title: '添加命令', label: '名称：', placeholder: '如：查看IP' });
-        if (!name) return;
-        const cmd = await promptBox({ title: '添加命令', label: '命令内容：', placeholder: 'ipconfig /all' });
-        if (!cmd) return;
-        const shell = await new Promise((resolve) => {
-          const b1 = btn('CMD', 'btn-secondary', () => { md.close(); resolve('cmd'); });
-          const b2 = btn('PowerShell', 'btn-secondary', () => { md.close(); resolve('ps'); });
-          const md = window.ui.modal({ title: '选择执行环境', body: (b) => b.appendChild(div('form-row', b1, b2)), foot: [] });
-        });
-        const items = await invoke('store:get', 'commands', []);
-        items.push({ id: nextId('cmd'), name, cmd, shell });
-        await invoke('store:set', 'commands', items);
-        toast('已收藏', 'success');
-        load();
+        try {
+          const name = await promptBox({ title: '添加命令', label: '名称：', placeholder: '如：查看IP' });
+          if (!name) return;
+          const cmd = await promptBox({ title: '添加命令', label: '命令内容：', placeholder: 'ipconfig /all' });
+          if (!cmd) return;
+          const shell = await pickOne('选择执行环境', [['cmd', 'CMD'], ['ps', 'PowerShell']]);
+          if (!shell) return;   // 用户关掉了弹窗
+          const items = await invoke('store:get', 'commands', []);
+          items.push({ id: nextId('cmd'), name, cmd, shell });
+          await invoke('store:set', 'commands', items);
+          toast('已收藏', 'success');
+          load();
+        } catch (e) {
+          toast('收藏失败：' + ((e && e.message) || String(e)), 'error');
+        }
       }
       page.appendChild(div('card', div('card-title', '我的命令', btn('➕ 收藏命令', 'btn-primary', add, 'plus'))));
       page.appendChild(div('card', list));

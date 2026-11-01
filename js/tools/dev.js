@@ -101,6 +101,38 @@
       const preview = h('div', { style: { width: '120px', height: '120px', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--page-bg)' } });
       const valEl = div('');
       valEl.style.marginTop = '10px';
+
+      /* 【把"鼠标位置 → 画布像素"抽成纯函数，为了能测】
+       *
+       * 原实现：px = Math.round((e.clientX - cap.display.bounds.x) * dpr)
+       * clientX/clientY 是**窗口内坐标**，display.bounds 是**屏幕坐标**。
+       * 两者相减只在「窗口正好贴住该显示器左上角」时成立：
+       *   · 窗口右移 300px  → 整体偏移 300，取色偏到旁边去；
+       *   · 副屏（bounds.x = 1920）→ 相减成负数 → drawImage 取到画布外，
+       *     颜色恒为黑色（而且不报错）。
+       * 屏幕截图 canvas 是按**整块显示器**的物理像素建的，所以要换算必须
+       * 用 e.screenX/e.screenY（屏幕物理坐标）。
+       *
+       * 越界必须夹取并明确告诉用户：鼠标落到别的显示器上时，该点在
+       * 当前 capture 的画布之外，强行取色只会得到黑点。
+       */
+      function calcPickPoint({ screenX, screenY, bounds, dpr, canvasW, canvasH }) {
+        const scale = dpr || 1;
+        const bx = (bounds && bounds.x) || 0;
+        const by = (bounds && bounds.y) || 0;
+        const px = Math.round((screenX - bx) * scale);
+        const py = Math.round((screenY - by) * scale);
+        const inX = px >= 0 && px < (canvasW || 0);
+        const inY = py >= 0 && py < (canvasH || 0);
+        if (!inX || !inY) {
+          /* 夹到最近的合法像素，便于界面仍能显示"边界处的颜色"而不是黑 */
+          const cx = Math.max(0, Math.min((canvasW || 1) - 1, px));
+          const cy = Math.max(0, Math.min((canvasH || 1) - 1, py));
+          return { px, py, cx, cy, inRange: false };
+        }
+        return { px, py, cx: px, cy: py, inRange: true };
+      }
+
       async function pick() {
         if (!isDesktop) return toast('桌面端可用（需要屏幕捕获）', 'warn');
         try {
@@ -122,21 +154,30 @@
           const dpr = cap.display.scaleFactor;
           let cur = null;
           function onMove(e) {
-            const px = Math.round((e.clientX - cap.display.bounds.x) * dpr);
-            const py = Math.round((e.clientY - cap.display.bounds.y) * dpr);
-            cur = { px, py, css: { x: e.clientX, y: e.clientY } };
+            const pt = calcPickPoint({
+              screenX: e.screenX, screenY: e.screenY,
+              bounds: cap.display.bounds, dpr,
+              canvasW: canvas.width, canvasH: canvas.height,
+            });
+            cur = { px: pt.cx, py: pt.cy, css: { x: e.clientX, y: e.clientY }, inRange: pt.inRange };
             const size = 40, half = 20;
             ctx.imageSmoothingEnabled = false;
             ctx.clearRect(0, 0, 160, 160);
-            try {
-              ctx.drawImage(canvas, px - half, py - half, size, size, 0, 0, 160, 160);
-              ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-              ctx.strokeRect(72, 72, 16, 16);
-            } catch (err) {}
+            if (pt.inRange) {
+              try {
+                ctx.drawImage(canvas, pt.px - half, pt.py - half, size, size, 0, 0, 160, 160);
+                ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+                ctx.strokeRect(72, 72, 16, 16);
+              } catch (err) {}
+            }
             mag.style.left = (e.clientX + 20) + 'px';
             mag.style.top = (e.clientY + 20) + 'px';
             info.style.left = (e.clientX + 20) + 'px';
             info.style.top = (e.clientY + 192) + 'px';
+            if (!pt.inRange) {
+              info.textContent = '已超出屏幕范围（鼠标在其他显示器上）';
+              return;
+            }
             try {
               const d = ctx.getImageData(80, 80, 1, 1).data;
               const hex = '#' + [d[0], d[1], d[2]].map(x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
@@ -145,6 +186,9 @@
           }
           async function onClick() {
             if (!cur) return;
+            /* 越界时不要取色：那个点根本不在截图里，getImageData 给的是
+             * 画布边缘的残留像素（或是黑的），拿它当结果会误导用户。 */
+            if (!cur.inRange) { toast('已超出屏幕范围，请把鼠标移到被截取的显示器上', 'warn'); return; }
             try {
               const d = ctx.getImageData(80, 80, 1, 1).data;
               const hex = '#' + [d[0], d[1], d[2]].map(x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
@@ -220,8 +264,16 @@
         return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
       }
       const countIn = h('input', { type: 'number', class: 'input input-sm', value: '10', min: '1', max: '1000', style: { width: '80px' } });
-      const rangeA = h('input', { type: 'number', class: 'input input-sm', value: '1', style: { width: '90px' } });
-      const rangeB = h('input', { type: 'number', class: 'input input-sm', value: '100', style: { width: '90px' } });
+      const rangeA = h('input', { type: 'number', class: 'input input-sm', value: '1', style: { width: '90px' }, 'data-role': 'num-min' });
+      const rangeB = h('input', { type: 'number', class: 'input input-sm', value: '100', style: { width: '90px' }, 'data-role': 'num-max' });
+      /* 【长度必须是独立输入框】
+       * 原来「随机字符串」的长度复用了 rangeA（随机数字的最小值），
+       * 同一行渲染里把它 append 了两次 —— 而 DOM 节点只能有一个父节点，
+       * 第二次 append 会把元素从随机数字行**移走**：
+       *   · 随机数字行只剩「按钮 ~ 最大值」，最小值输入框凭空消失；
+       *   · 两边还共用一个值：改字符串长度就等于改随机数下限。
+       * 现在长度单独一个 lenIn，默认 16。 */
+      const lenIn = h('input', { type: 'number', class: 'input input-sm', value: '16', min: '1', max: '65536', style: { width: '90px' }, 'data-role': 'str-len' });
       function gen(kind) {
         const n = Math.min(1000, Math.max(1, parseInt(countIn.value) || 10));
         const lines = [];
@@ -234,7 +286,7 @@
             // crypto.getRandomValues 单次上限 65536 字节，超了抛 QuotaExceededError
             // （长度填 10 万会直接报错且 gen() 无 try/catch，用户看不到任何提示）。
             // 这里钳到 65536，并分块填充避免一次申请过大。
-            const wantLen = parseInt(rangeA.value) || 12;
+            const wantLen = parseInt(lenIn.value, 10) || 16;
             const len = Math.max(1, Math.min(65536, wantLen));
             const cs = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
             const arr = new Uint32Array(len);
@@ -264,7 +316,7 @@
       page.appendChild(div('card', div('card-title', '生成'),
         div('form-row', btn('UUID', 'btn-secondary', () => gen('uuid')),
           btn('随机数字', 'btn-secondary', () => gen('num')), rangeA, '~', rangeB),
-        div('form-row', btn('随机字符串', 'btn-secondary', () => gen('str')), h('span', { class: 'field-hint' }, '长度'), rangeA),
+        div('form-row', btn('随机字符串', 'btn-secondary', () => gen('str')), h('span', { class: 'field-hint' }, '长度'), lenIn),
         div('form-row', btn('随机手机号', 'btn-secondary', () => gen('phone')),
           btn('随机姓名', 'btn-secondary', () => gen('name')))));
       page.appendChild(div('card', div('card-title', '结果'), out));
@@ -328,21 +380,34 @@
       const startBtn = btn('▶ 启动服务', 'btn-primary', start);
       const stopBtn = btn('■ 停止服务', 'btn-danger-plain', stop);
       stopBtn.disabled = true;
+      /* 把「运行中」的界面状态收成一处，启动/停止/回填都走它 ——
+       * 否则三处各写一遍，很容易像原来那样漏掉某条路径的按钮状态。 */
+      function paintRunning(r) {
+        running = true;
+        startBtn.disabled = true; stopBtn.disabled = false;
+        if (r && r.url) {
+          statusEl.innerHTML = `<span class="status-ok">● 运行中</span> <a href="#" id="srv-link" style="color:var(--primary)">${escapeHtml(r.url)}</a>`;
+          const link = statusEl.querySelector('#srv-link');
+          if (link) link.addEventListener('click', (e) => { e.preventDefault(); invoke('shell:open-url', r.url); });
+        } else {
+          statusEl.innerHTML = `<span class="status-ok">● 运行中</span>`;
+        }
+      }
+      function paintStopped() {
+        running = false;
+        statusEl.textContent = '已停止';
+        startBtn.disabled = false; stopBtn.disabled = true;
+      }
       async function start() {
         if (!dirIn.value.trim()) return toast('请选择目录', 'warn');
         try {
           const r = await invoke('server:start', dirIn.value.trim(), parseInt(portIn.value) || 8128);
-          running = true;
-          statusEl.innerHTML = `<span class="status-ok">● 运行中</span> <a href="#" id="srv-link" style="color:var(--primary)">${escapeHtml(r.url)}</a>`;
-          statusEl.querySelector('#srv-link').addEventListener('click', (e) => { e.preventDefault(); invoke('shell:open-url', r.url); });
-          startBtn.disabled = true; stopBtn.disabled = false;
+          paintRunning(r);
         } catch (e) { toast(e.message, 'error'); }
       }
       async function stop() {
         try { await invoke('server:stop'); } catch (e) {}
-        running = false;
-        statusEl.textContent = '已停止';
-        startBtn.disabled = false; stopBtn.disabled = true;
+        paintStopped();
       }
       const logUnsub = window.api.on('server:log', (d) => {
         logEl.appendChild(h('div', null, `[${new Date(d.time).toLocaleTimeString('zh-CN', { hour12: false })}] ${d.text}`));
@@ -350,6 +415,18 @@
         while (logEl.children.length > 200) logEl.firstChild.remove();
       });
       window.App.onCleanup(() => { try { logUnsub(); } catch (e) {} });
+      /* 【进页面先问主进程：服务还在不在？】
+       * 服务活在主进程里，切页不会停服；而这个页面每次 render() 都是
+       * 全新的局部状态。不查一次就会出现：
+       *   启动 → 切页 → 切回来 → 界面显示「未启动」，点启动报
+       *   「已有服务在运行」，而停止按钮是禁用的 → 死局（只能重启程序）。
+       * 查到在跑就回填地址与按钮状态，并把目录/端口也填回输入框。 */
+      invoke('server:status').then((st) => {
+        if (!st || !st.running) return;
+        paintRunning(st);
+        if (st.root) dirIn.value = st.root;
+        if (st.port) portIn.value = String(st.port);
+      }).catch(() => {});
       page.appendChild(div('card', div('card-title', '服务配置'),
         div('form-row', dirIn, pickBtn),
         div('form-row', h('span', { class: 'form-label' }, '端口'), portIn, startBtn, ' ', stopBtn, statusEl)));

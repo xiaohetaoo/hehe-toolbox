@@ -166,14 +166,23 @@
       let watching = false, timer = null, lastClip = '';
       window.App.onCleanup(() => { watching = false; if (timer) { clearTimeout(timer); timer = null; } });
       let history = [];
+      /* 【两条裁剪路径必须共用同一个上限】
+       * 原来文本路径写 `history.slice(0, 200)`、图片路径调 `trimHistory(history, 100)`
+       * —— 截一张图就可能把整条历史（含文本）从 200 砍到 100，用户没做任何"清理"操作
+       * 却丢掉一半记录，而且这种缩水完全无声。
+       * 另外文本那条没走 trimHistory，于是被挤出的图片条目对应的
+       * clip-img/*.png 永远不会被回收，文件无限堆积。 */
+      const HISTORY_LIMIT = 200;
       // 删除条目时连带删掉它落盘的图片文件（否则 clip-img 会无限堆积）
       async function dropImages(entries) {
         const files = (entries || []).filter(x => x && x.type === 'image' && x.file).map(x => x.file);
         if (!files.length) return;
         try { await invoke('clip:remove-images', files); } catch (e) {}
       }
-      // 超出上限被截断的条目，一并清理其图片文件
-      async function trimHistory(list, cap) {
+      /* 按统一上限裁剪：**任何**被淘汰的条目（文本或图片）都先走 dropImages，
+       * 再截断。这样「文本把图片挤出列表」时对应的 png 也会被回收。 */
+      async function trimHistory(list) {
+        const cap = HISTORY_LIMIT;
         if (list.length <= cap) return list;
         const dropped = list.slice(cap);
         await dropImages(dropped);
@@ -206,7 +215,9 @@
             const okText = admitText(text);
             if (okText === null) { timer = setTimeout(poll, 1200); return; }
             history.unshift({ type: 'text', content: okText, time: Date.now() });
-            history = history.slice(0, 200);
+            /* 必须走 trimHistory：它会回收被挤出上限的图片文件。
+             * 直接 slice(0, 200) 会让图片条目"消失但文件还在"。 */
+            history = await trimHistory(history);
             await invoke('store:set', 'clipHistory', history);
             render();
           } else if (!text) {
@@ -217,7 +228,7 @@
               let entry = { type: 'image', content: img, time: Date.now() };
               try { const r = await invoke('clip:save-image', img); entry = { type: 'image', file: r.path, time: Date.now() }; } catch (e) {}
               history.unshift(entry);
-              history = await trimHistory(history, 100);
+              history = await trimHistory(history);
               await invoke('store:set', 'clipHistory', history);
               render();
             }

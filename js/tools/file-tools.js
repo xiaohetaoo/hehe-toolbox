@@ -5,6 +5,34 @@
   const { invoke } = window.api;
   const MOD = 'file';
 
+  /* 拼「批量操作失败明细」的文本 —— 抽成纯函数，不是为了好看：
+   *
+   * 【原来这里是内联在两次 alertBox 调用里的模板字符串】
+   * 于是测试只能去匹配源码形态（`/alertBox\({[\s\S]{0,200}部分文件未能重命名/`），
+   * 那条断言锁住的恰恰是**缺陷本身**：上一轮它要求源码里出现
+   * 「alertBox 紧跟一个左花括号」，而 alertBox 的签名是 (message, title)，
+   * 传配置对象进去会被 h() 当普通对象丢掉，弹出空白框。
+   * 修好之后功能对了、断言反而红了 —— 典型的「测试比代码更坚持错误」。
+   *
+   * 现在：明细怎么拼、上限多少、剩余多少条怎么提示，全在这个纯函数里，
+   * 测试直接调它断言返回值内容（含文件名、含原因、截断提示），
+   * 源码匹配只剩「调用了 alertBox」这一层结构事实。
+   *
+   * @param {number} ok 成功数
+   * @param {Array<{from:string,to:string,err:string}>} failures 失败项
+   * @param {number} [limit] 最多列出几条（默认 15）
+   * @returns {string} 可直接作为 alertBox 第一个实参的文本
+   */
+  function buildFailText(ok, failures, limit = 15) {
+    const list = Array.isArray(failures) ? failures : [];
+    const shown = Math.max(0, Number(limit) || 0) || 15;
+    const head = `成功 ${ok} 个，失败 ${list.length} 个：\n\n`;
+    const body = list.slice(0, shown)
+      .map(f => `${f.from}\n  → ${f.to}\n  原因：${f.err}`).join('\n\n');
+    const more = list.length > shown ? `\n\n…还有 ${list.length - shown} 个未列出` : '';
+    return head + body + more;
+  }
+
   /* ---------- 批量重命名 ---------- */
   register({
     id: 'batch-rename', name: '批量重命名', module: MOD, icon: 'pencil',
@@ -118,12 +146,12 @@
         // 失败原因必须可见（原来只进 console.error），否则用户只看到「失败 1」，
         // 不知道是哪个文件、为什么，也无法判断批量操作后的半成功状态。
         if (failures.length) {
-          await alertBox({
-            title: '部分文件未能重命名',
-            message: `成功 ${ok} 个，失败 ${failures.length} 个：\n\n` +
-              failures.slice(0, 15).map(f => `${f.from}\n  → ${f.to}\n  原因：${f.err}`).join('\n\n') +
-              (failures.length > 15 ? `\n\n…还有 ${failures.length - 15} 个未列出` : '')
-          }).catch(() => {});
+          /* 【alertBox 的签名是 alertBox(message, title)，不是配置对象】
+           * 原来这里写成 alertBox({ title, message }) —— 对象当作 message 传进
+           * h('div', null, message)，而 h 的子节点只认字符串/数字/Node/带 style 的对象，
+           * 普通对象被直接丢弃。于是弹出来的是标题「提示」+ 正文完全空白，
+           * 比原来只打 console.error 还糟：注释写着"失败原因必须可见"，实际全丢了。 */
+          await alertBox(buildFailText(ok, failures), '部分文件未能重命名').catch(() => {});
         } else {
           toast(`完成：成功 ${ok} 个`, 'success');
         }
@@ -207,12 +235,8 @@
         // 失败明细必须列出来：只报「失败 1」用户不知道是哪个文件、为什么失败，
         // 而且批量操作半成功半失败的状态无从判断，后续手工整理极易出错。
         if (failures.length) {
-          await alertBox({
-            title: '部分文件未能修改',
-            message: `成功 ${ok} 个，失败 ${failures.length} 个：\n\n` +
-              failures.slice(0, 15).map(f => `${f.from}\n  → ${f.to}\n  原因：${f.err}`).join('\n\n') +
-              (failures.length > 15 ? `\n\n…还有 ${failures.length - 15} 个未列出` : '')
-          }).catch(() => {});
+          /* 同上：alertBox(message, title)。对象形式会弹出一个空白框。 */
+          await alertBox(buildFailText(ok, failures), '部分文件未能修改').catch(() => {});
         } else {
           toast(`完成：成功 ${ok} 个`, 'success');
         }

@@ -49,6 +49,9 @@ let isQuitting = false;
 let jobSeq = 0;
 const jobs = new Map(); // id -> {cancel()}
 const serverMap = new Map();
+/* 静态服务的根目录与端口。服务活在主进程、跨页面存活，
+ * 所以这些信息必须留在主进程，供 server:status 回填界面。 */
+let serverRoot = null, serverPort = null;
 let lastCpuSample = null;
 let lastProcSnap = null;
 
@@ -393,6 +396,15 @@ function dangerousEnabled(cap) {
 const CAP_GATED_CHANNELS = {
   'fs:delete': 'file-delete',
   'fs:delete-empty': 'file-delete',
+  /* 【fs:rename 为什么也归到 file-delete】
+   * 它是一个「移动文件到任意位置」的原语：可以把自己的文件搬进 Startup 实现自启，
+   * 也可以在 overwrite=true 时覆盖目标同名文件（等于删掉了目标那份）。
+   * 语义上它就是「删除 + 新建」的组合，而同一批写盘通道
+   * （fs:write-text / fs:write-file-b64 / fs:merge-parts / zip:compress）
+   * 都走 checkOverwritable 闸门，唯独它既没闸门、也不在门禁表里 ——
+   * 等于一个不受任何高位约束的任意外写入口。
+   * 现在两者都补上：目标路径过 checkOverwritable，通道归 file-delete 门禁。 */
+  'fs:rename': 'file-delete',
   'clip:remove-images': 'file-delete',
   'clip:gc-images': 'file-delete',
   'fs:clean-junk': 'junk-clean',
@@ -452,6 +464,13 @@ handle('dangerous:set', (e, cap, on) => {
 const TOOL_DANGEROUS_CAPS = {
   'junk-clean': ['junk-clean'],
   'empty-dir-clean': ['file-delete'],
+  /* 【批量重命名 / 批量改后缀 也依赖 file-delete】
+   * fs:rename 归到 file-delete 门禁之后（见 CAP_GATED_CHANNELS 的说明），
+   * 这两个工具就成了"必须开启该能力才能用"的功能。若不在这里登记，
+   * 设置页的开关拨了不生效、工具卡片也不标红 —— 用户看到的是
+   * 「功能点了没反应」，而不是「需要先开启高危能力」。 */
+  'batch-rename': ['file-delete'],
+  'batch-ext': ['file-delete'],
   'dedupe': ['file-delete'],
   'local-notes': ['file-delete'],
   'clipboard-history': ['file-delete'],
@@ -1068,7 +1087,19 @@ handle('fs:rename', async (e, from, to, overwrite) => {
    * 「目标文件已存在」全部拒绝 —— 报错指向一个并不存在的冲突。
    * 判据：两个路径解析后除了大小写完全相同，即视为同一文件的重命名，
    * 底层 rename 在 NTFS 上能正确改写大小写。
-   * 只放宽「忽略大小写后完全相同」的情形；FILE.TXT → OTHER.TXT 仍然拒绝。 */
+   * 只放宽「忽略大小写后完全相同」的情形；FILE.TXT → OTHER.TXT 仍然拒绝。
+   *
+   * 【这道闸门必须放在大小写分支之前】
+   * 纯大小写改名虽然不会新建路径，但它同样是"往 rt 这个位置写"，
+   * 而 rt 与 rf 只差大小写 —— 也就是说如果不拦，就能把一个文件
+   * 改成系统目录里某个文件的镜像名（例如把 C:\evil.exe 改成 C:\Windows\x.exe
+   * 只有在大小写不同时才走得通，这恰恰是要防的那类事情）。
+   * 放在前面既能拦住越权目标，又不会挡住正常的同目录改名
+   * （同一目录里的正常改名，rf 与 rt 都在同一个"可写"位置）。 */
+  const guard = pathGuard.checkOverwritable(rt);
+  if (guard) {
+    throw pathGuard.err(guard.code, guard.reason, '请换一个目标路径（不要指向系统目录或盘符根）');
+  }
   if (rf.toLowerCase() === rt.toLowerCase()) {
     await fsp.rename(from, to);
     return true;
@@ -1140,6 +1171,19 @@ handle('fs:scan-tree', async (e, root, opts = {}) => {
   const cancelRef = { canceled: false };
   jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
   latestCancelable = () => { cancelRef.canceled = true; };
+  /* 【根路径必须先归一，尤其是去掉尾随分隔符】
+   * 原实现拿 root **原样**用，而聚合祖先时是这样判包含的：
+   *     while (cur.length >= root.length) { ... }
+   * 用**字符串长度**做包含判断。当 root = 'D:\foo\'（用户从地址栏复制
+   * 过来就带尾斜杠，而占位提示写的正是「如 D:\」）时：
+   *   root.length = 8，而 path.dirname('D:\foo\a.txt') = 'D:\foo'（长度 7），
+   *   7 >= 8 为假 → 循环一次都不进 → 根目录累计恒为 0。
+   * 同理 dirSize 的键是带尾斜杠的原字符串，而 cur 不带，dirSize.has(cur)
+   * 永远不命中 —— 不是"算错一点"，而是这一整支统计全是 0。
+   * 现在：先 path.resolve 归成绝对路径，再去掉尾随分隔符（盘符根本身除外）；
+   * 包含判断改成 cur === root || cur.startsWith(root + sep)。
+   * 返回的 root 也用归一后的值，界面显示才与实际统计口径一致。 */
+  const scanRoot = normalizeRootForScan(root);
   const dirSize = new Map();
   let files = 0, totalSize = 0, dirCount = 0, lastEmit = 0;
   const topFiles = [];
@@ -1154,9 +1198,10 @@ handle('fs:scan-tree', async (e, root, opts = {}) => {
         if (topFiles.length > 400) { topFiles.sort((a, b) => b.size - a.size); topFiles.length = 200; }
         // aggregate to ancestors
         let cur = path.dirname(item.path);
-        while (cur.length >= root.length) {
+        while (cur === scanRoot || cur.startsWith(scanRoot + path.sep)
+               || cur === path.parse(cur).root) {
           if (dirSize.has(cur)) dirSize.set(cur, dirSize.get(cur) + item.size);
-          if (cur === path.parse(cur).root || cur === root) break;
+          if (cur === path.parse(cur).root || cur === scanRoot) break;
           const parent = path.dirname(cur);
           if (parent === cur) break;
           cur = parent;
@@ -1171,11 +1216,21 @@ handle('fs:scan-tree', async (e, root, opts = {}) => {
     }
   } finally { jobs.delete(id); }
   topFiles.sort((a, b) => b.size - a.size);
-  const topDirs = [...dirSize.entries()].filter(([p]) => p !== root).map(([p, size]) => ({ path: p, size }))
+  const topDirs = [...dirSize.entries()].filter(([p]) => p !== scanRoot).map(([p, size]) => ({ path: p, size }))
     .sort((a, b) => b.size - a.size).slice(0, 30);
   if (cancelRef.canceled) throw new Error('已取消');
-  return { id, root, totalSize, files, dirCount, topFiles: topFiles.slice(0, 30), topDirs };
+  return { id, root: scanRoot, totalSize, files, dirCount, topFiles: topFiles.slice(0, 30), topDirs };
 });
+
+/* 扫描用的根路径归一：绝对化 + 去尾随分隔符（盘符根本身保留 'X:\' 形态）。 */
+function normalizeRootForScan(root) {
+  let s = path.resolve(String(root == null ? '' : root));
+  const volRoot = path.parse(s).root;
+  /* path.resolve 对 'D:\foo\' 已经会去掉尾斜杠；这里额外处理
+   * 用户可能传的正斜杠与重复分隔符（'D:/foo//' 之类）。 */
+  if (s.length > volRoot.length && /[\\/]$/.test(s)) s = s.slice(0, -1);
+  return s;
+}
 
 /* empty dirs */
 handle('fs:scan-empty-dirs', async (e, root) => {
@@ -1205,7 +1260,18 @@ handle('fs:scan-empty-dirs', async (e, root) => {
 });
 handle('fs:delete-empty', async (e, dirs) => {
   let deleted = 0; const errors = [];
+  /* 【入参必须是字符串数组 —— 这里曾出现过「一个都删不掉还报成功」】
+   * 渲染层早期把扫描结果 { path, depth } 对象数组原样发过来，
+   * 于是 checkDeletable(obj) 里 String(obj) 变成 "[object Object]" 一路放行，
+   * fsp.rmdir(obj) 抛 ERR_INVALID_ARG_TYPE 被 catch 收进 errors，deleted 恒 0。
+   * 调用点已改对，这里再加一道显式校验：把「调用方传错类型」当场报出来，
+   * 而不是靠 String() 悄悄降级成一个看起来正常、实际毫无意义的路径。 */
+  if (!Array.isArray(dirs)) return { deleted: 0, errors: ['参数必须是路径数组'] };
   for (const p of dirs) { // deepest first (caller sorts)
+    if (typeof p !== 'string' || !p.trim()) {
+      errors.push(`非法参数：${typeof p === 'object' ? JSON.stringify(p) : String(p)}（路径必须是字符串）`);
+      continue;
+    }
     // 闸门：不允许删系统关键目录 / 盘符根 / 用户主目录本身
     const bad = pathGuard.checkDeletable(p, false);
     if (bad) { errors.push(`${p}: ${bad.reason}`); continue; }
@@ -1251,6 +1317,21 @@ async function dirSizeFast(p, maxFiles = 50000) {
     }
   }
   return { size, files, truncated: false };
+}
+/* 【扫描结果要留下来，clean-junk 只认这一份】
+ * 清扫通道的语义是「清临时文件 / 浏览器缓存 / 缩略图缓存」，能力范围很窄。
+ * 但早期 renderer 直接把 targets 传回来，主进程只做了三道检查
+ * （%TEMP% 白名单、checkDeletable、存在性）—— 没有任何「必须来自本次扫描」的校验。
+ * 于是传 D:\\照片 或 C:\\Users\\me\\Documents\\工作 都能过：
+ * keepRoot=false 时甚至 fsp.rm(abs, { recursive: true, force: true }) 连根删。
+ * 对比 fs:delete 走的是 file-delete 门禁，这个通道的能力范围严重不匹配。
+ * 现在缓存上一轮扫描的候选集合，clean-junk 只接受集合内的路径。 */
+let junkScanCache = { at: 0, paths: new Set() };
+/* 清理通道的路径比较键：绝对路径 + 统一分隔符 + 小写
+ * （Windows 路径不区分大小写，纯字符串比较会被大小写变体绕过）。 */
+function normForJunk(p) {
+  try { return path.resolve(p).replace(/\//g, '\\').toLowerCase(); }
+  catch (e) { return String(p == null ? '' : p).toLowerCase(); }
 }
 handle('fs:scan-junk', async () => {
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
@@ -1303,14 +1384,34 @@ handle('fs:scan-junk', async () => {
       if (r.files > 0) out.push({ id: c.id, label: c.label, path: c.path, size: r.size, files: r.files, targets: [c.path] });
     }
   }
+  /* 记下本轮扫描命中的全部候选路径，供 fs:clean-junk 校验来源。
+   * 用绝对路径归一后的形态比较（大小写不敏感，符合 Windows 路径语义）。 */
+  const cachePaths = new Set();
+  for (const g of out) for (const t of (g.targets || [])) cachePaths.add(normForJunk(t));
+  junkScanCache = { at: Date.now(), paths: cachePaths };
   return out;
 });
 handle('fs:clean-junk', async (e, targets, keepRoot) => {
   let cleaned = 0, bytes = 0; const errors = [];
   const tmpRoot = path.resolve(os.tmpdir());
+  if (!Array.isArray(targets)) return { cleaned: 0, bytes: 0, errors: ['参数必须是路径数组'] };
   for (const t of targets) {
     try {
-      const abs = path.resolve(String(t || ''));
+      if (typeof t !== 'string' || !t.trim()) { errors.push(`非法参数：${String(t)}（路径必须是字符串）`); continue; }
+      const abs = path.resolve(t);
+      /* 【只接受本次扫描命中的候选，其他一律拒绝】
+       * 这是能力范围的边界，不是可选的"额外保险"：
+       * 这个通道叫「清理垃圾」，它该动的只有临时文件、浏览器缓存、缩略图缓存。
+       * 没有这道校验时，传入任意用户目录都会被递归删除（见上面的注释）。
+       * 缓存为空（没扫过 / 进程刚起来）时一律拒绝 —— 没有扫描结果就没有清理依据。 */
+      if (!junkScanCache.paths.size) {
+        errors.push(`${t}: 没有扫描结果作为依据，请先执行扫描`);
+        continue;
+      }
+      if (!junkScanCache.paths.has(normForJunk(abs))) {
+        errors.push(`${t}: 不在本次扫描结果内，拒绝清理（该功能只能清扫描出来的垃圾）`);
+        continue;
+      }
       // 最后一道防线：绝不允许把 %TEMP% 整体（或其子目录）当作清理目标。
       // %TEMP% 是全机器共享的，里面有别的程序正在用的文件。
       // 允许的只有「本应用自己的产物」这一项。
@@ -1332,7 +1433,13 @@ handle('fs:clean-junk', async (e, targets, keepRoot) => {
         const entries = await fsp.readdir(abs).catch(() => []);
         for (const n of entries) await fsp.rm(path.join(abs, n), { recursive: true, force: true });
       } else {
-        await fsp.rm(abs, { recursive: true, force: true });
+        /* 【keepRoot=false 的「连根删」分支已移除】
+         * 唯一调用方（js/tools/junk-clean.js）恒传 true，这个分支从来没被用过，
+         * 而它是这个通道里最危险的一段（递归删除传入的整个目录）。
+         * 删掉它，把这个能力范围外的入口直接消灭，而不是靠"没人传 false"。
+         * 如将来真需要删整个根，请走 fs:delete（那条有完整的删除门禁）。 */
+        errors.push(`${t}: 不支持删除根目录本身（只清理其中的内容）`);
+        continue;
       }
       cleaned++; bytes += before;
     } catch (err) { errors.push(`${t}: ${fmtErr(err)}`); }
@@ -1473,22 +1580,49 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
   await new Promise((resolve, reject) => {
     const rs = fs.createReadStream(p, { highWaterMark: 1 << 20 });
     let idx = 1, ws = null, done = 0, pausedFor = null;
+    /* 【本次产出的分片路径】失败时要逐个清掉，否则输出目录里留下半截分片，
+     * 用户下次分割会撞上 flags:'wx' 的 EEXIST 而永远失败。 */
+    const madePaths = [];
+    /* 【统一失败收口：读流必须销毁，否则 fd 挂到进程退出】
+     * 原实现里 ws 的 error 直接 reject —— 既没 rs.destroy() 也没清半截分片。
+     * 触发点很常见：默认输出目录是「源文件 + '.parts'」，同一个文件分两次
+     * 必然命中 flags:'wx' 的 EEXIST。
+     * 更隐蔽的是：如果 reject 发生在**背压暂停之后**，那个 drain 监听挂在
+     * 一个已经出错的 ws 上，永远不会触发，rs 就再也不 resume ——
+     * 读流停在暂停态、fd 不释放，直到进程退出。 */
+    let settled = false;
+    const fail = (e) => {
+      if (settled) return;
+      settled = true;
+      try { rs.destroy(); } catch (x) {}
+      try { if (ws) ws.destroy(); } catch (x) {}
+      for (const fp of madePaths) { try { fs.unlinkSync(fp); } catch (x) {} }
+      reject(e);
+    };
     // 分片必须排他创建（flags: 'wx'）：默认的 'w' 会截断已存在的同名分片，
     // 用户重复分割同一个文件时，旧分片被静默覆盖，合并结果就是新旧混合。
     const openPart = () => {
       const partPath = path.join(outDir, `${base}.part${String(idx).padStart(pad, '0')}`);
       ws = fs.createWriteStream(partPath, { flags: 'wx' });
+      /* 【只登记"确实由我们创建成功"的分片】
+       * createWriteStream 是异步打开的，'error' 可能要过一会儿才到。
+       * 早期这里在 createWriteStream 之后立刻 push，于是 EEXIST 的情况下
+       * 那个**别人已有的同名分片**也被当成"本次产出"，fail() 会把它删掉 ——
+       * 用户明明只想"中止、别覆盖"，结果旧分片被清理掉了，这正是 wx 要防的事。
+       * 现在等 'open' 事件（文件确实建成了）才登记。 */
+      ws.on('open', () => { if (!settled) madePaths.push(partPath); });
       ws.on('error', (e) => {
         if (e && e.code === 'EEXIST') {
-          reject(new Error('目标目录已存在同名分片：' + path.basename(partPath) + '（为避免覆盖已中止，请换个输出目录或先清理旧分片）'));
+          fail(new Error('目标目录已存在同名分片：' + path.basename(partPath) + '（为避免覆盖已中止，请换个输出目录或先清理旧分片）'));
           return;
         }
-        reject(e); // 磁盘满/权限错误时让 Promise 落定，而非悬挂
+        fail(e); // 磁盘满/权限错误也让 Promise 落定，并清掉半截分片
       });
       realParts = idx;
     };
     openPart();
     rs.on('data', (chunk) => {
+      if (settled) return;
       let off = 0;
       while (off < chunk.length) {
         if (ws.bytesWritten >= chunkSize) { ws.end(); idx++; openPart(); if (pausedFor && pausedFor !== ws) { pausedFor = null; rs.resume(); } }
@@ -1510,8 +1644,8 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
       }
       done += chunk.length; send('job:progress', { id: p, kind: 'split', done, total: st.size });
     });
-    rs.on('end', () => { ws.end(); ws.on('finish', resolve); });
-    rs.on('error', reject);
+    rs.on('end', () => { ws.end(); ws.on('finish', () => { if (!settled) { settled = true; resolve(); } }); });
+    rs.on('error', (e) => fail(e));
   });
   /* 源文件在分割期间被追加/截断会让「清单声明」与「磁盘实际」脱节：
      清单说 3 片、磁盘却有 5 片，合并时只读前 3 片 —— 合并结果少 20MB，
@@ -1699,7 +1833,13 @@ handle('fs:dedupe', async (e, root, opts = {}) => {
         sizes.push(st ? st.size : 0);
       }
       const groupSize = sizes.reduce((a, b) => a + b, 0);
-      const maxSize = sizes.length ? Math.max(...sizes) : 0;
+      /* 【不能用 Math.max(...sizes)】sizes 收的是整棵树的文件大小，
+       * 查重一个大目录很容易过十万项。实测
+       *   Math.max(...new Array(130000).fill(1))
+       * 直接抛 RangeError: Maximum call stack size exceeded（13 万之前正常）。
+       * 过线即整轮查重失败，而报错跟"文件太多"毫无关系，用户根本猜不到原因。
+       * reduce 版没有参数个数上限。 */
+      const maxSize = sizes.reduce((a, b) => (a > b ? a : b), 0);
       groups.push({
         size: maxSize, totalSize: groupSize, waste: Math.max(0, groupSize - maxSize),
         hash: mode === 'content' ? 'md5' : mode, files, sizes
@@ -2295,22 +2435,55 @@ handle('server:start', async (e, root, port) => {
       }
       res.writeHead(200, { 'Content-Type': MIME[path.extname(fp).toLowerCase()] || 'application/octet-stream', 'Content-Length': st.size });
       const stream = fs.createReadStream(fp);
-      stream.on('error', () => { try { res.destroy(); } catch (e) {} });
-      stream.pipe(res);
+      /* 【客户端断开时必须销毁读流，否则 fd 泄漏】
+       * 原来只有 stream.on('error')，没有 res.on('close')。
+       * pipe 在目标端失效时只会 unpipe，**不会**销毁源流；
+       * 浏览器关标签、刷新页面、取消下载都会让 createReadStream 停在半途，
+       * 文件句柄一直开着 —— 反复刷新一个大文件页面就能把句柄耗光。
+       * 现在用 pipeline 让 Node 自己负责销毁与清理（它会在任一端结束/出错时
+       * 销毁另一端），比手写 res.on('close') 更完整。 */
+      try {
+        const { pipeline } = require('stream');
+        pipeline(stream, res, () => { /* 结束/出错都无需额外处理，资源已由 pipeline 释放 */ });
+      } catch (e) {
+        // 极端兜底：pipeline 不可用时至少保证客户端断开能销毁读流
+        res.on('close', () => { try { stream.destroy(); } catch (x) {} });
+        stream.on('error', () => { try { res.destroy(); } catch (x) {} });
+        stream.pipe(res);
+      }
       send('server:log', { time: Date.now(), text: `200  ${req.method} ${urlPath}  ${st.size}B` });
     } catch (err) { res.writeHead(500); res.end('500'); }
   });
   await new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(p, '127.0.0.1', () => resolve()); });
   serverMap.set('s', srv);
+  /* 记下真实根目录与端口：server:status 要能据此回填界面（见该 handler 的说明） */
+  serverRoot = root; serverPort = p;
   return { port: p, url: `http://127.0.0.1:${p}` };
 });
 handle('server:stop', () => {
   const s = serverMap.get('s');
   if (s) { s.close(); serverMap.delete('s'); }
+  serverRoot = null; serverPort = null;
   return true;
 });
-/* server:status 已移除：全项目无调用方（临时 HTTP 服务的启停由
- * server:start / server:stop 的返回值直接告知，不必再轮询状态）。 */
+/* 【server:status 恢复 —— 它曾经被"没有调用方"删掉，但那个判断漏了一件事】
+ *
+ * 服务本身活在**主进程**的 serverMap 里，页面销毁（切页）并不会停服。
+ * 而渲染层每次 render() 都是全新局部状态（let running = false、
+ * stopBtn.disabled = true），没有任何地方同步主进程的真实状态。
+ * 于是「启动 → 切到别的工具页 → 切回来」会变成死局：
+ *   · 界面显示「未启动」；
+ *   · 点启动报「已有服务在运行，请先停止」；
+ *   · 停止按钮是禁用的（因为界面以为没启动）。
+ * 用户只能重启程序。
+ *
+ * 真正的结论是：**跨页面存活的东西必须有地方问它还在不在**。
+ * 只有只读、不产生副作用的查询，所以不需要门禁。 */
+handle('server:status', () => {
+  const s = serverMap.get('s');
+  if (!s) return null;
+  return { running: true, root: serverRoot, port: serverPort, url: serverPort ? `http://127.0.0.1:${serverPort}` : null };
+});
 
 /* ================= IPC: system ================= */
 
@@ -2417,6 +2590,40 @@ foreach ($d in $disks) {
 });
 
 let hwCache = null, hwCacheAt = 0;
+/* 【PowerShell 5.1 的日期形态】
+ * ConvertTo-Json 会把 DateTime 写成 "/Date(1793413286500)/"（带正斜杠转义）。
+ * 派生的 TimeSpan（例如 Win32_Process 的 CreationDate）会写成
+ * "/Date(ms)/" 或 {"value":..,"Days":..} 这类对象，两种都要能处理。
+ * 这里统一转成毫秒数字；解析不出来就置 null（界面显示「-」，绝不显示 NaN）。
+ * 纯函数，供测试直接调。 */
+function parsePsDate(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'object') {
+    // TimeSpan / DateTime 的包装对象
+    if (typeof v.value === 'number') return v.value;
+    return null;
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+  // /Date(1793413286500)/ 或 /Date(-1234567)/
+  const m = s.match(/^\/Date\(([-+]?\d+)\)\/$/);
+  if (m) {
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : null;
+  }
+  // 已经是 ISO 或其它 new Date 可解析的形态
+  const t = new Date(s).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+/* 把 os 对象里的日期字段统一成毫秒数字（另附 *Ms 形式的显式字段）。 */
+function normalizeDateFields(osObj) {
+  const out = Object.assign({}, osObj);
+  for (const k of ['LastBootUpTime', 'InstallDate']) {
+    if (k in out) out[k] = parsePsDate(out[k]);
+  }
+  return out;
+}
 handle('sys:hw-info', async (e, force) => {
   if (!force && hwCache && Date.now() - hwCacheAt < 60000) return hwCache;
   const script = `
@@ -2452,7 +2659,13 @@ $tmp = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperat
     cpu: maybeParse(j.cpu) || {},
     board: j.board || {}, bios: j.bios || {},
     gpu: norm(j.gpu), disks: norm(j.disks),
-    os: j.os || {}, nic: norm(j.nic).filter(n => n.Name),
+    /* 【PS 5.1 的 ConvertTo-Json 会把 DateTime 序列化成 "\/Date(1793413286500)\/"】
+     * 这个字符串交给 new Date() 得到的是 Invalid Date，getTime() 是 NaN，
+     * 界面那一格就恒显示 "NaN-NaN-NaN NaN:NaN:NaN"。
+     * 修在**数据出口**：把这种形式解析成毫秒数字（再补一个 ISO 形态的字段，
+     * 渲染层两种都能用）。只在界面层兜的话，任何新调用方都会再踩一遍。 */
+    os: normalizeDateFields(j.os || {}),
+    nic: norm(j.nic).filter(n => n.Name),
     battery: j.battery || null,
     temps: norm(j.temps).filter(t => t.CurrentTemperature).map(t => ({ name: t.InstanceName, celsius: Math.round((t.CurrentTemperature / 10 - 273.15) * 10) / 10 })),
     partitions: parts,
@@ -4196,7 +4409,26 @@ handle('content:search', (e, { root, q, useRegex, ci, exts, limit }) => {
 });
 
 /* ================= IPC: 贴图置顶窗口 ================= */
+/* 【Map 键必须是**字符串**，且读写两侧都要归一】
+ * 原来写的是 `pinWins.set(bw.id, bw)` —— bw.id 是数字。但窗口 URL 里传的是
+ * `String(bw.id)`，渲染层用 URLSearchParams.get() 读回来必然是字符串，
+ * 又原样经 IPC 发回来。于是 `get('12')` 与 `get(12)` 是两个不同的键，
+ * 三个 handler 全都取不到窗口；而它们都写成 `if (bw && ...) return true`，
+ * 取不到照样返回成功 —— 表现就是**拖动、滚轮缩放、双击/Esc 关闭三件事
+ * 全部静默失效**，不报错、不提示。
+ * （关闭"看起来能用"是假象：closePin() 里还有一句 window.close() 兜底，
+ *   走的是 Electron 自己的关闭，根本没经过这三个 handler。）
+ *
+ * 修法双保险：登记与删除统一转 String，handler 侧再用 pinKey() 归一，
+ * 将来谁传数字也不会坏。取不到窗口时返回 false 而不是假装成功，
+ * 让"没生效"这件事对调用方可观测。 */
+const pinKey = (id) => String(id == null ? '' : id);
 const pinWins = new Map();
+/** 按 id 找贴图窗口：键类型归一，已销毁的一律当作找不到。 */
+function pinWinOf(id) {
+  const bw = pinWins.get(pinKey(id));
+  return (bw && !bw.isDestroyed()) ? bw : null;
+}
 async function createPinWindow(srcPath) {
   const img = nativeImage.createFromPath(srcPath);
   const size = img.getSize();
@@ -4210,16 +4442,31 @@ async function createPinWindow(srcPath) {
       additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
   bw.setAlwaysOnTop(true, 'screen-saver');
-  pinWins.set(bw.id, bw);
-  bw.on('closed', () => pinWins.delete(bw.id));
+  pinWins.set(pinKey(bw.id), bw);
+  bw.on('closed', () => pinWins.delete(pinKey(bw.id)));
   await bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath, accent: currentAccent } });
   return { id: bw.id, w: size.width, h: size.height };
 }
 /* win:pin-image 通道已移除：截图「贴图」与「贴剪贴板图片」都直接调
  * createPinWindow()，没有渲染层调用方。函数本身保留，它是这两条路径的实现。 */
-handle('win:pin-move', (e, id, x, y) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.setPosition(Math.round(x), Math.round(y)); return true; });
-handle('win:pin-resize', (e, id, w, h) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.setSize(Math.max(80, Math.round(w)), Math.max(60, Math.round(h))); return true; });
-handle('win:pin-close', (e, id) => { const bw = pinWins.get(id); if (bw && !bw.isDestroyed()) bw.close(); return true; });
+handle('win:pin-move', (e, id, x, y) => {
+  const bw = pinWinOf(id);
+  if (!bw) return false;   // 找不到就如实说没做到，不再假装成功
+  bw.setPosition(Math.round(x), Math.round(y));
+  return true;
+});
+handle('win:pin-resize', (e, id, w, h) => {
+  const bw = pinWinOf(id);
+  if (!bw) return false;
+  bw.setSize(Math.max(80, Math.round(w)), Math.max(60, Math.round(h)));
+  return true;
+});
+handle('win:pin-close', (e, id) => {
+  const bw = pinWinOf(id);
+  if (!bw) return false;
+  bw.close();
+  return true;
+});
 
 /* ================= IPC: 窗口管理（置顶/透明度/置底） ================= */
 const WINMGR_CS = `
@@ -4730,9 +4977,38 @@ function buildLinkKeySet(root, linkList) {
  * @param {string} srcAbs
  * @param {string} dstAbs
  * @param {string[]} linkList 源侧链接的绝对路径
+ * @returns {Promise<{files:number, dirs:number, skippedDisappeared:number, disappeared:string[]}>}
  */
 async function copyTreeExcludingLinks(srcAbs, dstAbs, linkList) {
   const skip = buildLinkKeySet(srcAbs, linkList);
+  /* 【复制期间源条目消失不是"搬家失败"】
+   * 源目录往往是活的：用户一边搬一边在往里写日志、删临时文件，
+   * 或者别的程序在清理缓存。readdir 拿到了目录项，等到 copyFile 时
+   * 那个文件可能已经不在了 —— 抛 ENOENT。
+   * 早期这里没有兜底，一个 ENOENT 就让整次搬家中止并回滚：
+   * 大目录搬了半小时，因为一个被删掉的临时文件全白费，
+   * 而报错是裸的「ENOENT: no such file or directory, copyfile ...」。
+   * 现在的口径：
+   *   · ENOENT（源条目已消失）→ 跳过并计数，最后如实告诉用户跳了几个；
+   *   · EBUSY/EPERM/EACCES（真被占用/没权限）→ 仍然抛出，因为这必须
+   *     让用户去处理（关闭程序/提权），静默跳过会得到一份悄悄变少的副本。
+   */
+  /* 【消失的条目要按类型分开计数】
+   * 早期把文件与目录都算进一个 skippedDisappeared，界面文案却统一写成
+   * 「N 个文件在复制期间从源目录消失」—— 一个目录被删掉时这句话是错的，
+   * 而且用户会去数文件，数不出来。所以文件与目录各记一份，界面按两者组合说话。 */
+  const stats = {
+    files: 0, dirs: 0,
+    skippedFiles: 0, skippedDirs: 0,
+    disappeared: [],
+  };
+  const noteGone = (rel, kind) => {
+    if (kind === 'dir') stats.skippedDirs++;
+    else stats.skippedFiles++;
+    if (stats.disappeared.length < 20) stats.disappeared.push(rel);
+  };
+  /** 兼容汇总：两个计数之和（调用方与界面按这个判断「要不要提示」）。 */
+  const totalGone = () => stats.skippedFiles + stats.skippedDirs;
 
   async function walk(relPosix) {
     const srcDir = relPosix ? path.join(srcAbs, ...relPosix.split('/')) : srcAbs;
@@ -4752,15 +5028,62 @@ async function copyTreeExcludingLinks(srcAbs, dstAbs, linkList) {
       if (ent.isSymbolicLink()) continue;               // 兜底：任何漏网的链接
 
       if (ent.isDirectory()) {
-        await walk(childRel);
+        try {
+          await walk(childRel);
+          stats.dirs++;
+        } catch (err) {
+          /* 子目录整个消失（被删了）也算「复制期间消失」，不当致命错。
+           * walk 内部把 readdir 失败包装成了可读文案（不再带 err.code），
+           * 所以这里靠原文里是否含 ENOENT 来判定；其它读取失败照旧上抛。
+           *
+           * 【必须把刚才建出来的空目录删掉】
+           * walk(childRel) 第一件事就是 fsp.mkdir(dstDir, { recursive: true })，
+           * 之后才 readdir —— 也就是说目录不存在这件事是**readdir 时**才发现的，
+           * 那时目标侧的空目录已经建好了。不删的话目标树里就多一个源里没有的
+           * 空目录，而 verifyCopy 只从**源侧**往目标侧对，永远发现不了它。
+           * 安全性：只删「刚由 walk 创建、且确认为空」的目录 —— 先 readdir 确认
+           * 为空，再用 rm 且不开 recursive，绝不递归删掉可能存在的别的东西。 */
+          const msg = (err && err.message) || '';
+          if (err && (err.code === 'ENOENT' || /ENOENT/.test(msg))) {
+            noteGone(childRel, 'dir');
+            const dstDirGone = path.join(dstDir, ent.name);
+            try {
+              const left = await fsp.readdir(dstDirGone);
+              if (left.length === 0) await fsp.rm(dstDirGone, { force: true });
+            } catch (e2) { /* 已经不在/没权限：不影响搬运，忽略即可 */ }
+          } else throw err;
+        }
       } else if (ent.isFile()) {
-        await fsp.copyFile(srcChild, dstChild);
+        try {
+          await fsp.copyFile(srcChild, dstChild);
+          stats.files++;
+        } catch (err) {
+          if (err && err.code === 'ENOENT') {
+            /* 源文件在 readdir 之后、copyFile 之前被删掉了 —— 跳过它继续搬，
+             * 最后把「跳了几个」如实告诉用户（静默跳过等于悄悄少拷文件）。*/
+            noteGone(childRel, 'file');
+            /* 目标侧可能有这次 copy 留下的半成品，清掉以免校验阶段对不上 */
+            try { await fsp.unlink(dstChild); } catch (e) {}
+          } else if (err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')) {
+            /* 真被占用/没权限：必须让用户处理，不能静默跳过 ——
+             * 否则用户拿到一份"成功"但少了文件的副本。换成能看懂的文案。 */
+            const why = err.code === 'EBUSY' ? '文件正被其它程序占用'
+              : (err.code === 'EACCES' ? '没有读取权限' : '没有权限或被安全软件拦截');
+            const e2 = new Error('复制失败（' + childRel + '）：' + why +
+              '。请关闭占用它的程序（或检查权限）后重试；本次搬家已回滚，源目录未受影响。');
+            e2.cause = err;
+            throw e2;
+          } else throw err;
+        }
       }
       /* 其它类型（设备/管道等）在普通目录里不常见，跳过即可 */
     }
   }
 
   await walk('');
+  /* 对外的返回结构保持一个总数（调用方与 emit 都用它），
+   * 但也把分类计数带回去，界面可以用更准确的说法。 */
+  return Object.assign({}, stats, { skippedDisappeared: totalGone() });
 }
 
 /**
@@ -4810,9 +5133,32 @@ async function restoreLinksIntoTarget(srcAbs, dstAbs, linkList, natures) {
       }
       const dstChild = path.join(dstAbs, ...rel.split('/'));
       await fsp.mkdir(path.dirname(dstChild), { recursive: true });
-      /* 若目标侧同名项已存在（理论上不会，因为上面刚建好目录树），先清掉 */
+      /* 【目标侧同名项要按类型清，清不掉必须记账】
+       * 原写法是 `try { fs.unlinkSync(dstChild); } catch (e) { 空 catch }`：
+       *   · unlinkSync 只能删文件/链接，同名项是**目录**时必然 EPERM/EISDIR，
+       *     然后被空 catch 吃掉 —— 接着 symlink 撞上已存在的目录而失败，
+       *     报出来的错是「重建链接失败」+ 一句跟真正原因无关的 EEXIST；
+       *   · 真要删时用同步调用阻塞主进程（这里已经在 async 函数里）。
+       * 现在先 lstat 判类型再删，仍失败就把可读原因 push 进 failed，
+       * 让上层能如实说出「目标侧已有同名项且清不掉」，而不是吞掉。
+       * 理论上这个分支不该走到（目标目录树是我们刚建的），但
+       * 「刚建好的树」和「此刻磁盘上的树」可能被第三方改过，不能假设。 */
       if (await pathExists(dstChild)) {
-        try { fs.unlinkSync(dstChild); } catch (e) { /* 忽略 */ }
+        try {
+          const st = fs.lstatSync(dstChild);
+          if (st.isDirectory() && !st.isSymbolicLink()) {
+            /* junction / 目录链接在 Windows 上 lstat 也报 directory，
+             * 但带 reparse 标记；用 rmSync 递归删对两者都安全
+             * （它删的是这个条目本身，不会跟着链接进去删目标）。 */
+            fs.rmSync(dstChild, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(dstChild);
+          }
+        } catch (e) {
+          /* 不吞：这里失败就等于后面的 symlink 注定失败，
+           * 早一点把真正的原因（清不掉同名项）说出来。 */
+          throw new Error('目标侧已有同名项且无法清除（' + dstChild + '）：' + ((e && e.message) || e));
+        }
       }
       /* 源侧这个链接本来是活的吗？两个用途：
        *   1) 建完自检（见下）只对活的做要求；
@@ -5321,6 +5667,13 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
   const ctx = { srcPath: srcAbs, dstPath: dstAbs, bakPath, linkPath: srcAbs };
   emit('check', { ok: true });
 
+  /* 【cpStats 必须在两个 try 之外声明】
+  * 它在「1) 复制」的 try 里被赋值，却要在「2) 校验」的 try 里读取
+  * （合并两阶段的"消失"计数）。写在第一个 try 内的话，第二个 try
+  * 根本访问不到它 —— 正是 js/app.js 里 finally 读 try 内 let 那类
+  * 块级作用域错误（那里每次必抛 ReferenceError）。这里提前声明。 */
+  let cpStats = null;
+
   /* ---------- 1) 复制到目标 ---------- */
   try {
     emit('copy', { ok: null, started: true });
@@ -5360,7 +5713,7 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
      * —— junction 类型不需要那个特权。
      */
     const treeLinks = await collectLinks(srcAbs);
-    await copyTreeExcludingLinks(srcAbs, dstAbs, treeLinks.links);
+    cpStats = await copyTreeExcludingLinks(srcAbs, dstAbs, treeLinks.links);
     /* 链接不在 cp 的范围里了，所以 cp 不会再碰 symlink()，EPERM 消失。
      * 重建前先判定每个链接指向目录还是文件 —— 目录用 junction（免特权），
      * 文件用符号链接（用 junction 会造出打不开的坏链接且不报错）。 */
@@ -5381,7 +5734,16 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
         path.basename(first.link) + ' —— ' + first.error);
     }
     emit('copy', { ok: true, links: treeLinks.links.length, fileLinks: linkRestore.fileLinks,
-      innerRewritten: linkRestore.innerRewritten });
+      innerRewritten: linkRestore.innerRewritten,
+      files: cpStats.files, dirs: cpStats.dirs,
+      /* 【跳过的条目数必须如实报出去】
+       * 静默跳过等于让用户拿到一份悄悄变少了的副本，而且事后对不上数
+       * （源侧还在、目标侧少了）会让人以为是搬家本身坏了。
+       * 只说个数和一个样例，不把几十条路径全塞进提示。
+       * 文件与目录分开给：一个目录被删掉时，说成「N 个文件消失」是错的。 */
+      skippedDisappeared: cpStats.skippedDisappeared,
+      skippedFiles: cpStats.skippedFiles, skippedDirs: cpStats.skippedDirs,
+      skippedExamples: cpStats.disappeared });
   } catch (err) {
     // 源完好，只需要删掉拷了一半的目标（且只在目标确实是本进程创建时才删）
     await rollbackDst();
@@ -5398,7 +5760,20 @@ async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
     emit('verify', { ok: null, started: true });
     const vr = await verifyCopy(srcAbs, dstAbs);
     if (!vr.ok) throw new Error(vr.reason);
-    emit('verify', { ok: true, files: vr.files, hashed: vr.hashed, bytes: vr.bytes });
+    /* 【复制阶段与校验阶段「消失」的数字必须合并显示，不能出现两套】
+     * 两个阶段都可能遇到源条目被删：复制时 catcher 记一份、校验时又记一份。
+     * 如果各报各的，用户会看到「跳过 2 个」然后「跳过 3 个」，不知道哪个算数。
+     * 这里把校验阶段的增量加上去，一次性报总数（UI 只认这一处）。
+     * 注意 cpStats 与 vr 统计的都是**不同**条目（校验阶段多出来的是
+     * "复制完之后才被删"的那批），相加不会重复计数。 */
+    const goneFiles = ((cpStats && cpStats.skippedFiles) || 0) + (vr.skippedFiles || 0);
+    const goneDirs = ((cpStats && cpStats.skippedDirs) || 0) + (vr.skippedDirs || 0);
+    emit('verify', {
+      ok: true, files: vr.files, hashed: vr.hashed, bytes: vr.bytes,
+      skippedFiles: goneFiles, skippedDirs: goneDirs,
+      skippedDisappeared: goneFiles + goneDirs,
+      skippedExamples: ((cpStats && cpStats.disappeared) || []).concat(vr.skippedList || []).slice(0, 20),
+    });
   } catch (err) {
     await rollbackDst();
     emit('verify', { ok: false, error: err.message });
@@ -5742,11 +6117,35 @@ async function verifyCopy(srcDir, dstDir) {
   const SIZE_LIMIT = 512 * 1024 * 1024;   // 单个文件超过 512MB 不做全量哈希（太慢）
   const HASH_BUDGET = 12;                 // 最多抽样 12 个不同大小的文件
 
+  /* 【源侧条目在复制与校验之间消失，必须与我刚加的容忍策略一致】
+   * copyTreeExcludingLinks 已经允许「readdir 之后文件被删」并记进
+   * skippedFiles/skippedDirs，注释写着「源目录往往是活的」。但这一步
+   * verifyCopy 会重新遍历**源树**：同一个场景立刻抛「读取源文件失败」，
+   * dirMoveRun 的 catch 接着回滚并报「校验失败 … 读取源文件失败：…」。
+   * 于是用户先看到「跳过 N 个」，再看到「读取源文件失败」—— 两句自相矛盾，
+   * 而且整个搬家白做。这里必须按同一口径处理：
+   *   · 源侧 stat 失败、但**目标侧存在** → 视为「源侧已消失」，计数跳过；
+   *   · 源侧在、目标侧缺 → 才是真正的校验失败（副本不完整）。
+   * 目录同理：源子目录整个没了，跳过它那棵子树，不当失败。 */
+  const skipped = { files: 0, dirs: 0, list: [] };
+  const noteGone = (rel, kind) => {
+    if (kind === 'dir') skipped.dirs++; else skipped.files++;
+    if (skipped.list.length < 20) skipped.list.push(rel);
+  };
+
   while (stack.length) {
     const [s, d] = stack.pop();
     let ents;
     try { ents = await fsp.readdir(s, { withFileTypes: true }); }
-    catch (err) { throw new Error('读取源目录失败：' + s + '（' + err.message + '）'); }
+    catch (err) {
+      /* 源子目录在遍历过程中被删掉了：按「已消失」处理，继续校验其它部分。
+       * ENOENT 才算消失；权限/IO 错误仍然要抛（那是环境问题，不是数据消失）。 */
+      if (err && err.code === 'ENOENT') {
+        noteGone(path.relative(path.resolve(srcDir), s), 'dir');
+        continue;
+      }
+      throw new Error('读取源目录失败：' + s + '（' + err.message + '）');
+    }
     for (const ent of ents) {
       const sp = path.join(s, ent.name);
       const dp = path.join(d, ent.name);
@@ -5754,14 +6153,22 @@ async function verifyCopy(srcDir, dstDir) {
       if (ent.isDirectory()) { stack.push([sp, dp]); continue; }
       if (!ent.isFile()) continue;
 
+      const stDst = await fsp.stat(dp).catch(() => null);
       const sst = await fsp.stat(sp).catch(() => null);
-      const dst = await fsp.stat(dp).catch(() => null);
-      if (!sst) throw new Error('读取源文件失败：' + sp);
-      if (!dst) throw new Error('目标缺少文件：' + dp);
-      if (sst.size !== dst.size) {
-        throw new Error('大小不一致：' + path.basename(sp) + '（源 ' + sst.size + ' / 目标 ' + dst.size + '）');
+      if (!sst) {
+        /* 源文件没了。判定口径：
+         *   目标侧有 → 复制阶段确实拷过它、之后源被删 → 记「已消失」，通过；
+         *   目标侧也没有 → 它从来没被成功复制，让后面的检查照常报失败。 */
+        if (stDst) { noteGone(path.relative(path.resolve(srcDir), sp), 'file'); continue; }
+        throw new Error('读取源文件失败：' + sp);
+      }
+      if (!stDst) throw new Error('目标缺少文件：' + dp);
+      if (sst.size !== stDst.size) {
+        throw new Error('大小不一致：' + path.basename(sp) + '（源 ' + sst.size + ' / 目标 ' + stDst.size + '）');
       }
       files++; bytes += sst.size;
+      /* 抽样哈希前再 stat 一次会更准，但这里有竞态：源可能正好在此时被删。
+       * hashFile 失败会被下面的 catch 归到「已消失」，不误判成内容不一致。 */
       if (sst.size > 0 && sst.size <= SIZE_LIMIT) toHash.push({ sp, dp, size: sst.size });
     }
   }
@@ -5780,11 +6187,21 @@ async function verifyCopy(srcDir, dstDir) {
     pick.push(it);
   }
   for (const it of pick) {
-    const a = await hashFile(it.sp), b = await hashFile(it.dp);
+    let a, b;
+    try { a = await hashFile(it.sp); }
+    catch (e) {
+      if (e && e.code === 'ENOENT') { noteGone(path.relative(path.resolve(srcDir), it.sp), 'file'); continue; }
+      throw e;
+    }
+    b = await hashFile(it.dp);
     if (a !== b) throw new Error('内容校验失败（哈希不一致）：' + path.basename(it.sp));
     hashed++;
   }
-  return { ok: true, files, hashed, bytes };
+  return {
+    ok: true, files, hashed, bytes,
+    skippedFiles: skipped.files, skippedDirs: skipped.dirs,
+    skippedDisappeared: skipped.files + skipped.dirs, skippedList: skipped.list,
+  };
 }
 
 function hashFile(p) {

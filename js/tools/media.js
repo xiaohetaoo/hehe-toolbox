@@ -325,11 +325,14 @@
           loaded = await Promise.all(picker.paths.map((p) => loadImg(p).then((img) => ({ path: p, img }))));
         } catch (e) { return toast('有图片无法解码：' + (e && e.message ? e.message : e), 'error'); }
         if (isV) {
-          cw = Math.max(...loaded.map(i => i.img.naturalWidth));
+          /* 不用 Math.max(...arr)：图片数量可以很大（批量转 PDF 能选几百张），
+           * 而「展开传参」有栈上限（实测约 12-13 万个参数会 RangeError）。
+           * 这里改用 reduce，语义相同且没有上限。 */
+          cw = loaded.reduce((m, i) => Math.max(m, i.img.naturalWidth), 0);
           ch = loaded.reduce((s, i) => s + i.img.naturalHeight, 0);
         } else {
           cw = loaded.reduce((s, i) => s + i.img.naturalWidth, 0);
-          ch = Math.max(...loaded.map(i => i.img.naturalHeight));
+          ch = loaded.reduce((m, i) => Math.max(m, i.img.naturalHeight), 0);
         }
 
         if (cw > MAX_SIDE || ch > MAX_SIDE || cw * ch > MAX_AREA) {
@@ -1331,6 +1334,15 @@
         style: { width: '160px', height: '120px', objectFit: 'cover', borderRadius: '8px', background: '#000', display: 'none' } });
       const camPreviewHint = h('span', { class: 'field-hint' }, '选择摄像头后在此预览');
       let previewStream = null;
+      /* 【页面已销毁的标记】
+       * onCleanup 里 stopPreview() 只能停掉「当时已知」的 stream。
+       * 但 getUserMedia 是异步的：用户刚选完摄像头就切走页面时，
+       * 请求还在飞 —— stopPreview 跑完了、previewStream 还是 null，
+       * 随后 getUserMedia 才 resolve，于是摄像头被打开、指示灯亮起，
+       * 而这段代码所属的页面已经销毁，再也没有人会去停它。
+       * 所以用一个标记把这条路堵上：destroyed 之后不再启动预览，
+       * 并且拿到 stream 时若发现已销毁，立刻把它关掉。 */
+      let destroyed = false;
       async function stopPreview() {
         if (previewStream) { previewStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} }); previewStream = null; }
         camPreview.srcObject = null;
@@ -1365,15 +1377,22 @@
       }
       async function startPreview(dshowName) {
         await stopPreview();
+        if (destroyed) return;   // 页面已销毁就别再开摄像头了
         if (!dshowName) { camPreviewHint.textContent = '选择摄像头后在此预览'; return; }
         try {
           const realId = await resolveDeviceId(dshowName);
+          if (destroyed) return;   // resolveDeviceId 里要等权限，可能已经切走了
           if (!realId) {
             // 不静默回落到默认摄像头：那会预览一个跟录制不同的设备，比不预览更误导
             camPreviewHint.textContent = '预览不可用：浏览器未匹配到该摄像头（名称不一致），录制不受影响';
             return;
           }
-          previewStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: realId } }, audio: false });
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: realId } }, audio: false });
+          /* 拿到 stream 时再查一次 destroyed：这个 await 可能跨越了整个页面生命周期。
+           * 已销毁的话直接关掉，否则摄像头会一直亮着 —— 而此刻页面已经没了，
+           * 除了重启程序没有任何办法把它关掉。 */
+          if (destroyed) { stream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} }); return; }
+          previewStream = stream;
           camPreview.srcObject = previewStream;
           camPreview.style.display = 'block';
           camPreviewHint.textContent = '预览中（录制时叠加到画面角落）';
@@ -1429,8 +1448,19 @@
           if (p.gif) gifChk.checked = true;
           camOn();
         }).catch(() => {});
-        window.App.onCleanup(() => { stopPreview(); });
       }).catch(() => {});
+      /* 【清理注册必须在这次 IPC 之外】
+       * 原来这行写在 invoke('rec:audio-devices').then(...) 的**内部** ——
+       * 设备枚举一旦 reject（ffmpeg 不可用、驱动查询失败、主进程抛错），
+       * 就一路 catch(() => {}) 吞掉，onCleanup 根本没注册。
+       * 后果：用户进过录制页、触发过摄像头预览，然后离开页面 ——
+       * 预览的 MediaStream 不会被 stop，摄像头指示灯一直亮着，
+       * 而 JS 已经找不到那个 stream 了（页面已销毁），只能去设备管理器禁用。
+       * 所以把它提到 then 外面，跟同级其它清理注册放一起：
+       * 无论枚举成败，离开页面时都会停掉预览。
+       * 同时置 destroyed：getUserMedia 的 await 可能还没回来，
+       * 光停「当时已知的」stream 挡不住那个迟到的结果（见 startPreview）。 */
+      window.App.onCleanup(() => { destroyed = true; stopPreview(); });
       [fpsSel, audioSel, camPosSel, camSizeSel].forEach(el => el.addEventListener('change', saveRecPrefs));
       gifChk.addEventListener('change', saveRecPrefs);
       async function pickRegion() {

@@ -275,15 +275,98 @@ t('P1 批量改后缀正确处理无扩展名文件', () => {
   assert.ok(!/item\.path\.slice\(0, item\.path\.length - ext\.length\) \+ to/.test(s), '仍是旧拼接写法');
 });
 
-/* P1-6 批量操作失败可见 */
+/* P1-6 批量操作失败可见
+ *
+ * 【这两条断言原来锁的是**缺陷本身**，必须说明清楚】
+ * 原来写成：
+ *   assert.ok(/alertBox\({[\s\S]{0,200}部分文件未能修改/.test(s), '没有弹失败明细');
+ * 它要求源码里出现「alertBox 紧跟一个左花括号」——而 alertBox 的签名是
+ * alertBox(message, title)，传配置对象进去会被 h() 当普通对象丢掉，
+ * 弹出来是个正文空白的框。也就是说这条断言当初把一个**错误调用形态**
+ * 当成了修复标志；等真正改对（alertBox(文本, 标题)）之后，它反而红了，
+ * 而且因为 package.json 用 && 串联，它一红后面 60 多个脚本全不执行。
+ *
+ * 现在改成「跑真实现」：把明细拼接抽成了 js/tools/file-tools.js 里的
+ * buildFailText(ok, failures) 纯函数，测试直接调它断言**返回值内容**
+ * （含文件名、含原因、含截断提示），源码匹配只剩「确实调用了 alertBox」
+ * 这一层结构事实。断言不再依赖版面，也不再锁死某种调用写法。
+ */
+
+/* 从 file-tools.js 里抽出 buildFailText 的真实现来跑（不复刻逻辑） */
+function loadBuildFailText() {
+  const src = read('js/tools/file-tools.js');
+  const i = src.indexOf('function buildFailText');
+  assert.ok(i > 0, 'file-tools.js 里找不到 buildFailText（失败明细应抽成纯函数以便测试）');
+  // 取到该函数结束：从函数体左花括号起做括号配平（跳过字符串）
+  const open = src.indexOf('{', i);
+  let depth = 0, j = open, inS = null;
+  while (j < src.length) {
+    const c = src[j];
+    if (inS) { if (c === '\\') j++; else if (c === inS) inS = null; j++; continue; }
+    if (c === "'" || c === '"' || c === '`') { inS = c; j++; continue; }
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) { j++; break; } }
+    j++;
+  }
+  assert.ok(depth === 0, 'buildFailText 括号不配平');
+  return new Function(src.slice(i, j) + '\nreturn buildFailText;')();
+}
+
+/* 剥注释统一走 lib/src-scan.js（三个测试脚本共用一份实现，见该文件里的说明）。 */
+const { stripComments } = require(path.join(ROOT, 'lib', 'src-scan'));
+
 t('P1 批量改后缀失败时列出明细', () => {
   const s = read('js/tools/file-tools.js');
   assert.ok(s.includes('failures.push'), '没有收集失败明细');
-  assert.ok(/alertBox\(\{[\s\S]{0,200}部分文件未能修改/.test(s), '没有弹失败明细');
+  const build = loadBuildFailText();
+  const ok = 3;
+  const failures = [
+    { from: 'D:/a/one.txt', to: 'D:/a/one.md', err: '被占用' },
+    { from: 'D:/a/two.txt', to: 'D:/a/two.md', err: '拒绝访问' },
+  ];
+  const text = build(ok, failures);
+  // 关键：文件名、目标名、原因都必须真的出现在文本里（不是"调用大概对了"
+  assert.ok(text.includes('one.txt'), '明细里没有源文件名');
+  assert.ok(text.includes('one.md'), '明细里没有目标名');
+  assert.ok(text.includes('被占用'), '明细里没有失败原因');
+  assert.ok(text.includes('拒绝访问'), '第二个失败项被吞掉了');
+  assert.ok(text.includes('成功 3 个') && text.includes('失败 2 个'), '成功/失败计数不对：' + text.split('\n')[0]);
+  // 反面对照：不能是空串或只有标题（空串正是"空白框"的表现）
+  assert.ok(text.trim().length > 20, '明细文本过短，弹出来接近空白：' + JSON.stringify(text));
 });
+
 t('P1 批量重命名失败时列出明细', () => {
-  const s = read('js/tools/file-tools.js');
-  assert.ok(/alertBox\(\{[\s\S]{0,200}部分文件未能重命名/.test(s), '没有弹失败明细');
+  const build = loadBuildFailText();
+  const text = build(0, [{ from: 'D:/b/x.jpg', to: 'D:/b/x.png', err: '目标已存在' }]);
+  assert.ok(text.includes('x.jpg') && text.includes('x.png') && text.includes('目标已存在'),
+    '重命名明细缺少文件或原因');
+  // 截断提示：20 条失败、默认只列 15 条，必须说明"还有 5 个未列出"
+  const many = Array.from({ length: 20 }, (_, k) => ({ from: 'f' + k, to: 'g' + k, err: 'err' + k }));
+  const big = build(1, many);
+  assert.ok(big.includes('…还有 5 个未列出'), '超过 15 条时没说明剩余数量');
+  assert.ok(!big.includes('err19'), '第 20 条不该被列出（上限 15）');
+  assert.ok(big.includes('err14'), '第 15 条应该被列出（上限 15）');
+});
+
+t('P1 两处调用都用 alertBox(文本, 标题) 而不是配置对象', () => {
+  /* 【先剥注释再断言】
+   * 这条是反面断言（"源码里不许出现对象调用形态"），而**解释这个缺陷的
+   * 注释本身**必然要写出那种形态（"原来这里写成 alertBox({ title, message })"）。
+   * 不剥注释就会让"记录缺陷的文字"触发"禁止缺陷"的规则 —— 我第一次跑
+   * 这条断言时正是被 file-tools.js 里那段说明注释卡住的。
+   * 这与 test-i18n-coverage 里修的另一处是同一类问题：注释不是代码。
+   * 剥注释的逻辑自测一版，避免"复刻一份"导致假绿（见下方断言）。 */
+  const strip = stripComments;
+  const raw = read('js/tools/file-tools.js');
+  const s = strip(raw);
+  // 反面：不许再出现 alertBox(…) 后紧跟对象字面量的调用形态
+  assert.ok(!/alertBox\s*\(\s*\{/.test(s),
+    '仍在用 alertBox({ title, message }) —— 对象会被 h() 丢掉，弹出空白框');
+  // 正面：两处标题都作为第二个实参出现
+  assert.ok(/alertBox\s*\(\s*buildFailText[\s\S]{0,80}?'部分文件未能重命名'/.test(s),
+    '重命名那处没有把标题作为第二个实参');
+  assert.ok(/alertBox\s*\(\s*buildFailText[\s\S]{0,80}?'部分文件未能修改'/.test(s),
+    '改后缀那处没有把标题作为第二个实参');
 });
 
 /* P2-8 音频剪辑固定命名 */

@@ -138,7 +138,13 @@
           { k: '源目录', v: r.src },
           { k: '新位置', v: r.dst },
           { k: '需要空间', v: r.needBytes != null ? fmtBytes(r.needBytes) : '（无法预估）' },
-          { k: '目标盘剩余', v: r.freeBytes != null ? fmtBytes(r.freeBytes) : '（未知）' },
+          /* 【读不到剩余空间时必须把话说全】
+           * 原来只写「（未知）」，用户很容易扫一眼就当成"校验过了"。
+           * 事实是：freeBytes 拿不到时 NO_SPACE 那条判据整段跳过 ——
+           * 空间够不够**根本没校验**。搬家是「先完整复制再改名」的长流程，
+           * 空间不够会拷到一半失败，所以这行必须把"未校验"讲明白。 */
+          { k: '目标盘剩余', v: r.freeBytes != null ? fmtBytes(r.freeBytes)
+            : (r.freeBytesUnknown ? '（无法获取，空间是否足够未校验）' : '（未知）') },
         ];
         /* 【源目录里的链接必须提前告知】
          * 搬家会把它们重建到新位置，用户若不知道，事后看到「多了一个链接」
@@ -278,6 +284,21 @@
          * 现在不传 jobId，让主进程按 jobSeq 生成 dirmv<序号>；
          * 渲染层这里按前缀认领（搬家是主进程单飞的，同一时刻只会有一个 dirmv 任务）。 */
         let claimedId = null;
+        /* 【把「复制期间消失」的文案集中到一处】
+         * 复制阶段与校验阶段都会遇到源条目被删，两个阶段各写一份文案的话，
+         * 措辞迟早会不一致（而且早期那版把目录也算成「文件」）。
+         * 这里按 skippedFiles / skippedDirs 分开说，为 0 的那类不提。 */
+        const goneText = (files, dirs, examples, when) => {
+          const f = files || 0, dd = dirs || 0;
+          if (!f && !dd) return '';
+          const parts = [];
+          if (f) parts.push(f + ' 个文件');
+          if (dd) parts.push(dd + ' 个目录');
+          let s = '；⚠ ' + parts.join('、') + '在' + (when || '复制期间') + '从源目录消失，已跳过';
+          const ex = Array.isArray(examples) ? examples : [];
+          if (ex.length) s += '（如 ' + ex.slice(0, 3).join('、') + ((f + dd) > 3 ? ' 等' : '') + '）';
+          return s;
+        };
         const unsub = window.api.on('job:stream', (d) => {
           if (!d || !d.id) return;
           if (!window.JobPrefix) return;
@@ -303,10 +324,27 @@
             note = j.links + ' 个链接已重建';
             if (j.innerRewritten) note += '（其中 ' + j.innerRewritten + ' 个的目标在源目录内部，已改写到新位置）';
             if (j.fileLinks) note += '；含 ' + j.fileLinks + ' 个文件符号链接';
+            if (j.files != null) note = (j.files + ' 个文件、' + (j.dirs || 0) + ' 个目录已复制；' + note);
+            /* 【复制期间消失的条目必须点名】
+             * 这类跳过不是错误（源目录是活的，被别的程序删了很正常），
+             * 但它意味着目标侧**比源侧少**了东西 —— 用户有权知道少了几个。
+             * 不说明的话，后面校验发现数量对不上会让人怀疑搬家坏了。
+             *
+             * 【文件与目录要分开说】
+             * 早期把两者合进一个计数却统一写成「N 个文件…消失」：
+             * 消失的是一个目录时那句话直接是错的，用户会去数文件、数不出来。
+             * 现在按 skippedFiles / skippedDirs 分别写，各为 0 就不提它。 */
+            note += goneText(j.skippedFiles, j.skippedDirs, j.skippedExamples, '复制期间');
           }
           /* 链接性质查询失败：不是致命错，但必须让用户看见 ——
            * 否则后面「无法判断这个链接指向目录还是文件」会显得莫名其妙。 */
           if (j.linkNaturesError) note = '⚠ 链接性质查询失败：' + j.linkNaturesError + '（这不代表没有文件链接）';
+          /* 校验阶段也可能遇到源条目被删（复制完、校验前）。主进程已经把
+           * 两阶段的数字合并成一个总数传过来（避免出现「跳过 2 个」又「跳过 3 个」），
+           * 所以这里只负责说清楚。 */
+          if (j.stage === 'verify' && j.ok === true && j.skippedDisappeared) {
+            note += goneText(j.skippedFiles, j.skippedDirs, j.skippedExamples, '复制期间');
+          }
           setStep(j.stage, status, note);
         });
 

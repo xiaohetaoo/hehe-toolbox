@@ -241,11 +241,23 @@
         payload.rect = { x: Math.round((sel.x + DX) * SCALE), y: Math.round((sel.y + DY) * SCALE), w: Math.round(sel.w * SCALE), h: Math.round(sel.h * SCALE) };
       } else if (action !== 'cancel') {
         const dpr = devicePixelRatio || 1;
+        /* 【源矩形必须乘 dpr，目标尺寸必须用逻辑尺寸 + scale】
+         * canvas 的位图是按 innerWidth * dpr 建的，绘制时 ctx.scale(dpr, dpr)
+         * —— 也就是说 canvas 里存的**像素**是逻辑坐标的 dpr 倍。
+         * sel 全程都是 CSS 逻辑像素（鼠标事件给的就是逻辑像素）。
+         * drawImage 的**源矩形**是在源画布的位图坐标系里取的，不受目标 ctx
+         * 变换影响；目标矩形才受 octx.scale 影响。所以：
+         *   源   → sel.x * dpr, sel.y * dpr, sel.w * dpr, sel.h * dpr（位图坐标）
+         *   目标 → 0, 0, sel.w, sel.h（逻辑尺寸，由 octx.scale 放大到 dpr 倍）
+         * 原来源矩形没乘 dpr，等于只截了画布左上角 1/dpr 那块再拉满输出 ——
+         * 100% 缩放下 dpr=1 看不出，150%/200% 缩放时框选的内容就整体错位。
+         * 注意同段的 payload.rect 是乘了 SCALE 的，只有这里漏了。 */
+        const sx = sel.x * dpr, sy = sel.y * dpr, sw = sel.w * dpr, sh = sel.h * dpr;
         const out = document.createElement('canvas');
         out.width = sel.w * dpr; out.height = sel.h * dpr;
         const octx = out.getContext('2d');
         octx.scale(dpr, dpr);
-        octx.drawImage(canvas, sel.x, sel.y, sel.w, sel.h, 0, 0, sel.w, sel.h);
+        octx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sel.w, sel.h);
         payload.dataUrl = out.toDataURL('image/png');
       }
       try { hehe.invoke('snip:finish', payload).catch(() => {}); } catch (e) {}

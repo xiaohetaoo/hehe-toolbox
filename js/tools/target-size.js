@@ -210,12 +210,30 @@
         prog.show(); status.textContent = '准备中…';
         picker.setLocked(true);
 
+        /* 【解锁必须走同一个出口】
+         * 这几个状态（running / 按钮 / picker 锁 / busy 样式 / 进度条）
+         * 在**每一条**退出路径上都要配对复位。原来 finally 里配了一组，
+         * 但「创建输出目录失败」那条 return 在进入 try 之前，只复位了
+         * running/startBtn/cancelBtn/prog —— 忘了 picker.setLocked(false)
+         * 和 dz 的 busy。
+         * locked 为真时 add/remove/clear/拖放全被拦（js/ui.js 的守卫），
+         * 用户就卡在一个既加不了文件、也清不掉列表的页面上，只能重开工具页。
+         * 收成一个函数，早退和 finally 都调它，避免下次再加路径时又漏一处。 */
+        function unlockUi() {
+          running = false;
+          startBtn.disabled = false; cancelBtn.disabled = true;
+          picker.setLocked(false);
+          picker.dz.classList.remove('busy');
+          runJobId = null;
+        }
+
         // 分组：图片走渲染层逐轮编码；音视频整体交给主进程
         const imgs = files.filter(isImg);
         const avs = files.filter(isAv);
         const outDirBase = outDirIn.value.trim() || (files[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-target');
         try { await invoke('fs:mkdir', outDirBase); } catch (e) {
-          running = false; startBtn.disabled = false; cancelBtn.disabled = true; prog.hide();
+          unlockUi();
+          setTimeout(() => prog.hide(), 800);
           return toast('创建输出目录失败：' + (window.api.errText ? window.api.errText(e) : e.message), 'error');
         }
 
@@ -311,10 +329,7 @@
           if (failCount === 0) toast(okCount ? `全部完成，共 ${okCount} 个` : '没有可处理的文件', 'success');
           else if (failures.length) window.ui.alertBox(failures.join('\n'), '部分文件未能压到目标体积');
         } finally {
-          running = false;
-          startBtn.disabled = false; cancelBtn.disabled = true; picker.setLocked(false);
-          picker.dz.classList.remove('busy');
-          runJobId = null;
+          unlockUi();
           setTimeout(() => prog.hide(), 800);
         }
       }

@@ -152,7 +152,27 @@
     });
   }
   function alertBox(message, title = '提示') {
-    return modal({ title, body: (b) => b.appendChild(h('div', null, message)), foot: [h('button', { class: 'btn btn-primary', onclick: function () { this.closest('.modal-mask').remove(); } }, '知道了')] });
+    /* 【兼容误传对象，并且必须吵一声】
+     * 真实缺陷：js/tools/file-tools.js 里曾两处把配置对象当第一个实参传进来
+     * （形如 alertBox 后面跟一个左花括号，里面是 title 与 message 两个字段）。
+     * 对象被当作 message 交给 h('div', null, message)，而 h 的子节点只认
+     * 字符串/数字/Node/带 style 的对象，普通对象直接丢弃 —— 弹出来是
+     * 标题「提示」+ 正文空白。讽刺的是那两处的注释正写着「失败原因必须可见」。
+     *
+     * 调用点已改对，但这里再挡一层：别人（或未来的我）按配置对象写也不会
+     * 得到一个空白框，而且 console.warn 会把调用方点名出来 —— 空白框本身
+     * 是无声的，没有任何线索能指回是哪次调用。
+     * 注意：只认带 message 字段的对象，避免把真的想显示对象字面量的调用误改。 */
+    if (message && typeof message === 'object' && !Array.isArray(message)
+        && typeof message.message === 'string') {
+      if (title === '提示' && typeof message.title === 'string' && message.title) title = message.title;
+      const wrong = message;
+      console.warn('alertBox 收到配置对象，已按 alertBox(message, title) 兼容处理：', wrong.title || '(无标题)');
+      message = wrong.message;
+    }
+    /* pre-wrap：失败明细是多行的（每个文件一行的 原因：…），没有它整段会被
+     * 压成一长条，横着读几十个文件根本对不上号。confirmBox 里同样的处理。 */
+    return modal({ title, body: (b) => b.appendChild(h('div', { style: { userSelect: 'text', whiteSpace: 'pre-wrap' } }, message)), foot: [h('button', { class: 'btn btn-primary', onclick: function () { this.closest('.modal-mask').remove(); } }, '知道了')] });
   }
   function promptBox({ title, label = '', value = '', placeholder = '', okText }) {
     // 同 confirmBox：默认文案必须运行时取，否则切语言后不跟随
@@ -418,6 +438,13 @@
     function refresh() {
       body.innerHTML = '';
       pendingSizes = [];
+      /* 【refresh 会重建所有行 —— 调用方的结果必须能在重建后重画】
+       * 这里不额外挂回调：makeRow 内部已经按 rowEnd(item, i, row) 调过一遍。
+       * 真实缺陷见 js/tools/hash.js：早期它把摘要 appendChild 到行元素上，
+       * 用户再添加/删除文件时 refresh 一重建，之前那行成了游离节点，
+       * 摘要画到看不见的地方；而「已算过」集合仍然命中，于是永不重算。
+       * 修法在工具侧：结果按路径存着，rowEnd 里按路径重画。
+       * （这里保留注释，是为了让后来者知道问题出在「行会被重建」这个前提上。） */
       items.forEach((it, i) => body.appendChild(makeRow(it, i)));
       emptyEl.style.display = items.length ? 'none' : '';
       el.classList.toggle('has-items', !!items.length);

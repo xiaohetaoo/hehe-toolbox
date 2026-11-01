@@ -43,7 +43,7 @@
           body.appendChild(sectionCard('🖧 网卡', info.nic.map(n => [n.Name, n.MACAddress || '-'])));
           body.appendChild(sectionCard('🦾 操作系统', [
             ['系统', info.os.Caption], ['版本', `${info.os.Version} (${info.os.BuildNumber}) ${info.os.OSArchitecture || ''}`],
-            ['上次启动', info.os.LastBootUpTime ? fmtDate(new Date(info.os.LastBootUpTime).getTime()) : '-'],
+            ['上次启动', fmtBoot(info.os.LastBootUpTime)],
             ['运行时长', fmtTimeDur(info.uptimeS)]
           ]));
           if (info.battery && info.battery.EstimatedChargeRemaining != null) {
@@ -74,6 +74,26 @@
       function fmtTimeDur(s) {
         const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
         return (d ? d + ' 天 ' : '') + h + ' 小时 ' + m + ' 分钟';
+      }
+      /* 【日期字段必须防 NaN】
+       * 主进程现在已经把 LastBootUpTime 解析成毫秒数字（修在数据出口，
+       * 见 main.js 的 parsePsDate）。这里再兜一层，因为：
+       *   · 老版本主进程 / 别的调用方可能仍然传 "/Date(...)/" 字符串；
+       *   · null、空串、"NaN" 之类都会让 new Date(...).getTime() 得到 NaN，
+       *     而 fmtDate 内部一串 getFullYear/getMonth 会把它渲染成
+       *     "NaN-NaN-NaN NaN:NaN:NaN" —— 用户看到的是乱码而不是「取不到」。
+       * 拿不到就显示 "-"，这是项目一贯的诚实原则。 */
+      function fmtBoot(v) {
+        if (v == null || v === '') return '-';
+        let ms;
+        if (typeof v === 'number') ms = v;
+        else {
+          const s = String(v).trim();
+          const m = s.match(/^\/Date\(([-+]?\d+)\)\/$/);   // PS 5.1 的形态
+          ms = m ? Number(m[1]) : new Date(s).getTime();
+        }
+        if (!Number.isFinite(ms)) return '-';
+        return fmtDate(ms);
       }
       function sectionCard(title, pairs) {
         const card = div('card');
@@ -353,7 +373,11 @@
         try {
           const targets = selected.flatMap(i => i.targets);
           const r = await invoke('fs:clean-junk', targets, true);
-          toast(`已清理 ${fmtBytes(r.bytes)}`, 'success');
+          /* 有失败时不能报成功：用户会以为都清掉了。
+           * （主进程现在会拒绝「不在本次扫描结果内」的路径，这类拒绝也必须可见。） */
+          const nErr = (r.errors || []).length;
+          if (nErr) toast(`已清理 ${fmtBytes(r.bytes)}，${nErr} 项未能清理：` + r.errors.slice(0, 3).join('；'), 'warn', 6000);
+          else toast(`已清理 ${fmtBytes(r.bytes)}`, 'success');
           scanBtn.click();
         } catch (e) { toast(e.message, 'error'); }
       });
@@ -411,8 +435,29 @@
         if (!dirs.length) return toast('请先扫描', 'warn');
         if (!(await confirmBox({ title: '删除空目录', message: `将删除 ${dirs.length} 个空目录，确定继续？`, danger: true, okText: '删除' }))) return;
         try {
-          const r = await invoke('fs:delete-empty', dirs);
-          toast(`已删除 ${r.deleted} 个空目录`, 'success');
+          /* 【必须传路径字符串，不能传扫描结果对象】
+           * r.dirs 的元素是 { path, depth } 对象。早期这里直接 invoke(..., dirs)
+           * 把**对象数组**发过去，主进程 for (const p of dirs) 里 p 是个对象：
+           *   1) pathGuard.checkDeletable(obj) 内部 String(p) 得到 "[object Object]"，
+           *      既不是根、不是关键目录、不是家目录 → 闸门直接放行（形同虚设）；
+           *   2) fsp.rmdir(obj) 抛 ERR_INVALID_ARG_TYPE，被内层 catch 收进 errors，
+           *      deleted 恒为 0；
+           *   3) 界面仍然 toast「已删除 0 个空目录」，而且是 success（绿色）样式，
+           *      而 r.errors 从头到尾没人读。
+           * 结果：点「删除全部空目录」一个都删不掉，用户却以为成功了。 */
+          const r = await invoke('fs:delete-empty', dirs.map((d) => (typeof d === 'string' ? d : d && d.path)));
+          /* 【成功/失败要分开说，不能一律绿色】
+           * 有失败时用 warn，并把前 3 条原因列出来 —— 否则用户只看到
+           * 「已删除 3 个」，不知道另外几个为什么没删掉。 */
+          const nErr = (r.errors || []).length;
+          if (nErr) {
+            const head = r.deleted
+              ? `已删除 ${r.deleted} 个，${nErr} 个失败：`
+              : `未能删除任何空目录（${nErr} 个失败）：`;
+            toast(head + (r.errors || []).slice(0, 3).join('；'), 'warn', 6000);
+          } else {
+            toast(`已删除 ${r.deleted} 个空目录`, 'success');
+          }
           scanBtn.click();
         } catch (e) { toast(e.message, 'error'); }
       });

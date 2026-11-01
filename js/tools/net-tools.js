@@ -94,8 +94,11 @@
       const stopBtn = btn('■ 停止 Ping', 'btn-danger-plain', stop);
       stopBtn.disabled = true;
       function updateStats() {
-        const min = latencies.length ? Math.min(...latencies) : 0;
-        const max = latencies.length ? Math.max(...latencies) : 0;
+        /* 不用 Math.max(...latencies)：ping 次数虽小，但「展开传参」这类写法
+         * 一旦数组变大就会 RangeError（栈上限约 12-13 万个参数）。
+         * 统一用 reduce，永远没有参数个数上限。 */
+        const min = latencies.length ? latencies.reduce((a, b) => (a < b ? a : b), Infinity) : 0;
+        const max = latencies.length ? latencies.reduce((a, b) => (a > b ? a : b), -Infinity) : 0;
         const avg = latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : 0;
         statsEl.innerHTML = '';
         for (const [k, v, u] of [['已发送', sent, ''], ['已接收', recv, ''], ['平均延迟', avg ? avg.toFixed(1) : '-', 'ms'], ['最小/最大', latencies.length ? `${min}/${max}` : '-', 'ms'], ['丢包率', sent ? ((1 - recv / sent) * 100).toFixed(1) : '-', '%']]) {
@@ -441,11 +444,28 @@
         downBtn.disabled = upBtn.disabled = true;
         status.textContent = '测试中…'; samples = [];
         /* job:stream 是全局通道，必须只认本次测速的 id，
-           否则别的任务发来的 samples 会被画到这条曲线上。 */
+           否则别的任务发来的 samples 会被画到这条曲线上。
+         *
+         * 【必须按前缀认领，不能"先到先得"】
+         * 原写法 `if (!speedId) speedId = d.id` 会**接管第一个到来的任何 id** ——
+         * 只要此刻别的任务（哈希、压缩、下载）恰好在广播，它抢到的就是
+         * 别人的 id，接着要么把别人的进度当成测速数据画出来，
+         * 要么因为 id 不匹配而把自己真实的事件全过滤掉（曲线一直是空的）。
+         * 主进程 net:speedtest 用 'speed' 前缀生成任务 id（见 lib/job-id.js），
+         * 所以这里只接受该前缀：`speed` + 纯数字，形如 speed123。
+         * 与文件下载页（dlg 前缀）保持同一套判定口径。 */
+        const SPEED_PREFIX = 'speed';
         let speedId = null;
         unsub = on('job:stream', (d) => {
           try {
-            if (d.id) { if (!speedId) speedId = d.id; else if (d.id !== speedId) return; }
+            if (!d || !d.id) return;
+            if (speedId) {
+              if (d.id !== speedId) return;          // 已认领：只认这一个
+            } else if (window.JobPrefix && window.JobPrefix.belongsTo(String(d.id), SPEED_PREFIX)) {
+              speedId = d.id;                        // 首次匹配到本前缀才认领
+            } else {
+              return;                                // 拿到真实 id 之前，别的一律不接管
+            }
             const j = JSON.parse(d.data);
             if (j.samples && j.samples.length) {
               samples = j.samples.map(s => s.mbps);

@@ -1257,6 +1257,17 @@
       /* 上一次点击可能还挂着订阅（下载未完成时离开页面），先退掉再开新的，
        * 否则连点几次就有几份 job:stream 监听同时更新同一个 updLine。 */
       if (updUnsub) { try { updUnsub(); } catch (e) {} updUnsub = null; }
+      /* 【dlId / unsub 必须在 try 之外声明 —— 这不是风格问题，是正确性问题】
+       * let 是块级作用域：写在 try 里面，finally 就是另一个块，读不到它，
+       * 运行时会抛 `ReferenceError: dlId is not defined`（是抛错，不是 undefined）。
+       *
+       * 后果比「变量为空」严重得多：
+       *   · finally 里排在 dlId 后面的 `updUnsub = unsub;` 永远执行不到 ——
+       *     那句「失败路径也要退订」的注释完全落空，监听器就一直挂在这个页面上；
+       *   · try 里的 return 被 finally 抛出的异常顶掉，checkUpdate 每次都以
+       *     rejected promise 结束（调用方拿不到正常返回值）；
+       *   · 用户完全看不见：UI 文案在抛错之前就已经写进 updLine 了。 */
+      let dlId = null;
       let unsub = null;
       try {
         const r = await invoke('update:check', { force: true });
@@ -1268,7 +1279,8 @@
         // job:stream 是全局通道：TTS/ffmpeg/卸载等任务也会广播 {done:true} 或 {pct}。
         // 不比对 id 就会把别人的退出事件当成下载失败（显示“✗ 下载失败：undefined”），
         // 进度数字也会被别的任务污染。先拿到 dl.id 再比对，拿到之前只缓冲不显示。
-        let dlId = null;
+        // （dlId 在 try 之外已声明 —— 这里不能再写 let，那会遮蔽外层变量，
+        //   finally 照样读到永远为 null 的外层那份。见 checkUpdate 开头的说明。）
         const pendingEvents = [];
         unsub = on('job:stream', (d) => {
           if (!dlId) { pendingEvents.push(d); return; }

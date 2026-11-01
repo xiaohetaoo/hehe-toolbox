@@ -25,6 +25,21 @@
       const restIn = h('input', { type: 'number', class: 'input input-sm', value: '5', min: '1', max: '60', style: { width: '70px' } });
       const countIn = h('input', { type: 'number', class: 'input input-sm', value: '4', min: '1', max: '20', style: { width: '70px' } });
       let pomodoros = 0, targetPomodoros = 4, phase = 'work';
+      /* 【「已完成」必须是可更新的节点，不是一次性文本】
+       * 原来是 h('span', ..., `已完成 ${pomodoros}`) —— 字符串在 render 时就定死了，
+       * 之后 pomodoros 再变也不会刷新，用户永远看到「已完成 0」。 */
+      const doneEl = h('span', { class: 'field-hint' }, '');
+      function paintDone() { doneEl.textContent = `已完成 ${pomodoros} / ${targetPomodoros}`; }
+      /* 【「目标番茄数」输入框必须真的被读取】
+       * countIn 原来创建后从未被读过，targetPomodoros 恒为 4 ——
+       * 用户改成 8 也没用，toast 里永远显示 (1/4)。
+       * 在一轮开始之前（setMode 与 start 的第一次开始）读一次即可：
+       * 中途改目标会让「已完成 N」的含义漂移。 */
+      function readTarget() {
+        const v = parseInt(countIn.value, 10);
+        targetPomodoros = Math.max(1, Math.min(20, Number.isFinite(v) ? v : 4));
+        paintDone();
+      }
       function fmt(sec) { sec = Math.max(0, Math.ceil(sec)); return `${pad2(Math.floor(sec / 60))}:${pad2(sec % 60)}`; }
       function drawRing(ratio, color) {
         const ctx = canvas.getContext('2d');
@@ -57,13 +72,18 @@
         stop();
         if (mode === 'countdown') {
           display.textContent = '00:00';
-          try { await invoke('clip:write-text', ''); } catch (e) {}
+          /* 【这里曾有一句 clip:write-text ''，已删除】
+           * 倒计时结束会**清空用户剪贴板** —— 而番茄钟、休息两条分支都没有
+           * 这个动作，代码里也找不出任何理由解释它（不是粘贴、不是复制）。
+           * 用户可能正好复制了一段要粘贴的内容，倒计时一响就没了。
+           * 提醒本身已经由 toast + Notification 完成，不需要碰剪贴板。 */
           toast('⏰ 倒计时结束！', 'success', 4000);
           new Notification('核核工具箱', { body: '倒计时结束！' });
           return;
         }
         if (phase === 'work') {
           pomodoros++;
+          paintDone();
           toast(`🍅 完成一个番茄！(${pomodoros}/${targetPomodoros})，休息一下`, 'success', 4000);
           new Notification('核核工具箱', { body: `完成第 ${pomodoros} 个番茄，休息 ${restIn.value} 分钟` });
           phase = 'rest';
@@ -117,7 +137,7 @@
         mode = m;
         phase = 'work';
         swElapsed = 0; // 切模式/重置都要把秒表累计清零，否则「重置」后会从旧值接着走
-        if (m === 'pomodoro') { total = (parseInt(workIn.value) || 25) * 60; statusText.textContent = `专注模式 · 第 ${pomodoros + 1} 个番茄`; display.style.fontSize = '64px'; }
+        if (m === 'pomodoro') { readTarget(); total = (parseInt(workIn.value) || 25) * 60; statusText.textContent = `专注模式 · 第 ${pomodoros + 1} 个番茄`; display.style.fontSize = '64px'; }
         else if (m === 'countdown') { total = (parseInt(workIn.value) || 25) * 60; statusText.textContent = '倒计时模式'; display.style.fontSize = '64px'; }
         else { statusText.textContent = '正计时（秒表）'; display.style.fontSize = '48px'; }
         remain = total;
@@ -145,7 +165,11 @@
         div('form-row', h('span', { class: 'form-label' }, '专注时长（分）'), workIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '休息（分）'), restIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '目标番茄数'), countIn,
-          h('span', { class: 'field-hint' }, `已完成 ${pomodoros}`))));
+          doneEl)));
+      /* 首屏就把「已完成 0 / 目标 N」算出来（原来这里是一次性文本，永远是 0）。
+       * 加 change 监听：用户改目标后立刻反映到文案上，不用等到开始计量。 */
+      readTarget();
+      countIn.addEventListener('change', readTarget);
     }
   });
 

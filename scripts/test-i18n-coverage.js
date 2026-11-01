@@ -27,8 +27,7 @@ const CJK = /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/;
 
 /* 逐字符扫描：跳过注释与字符串，只在代码区做括号配平。
  * 直接对全文数 {} 会被字符串里的 '{' 带偏（本文件里就有 h('div', {…})）。 */
-function scan(src, from) {
-  let i = from;
+function scan(src, from) {  let i = from;
   let depth = 0;
   let started = false;
   while (i < src.length) {
@@ -79,8 +78,23 @@ function functionBody(src, name) {
   return src.slice(start, end);
 }
 
-/* 收集字符串字面量；带上它们在源码中的位置，便于按上下文排除 */
-function stringLiterals(body) {
+/* 判断当前位置的 `/` 是否应当按正则字面量处理。
+ * 看 out（已经输出、即剥过注释的代码前缀）里最近一个有效 token： */
+/* 【剥注释与正则识别统一到 lib/src-scan.js】
+ * 这里有三个测试脚本都要「剥掉注释再断言」，早期各自实现了一份：
+ * 一个地方修了正则识别，另一处的旧实现还在朴素扫描，行为不一致。
+ * 更要命的是「抽取函数」这个动作本身也要跳正则字面量
+ * （regexAllowed 内部就有 /[a-zA-Z0-9_$])}]/，朴素配平会被那个 } 带偏）。
+ * 集中到 lib/src-scan.js 后谁 require 谁一致。 */
+const { stripComments, regexAllowed } = require(path.join(ROOT, 'lib', 'src-scan'));
+
+/* 收集字符串字面量；带上它们在源码中的位置，便于按上下文排除
+ *
+ * 入参一律先剥注释：注释里用引号提到的界面文案不是硬编码文案。
+ * （剥完位置会与原文偏移，但调用方只用它配合 body 做 console.* 判断，
+ *   而这个 body 现在也是剥过注释的，两边一致。） */
+function stringLiterals(rawBody) {
+  const body = stripComments(rawBody);
   const out = [];
   // '...' 与 "..."
   for (const m of body.matchAll(/'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"/g)) {
@@ -115,7 +129,11 @@ const ALLOWED_LITERALS = new Set(['简体中文']);
 t('设置区各绘制函数里没有硬编码中文文案', () => {
   const offenders = [];
   for (const fn of SETTINGS_FNS) {
-    const body = functionBody(raw, fn);
+    /* 剥注释一次，两处共用同一份文本：
+     * stringLiterals() 内部会剥注释，它返回的 index 是**剥注释后文本**的偏移。
+     * 若把原始 body 传给 isLogArgument，偏移就对不上，console.* 判断会判错。
+     * （原来两边都用原始 body，所以注释里的引号能被当成字面量 —— 那正是要修的 bug。） */
+    const body = stripComments(functionBody(raw, fn));
     for (const lit of stringLiterals(body)) {
       if (!CJK.test(lit.text)) continue;
       if (ALLOWED_LITERALS.has(lit.text)) continue;
@@ -227,6 +245,91 @@ t('英文字典的值里没有中文字符', () => {
     if (CJK.test(m[2])) offenders.push(m[1] + ': ' + m[2].slice(0, 50));
   }
   assert.deepStrictEqual(offenders, [], '英文值里还有中文：\n  ' + offenders.join('\n  '));
+});
+
+/* ---- 5. stripComments 自身的行为（用合成输入，不依赖仓库现状） ----
+ *
+ * 【为什么要单独测这个函数】
+ * 上一节（设置区硬编码中文）现在能过，但**不能反过来证明 stripComments 有效**：
+ * app.js 里那两个触发点已经顺手改成中文引号了，就算把 stripComments 整个
+ * 退回 rawBody，那一节照样全绿 —— 我实测过，确实是绿的。
+ * 也就是说那条断言在当前代码下没有能力变红，它只是"恰好没坏"。
+ * 所以这里用**人造输入**直接测这个函数：注释里的引号必须被剥掉，
+ * 字符串里的 // 必须保留。这两条任一失效都会翻红，不受仓库现状影响。
+ */
+t('stripComments：注释里用引号提到的文案不算字符串字面量', () => {
+  const src = [
+    'function drawAbout() {',
+    "  // 这里注释写着\"变量为空\"这种说法",
+    "  /* 块注释里的\"失败路径也要退订\"同样是注释 */",
+    "  const real = '真正的文案';",
+    '  return real;',
+    '}',
+  ].join('\n');
+  const stripped = stripComments(src);
+  // 注释内容必须消失
+  assert.ok(!stripped.includes('变量为空'), '行注释没被剥掉');
+  assert.ok(!stripped.includes('失败路径也要退订'), '块注释没被剥掉');
+  // 真字符串必须保留
+  assert.ok(stripped.includes('真正的文案'), '把真字符串也剥掉了');
+  // 剥完再做字面量提取，注释里的引号不该被识别出来
+  const lits = stringLiterals(stripped).map((x) => x.text);
+  assert.deepStrictEqual(lits, ['真正的文案'],
+    '注释里的引号被当成了字面量：' + JSON.stringify(lits));
+});
+
+t('stripComments：字符串里的 // 与 /* 不能被当成注释起点', () => {
+  const src = "const u = 'http://a/b'; const v = 'x/*not-a-comment*/y';";
+  const stripped = stripComments(src);
+  assert.ok(stripped.includes('http://a/b'), "字符串里的 // 被截断了：" + stripped);
+  assert.ok(stripped.includes('x/*not-a-comment*/y'), "字符串里的 /* 被截断了：" + stripped);
+  const lits = stringLiterals(stripped).map((x) => x.text);
+  assert.deepStrictEqual(lits, ['http://a/b', 'x/*not-a-comment*/y'],
+    '剥注释破坏了字符串内容：' + JSON.stringify(lits));
+});
+
+t('stripComments：块注释不会把前后两段代码粘连', () => {
+  const stripped = stripComments('return a/*c*/b;');
+  assert.ok(/return a[ \t]b;/.test(stripped) || /return a b;/.test(stripped),
+    '块注释处没有分隔，a 和 b 被粘成了一个标识符：' + JSON.stringify(stripped));
+  assert.ok(!/return ab;/.test(stripped), 'a/*c*/b 被粘成了 ab');
+});
+
+/* 【这一条来自实战踩坑，必须留下】
+ * 真实缺陷（是我自己写的测试代码里的缺陷）：
+ * stripComments 不识别正则字面量，于是 js/tools/net-tools.js 里
+ *   raw.replace(/[\x00-\x1f<>:"|?*]/g, '_')
+ * 正则内部的这个双引号被当成字符串开头，一路吃到后面第 2907 个字符的
+ * 另一个双引号上 —— 此后所有注释/字符串判断全部错位。
+ * 表现是：明明存在块注释，剥完却还在；进而 i18n 的硬编码断言变成假绿
+ * （它没报错，只是因为恰好没有触发点）。
+ *
+ * 这里用**真实文件**做输入，因为编造的简化样例不一定能复现这种状态错位。
+ */
+t('stripComments：正则字面量里的引号不能被当成字符串开头', () => {
+  const netSrc = fs.readFileSync(path.join(ROOT, 'js', 'tools', 'net-tools.js'), 'utf8');
+  const stripped = stripComments(netSrc);
+  // 1) 该剥的注释必须真的被剥掉（这条在修复前是红的）
+  assert.ok(!stripped.includes('必须按前缀认领'),
+    '正则字面量里的引号把扫描状态带偏了：后续块注释没被剥掉');
+  // 2) 正则字面量本身要原样保留（不能被当成注释或字符串删掉）
+  assert.ok(stripped.includes('x00-'),
+    '正则字面量被剥掉了（剥注释不能动代码）');
+  // 3) 剥完还能正确提取字符串字面量（状态没乱）
+  const lits = stringLiterals(stripped).map((x) => x.text);
+  assert.ok(lits.includes('网速测试') || lits.includes('测速'),
+    '剥注释后字面量提取异常，状态位错乱：前 10 个 = ' + JSON.stringify(lits.slice(0, 10)));
+});
+
+t('regexAllowed：除号与正则要能分开', () => {
+  assert.strictEqual(regexAllowed('const x = '), true, '= 之后应当是正则');
+  assert.strictEqual(regexAllowed('a '), false, '标识符之后应当是除号');
+  assert.strictEqual(regexAllowed('return '), true, 'return 之后应当是正则');
+  assert.strictEqual(regexAllowed('1 '), false, '数字之后应当是除号');
+  assert.strictEqual(regexAllowed('fn() '), false, '右括号之后应当是除号');
+  assert.strictEqual(regexAllowed('typeof '), true, 'typeof 之后应当是正则');
+  assert.strictEqual(regexAllowed('a[0] '), false, '右方括号之后应当是除号');
+  assert.strictEqual(regexAllowed('typeof x '), false, 'typeof 后跟标识符，再之后是除号');
 });
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
