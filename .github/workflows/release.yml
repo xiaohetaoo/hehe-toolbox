@@ -132,3 +132,30 @@ jobs:
         run: |
           set -e
           node scripts/fix-release-title.js "$TAG"
+
+      # 兜底：确保 Release 正文非空。
+      #
+      # 【为什么需要这一步】
+      # 上面 action-gh-release 配了 generate_release_notes: true，但实测
+      # **v0.3.7 的正文是 null**，v0.3.6/v0.3.5/v0.2.8 都有（3386/1714/1380 字符）。
+      # 已排除：配置没改过（git diff 空）、权限够（contents: write）、
+      # 两步都 success、fix-release-title.js 不碰 body。
+      # 上游有同类 issue（softprops/action-gh-release#191），属 action 行为不稳定。
+      #
+      # 所以不把「有正文」寄托在第三方 action 的一个布尔参数上：
+      # 这里自己检查一次，为空就用 GitHub 的 generate-notes API 补上。
+      # 已有正文时幂等退出，不会覆盖 action 生成的内容。
+      #
+      # 【这一步刻意不挂红】资产已上传、用户能下载；正文缺失是「说明不完整」，
+      # 不是「发布失败」。生成不出来时打一行 WARN 让人看见即可。
+      # （对比：标题归一化那步失败必须挂红 —— 标题与 tag 对不上会让用户按 tag
+      #  找包时对不上，那是真问题。）
+      - name: Ensure release notes are not empty
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/ensure-release-notes.js "$TAG"

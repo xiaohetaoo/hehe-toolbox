@@ -55,7 +55,26 @@ const scanBrace = require('../lib/src-scan').scanBrace;
 function segFromFn(needle, label) {
   const i = mainSrc.indexOf(needle);
   assert.ok(i > 0, '找不到 ' + (label || needle));
-  const open = mainSrc.indexOf('{', i);
+  /* 【不能直接取 needle 之后的第一个 '{'】
+   * 函数签名里可能有默认参数对象：function runCmd(cmd, args, opts = {}) {
+   * 第一个 '{' 是那个空对象 —— 用它配平只能得到 36 个字符
+   * （实测：抽出的是 "function runCmd(cmd, args, opts = {}"）。
+   * 正确做法是先把参数括号配平掉，再取之后的第一个 '{'：
+   *   function foo(a, b = {}) {        ← 参数里的 { 在括号内部，不属于函数体
+   *   const foo = (a) => {             ← 箭头函数同理
+   * 这里统一处理：找 needle 之后的第一个 '('，配平到 ')'，再从那里往后找 '{'。 */
+  let cursor = i;
+  const paren = mainSrc.indexOf('(', i);
+  if (paren > 0) {
+    let depth = 0, k = paren;
+    for (; k < mainSrc.length; k++) {
+      const c = mainSrc[k];
+      if (c === '(') depth++;
+      else if (c === ')') { depth--; if (depth === 0) { k++; break; } }
+    }
+    if (k > paren) cursor = k;
+  }
+  const open = mainSrc.indexOf('{', cursor);
   assert.ok(open > i, (label || needle) + ' 没有函数体');
   const end = scanBrace(mainSrc, open);
   assert.ok(end > open, (label || needle) + ' 括号不配平');
@@ -185,10 +204,12 @@ t('1c crypto：真正被截断的文件仍然要报「文件不完整」', async
 
 /* ==================== 2. 密码脱敏（含空格） ==================== */
 function loadSanitize() {
-  const i = mainSrc.indexOf('function sanitizeCmdError');
-  const j = mainSrc.indexOf('// Windows PowerShell 输出默认是 OEM');
-  assert.ok(i > 0 && j > i, '找不到 sanitizeCmdError');
-  return new Function(mainSrc.slice(i, j) + '\nreturn sanitizeCmdError;')();
+  /* 【不用注释当右边界】原实现找 '// Windows PowerShell 输出默认是 OEM'
+   * 作为函数结束位置。那条注释一旦改写（换行/措辞/翻译），indexOf 返回 -1，
+   * 这条报「找不到 sanitizeCmdError」—— 纯误报，而实现完全正常。
+   * 改成括号配平：sanitizeCmdError 是顶层函数，配平它的函数体即可。 */
+  return new Function(segFromFn('function sanitizeCmdError', 'sanitizeCmdError') +
+    '\nreturn sanitizeCmdError;')();
 }
 
 function realExecError(args) {
@@ -236,10 +257,18 @@ t('2c 脱敏：原有规则未被破坏（-p 无空格、--password=、裸长串
 
 /* ==================== 3. clean 周期任务保留 hhmm ==================== */
 function loadNormSchedule() {
-  const i = mainSrc.indexOf('const SCHED_TYPES');
-  const j = mainSrc.indexOf('/* 生成不重复的本地 id');
-  assert.ok(i > 0 && j > i, '找不到 normSchedule');
-  return new Function(mainSrc.slice(i, j) + '\nreturn { normSchedule, SCHED_TYPES };')();
+  /* 【不用注释当右边界】原实现靠「生成不重复的本地 id」那条注释定位结束，
+   * 注释一改就报「找不到 normSchedule」。
+   * 这段包含三个顶层声明（SCHED_TYPES / SCHED_MIN_EVERY_MIN / normSchedule），
+   * 所以取「SCHED_TYPES 起 → normSchedule 函数体配平结束为止」。 */
+  const start = mainSrc.indexOf('const SCHED_TYPES');
+  assert.ok(start > 0, '找不到 SCHED_TYPES');
+  const fnAt = mainSrc.indexOf('function normSchedule', start);
+  assert.ok(fnAt > start, '找不到 normSchedule');
+  const open = mainSrc.indexOf('{', fnAt);
+  const end = scanBrace(mainSrc, open);
+  assert.ok(end > open, 'normSchedule 括号不配平');
+  return new Function(mainSrc.slice(start, end) + '\nreturn { normSchedule, SCHED_TYPES };')();
 }
 
 t('3a normSchedule：clean 类型必须保留用户选的 hhmm', () => {
@@ -534,10 +563,9 @@ t('8c 电源门禁：无害命令与 shutdown /a 仍要放行（别矫枉过正�
 
 /* ==================== 9. 跨盘提交不能裸 rename ==================== */
 t('9a moveFile：同卷时走 rename；跨卷（EXDEV）退回复制+删源', async () => {
-  const i = mainSrc.indexOf('async function moveFile');
-  const j = mainSrc.indexOf('/* 本应用在系统临时目录里创建的临时产物');
-  assert.ok(i > 0 && j > i, '找不到 moveFile');
-  const fn = new Function('fsp', 'path', mainSrc.slice(i, j) + '\nreturn moveFile;')(fs.promises, path);
+  /* 【不用注释当右边界】见 segFromFn 的说明。moveFile 是顶层 async 函数。 */
+  const fn = new Function('fsp', 'path',
+    segFromFn('async function moveFile', 'moveFile') + '\nreturn moveFile;')(fs.promises, path);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r12x-move-'));
   try {
@@ -558,7 +586,8 @@ t('9a moveFile：同卷时走 rename；跨卷（EXDEV）退回复制+删源', as
         return fs.promises.rename(s, t);
       },
     });
-    const fn2 = new Function('fsp', 'path', mainSrc.slice(i, j) + '\nreturn moveFile;')(fakeFsp, path);
+    const fn2 = new Function('fsp', 'path',
+      segFromFn('async function moveFile', 'moveFile') + '\nreturn moveFile;')(fakeFsp, path);
     const r2 = await fn2(c, d);
     assert.strictEqual(fs.readFileSync(d, 'utf8'), 'world', '跨卷后目标内容必须正确');
     assert.ok(!fs.existsSync(c), '跨卷复制成功后源应被删掉');
@@ -567,13 +596,13 @@ t('9a moveFile：同卷时走 rename；跨卷（EXDEV）退回复制+删源', as
 });
 
 t('9b moveFile：非 EXDEV 的错误要原样抛出，不能悄悄改成复制', async () => {
-  const i = mainSrc.indexOf('async function moveFile');
-  const j = mainSrc.indexOf('/* 本应用在系统临时目录里创建的临时产物');
+  /* 【不用注释当右边界】同 9a。 */
   const fakeFsp = Object.assign({}, fs.promises, {
     rename: async () => { const e = new Error('EPERM: operation not permitted'); e.code = 'EPERM'; throw e; },
     copyFile: async () => { throw new Error('不该走到复制'); },
   });
-  const fn = new Function('fsp', 'path', mainSrc.slice(i, j) + '\nreturn moveFile;')(fakeFsp, path);
+  const fn = new Function('fsp', 'path',
+    segFromFn('async function moveFile', 'moveFile') + '\nreturn moveFile;')(fakeFsp, path);
   await assert.rejects(() => fn('x', 'y'), /EPERM/, '非 EXDEV 必须原样抛出');
 });
 
@@ -617,13 +646,12 @@ t('10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有�
 
 /* ==================== 11. runCmd 的 throwOnNonZero ==================== */
 t('11a runCmd：默认「非零不抛」，打开 throwOnNonZero 后必须抛', async () => {
-  const i = mainSrc.indexOf('function runCmd(');
-  const j = mainSrc.indexOf('/* 命令行脱敏');
-  assert.ok(i > 0 && j > i, '找不到 runCmd');
+  /* 【不用注释当右边界】原实现靠「命令行脱敏」那条注释定位 runCmd 的结束，
+   * 注释一改就报「找不到 runCmd」。改用括号配平。 */
   const build = () => {
     const sanitize = loadSanitize();
     return new Function('execFile', 'sanitizeCmdError', 'TextDecoder', 'Buffer',
-      mainSrc.slice(i, j) + '\nreturn runCmd;')(
+      segFromFn('function runCmd(', 'runCmd') + '\nreturn runCmd;')(
       require('child_process').execFile, sanitize, TextDecoder, Buffer);
   };
   const runCmd = build();
@@ -932,9 +960,17 @@ t('23 svc:action：sc.exe 的失败信息在 stdout 里，不能只看 stderr', 
 t('24 armAllSchedules：不能在建窗后立刻对未加载完的页面发确认提示', () => {
   /* 定位到 applyHotkey 之后、冒烟测试之前的那一小段（周期任务武装处），
    * 只在这一段里查，避免命中文件别处（createWindow 里也有 did-finish-load）造成的假绿。 */
+  /* 【右边界不用注释】原实现找「冒烟测试：遍历全部工具页」那句注释。
+   * 那段是 whenReady 回调里的代码，注释一改就定位失败。
+   * 改用 whenReady 回调体的括号配平。 */
   const from = mainSrc.indexOf('applyHotkey(storeGet');
-  const to = mainSrc.indexOf('// 冒烟测试：遍历全部工具页');
-  assert.ok(from > 0 && to > from, '定位不到周期任务武装那一段');
+  assert.ok(from > 0, '定位不到 applyHotkey 调用处');
+  const readyAt = mainSrc.lastIndexOf('app.whenReady(', from);
+  assert.ok(readyAt > 0, '找不到 app.whenReady');
+  const readyOpen = mainSrc.indexOf('{', mainSrc.indexOf('(', readyAt));
+  const readyEnd = scanBrace(mainSrc, readyOpen);
+  assert.ok(readyEnd > from, 'whenReady 回调括号不配平');
+  const to = readyEnd;
   const seg = mainSrc.slice(from, to);
   /* 允许的形态只有两种：包在 isLoading() 判断里，或包在 did-finish-load 回调里。
    * 裸的 `armAllSchedules();`（上一行不是 if / 回调）才算缺陷 —— 用「前一行」判断。 */

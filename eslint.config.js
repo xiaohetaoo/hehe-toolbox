@@ -75,6 +75,21 @@ module.exports = [
       'scripts/**',
       'assets/**',
       'css/**',
+      /* 【外部工具留下的目录，不属于本项目源码】
+       * .workbuddy/ 是某个外部助手工具的本地记忆目录（已在 .gitignore 里），
+       * 但它会往里丢 .js 片段（例如 old-media.js，是我们拆分 media.js 时
+       * 留下的旧副本）。那些文件不在任何构建产物里，也不参与运行，
+       * 却会被 `eslint .` 扫到并按主进程/渲染层的规则报一堆 no-undef ——
+       * 实测会让 `npm run lint` 直接失败（本轮就踩了一次）。
+       * 这里连同 .gitignore 里其它临时目录一起排除。 */
+      '.workbuddy/**',
+      '.shots/**',
+      '.tmp-audit/**',
+      '.tmp-*/**',
+      '.e2e-*/**',
+      '.ciunpack/**',
+      '.verify-unpacked/**',
+      '.hehe-build-stage/**',
     ],
   },
   js.configs.recommended ? {
