@@ -1,36 +1,45 @@
 #!/usr/bin/env node
 'use strict';
-/* 确保 Release 正文非空（发布流程的兜底步骤）。
+/* 确保 Release 正文是**有用的版本介绍**（发布流程的最后一步）。
  *
  * ============ 这个脚本为什么存在 ============
- * release.yml 里 softprops/action-gh-release 配了 generate_release_notes: true，
- * 但实测 **v0.3.7 的 Release body 是 null**，而 v0.3.6 / v0.3.5 / v0.2.8
- * 都有正文（3386 / 1714 / 1380 字符）。
+ * 最初的目标只是「正文别为空」，因为 v0.3.7 的 body 是 null。
+ * 但 v0.3.8 发布后暴露出更深的问题：body 不空，却只有 86 个字符 ——
+ *   **Full Changelog**: https://github.com/.../compare/v0.3.7...v0.3.8
+ * 这仍然是「用户看不到这个版本做了什么」。而历史版本
+ * v0.3.6 / v0.3.5 / v0.2.8 的正文是 3386 / 1716 / 1380 字符的实质内容。
  *
- * 已排除的原因：
- *   · 配置没改过 —— git diff v0.3.6..v0.3.7 -- .github/workflows/release.yml 是空的
- *   · 权限够 —— permissions: contents: write
- *   · 步骤没失败 —— "Publish release with assets" 与 "Normalize release title" 都是 success
- *   · 不是我们的脚本覆盖的 —— fix-release-title.js 只 PATCH name 字段，不碰 body
- * 上游有同类 issue（softprops/action-gh-release#191「generate_release_notes」），
- * 属于那次 action 行为不稳定。
+ * 所以判据从「非空」改成「够不够像一份说明」：
+ *   · 空 → 需要补
+ *   · 只有一行 changelog 链接（自动生成的兜底）→ 需要补
+ *   · 已经是实质内容（≥ MIN_BODY 且不只含链接）→ 幂等跳过，不动它
  *
- * 结论：**不能把「Release 有正文」寄托在第三方 action 的一个布尔参数上**。
- * 这个脚本在发布完成后跑一次，检查 body；为空就用 GitHub 的
- * generate-notes API 自己补上。与 fix-release-title.js 是同一套模式
- * （显式 JSON、回读校验、幂等、不改已正确的值）。
+ * ============ 正文从哪来 ============
+ * 优先级：
+ *   1. 仓库里的 docs/release-notes/v<tag>.md（策划好的版本介绍，人工维护）
+ *   2. GitHub 的 generate-notes API（兜底，至少给出 compare 链接）
  *
- * ============ 为什么用 API 而不是让 action 再生成一次 ============
- * v0.2.6 那次曾用 `curl -d` 改 Release 标题，而 curl 的 -d 默认
+ * 为什么先看仓库文件：GitHub 自动生成的 notes 只有 PR 列表/commit 链接，
+ * 而这个项目的发布说明需要写清「改了什么、为什么改、有什么已知限制」——
+ * 那些信息在 commit message 里有，但自动 notes 不会替我们组织。
+ *
+ * ============ 为什么不用 curl ============
+ * v0.2.6 那次用 `curl -d` 改 Release 标题：curl 的 -d 默认
  * Content-Type 是 x-www-form-urlencoded，GitHub 按表单解析拿不到对象、
- * 返回 200 但什么都没改，最后循环跑完判定失败，白挂一个红灯。
- * 所以这里统一走 fetch + 显式 application/json + 回读校验。
+ * 返回 200 但什么都没改，最后循环跑完判定失败、白挂一个红灯。
+ * 所以统一走 fetch + 显式 application/json + 回读校验。
  *
- * 用法：
- *   node scripts/ensure-release-notes.js <tag>
+ * 用法：node scripts/ensure-release-notes.js <tag>
  * 环境变量：GITHUB_TOKEN / GH_TOKEN（必需）、GITHUB_REPOSITORY（必需）
  */
+const fs = require('fs');
+const path = require('path');
+
 const API = 'https://api.github.com';
+/* 少于这个长度就认为「不是一份说明」。
+ * 自动生成的纯 changelog 链接是 86 字符；而一份真正的版本介绍
+ * 至少要讲清楚一两件事，1000 字符是很容易达到的下限。 */
+const MIN_BODY = 400;
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -52,7 +61,7 @@ async function apiCall(repo, token, method, urlPath, body, accept) {
   return { status: res.status, ok: res.ok, json, text };
 }
 
-/** 取某个 tag 对应的 release（最多等一会儿，刚发布的可能还没索引到） */
+/** 取某个 tag 对应的 release（刚发布的可能还没索引到，重试几次） */
 async function findRelease(repo, token, tag) {
   for (let i = 0; i < 10; i++) {
     const r = await apiCall(repo, token, 'GET', `/releases/tags/${encodeURIComponent(tag)}`);
@@ -65,25 +74,44 @@ async function findRelease(repo, token, tag) {
   return null;
 }
 
-/** 让 GitHub 生成本次相对上一个 tag 的 release notes */
+/** 现有正文是否「像一份说明」（而非空 / 纯链接） */
+function isMeaningful(body) {
+  const s = String(body || '').trim();
+  if (!s) return false;
+  if (s.length < MIN_BODY) return false;
+  /* 只剩自动 changelog 链接的形态：整段去掉链接与空白后没剩什么 */
+  const withoutLinks = s
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/^\s*\*\*Full Changelog\*\*:?\s*$/gim, '')
+    .replace(/\s+/g, '');
+  return withoutLinks.length >= MIN_BODY / 4;
+}
+
+/** 从仓库里读策划好的版本说明（存在则优先用它） */
+function readPlannedNotes(tag) {
+  const bare = String(tag).replace(/^v/i, '');
+  const candidates = [
+    path.join(process.cwd(), 'docs', 'release-notes', 'v' + bare + '.md'),
+    path.join(process.cwd(), 'docs', 'release-notes', bare + '.md'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        const t = fs.readFileSync(p, 'utf8').trim();
+        if (t) { console.log('[release-notes] 使用仓库里的版本说明：' + p); return t; }
+      }
+    } catch (e) { /* 读不到就继续试下一个 */ }
+  }
+  return null;
+}
+
+/** 让 GitHub 生成一份 notes（兜底） */
 async function generateNotes(repo, token, tag) {
-  /* 先试 generate-notes（推荐，会按 PR 分类）；
-   * 失败再退回 /releases 的 generate_release_notes（按 commit 生成）。 */
   const byTag = await apiCall(
-    repo, token, 'POST', `/releases/generate-notes`,
+    repo, token, 'POST', '/releases/generate-notes',
     { tag_name: tag }, 'application/vnd.github+json'
   );
   if (byTag.ok && byTag.json && byTag.json.body) return byTag.json.body;
-
-  const alt = await apiCall(
-    repo, token, 'POST', `/releases`,
-    { tag_name: tag, generate_release_notes: true, draft: true }, 'application/vnd.github+json'
-  );
-  if (alt.ok && alt.json && alt.json.body) {
-    /* 顺手删掉这个临时草稿（它的唯一用途是拿到生成的正文） */
-    if (alt.json.id) await apiCall(repo, token, 'DELETE', `/releases/${alt.json.id}`);
-    return alt.json.body;
-  }
   return '';
 }
 
@@ -99,23 +127,29 @@ async function main() {
   if (!rel) { console.error('找不到 release：' + tag); process.exit(1); }
 
   const cur = String(rel.body || '');
-  if (cur.trim()) {
-    /* 已经有正文 —— 幂等退出，不改任何东西。
-     * 这一点很重要：如果将来 action 又能自己生成了，这个脚本不能把它覆盖掉。 */
-    console.log('[release-notes] ' + tag + ' 已有正文（' + cur.length + ' 字符），无需处理');
+  if (isMeaningful(cur)) {
+    /* 已经有实质说明 —— 幂等退出，一个字都不改。
+     * 这条分支保证：将来有人手工写好正文、或 action 又能生成了，
+     * 这个脚本不会把人工内容覆盖掉。 */
+    console.log('[release-notes] ' + tag + ' 已有实质正文（' + cur.length + ' 字符），保持不变');
     return;
   }
+  console.log('[release-notes] ' + tag + ' 的正文不够用（当前 ' + cur.length + ' 字符），准备补上');
 
-  console.log('[release-notes] ' + tag + ' 的正文为空，尝试生成…');
-  const body = await generateNotes(repo, token, tag);
-  if (!body.trim()) {
+  /* 优先用仓库里的策划稿；没有才退回自动生成 */
+  let body = readPlannedNotes(tag);
+  if (!body) {
+    body = await generateNotes(repo, token, tag);
+    if (body) console.log('[release-notes] 仓库里没有策划稿，使用 GitHub 自动生成的内容');
+  }
+
+  if (!body || !body.trim()) {
     /* 【生成失败不能让发布流程变红】
      * 资产已经上传成功、用户能下载了；正文缺失是「说明不完整」，
-     * 不是「发布失败」。打一行以 WARN 开头的日志让人看见即可，
-     * 不要把已经成功的发布判成失败。
-     * （对比：fix-release-title.js 失败时会挂红，因为标题与 tag 不一致
-     *  会让用户按 tag 找包时对不上 —— 那是真问题。正文为空不是。） */
-    console.log('WARN ' + tag + ' 的正文仍为空（generate-notes 没返回内容），请手动补充');
+     * 不是「发布失败」。打一行 WARN 让人看见即可。
+     * （对比：标题归一化失败会挂红 —— 标题与 tag 不一致会让用户按 tag
+     *  找包时对不上，那是真问题。正文不够详细不是。） */
+    console.log('WARN ' + tag + ' 没有可用的正文内容，请手动补充');
     return;
   }
 
@@ -130,14 +164,14 @@ async function main() {
   /* 回读校验：不能只信 PATCH 的返回码（v0.2.6 就是 200 但没生效） */
   const back = await apiCall(repo, token, 'GET', `/releases/${rel.id}`);
   const now = String((back.ok && back.json && back.json.body) || '');
-  if (!now.trim()) {
-    console.log('WARN 正文写入后回读仍为空');
+  if (!isMeaningful(now)) {
+    console.log('WARN 正文写入后回读仍不合格（' + now.length + ' 字符）');
     return;
   }
   console.log('[release-notes] 已补上正文（' + now.length + ' 字符）');
 }
 
 main().catch((e) => {
-  /* 同样不挂红：见上面的说明 */
+  /* 同样不挂红：见上面对「正文缺失不是发布失败」的说明 */
   console.log('WARN 补正文时出错：' + (e && e.message ? e.message : e));
 });
