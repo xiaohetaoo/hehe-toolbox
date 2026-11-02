@@ -1,4 +1,5 @@
 const { t, done } = require('./lib/harness');
+const stripComments = require('../lib/src-scan').stripComments;
 // 纯函数回归测试（不依赖 Electron），覆盖本轮修复的关键逻辑：
 // 进制转换负数、Unicode emoji 往返、JSON null 形态、密码破解时间分档、ping 行解析。
 // 用法：node scripts/test-lib.js
@@ -13,6 +14,14 @@ function toAll(val, from) {
   const big = neg ? -abs : abs;
   return { dec: big.toString(10), bin: big.toString(2), oct: big.toString(8), hex: big.toString(16).toUpperCase() };
 }
+const fs = require('fs');
+const { readTree } = require('./lib/harness');
+/* 读一个路径：是目录就拼整棵树，是文件就读原文。
+ * 迁移来的 15 用例要「遍历全库」检查展开传参，所以要两种都能处理。 */
+function readAny(p) {
+  return p.endsWith('.js') ? fs.readFileSync(p, 'utf8') : readTree(p);
+}
+
 t('十六进制负数 -FF -> -255', () => assert.strictEqual(toAll('-FF', 16).dec, '-255'));
 t('二进制负数 -101 -> -5', () => assert.strictEqual(toAll('-101', 2).dec, '-5'));
 t('八进制负数 -17 -> -15', () => assert.strictEqual(toAll('-17', 8).dec, '-15'));
@@ -93,6 +102,29 @@ for (const [line, want] of pingCases) {
 }
 t('ping 超时行不误判为成功', () => {
   assert.ok(!('请求超时。'.match(RE1) || '请求超时。'.match(RE2)));
+});
+
+t('15 全库不再用展开传参求极值', () => {
+  const files = ['main.js', 'lib/target-size.js', 'lib/dir-move.js', 'lib/links.js',
+    'js/tools/net-tools.js', 'js/tools/dev.js'];
+  /* 任务 9 拆成 js/tools/media/*.js，这里补上整棵树 */
+  files.push('js/tools/media');
+  const bad = [];
+  for (const f of files) {
+    const code = stripComments(readAny(f));
+    for (const m of code.matchAll(/Math\.(max|min)\s*\(\s*\.\.\./g)) bad.push(f + ' -> ' + m[0]);
+  }
+  assert.deepStrictEqual(bad, [], '仍在用展开传参（数组一大就 RangeError: Maximum call stack size exceeded）');
+});
+
+t('15b 行为：13 万个元素的极值不再抛错', () => {
+  const arr = new Array(130000).fill(1);
+  let threw = null;
+  try { Math.max(...arr); } catch (e) { threw = e; }
+  assert.ok(threw && /Maximum call stack/.test(threw.message),
+    '前提不成立：13 万参数应当会栈溢出（若 Node 版本变了请更新本条）');
+  // reduce 版必须正常
+  assert.strictEqual(arr.reduce((a, b) => (a > b ? a : b), 0), 1, 'reduce 版应当正常工作');
 });
 
 done();

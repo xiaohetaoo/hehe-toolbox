@@ -1,5 +1,6 @@
 'use strict';
 const { t, done, readTree, readMain } = require('./lib/harness');
+const mainSrc = readMain({ raw: true });
 /* 第五轮审查：破坏性 bug 的回归测试。
  *
  * 本轮的核心是「杜绝破坏性 bug」——用户数据被毁掉比功能失效严重得多。
@@ -8,7 +9,10 @@ const { t, done, readTree, readMain } = require('./lib/harness');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const srcScan = require('../lib/src-scan');
+/* 迁移来的用例用裸 stripComments（原 test-round15 里也是这个名字）。 */
+const stripComments = srcScan.stripComments;
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
@@ -82,6 +86,90 @@ function updateScriptBody(src) {
 }
 
 /* ================= P0：fs:delete 无边界 ================= */
+/* 取某个 handler 的箭头函数体（迁移来的 1b 用例用）。
+ * 用花括号配平而不是找 "\n});"，因为 handler 体里可能有嵌套的 }。 */
+
+/* ==================== 1. delete-empty 的对象入参 ==================== */
+/* 取某个 handler 的箭头函数体（迁移来的 1b 用例用）。
+ * 用自带的扫描器配平，而不是找换行加 }); —— handler 体里有嵌套的 } 与正则字面量。
+ * 【必须补 async】handle 的回调写法是 async (e, ...) => {...}，而这里截取的是
+ * 从形参小括号开始的片段，不含前面的 async —— 不补就会得到带 await 的非 async
+ * 函数，语法直接报错。 */
+function loadHandlerArrow(channel, deps) {
+  const code = stripComments(mainSrc);
+  const i = code.indexOf("handle('" + channel + "'");
+  assert.ok(i > 0, '找不到 handler ' + channel);
+  /* 找回调的箭头函数起点：handler 名之后的第二个 '(' 参数列表结束处的 '=>' */
+  const arrow = code.indexOf('=>', i);
+  assert.ok(arrow > 0, channel + ' 不是箭头函数形态');
+  const bodyStart = code.indexOf('{', arrow);
+  const end = (function scan(text, from) {
+    let depth = 0, j = from, inS = null;
+    while (j < text.length) {
+      const c = text[j];
+      if (inS) { if (c === '\\') j++; else if (c === inS) inS = null; j++; continue; }
+      if (c === '/' && text[j + 1] === '/') { const nl = text.indexOf('\n', j); j = nl === -1 ? text.length : nl; continue; }
+      if (c === '/' && text[j + 1] === '*') { const e = text.indexOf('*/', j + 2); j = e === -1 ? text.length : e + 2; continue; }
+      if (c === "'" || c === '"' || c === '`') { inS = c; j++; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) return j + 1; }
+      j++;
+    }
+    return -1;
+  })(code, bodyStart);
+  assert.ok(end > 0, channel + ' 括号不配平');
+  /* 截取从箭头函数形参起点（'(' 或 'async' 之后）到函数体结束 */
+  const paramsStart = code.lastIndexOf('(', arrow);
+  const fnSrc = code.slice(paramsStart, end);
+  /* 【必须补 async】handle 包装器本身是 async，但回调的 `async (e, ...) =>` 前面
+   * 的 async 关键字不在 paramsStart..end 这段里（paramsStart 指向 '('）。
+   * 不补就会得到 `(e, dirs) => {...}` —— 里面有 await，语法直接报错。 */
+  return new Function('path', 'fsp', 'fs', 'pathGuard', 'os', 'fmtErr',
+    'return async ' + fnSrc + ';')(...deps);
+}
+
+t('1a checkDeletable：非字符串一律拒绝，不做 String() 降级', () => {
+  const pg = require(path.join(ROOT, 'lib', 'path-guard'));
+  const B = String.fromCharCode(92);
+  const obj = { path: 'C:' + B + 'tmp' + B + 'a', depth: 1 };
+  const r = pg.checkDeletable(obj, false);
+  assert.ok(r, '传对象给 checkDeletable 必须被拒（旧实现 String(obj) → "[object Object]" 一路放行）');
+  assert.strictEqual(r.code, 'BAD_ARG', '拒绝码应为 BAD_ARG，实际 ' + r.code);
+  // 数字、null、undefined 同样要拒
+  assert.ok(pg.checkDeletable(123, false), '数字应被拒');
+  assert.ok(pg.checkDeletable(null, false), 'null 应被拒');
+  assert.ok(pg.checkDeletable(undefined, false), 'undefined 应被拒');
+  // 正常字符串仍然放行（不误伤）
+  assert.strictEqual(pg.checkDeletable('C:' + B + 'tmp' + B + 'a', false), null, '普通路径不该被拦');
+});
+
+t('1b 行为：把对象数组传给 fs:delete-empty，deleted 必须是 0 且每项都进 errors', async () => {
+  const pg = require(path.join(ROOT, 'lib', 'path-guard'));
+  const handler = loadHandlerArrow('fs:delete-empty', [
+    path, fs.promises, fs, pg, os, (e) => (e && e.message) || String(e),
+  ]);
+  const B = String.fromCharCode(92);
+  const objs = [{ path: 'C:' + B + 'tmp' + B + 'a', depth: 1 }, { path: 'D:' + B + 'tmp' + B + 'b', depth: 2 }];
+  const r = await handler({}, objs);
+  assert.strictEqual(r.deleted, 0, '对象数组不该删掉任何东西');
+  assert.strictEqual(r.errors.length, objs.length,
+    '每个非法入参都要各记一条错误（旧实现只有 rmdir 抛出的含糊错误，且 deleted 为 0 却被界面报成功）');
+  assert.ok(r.errors.every((x) => /字符串/.test(x)), '错误里应说明"路径必须是字符串"：' + r.errors.join(' / '));
+});
+
+t('1c 界面：有失败时不许用 success 样式，且要列出原因', () => {
+  const code = stripComments(read('js/tools/sys-tools.js'));
+  const i = code.indexOf("invoke('fs:delete-empty'");
+  assert.ok(i > 0, '找不到 delete-empty 调用');
+  const seg = code.slice(i, i + 900);
+  assert.ok(/map\(/.test(seg) && /\.path/.test(seg), '仍然把对象数组原样传给主进程（没有取 .path）');
+  assert.ok(/errors/.test(seg), '界面没有读 r.errors —— 失败静默');
+  assert.ok(/warn/.test(seg), '有失败时没有用 warn 样式（仍会显示成绿色成功）');
+  // 反面：不许再出现"直接报成功"的单分支
+  assert.ok(!/toast\(`已删除 \$\{r\.deleted\} 个空目录`, 'success'\);\s*\n\s*scanBtn\.click\(\);\s*\n\s*\} catch/
+    .test(seg) || /nErr/.test(seg), '仍然是"无条件 success"');
+});
+
 t('P0 fs:delete 有路径闸门', () => {
   const fn = handlerBody(readMain(), 'fs:delete');
   assert.ok(fn.includes('pathGuard.checkDeletable'), '没有调用删除闸门');
@@ -413,7 +501,6 @@ t('P1 批量改后缀正确处理无扩展名文件', () => {
  */
 
 /* 剥注释统一走 lib/src-scan.js（三个测试脚本共用一份实现，见该文件里的说明）。 */
-const { stripComments } = require(path.join(ROOT, 'lib', 'src-scan'));
 const { buildFailText } = require('../lib/fail-text');
 
 t('P1 批量改后缀失败时列出明细', () => {
@@ -534,5 +621,79 @@ t('main.js 没有重复注册的 IPC 通道', () => {
   assert.deepStrictEqual(dups.map(([k, v]) => `${k}@${v.join(',')}`), [],
     '重复注册会让应用启动即报 "Attempted to register a second handler" 并卡死');
 });
+
+t('1a checkDeletable：非字符串一律拒绝，不做 String() 降级', () => {
+  const pg = require(path.join(ROOT, 'lib', 'path-guard'));
+  const B = String.fromCharCode(92);
+  const obj = { path: 'C:' + B + 'tmp' + B + 'a', depth: 1 };
+  const r = pg.checkDeletable(obj, false);
+  assert.ok(r, '传对象给 checkDeletable 必须被拒（旧实现 String(obj) → "[object Object]" 一路放行）');
+  assert.strictEqual(r.code, 'BAD_ARG', '拒绝码应为 BAD_ARG，实际 ' + r.code);
+  // 数字、null、undefined 同样要拒
+  assert.ok(pg.checkDeletable(123, false), '数字应被拒');
+  assert.ok(pg.checkDeletable(null, false), 'null 应被拒');
+  assert.ok(pg.checkDeletable(undefined, false), 'undefined 应被拒');
+  // 正常字符串仍然放行（不误伤）
+  assert.strictEqual(pg.checkDeletable('C:' + B + 'tmp' + B + 'a', false), null, '普通路径不该被拦');
+});
+
+t('1b 行为：把对象数组传给 fs:delete-empty，deleted 必须是 0 且每项都进 errors', async () => {
+  const pg = require(path.join(ROOT, 'lib', 'path-guard'));
+  const handler = loadHandlerArrow('fs:delete-empty', [
+    path, fs.promises, fs, pg, os, (e) => (e && e.message) || String(e),
+  ]);
+  const B = String.fromCharCode(92);
+  const objs = [{ path: 'C:' + B + 'tmp' + B + 'a', depth: 1 }, { path: 'D:' + B + 'tmp' + B + 'b', depth: 2 }];
+  const r = await handler({}, objs);
+  assert.strictEqual(r.deleted, 0, '对象数组不该删掉任何东西');
+  assert.strictEqual(r.errors.length, objs.length,
+    '每个非法入参都要各记一条错误（旧实现只有 rmdir 抛出的含糊错误，且 deleted 为 0 却被界面报成功）');
+  assert.ok(r.errors.every((x) => /字符串/.test(x)), '错误里应说明"路径必须是字符串"：' + r.errors.join(' / '));
+});
+
+t('1c 界面：有失败时不许用 success 样式，且要列出原因', () => {
+  const code = stripComments(read('js/tools/sys-tools.js'));
+  const i = code.indexOf("invoke('fs:delete-empty'");
+  assert.ok(i > 0, '找不到 delete-empty 调用');
+  const seg = code.slice(i, i + 900);
+  assert.ok(/map\(/.test(seg) && /\.path/.test(seg), '仍然把对象数组原样传给主进程（没有取 .path）');
+  assert.ok(/errors/.test(seg), '界面没有读 r.errors —— 失败静默');
+  assert.ok(/warn/.test(seg), '有失败时没有用 warn 样式（仍会显示成绿色成功）');
+  // 反面：不许再出现"直接报成功"的单分支
+  assert.ok(!/toast\(`已删除 \$\{r\.deleted\} 个空目录`, 'success'\);\s*\n\s*scanBtn\.click\(\);\s*\n\s*\} catch/
+    .test(seg) || /nErr/.test(seg), '仍然是"无条件 success"');
+});
+
+/* ==================== 2. 倒计时不得清空剪贴板 ==================== */
+
+t('7a clean-junk 只接受本次扫描命中的路径', () => {
+  const code = stripComments(mainSrc);
+  const i = code.indexOf("handle('fs:clean-junk'");
+  assert.ok(i > 0, '找不到 fs:clean-junk');
+  const seg = code.slice(i, i + 2400);
+  /* 【不能只查"有没有那句错误文案"】
+   * 第一次写的是 /junkScanCache/.test + /不在本次扫描结果内/.test，
+   * 而把守卫改成 `if (false) {` 之后，**文案字符串还在源码里**（只是永不执行），
+   * 断言照样绿（反向验证 MISSED 证实）。必须断言 guards 调用**本身**没被短路。 */
+  assert.ok(/junkScanCache\.paths\.has\(normForJunk\(abs\)\)/.test(seg),
+    '没有真正的"是否在扫描结果内"判断');
+  assert.ok(!/if \(false\)[\s\S]{0,120}junkScanCache/.test(seg),
+    '存在把来源校验短路掉的写法（if (false) 之类的开关）');
+  // 缓存为空时必须拒绝（没扫过就没有清理依据）
+  assert.ok(/junkScanCache\.paths\.size/.test(seg), '没有处理"缓存为空"的情形');
+  /* 反面：keepRoot=false 的连根删分支必须消失 */
+  assert.ok(!/keepRoot[\s\S]{0,400}fsp\.rm\(abs, \{ recursive: true, force: true \}\)/.test(seg),
+    'keepRoot=false 的「递归删掉整个目标」分支仍存在（能力范围外溢）');
+});
+
+t('7b clean-junk 会缓存扫描结果', () => {
+  const code = stripComments(mainSrc);
+  const i = code.indexOf("handle('fs:scan-junk'");
+  const seg = code.slice(i, code.indexOf("handle('fs:clean-junk'"));
+  assert.ok(/junkScanCache = \{/.test(seg), 'scan-junk 没有把候选集合记下来');
+  assert.ok(/cachePaths/.test(seg), '没有收集候选路径');
+});
+
+/* ==================== 8. fs:rename 的闸门与门禁 ==================== */
 
 done();

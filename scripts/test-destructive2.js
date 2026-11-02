@@ -1,5 +1,8 @@
 'use strict';
 const { t, done, readMain } = require('./lib/harness');
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
+const mainSrc = readMain({ raw: true });
 /* 第四轮审查（main.js 破坏性操作专项）的回归测试。
  * 重点覆盖：门禁绕过、系统进程保护、密码脱敏、字段缺失守卫。
  */
@@ -225,5 +228,31 @@ t('P2 hosts 备份名精确到毫秒且带随机后缀', () => {
   assert.ok(main.includes("slice(0, 23)"), '没有精确到毫秒');
   assert.ok(/hosts-\$\{new Date\(\)[\s\S]{0,120}crypto\.randomBytes\(2\)/.test(main), '没有随机后缀');
 });
+
+t('8a fs:rename 补了 checkOverwritable 闸门', () => {
+  const code = stripComments(mainSrc);
+  const i = code.indexOf("handle('fs:rename'");
+  assert.ok(i > 0, '找不到 fs:rename');
+  const seg = code.slice(i, code.indexOf("handle('fs:delete'"));
+  assert.ok(/checkOverwritable/.test(seg), 'fs:rename 没有覆盖闸门（可以把文件搬进 Startup 或覆盖任意目标）');
+  /* 大小写改名分支必须保留 */
+  assert.ok(/toLowerCase\(\) === rt\.toLowerCase\(\)/.test(seg), '纯大小写改名被误删了');
+});
+
+t('8b fs:rename 在 file-delete 门禁里，且工具表同步', () => {
+  const code = stripComments(mainSrc);
+  assert.ok(/'fs:rename': 'file-delete'/.test(code), 'fs:rename 不在 CAP_GATED_CHANNELS');
+  assert.ok(/'batch-rename': \['file-delete'\]/.test(code), '批量重命名没有登记依赖 file-delete');
+  assert.ok(/'batch-ext': \['file-delete'\]/.test(code), '批量改后缀没有登记依赖 file-delete');
+});
+
+t('8c 行为：往系统目录改名会被拒，普通目录不受影响', () => {
+  const pg = require(path.join(ROOT, 'lib', 'path-guard'));
+  const B = String.fromCharCode(92);
+  assert.ok(pg.checkOverwritable('C:' + B + 'Windows' + B + 'x.exe'), '系统目录内的目标应被拒');
+  assert.strictEqual(pg.checkOverwritable('D:' + B + 'a' + B + 'x.exe'), null, '普通目录不该被拦');
+});
+
+/* ==================== 9. LastBootUpTime ==================== */
 
 done();

@@ -11,6 +11,8 @@
  * 本测试直接 require lib/power-gate.js（main.js 用的同一份实现）。
  */
 const assert = require('assert');
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
 /* 读项目内文件（迁移来的用例用）。 */
 const fsx = require('fs');
 function read(rel) { return fsx.readFileSync(require('path').join(__dirname, '..', rel), 'utf8'); }
@@ -227,7 +229,50 @@ t('不再对 norm 做「整条都是文本命令」的豁免', () => {
   assert.ok(/allTextSegments\(raw\)/.test(code), 'raw 的逐段判定必须保留');
 });
 
-/* ================= ③ 分批 ================= */
+/* ================= ③ 分批 ================= */
+
+t('6a 三种新绕过必须全部拦下', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  const must = [
+    'cmd /c %ComSpec% /c shutdown /s',
+    'powershell -EncodedCommand UwB0AG8AcAAtAEMAbwBtAHAAdQB0AGUAcgA=',
+    'for %i in (x) do shutdown /s',
+  ];
+  for (const c of must) {
+    assert.strictEqual(PG.isPowerCommand(c), true, '未拦下：' + c);
+  }
+});
+
+t('6b 原有 8 种对照仍然拦下（不能改坏）', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  const must = [
+    'shutdown /s', 'cmd /c shutdown /s', 'shutdown.exe /s',
+    'echo hi & shutdown /s', 'rundll32 powrprof.dll,SetSuspendState 0,1,0',
+    'call shutdown /s', 'start shutdown /s',
+  ];
+  for (const c of must) assert.strictEqual(PG.isPowerCommand(c), true, '未拦下：' + c);
+});
+
+t('6c 不能误伤日常命令', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  const B = String.fromCharCode(92);
+  const allow = ['echo shutdown', 'shutdown /a', 'type shutdown.txt', 'del shutdown.log',
+    'copy shutdown.exe D:' + B, 'tasklist | findstr shutdown'];
+  for (const c of allow) assert.strictEqual(PG.isPowerCommand(c), false, '误拦了：' + c);
+});
+
+t('6d 未展开的变量 fail-closed，已知变量要能展开', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 未知变量：判不出来 → 按需要门禁（fail-closed） */
+  assert.strictEqual(PG.isPowerCommand('%FOO% shutdown /s'), true, '未知变量 + 危险词应当拦截');
+  /* 纯文本里的 %VAR% 不算（已被文本豁免放行） */
+  assert.strictEqual(PG.isPowerCommand('echo %PATH%'), false, 'echo 只是打印变量，不该拦');
+  /* 已知变量展开后应能剥壳 */
+  const norm = PG.normalizeCommand('cmd /c %ComSpec% /c shutdown /s');
+  assert.ok(!/%comspec%/.test(norm), 'normalizeCommand 没有展开 %ComSpec%：' + norm);
+});
+
+/* ==================== 7. clean-junk 来源校验 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

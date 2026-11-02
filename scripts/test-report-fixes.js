@@ -1,4 +1,7 @@
 const { t, done, readMain } = require('./lib/harness');
+/* 主进程源码：迁移来的 parsePsDate 用例要看 fmtBoot 的实现形态。 */
+const mainSrc = readMain({ raw: true });
+const stripComments = require('../lib/src-scan').stripComments;
 /* P1-3 / P2-3 / P3-1 的回归测试（渲染层行为的静态校验 + 真实现行为）。
  *
  * 这三条都是「看起来在跑、其实结论是错的」类缺陷：
@@ -207,5 +210,37 @@ t('file:who-locks-dir 不再把子目录/链接拼进查询列表', () => {
   assert.ok(!/names\.slice\(0, 200\)|sample\.map/.test(fn),
     '不该再把整批 readdir 结果直接拼成查询列表');
 });
+
+t('9a parsePsDate 三种形态', () => {
+  const code = stripComments(mainSrc);
+  const i = code.indexOf('function parsePsDate');
+  const j = code.indexOf("handle('sys:hw-info'");
+  assert.ok(i > 0 && j > i, '找不到 parsePsDate');
+  const f = new Function(code.slice(i, j) + '\nreturn { parsePsDate, normalizeDateFields };')();
+  assert.strictEqual(f.parsePsDate('/Date(1793413286500)/'), 1793413286500, 'PS 5.1 的 /Date(ms)/ 必须解析成毫秒');
+  assert.strictEqual(f.parsePsDate('2026-10-31T00:00:00Z'), new Date('2026-10-31T00:00:00Z').getTime(), 'ISO 也要能解析');
+  assert.strictEqual(f.parsePsDate(null), null, 'null 应返回 null');
+  assert.strictEqual(f.parsePsDate('garbage'), null, '解析不出来应返回 null（不能返回 NaN）');
+  assert.strictEqual(f.parsePsDate(1793413286500), 1793413286500, '已经是数字就原样返回');
+  // normalizeDateFields 要真正替换字段
+  const n = f.normalizeDateFields({ LastBootUpTime: '/Date(1793413286500)/', InstallDate: null, Caption: 'x' });
+  assert.strictEqual(n.LastBootUpTime, 1793413286500);
+  assert.strictEqual(n.InstallDate, null);
+  assert.strictEqual(n.Caption, 'x', '其它字段不该丢');
+});
+
+t('9b 渲染层不再渲染出 NaN', () => {
+  const code = stripComments(read('js/tools/sys-tools.js'));
+  assert.ok(/function fmtBoot/.test(code), '没有 fmtBoot 防御');
+  const i = code.indexOf('function fmtBoot');
+  const seg = code.slice(i, i + 900);
+  assert.ok(/Number\.isFinite/.test(seg), 'flat 地调 fmtDate 会把 NaN 渲染成 NaN-NaN-NaN');
+  assert.ok(/'-'/.test(seg), '取不到时应显示 -');
+  /* 旧的直算写法必须消失 */
+  assert.ok(!/fmtDate\(new Date\(info\.os\.LastBootUpTime\)\.getTime\(\)\)/.test(code),
+    '仍在直接 new Date(...).getTime() 传给 fmtDate');
+});
+
+/* ==================== 10. 选择弹窗关闭后不能挂起 ==================== */
 
 done();
