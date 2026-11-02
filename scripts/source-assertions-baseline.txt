@@ -29,6 +29,7 @@ scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
 scripts/test-danger-inline-enable.js | A=2 | B=0 | e2e-fixture
 scripts/test-destructive.js | A=1 | B=45 | legacy-source-assertion
 scripts/test-dir-move-e2e.js | A=4 | B=0 | e2e-fixture
+scripts/test-dir-move-impl.js | A=0 | B=1 | legacy-source-assertion
 scripts/test-disk-health-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-dz-el.js | A=2 | B=13 | legacy-source-assertion
 scripts/test-expr-eval.js | A=1 | B=2 | legacy-source-assertion
@@ -57,7 +58,6 @@ scripts/test-regressions.js | A=1 | B=48 | legacy-source-assertion
 scripts/test-report-fixes.js | A=1 | B=0 | legacy-read
 scripts/test-round10-fixes.js | A=1 | B=0 | legacy-read
 scripts/test-round11-fixes.js | A=2 | B=0 | legacy-read
-scripts/test-round12-fixes.js | A=1 | B=0 | legacy-read
 scripts/test-round13-fixes.js | A=11 | B=2 | legacy-source-assertion
 scripts/test-round14-fixes.js | A=1 | B=37 | legacy-source-assertion
 scripts/test-round15-fixes.js | A=1 | B=78 | legacy-source-assertion
