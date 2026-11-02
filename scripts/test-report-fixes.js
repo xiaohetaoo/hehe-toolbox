@@ -12,6 +12,7 @@ const { t, done, readMain } = require('./lib/harness');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const srcScan = require('../lib/src-scan');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
@@ -108,20 +109,71 @@ t('「检查能否无损转码」不再把目标编码写死为 utf-8', () => {
 
 t('目标编码至少提供 GBK 与 UTF-8 两项', () => {
   const src = strip(read('js/tools/mojibake-fix.js'));
-  const seg = src.slice(src.indexOf('can-reencode') - 1200, src.indexOf('can-reencode'));
-  assert.ok(/gbk/.test(seg), '应提供 GBK 选项');
-  assert.ok(/utf-8/.test(seg), '应提供 UTF-8 选项');
+  /* 【窗口必须精确落在选项数组上，不能是「can-reencode 往前 1200 字符」】
+   * 原实现取 `src.slice(indexOf('can-reencode') - 1200, indexOf('can-reencode'))`。
+   * 这个窗口确实覆盖了下拉框的选项构造，但**也覆盖了紧跟着的默认值表达式**：
+   *   encSel.value = /utf-8/i.test(labelOf(best)) ? 'gbk' : 'utf-8';
+   * 而断言写的是 `/gbk/.test(seg)` —— 只要窗口里出现过任意一个 'gbk' 就算通过。
+   * 实测确认：把选项数组改成只剩 [['utf-8','UTF-8']]（GBK 选项彻底移除），
+   * 这条断言仍然 PASS，因为默认值那一行的 'gbk' 还在。
+   *
+   * 现在改成锚定「选项数组」本身：找到 encSel 的 for...of 里的那个二维数组，
+   * 再断言它含 'gbk' 与 'utf-8'。这样默认值那行的字面量不会干扰判定。 */
+  const arrMatch = src.match(/for \(const \[v, t\] of \[([\s\S]*?)\]\) \{/);
+  assert.ok(arrMatch, '找不到目标编码的选项数组（实现可能已改动，请同步更新这条断言）');
+  const options = arrMatch[1];
+  assert.ok(/\[\s*'gbk'/.test(options), '目标编码选项里没有 GBK（用户选不到，默认值那行的 gbk 不能顶替）');
+  assert.ok(/\[\s*'utf-8'/.test(options), '目标编码选项里没有 UTF-8');
+  assert.ok(/\[\s*'gb18030'/.test(options), '目标编码选项里没有 GB18030');
+  assert.ok(/\[\s*'big5'/.test(options), '目标编码选项里没有 Big5');
 });
 
 /* ---------- 行为验证：text:can-reencode 对 GBK 的真实结论 ---------- */
-t('GBK 不在 Node 原生编码器里 → 结论必须是「需要系统工具」', () => {
-  /* 直接跑 main.js 里那段判据的等价表达式：supported 只列 Node 原生支持的编码。
-   * 这里断言的是「GBK 确实不在那份列表里」，也就是按钮会给出真实结论，
-   * 而不是把「没有替换字符」当成「可以转」。 */
-  const NATIVE = ['utf-8', 'utf-16le', 'utf-16be'];
-  assert.strictEqual(NATIVE.indexOf('gbk'), -1, 'GBK 不该被当成 Node 原生支持');
-  assert.strictEqual(NATIVE.indexOf('gb18030'), -1, 'GB18030 不该被当成 Node 原生支持');
-  assert.ok(NATIVE.indexOf('utf-8') >= 0, 'UTF-8 是原生支持的（用来做对照）');
+t('GBK 不在 Node 原生编码器里 → 结论必须是「需要系统工具」', async () => {
+  /* 【必须是真行为断言，不能断言测试自己写的常量】
+   * 原实现是 `const NATIVE = ['utf-8','utf-16le','utf-16be'];` 定义在**测试文件里**，
+   * 然后断言 `NATIVE.indexOf('gbk') === -1` —— 测的是测试自己的数组，
+   * 与 main.js 的实现无关。实测确认：把 main.js 里那份 supported 列表
+   * 改成含 'gbk'（于是 GBK 被误判成「可以转换」，而 Node 其实没有 GBK 编码器），
+   * 这条断言仍然 PASS。
+   *
+   * 现在真的跑 main.js 里那段判据：把 text:can-reencode 的 handler 抽出来，
+   * 注入桩后调用，断言它对 GBK 给出的 supported 是 false。 */
+  const mainSrc = strip(readMain({ raw: true }));
+  const start = mainSrc.indexOf("handle('text:can-reencode'");
+  assert.ok(start > 0, '找不到 text:can-reencode');
+  /* 【用括号配平取箭头函数，不能用 '\n});' 切】
+   * handler 结尾是 `\n});` —— 但那个 `)` 属于外层的 handle(…)，不属于函数体。
+   * 用 '\n});' 做右边界会把多余的 ')' 切进来，`(async …})` 直接语法错误。
+   * 改用 lib/src-scan.js 的 scanBrace：从 async 之后的第一个 '{' 配平，
+   * 它跳过注释/字符串/正则，不会被文案里的括号带偏。 */
+  const asyncAt = mainSrc.indexOf('async', start);
+  assert.ok(asyncAt > start, '找不到 text:can-reencode 的箭头函数起点');
+  const bodyOpen = mainSrc.indexOf('{', asyncAt);
+  assert.ok(bodyOpen > asyncAt, '找不到函数体开括号');
+  const bodyEnd = srcScan.scanBrace(mainSrc, bodyOpen);
+  assert.ok(bodyEnd > bodyOpen, '函数体括号不配平');
+  const arrowSrc = mainSrc.slice(asyncAt, bodyEnd);   // 到配平的 '}' 为止，含它
+  assert.ok(/^async\s*\(/.test(arrowSrc), '抽取起点不是 async 箭头函数：' + JSON.stringify(arrowSrc.slice(0, 40)));
+  assert.ok(/\}$/.test(arrowSrc), '抽取的箭头函数不完整：' + JSON.stringify(arrowSrc.slice(-40)));
+  assert.ok(arrowSrc.indexOf('supported') > 0, '抽到的片段里没有 supported 判据');
+
+  /* 把 handler 包成可直接调用的函数。它内部只依赖 mojibake.normEnc 与几个常量，
+   * 这里把这两样注进去（normEnc 用真实现，避免又一次「测副本」）。 */
+  const mojibake = require('../lib/mojibake');
+  /* 末尾可能带一个分号（`};`），构造函数表达式时必须剥掉，否则 `(async …};)` 是语法错误 */
+  const exprSrc = arrowSrc.replace(/\}\s*;?\s*$/, '}');
+  const handler = new Function('mojibake', 'return (' + exprSrc + ');')(mojibake);
+
+  /* handler 是 async 的，返回 Promise —— 必须 await，直接读属性只会拿到 undefined */
+  const gbkRes = await handler({}, '测试文本', 'gbk');
+  assert.strictEqual(gbkRes.supported, false,
+    'GBK 被当成了 Node 原生支持的编码（实际 Node 没有 GBK 编码器，转存后会是乱码）');
+  const gb18030Res = await handler({}, '测试文本', 'gb18030');
+  assert.strictEqual(gb18030Res.supported, false, 'GB18030 同上，不该被当成原生支持');
+  /* 对照组：UTF-8 确实原生支持 —— 防「全都返回 false」这种退化 */
+  const utf8Res = await handler({}, '测试文本', 'utf-8');
+  assert.strictEqual(utf8Res.supported, true, 'UTF-8 应判定为原生支持（对照组）');
 });
 
 t('text:can-reencode 的 note 会区分原生支持与需要系统工具', () => {

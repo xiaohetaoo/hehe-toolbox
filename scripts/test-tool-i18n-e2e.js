@@ -125,7 +125,25 @@ try {
 } catch (e) { raw = String(e.stdout || '') + String(e.stderr || ''); }
 
 const line = String(raw).split(/\r?\n/).find((l) => l.startsWith('TI18N '));
-if (!line) { console.log('未拿到 TI18N'); console.log(raw.slice(-2500)); done(); return; }
+if (!line) {
+  /* 【探针没落盘时不能静默通过】
+   * 原实现是 `done(); return;` —— 但这行之前一条 t() 都还没注册，
+   * 于是 harness 打印「0 通过 / 0 失败」并 exit 0，CI 全绿。
+   * 而下面那 4 条真断言（二维码页全英文、哈希页全英文、
+   * 未迁移的 zip-tool 仍为中文、无未捕获错误）就此凭空消失。
+   *
+   * 这个形态在 CI 上很常见：windows-latest 的 electron.exe 存在，
+   * 但缺 display/GPU/sandbox 起不来，execFileSync 被 catch 吞掉、
+   * raw 里没有 TI18N 行 —— 日志只有一行「未拿到 TI18N」，
+   * 没人会认为 4 条断言没跑。
+   *
+   * 改成显式 SKIP：CI 的 `grep -E '^(FAIL|SKIP) '` 会把它当 annotation
+   * 报出来，人能看见「这一轮没测到」；exit 0 保持「环境不满足不算失败」
+   * 的语义（与其它 E2E 脚本一致）。 */
+  console.log('SKIP 探针未落盘，英文模式相关断言未执行（该环境启动真实应用受限）');
+  console.log(raw.slice(-2500));
+  process.exit(0);
+}
 const R = JSON.parse(line.slice('TI18N '.length));
 
 const CJK = /[\u4e00-\u9fff]/;

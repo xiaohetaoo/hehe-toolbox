@@ -10,6 +10,8 @@ const { t, done, readTree, ROOT } = require('./lib/harness');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const srcScan = require('../lib/src-scan');
+const stripComments = srcScan.stripComments;
 
 const MEDIA_DIR = path.join(ROOT, 'js', 'tools', 'media');
 const OLD_FILE = path.join(ROOT, 'js', 'tools', 'media.js');
@@ -35,12 +37,36 @@ t('旧的 js/tools/media.js 已删除（否则会有两份注册，工具 id 重
 
 /* ---- 2. 工具一个没少 ---- */
 t('16 个媒体工具 id 一个没少', () => {
-  const src = readTree('js/tools/media', { raw: true });
   /* 【不要用 `\n  id: '…'` 这种锚点】
    * 仓库里这些文件是 CRLF（git 检出时 LF → CRLF），`\n  id:` 在 `\r\n  id:`
    * 上匹配不到，结果是 ids 为空、这条断言报「集合变了」而工具其实一个没少。
-   * 用不带行首锚定的形态：注册对象的第一个字段就是 id + name。 */
-  const ids = [...src.matchAll(/id: '([^']+)', name: [^\n]*?module: MOD/g)].map((m) => m[1]).sort();
+   *
+   * 【也不要要求 id/name/module 三个字段写在同一行且顺序固定】
+   * 原实现是 /id: '([^']+)', name: [^\n]*?module: MOD/g —— 用 [^\n]*?
+   * 强制三个字段同行相邻。实测确认：把注册对象改成分行写
+   *   id: 'x',
+   *   name: 'X',
+   *   module: MOD
+   * 这是零语义的纯格式化改动，ids 立刻变成空数组、断言误报「集合变了」，
+   * 而 16 个工具一个没少。
+   * 反过来，注释里出现同形态的假注册也会被算进去（这条用了 raw:true，
+   * 不剥注释）。
+   *
+   * 现在改成：先剥注释，再按 register({ … }) 括号配平取出每个注册对象，
+   * 然后只在该对象内抓 id 字段。与字段顺序、换行、注释都无关。 */
+  const src = stripComments(readTree('js/tools/media', { raw: true }));
+  const ids = [];
+  const re = /register\(\s*\{/g;
+  let m;
+  while ((m = re.exec(src))) {
+    const open = src.indexOf('{', m.index);
+    const end = srcScan.scanBrace(src, open);
+    if (end < 0) continue;
+    const obj = src.slice(open, end);
+    const idm = obj.match(/id:\s*'([^']+)'/);
+    if (idm) ids.push(idm[1]);
+  }
+  ids.sort();
   assert.deepStrictEqual(ids, EXPECTED.slice().sort(),
     '媒体工具集合变了。多了会静默新增页面，少了会让用户找不到功能。\n实际：' + ids.join(', '));
 });

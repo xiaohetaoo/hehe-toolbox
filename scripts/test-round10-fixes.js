@@ -25,9 +25,19 @@ const ROOT = path.join(__dirname, '..');
 const BS = String.fromCharCode(92);
 
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
-function stripComments(s) {
-  return String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-}
+/* 【stripComments 统一用 lib/src-scan.js 的实现，不要在这里另写一份】
+ * 原来这几行是朴素实现：先用两条正则分别去掉块注释与整行行注释。
+ * 它有两个真实缺陷：
+ *   ① 不识别正则字面量。net-tools.js 里的字符类含一个双引号，
+ *      朴素实现会把它当成字符串开头，之后所有注释与字符串判断全部错位
+ *      （lib/src-scan.js 的头部注释记录了这次事故）。
+ *   ② 只剥「整行」注释（行首到行尾的那一类），行尾注释里的文字被留下，
+ *      于是「某个词只出现在注释里」也会被当成代码命中，断言假绿。
+ * 实测同一份 main.js：朴素实现剥后 164145 字符，src-scan 剥后 163767 字符 ——
+ * 差的 378 字符正是没被去掉的行尾注释，它们会参与后续正则匹配。
+ */
+
+const stripComments = require('../lib/src-scan').stripComments;
 
 /* 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/acl-links.js：
  * 这里读「主进程全部源码」（main.js 在前，ipc/ 下的文件按名排序在后）——

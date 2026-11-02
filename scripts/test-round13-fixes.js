@@ -35,6 +35,47 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
  * 都留在 main.js 里，所以继续只读 main.js 是正确的边界。 */
 const mainSrc = read('main.js');
 
+/* 【取「从某个 needle 到下一个顶层定义」的片段，不要用注释做右边界】
+ *
+ * 本文件早期大量这样写：
+ *   const j = mainSrc.indexOf('\/\* 命令行脱敏');          // 用注释当边界
+ *   const seg = mainSrc.slice(mainSrc.indexOf("handle('x'"), mainSrc.indexOf('\/\* 图片的目标体积压缩'));
+ * 这些注释一旦被改写（换行、加一句、翻译、调整措辞），indexOf 返回 -1：
+ *   · 配平式的会报「找不到 xxx」，而实现完全正常 —— 纯误报；
+ *   · slice 式的更糟：slice(start, -1) 会切到文件倒数第二个字符，
+ *     断言实际在「扫整个文件」，任何地方出现目标字符串就算通过 —— 假绿。
+ *
+ * 下面两个助手按**代码结构**取边界：
+ *   segFromFn(needle)   —— 从 needle 起，配平到它自己的右花括号（函数/对象）
+ *   segFromHandler(ch)  —— 从 handle('<ch>' 起，配平到该 handler 的函数体结束
+ * 两者都走 lib/src-scan 的 scanBrace（跳过注释/字符串/正则字面量）。
+ */
+const scanBrace = require('../lib/src-scan').scanBrace;
+
+function segFromFn(needle, label) {
+  const i = mainSrc.indexOf(needle);
+  assert.ok(i > 0, '找不到 ' + (label || needle));
+  const open = mainSrc.indexOf('{', i);
+  assert.ok(open > i, (label || needle) + ' 没有函数体');
+  const end = scanBrace(mainSrc, open);
+  assert.ok(end > open, (label || needle) + ' 括号不配平');
+  return mainSrc.slice(i, end);
+}
+
+function segFromHandler(channel, label) {
+  const start = mainSrc.indexOf("handle('" + channel + "'");
+  assert.ok(start > 0, '找不到 handler: ' + channel);
+  /* handler 签名里可能有默认参数对象 `opts = {}`，不能取 start 之后的第一个 '{'，
+   * 要跳到 `=> {` 之后的那个函数体开括号。 */
+  const arrow = mainSrc.indexOf('=>', start);
+  const from = arrow > 0 ? arrow : start;
+  const open = mainSrc.indexOf('{', from);
+  assert.ok(open > 0, 'handler ' + channel + ' 没有函数体');
+  const end = scanBrace(mainSrc, open);
+  assert.ok(end > open, 'handler ' + channel + ' 括号不配平');
+  return mainSrc.slice(start, end);
+}
+
 function rmDir(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); }
   catch (e) { try { cp.execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', dir], { windowsHide: true }); } catch (e2) {} }
@@ -93,10 +134,34 @@ t('1b crypto：56 字节（40 头 + 一个 16 字节块）是目前可能的最�
     await cryptStream(src, enc, 'pw', false);
     const size = fs.statSync(enc).size;
     assert.strictEqual(size, 56, '空文件密文应为 56 字节，实际 ' + size);
-    // 阈值必须 <= 56，否则这个文件永远解不开
-    assert.ok(/MIN_ENC_SIZE|st\.size < 56/.test(mainSrc)
-      || !/st\.size < 64/.test(mainSrc),
-      'main.js 里仍在用 64 作为下限（会把 56 字节的合法密文判成「文件不完整」）');
+
+    /* 【下限必须是行为断言的靶子，不能只查源码里出现过某个标识符】
+     * 原实现是：
+     *   assert.ok(/MIN_ENC_SIZE|st\.size < 56/.test(mainSrc)
+     *     || !/st\.size < 64/.test(mainSrc), '…')
+     * 这是个恒真式 —— 左半边只要源码任何位置出现过 `MIN_ENC_SIZE` 就为真
+     * （main.js 里正是 `const MIN_ENC_SIZE = 40 + 16;`），
+     * 右半边在 main.js 不再用字面量 64 时也恒真。
+     * 实测确认：把 `40 + 16` 改成 `40 + 32`（=72），断言仍然为真 ——
+     * 而 56 字节的合法密文会被判成「文件不完整」，1a 也照样绿
+     * （1a 用的最短是 0 字节源 → 72 字节密文）。
+     *
+     * 现在改成真跑一遍：56 字节必须解得开，差 1 字节必须报「不完整」。
+     * 这样 56 这个数字是被行为锁住的，改成任何 ≥57 的值都会立刻红。 */
+    const out = path.join(dir, 'e.out');
+    await cryptStream(enc, out, 'pw', true);
+    assert.strictEqual(fs.readFileSync(out, 'utf8'), '', '56 字节的最小合法密文没能解开');
+
+    /* 截掉最后 1 字节 → 55 字节，必须报「文件不完整」而不是静默产出空文件 */
+    const truncated = path.join(dir, 'e55.hehe');
+    fs.writeFileSync(truncated, fs.readFileSync(enc).subarray(0, 55));
+    let threw = null;
+    try {
+      await cryptStream(truncated, path.join(dir, 'e55.out'), 'pw', true);
+    } catch (e) { threw = e; }
+    assert.ok(threw, '55 字节的密文没有被拒绝（下限形同虚设）');
+    assert.ok(/不完整|至少应有/.test(String(threw.message)),
+      '55 字节密文的报错文案不是「文件不完整」：' + threw.message);
   } finally { rmDir(dir); }
 });
 
@@ -223,7 +288,15 @@ function extractZipCompress() {
 t('4a zip:compress 行为：两个不同目录下的同名子目录，内容都要保留', async () => {
   let AdmZip;
   try { AdmZip = require(path.join(ROOT, 'node_modules', 'adm-zip')); }
-  catch (e) { console.log('     （跳过：没有 adm-zip）'); return; }
+  catch (e) {
+    /* 【依赖缺失要显式报出来，不能静默 return】
+     * 原来只打一行 5 个空格缩进的「跳过：没有 adm-zip」然后 return ——
+     * CI 的 `grep -E '^(FAIL|SKIP) '` 抓不到，这两条会静默消失。
+     * adm-zip 是 package.json 的正式 dependency，缺了说明环境坏了，
+     * 不该悄悄跳过（那样「zip 同名子目录互相覆盖」这个 P1 缺陷就没人看着了）。 */
+    console.log('SKIP 缺少 adm-zip 依赖，zip 同名子目录合并的行为未被测到（请检查 npm ci）');
+    return;
+  }
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r12x-zip-'));
   try {
@@ -505,12 +578,12 @@ t('9b moveFile：非 EXDEV 的错误要原样抛出，不能悄悄改成复制',
 });
 
 t('9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结果', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('target:compress-av'"), mainSrc.indexOf('/* 图片的目标体积压缩'));
+  const seg = segFromHandler('target:compress-av');
   assert.ok(!/fsp\.rename\(finalOut\.file, dst\)/.test(seg),
     'target:compress-av 仍在用裸 rename 提交（跨盘 EXDEV 会丢成果）');
   assert.ok(/moveFile\(finalOut\.file, dst\)/.test(seg), '应改用 moveFile');
 
-  const off = mainSrc.slice(mainSrc.indexOf("handle('office:convert'"), mainSrc.indexOf('/* ================= IPC: 右键菜单管理'));
+  const off = segFromHandler('office:convert');
   assert.ok(!/fsp\.rename\(produced, out\)/.test(off),
     'office:convert 仍在用裸 rename 提交（stage 在 %TEMP%，outDir 可能在别的盘）');
 });
@@ -588,7 +661,7 @@ t('11c ffmpeg:pick 判 ffmpeg 必须看输出的 "ffmpeg version"，且不覆盖
 
 /* ==================== 12. 批量处理单条失败不拖垮整批 ==================== */
 t('12 target:compress-av：单个源文件读不到时要记录失败并继续', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('target:compress-av'"), mainSrc.indexOf('/* 图片的目标体积压缩'));
+  const seg = segFromHandler('target:compress-av');
   /* 原来裸的 `const srcSize = (await fsp.stat(input)).size;` 必须消失 */
   assert.ok(!/const srcSize = \(await fsp\.stat\(input\)\)\.size;/.test(seg),
     '仍在裸调 fsp.stat(input)：单个文件消失会中断整批，已完成的 results 也会丢');
@@ -600,7 +673,7 @@ t('12 target:compress-av：单个源文件读不到时要记录失败并继续',
 
 /* ==================== 13. proc:kill 不能把「查询失败」当「进程已退出」 ==================== */
 t('13 proc:kill：进程查询失败必须拒绝，而不是跳过保护检查直接 taskkill', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('proc:kill'"), mainSrc.indexOf('/* ================= IPC: network'));
+  const seg = segFromHandler('proc:kill');
   /* 缺陷形态：一个 try 包住保护判定，catch 里靠中文文本匹配决定是否重抛 */
   assert.ok(!/if \(\/拒绝结束\/\.test\(String\(err\.message\)\)\) throw err;/.test(seg),
     '仍在用中文文本匹配决定是否重抛 —— 查询机制坏掉时保护检查被整体跳过');
@@ -628,7 +701,7 @@ t('14b 下载：416 必须重置断点，否则重试永远 416', () => {
 
 /* ==================== 15. 截帧计数 ==================== */
 t('15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧数', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('ffmpeg:frames'"), mainSrc.indexOf('/* 音频剪辑'));
+  const seg = segFromHandler('ffmpeg:frames');
   assert.ok(!/n = \(await fsp\.readdir\(outDir\)\)\.filter\(f => f\.startsWith\(base \+ '_'\)/.test(seg),
     '仍在统计目录里所有同名帧 —— 重复截帧时 count 会虚高（上次 20 张 + 这次 5 张报 25）');
   assert.ok(/before/.test(seg) && /!before\.has/.test(seg),
@@ -697,7 +770,7 @@ t('18 wifi:key：多行 netsh 输出里能取到密码与身份验证', () => {
   /* 真实 netsh 输出是分节的，`关键内容 : xxx` 只是其中一行。
    * 原实现直接在整段上跑 /...$/（无 /m），$ 只匹配整串末尾，
    * 于是 key/auth 恒为 undefined → 界面把所有加密 WiFi 显示成「开放网络无密码」。 */
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('wifi:key'"), mainSrc.indexOf('/* ================= IPC: 文本朗读'));
+  const seg = segFromHandler('wifi:key');
   assert.ok(!/out\.match\(\/\(\?:关键内容/.test(seg),
     '仍在整段字符串上匹配（无 /m 时 $ 只匹配串尾，永远匹配不到）');
   assert.ok(/split\(\/\\r\?\\n\/\)/.test(seg),
@@ -777,7 +850,7 @@ t('19b acl:repair：把「未知」和「确定不是管理员」分开提示', 
 
 /* ==================== 20. update:apply 单飞 ==================== */
 t('20 update:apply：并发调用要被挡住（连点两次会跑两份替换脚本）', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('update:apply'"), mainSrc.indexOf('// 清理 update 下载目录'));
+  const seg = segFromHandler('update:apply');
   assert.ok(/updateApplying/.test(seg), '缺少升级单飞标志');
   assert.ok(/if \(updateApplying\) throw/.test(seg), '第二次调用应直接拒绝');
   /* 校验失败要能重试：commit 之前的错误必须放开标志 */
@@ -813,7 +886,18 @@ t('21a 截图：文件名带随机后缀（同一毫秒两次不撞名）且仍�
 });
 
 t('21b 截图：窗口关闭 / 取消 / 保存后都要清掉临时 PNG', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf('let snipSrcFile = null'), mainSrc.indexOf('// 贴剪贴板图片（托盘/工具用）'));
+  /* 【这段要覆盖「变量声明 → 清理函数 → 窗口事件」，不是单个函数】
+   * 原来用 `mainSrc.indexOf('// 贴剪贴板图片（托盘/工具用）')` 当右边界。
+   * 换成 segFromFn('let snipSrcFile = null') 是**错**的 —— 那是个变量声明，
+   * 它后面的第一个 '{' 属于下一个函数，配平会取到很窄的一段，
+   * 于是 dropSnipSrc 与 snipWin.on 都不在里面（实测这条立刻红了）。
+   * 正确的边界是「声明处 → 下一个顶层定义」，用「走到下一个 'function ' 之前」
+   * 来定位：这两个定义在该区间内是连续的，中间不会插入别的顶层函数。
+   * 若将来中间插入了新函数，这条会因取到的片段变短而红 —— 那是应该被看见的。 */
+  const start = mainSrc.indexOf('let snipSrcFile = null');
+  assert.ok(start > 0, '找不到 snipSrcFile 声明');
+  const nextFn = mainSrc.indexOf('\nfunction ', start + 10);
+  const seg = mainSrc.slice(start, nextFn > start ? nextFn : start + 3000);
   assert.ok(/dropSnipSrc/.test(seg), '缺少统一的临时文件清理函数');
   assert.ok(/snipWin\.on\('closed', \(\) => \{ snipWin = null; dropSnipSrc\(\); \}\)/.test(seg),
     '窗口关闭时必须清理（Esc 取消 / 直接关窗都走这条路）');
@@ -825,7 +909,7 @@ t('21b 截图：窗口关闭 / 取消 / 保存后都要清掉临时 PNG', () => 
 t('22 seven:extract：失败回滚要把条目搬回 staging，不能直接删', () => {
   /* 直接删的风险：uniqueTarget 的存在性判断若因权限/瞬时错误失准，
    * rm 掉的可能是用户原有文件 —— 解压失败反毁数据。 */
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('seven:extract'"), mainSrc.indexOf('/* ================= IPC: WiFi 密码查看'));
+  const seg = segFromHandler('seven:extract');
   const catchBlk = seg.slice(seg.lastIndexOf('} catch (err) {'));
   assert.ok(!/for \(const dst of movedTo\.reverse\(\)\) \{\s*try \{ await fsp\.rm\(dst/.test(seg),
     '回滚仍在直接 rm(dst)');

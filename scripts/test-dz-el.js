@@ -96,23 +96,14 @@ function scanBraces(text, open) {
   return -1;
 }
 
-/* 剥掉注释（保留字符串内容，否则 'a//b' 会被截断） */
-function stripComments(text) {
-  let out = '', i = 0;
-  while (i < text.length) {
-    const c = text[i];
-    if (c === '/' && text[i + 1] === '/') { const n = text.indexOf('\n', i); i = n < 0 ? text.length : n; continue; }
-    if (c === '/' && text[i + 1] === '*') { const n = text.indexOf('*/', i + 2); i = n < 0 ? text.length : n + 2; out += ' '; continue; }
-    if (c === '"' || c === "'" || c === '`') {
-      const q = c; out += c; i++;
-      while (i < text.length && text[i] !== q) { out += text[i]; if (text[i] === '\\') { i++; out += text[i]; } i++; }
-      if (i < text.length) { out += text[i]; i++; }
-      continue;
-    }
-    out += c; i++;
-  }
-  return out;
-}
+/* 【stripComments 统一用 lib/src-scan.js 的实现】
+ * 原来这里是一份手写状态机：识别行注释、块注释与字符串，但**不识别正则字面量**
+ * ——与 lib/src-scan.js 头部注释记录的那次事故同型。
+ * src-scan 的实现多认一条「正则字面量」分支，并跳过其中的花括号与斜杠，
+ * 因此 net-tools.js 里含双引号的字符类不会被当成字符串开头。
+ * 两者在本文件的目标文本上结果一致（都已实测通过），但只在 src-scan 上有保证。
+ */
+const stripComments = require('../lib/src-scan').stripComments;
 
 /* 取 async function run() 的完整源段（含函数体），不依赖任何长度常量 */
 function extractRunBody(source) {

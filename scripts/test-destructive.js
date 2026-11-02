@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const guard = require('../lib/path-guard');
+const srcScan = require('../lib/src-scan');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
@@ -44,8 +45,34 @@ function handlerBody(src, channel) {
     }
   }
   assert.ok(start > 0, '找不到 handler: ' + channel);
-  const end = src.indexOf('\n});', start);
-  return src.slice(start, end);
+  /* 【必须括号配平，不能用 '\n});' 找结尾】
+   * 原实现是 `src.indexOf('\n});', start)`。它在 main.js 的单文件时代勉强能用，
+   * 但任务 5 把两个域搬到 ipc/acl-links.js 后，那里的 handler 收尾是
+   * `\n})` 而**不是** `\n});`。于是 indexOf 返回 -1，
+   * slice(start, -1) 直接切到**整个文件倒数第二个字符**。
+   * 实测：link:remove 14732 字符、link:scan 19124 字符、
+   * file:who-locks-dir 21000 字符 —— 全部远超各自 handler 的真实长度，
+   * 确认是越界而非恰好覆盖。
+   *
+   * 后果是这些断言实际在「扫整个文件」：只要文件后面任何地方出现
+   * `checkOverwritable` / `resolveInside` / `uniqueTarget` 字样，
+   * 「某 handler 里有某保护」就成立。实测确认：把 fs:merge-parts 的
+   * resolveInside 保护删掉，只要后面别的 handler 里还有这个标识符，
+   * 对应断言照样 PASS。
+   *
+   * 现在改用 lib/src-scan.js 的 scanBrace（跳过注释/字符串/正则字面量）。
+   * 【起点不能直接取 start 之后的第一个 '{'】
+   * handler 的签名里常有默认参数对象字面量：
+   *   handle(CH.ACL_LINKS.LINK_REMOVE, async (e, paths, opts = {}) => {
+   * 第一个 '{' 是 `opts = {}` 那个 —— 在那里配平会在 `}` 处立刻结束，
+   * 只拿到 66 个字符（实测就是这个数）。必须跳过默认参数，
+   * 定位到 `=> {` 之后的那个函数体开括号。 */
+  const arrow = src.indexOf('=>', start);
+  const braceFrom = arrow > 0 ? arrow : start;
+  const open = src.indexOf('{', braceFrom);
+  if (open < 0) return src.slice(start);
+  const end = srcScan.scanBrace(src, open);
+  return end > 0 ? src.slice(start, end) : src.slice(start);
 }
 /* 取升级脚本（const ps = [ ... ].join('\r\n');）的正文 */
 function updateScriptBody(src) {

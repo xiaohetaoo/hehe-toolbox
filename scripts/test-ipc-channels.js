@@ -17,6 +17,8 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const MAIN = path.join(ROOT, 'main.js');
+/* 扫源码前一律先剥注释（见 registered() 里的说明） */
+const strip = (s) => require(path.join(ROOT, 'lib', 'src-scan')).stripComments(s);
 
 /* 主进程注册的通道。
  *
@@ -42,7 +44,16 @@ function mainProcSources() {
 function registered() {
   const set = new Set();
   const chTable = require('../lib/channels').flatten();
-  for (const s of mainProcSources()) {
+  /* 【必须先剥注释再扫】
+   * 不剥的话，注释里出现的示例会被当成真实注册。
+   * main.js 第 43 行附近就写着：
+   *   * handle(dirMoveCh.X.Y, ...) 一起搬过去了
+   * 它会被下面第二条正则匹配成 key = 'X.Y'，chTable 查不到所以当前侥幸无害。
+   * 但只要有人在注释里举个**真实**的通道做例子（这是很自然的写法），
+   * 那个并不存在的注册就会被算进 reg，
+   * 进而让「没有无人调用的通道」和「注册通道总数」两条失真。
+   * test-channels-sync.js 早就这么做了（它也是剥注释后扫），这里跟上。 */
+  for (const s of mainProcSources().map(strip)) {
     for (const m of s.matchAll(/handle\('([^']+)'/g)) set.add(m[1]);
     /* 【常量化的通道也要算进来】任务 6 把两个域的通道名换成了
      * handle(dirMoveCh.<组>.<键>, ...)。只扫字面量的话这 8 个通道会从
@@ -88,12 +99,30 @@ function referenced() {
     if (fs.existsSync(p)) files.push(p);
   }
 
+  /* 【必须排除常量表文件自己】
+   * js/channels.js 里就是一张「语义名 → 通道字面量」的表：
+   *   WHO_LOCKS_DIR: 'file:who-locks-dir'
+   *   DIR_MOVE: { MOVE: 'dir:move' }
+   * 把它扫进来的后果是：**表里有哪个通道，就等于「渲染层调用了哪个通道」**。
+   * 于是本文件后面那条「常量表里的通道：主进程注册 + 渲染层调用 双向都在」
+   * 变成了自我满足 —— 表本身就是它要找的调用点。
+   * 实测确认过：把 js/tools/file-unlock.js 里真实的
+   *   invoke(Channels.CHANNELS.ACL_LINKS.WHO_LOCKS_DIR, it.path)
+   * 换成别的通道，referenced() 仍然返回 true，断言照样 PASS。
+   *
+   * 而「渲染层引用了没注册的通道」「注册了没人用的通道」正是本文件存在的
+   * 唯一目的，被这一条掏空就等于整份审计失效。
+   * 常量表自身的正确性由 scripts/test-channels-sync.js 单独校验
+   * （它比对 lib/channels.js 与 js/channels.js 的键与值），不在这里重复。 */
+  const CONST_TABLE_FILES = new Set([path.join(ROOT, 'js', 'channels.js')]);
+
   const set = new Set();
   /* 通道字面量形如 'a:b' 或 'a:b:c'（带冒号、无空格）。
    * 注意要允许**多级冒号**：辅助窗口用的就是 win:ruler:move 这种写法，
    * 只匹配单冒号会把它们误判成「无人调用」。 */
   const RE = /['"`]([a-z][a-z0-9]*(?:[-:][a-z0-9]+)*)['"`]/gi;
   for (const f of files) {
+    if (CONST_TABLE_FILES.has(f)) continue;
     const src = fs.readFileSync(f, 'utf8');
     for (const m of src.matchAll(RE)) {
       if (m[1].includes(':')) set.add(m[1]);
@@ -102,8 +131,82 @@ function referenced() {
   return set;
 }
 
+/* 【按「常量引用」统计已迁移域的调用点】
+ *
+ * 通道名常量化之后，渲染层的调用长这样：
+ *   invoke(Channels.CHANNELS.ACL_LINKS.WHO_LOCKS_DIR, it.path)
+ * 通道名不再以字面量出现，所以上面的 referenced()（只认字面量）
+ * 看不见它们 —— 这会同时破坏下面两条断言的语义：
+ *   · 「注册了没人用」会把这 8 个全报出来（其实都在用）
+ *   · 反过来，如果只把常量表排除掉却不补这条，「常量表里的通道双向都在」
+ *     就永远验不到真实调用点
+ *
+ * 做法：扫 `Channels.CHANNELS.<组>.<键>` 的**引用形态**，
+ * 把 <组>.<键> 映射回 lib/channels.js 里的真实通道名。
+ * 这里不直接 require lib/channels.js —— 那个模块是主进程侧的，
+ * 测试要验的恰恰是「渲染层这份表与主进程那份是否一致」，
+ * 自己引用同一份来源会让比对失去意义。所以从 js/channels.js 的
+ * 字面量里解析（那份表的键值正确性由 test-channels-sync.js 单独保证）。
+ */
+function referencedByConst() {
+  const tablePath = path.join(ROOT, 'js', 'channels.js');
+  if (!fs.existsSync(tablePath)) return new Set();
+  const tableSrc = fs.readFileSync(tablePath, 'utf8');
+  /* 解析出 "组.键" → 通道名。表的结构是 CHANNELS = { GROUP: { KEY: 'value' } }，
+   * 这里用「找 GROUP 开括号，再在块内找 KEY: 'value'」的两级扫描，
+   * 不去完整解析 JS（那是过度工程，而且表的结构是人工维护的常量）。 */
+  const map = new Map();          // "GROUP.KEY" → channel
+  const groupRe = /([A-Z][A-Z0-9_]*)\s*:\s*\{/g;
+  let gm;
+  while ((gm = groupRe.exec(tableSrc))) {
+    const group = gm[1];
+    const blockStart = gm.index + gm[0].length;
+    /* 花括号配平取出这一组的内容 */
+    let depth = 1, i = blockStart;
+    while (i < tableSrc.length && depth > 0) {
+      const ch = tableSrc[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+      i++;
+    }
+    const block = tableSrc.slice(blockStart, i - 1);
+    const keyRe = /([A-Z][A-Z0-9_]*)\s*:\s*'([^']+)'/g;
+    let km;
+    while ((km = keyRe.exec(block))) map.set(group + '.' + km[1], km[2]);
+  }
+
+  /* 扫渲染层对 Channels.CHANNELS.<组>.<键> 的引用 */
+  const set = new Set();
+  const files = [];
+  const push = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { push(p); continue; }
+      if (e.name.endsWith('.js') || e.name.endsWith('.html')) files.push(p);
+    }
+  };
+  push(path.join(ROOT, 'js'));
+  const useRe = /Channels\.CHANNELS\.([A-Z][A-Z0-9_]*)\.([A-Z][A-Z0-9_]*)/g;
+  for (const f of files) {
+    if (f === path.join(ROOT, 'js', 'channels.js')) continue;
+    const src = fs.readFileSync(f, 'utf8');
+    for (const m of src.matchAll(useRe)) {
+      const ch = map.get(m[1] + '.' + m[2]);
+      if (ch) set.add(ch);
+    }
+  }
+  return set;
+}
+
 const reg = registered();
 const ref = referenced();
+const refConst = referencedByConst();
+/* 【两路引用的并集才是「渲染层真的在用哪些通道」】
+ *   referenced()          —— 通道名以字面量出现（未迁移的绝大多数域）
+ *   referencedByConst()   —— 通道名以 Channels.CHANNELS.X.Y 常量引用（已迁移的 2 个域）
+ * 只算字面量会把已迁移域的 8 个通道误判成「无人调用」，
+ * 只算常量引用则漏掉另外 152 个。两者必须合并。 */
+const allRef = new Set([...ref, ...refConst]);
 const pushed = pushedChannels();
 
 /* 明确决定「保留」的通道 → 理由。
@@ -123,7 +226,7 @@ t('渲染层引用的通道都有主进程注册或属于推送事件', () => {
 
 /* ---- 2. 差集（注册了没人用）必须是空的，或只在白名单里 ---- */
 t('没有无人调用的 IPC 通道（白名单除外）', () => {
-  const unused = [...reg].filter((c) => !ref.has(c) && !INTENTIONALLY_KEPT[c]);
+  const unused = [...reg].filter((c) => !allRef.has(c) && !INTENTIONALLY_KEPT[c]);
   assert.deepStrictEqual(unused, [],
     '这些通道注册了但全项目无调用方，应删除或补上保护后再白名单：\n  ' + unused.join('\n  '));
 });
@@ -169,10 +272,10 @@ t('常量表里的通道：主进程注册 + 渲染层调用 双向都在', () =
   const noReg = entries.filter(([, ch]) => !reg.has(ch)).map(([k, ch]) => k + '→' + ch);
   assert.deepStrictEqual(noReg, [],
     '这些通道登记在常量表里但主进程没注册：' + noReg.join(', '));
-  const noCall = entries.filter(([, ch]) => !ref.has(ch)).map(([k, ch]) => k + '→' + ch);
+  const noCall = entries.filter(([, ch]) => !allRef.has(ch)).map(([k, ch]) => k + '→' + ch);
   assert.deepStrictEqual(noCall, [],
     '这些通道登记在常量表里但渲染层没有调用点（登记了却没人用 = 未来误删风险）：' + noCall.join(', '));
 });
 
-console.log(`\n注册 ${reg.size} 个通道，渲染层引用 ${ref.size} 个，无人调用 ${[...reg].filter((c) => !ref.has(c)).length} 个`);
+console.log(`\n注册 ${reg.size} 个通道，渲染层引用 ${allRef.size} 个，无人调用 ${[...reg].filter((c) => !allRef.has(c)).length} 个`);
 done();

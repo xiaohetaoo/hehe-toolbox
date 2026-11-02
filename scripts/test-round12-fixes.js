@@ -15,9 +15,19 @@ const cp = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
-function stripComments(s) {
-  return String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-}
+/* 【stripComments 统一用 lib/src-scan.js 的实现，不要在这里另写一份】
+ * 原来这几行是朴素实现：先用两条正则分别去掉块注释与整行行注释。
+ * 它有两个真实缺陷：
+ *   ① 不识别正则字面量。net-tools.js 里的字符类含一个双引号，
+ *      朴素实现会把它当成字符串开头，之后所有注释与字符串判断全部错位
+ *      （lib/src-scan.js 的头部注释记录了这次事故）。
+ *   ② 只剥「整行」注释（行首到行尾的那一类），行尾注释里的文字被留下，
+ *      于是「某个词只出现在注释里」也会被当成代码命中，断言假绿。
+ * 实测同一份 main.js：朴素实现剥后 164145 字符，src-scan 剥后 163767 字符 ——
+ * 差的 378 字符正是没被去掉的行尾注释，它们会参与后续正则匹配。
+ */
+
+const stripComments = require('../lib/src-scan').stripComments;
 /* 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/acl-links.js：
  * 这里读「主进程全部源码」（main.js 在前，ipc/ 下的文件按名排序在后）——
  * 断言的语义是「主进程里有这个实现」，与它被放在哪个文件无关。 */
@@ -82,7 +92,14 @@ t('① normalizeForComparePath 把 8.3 短名解析成长名', () => {
     let short = '';
     try { short = shortPath(long); } catch (e) { short = ''; }
     if (!short || short.toLowerCase() === long.toLowerCase()) {
-      console.log('      （本机未生成 8.3 短名，跳过这条的短名断言）');
+      /* 【跳过必须让 CI 看见】
+       * 原来这里只打一行带 6 个空格缩进的说明然后 return —— 既不 FAIL 也不 SKIP，
+       * CI 的 `grep -E '^(FAIL|SKIP) '` 抓不到任何东西。
+       * 后果：在关闭了 8.3 短名生成的卷（ntfs 8dot3name=0）上，
+       * normalizeForComparePath 的短名解析能力**完全没被测过**，CI 照样全绿。
+       * 改成以 `SKIP ` 开头：GitHub Actions 会把它作为 annotation 报出来，
+       * reviewer 一眼能看出这一轮少测了一条。 */
+      console.log('SKIP 本机未生成 8.3 短名，normalizeForComparePath 的短名解析未被测到（卷可能关了 8dot3name）');
       return;
     }
     assert.ok(/~\d/.test(short), '短名应带 ~N：' + short);

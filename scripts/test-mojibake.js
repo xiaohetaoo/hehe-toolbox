@@ -187,11 +187,25 @@ t('运行时没有 GBK 解码器时要退回小样本，不能崩也不能变成
    * 而不是：
    *   · 崩（模块加载失败，整个乱码工具不可用）
    *   · 变成空集合（commonRatio 恒为 0，所有文本都被判「生僻」，比原来更糟）
-   * 做法：注入一个只认 utf-8 的 TextDecoder，重新加载一份 lib，检查降级结果。
-   * 这是行为断言 —— 真的跑那条降级分支，不是匹配源码。 */
-  const fs = require('fs');
+   *
+   * 【必须在子进程里跑，不能在本进程替换 globalThis.TextDecoder】
+   * 这条测试最初的写法是把桩拼在 lib 源码前面、require 一份临时副本。
+   * 但那个桩是 `globalThis.TextDecoder = class {...}` —— 改的是**全局**，
+   * 而 finally 只 unlink 了临时文件、只 delete require.cache，
+   * **没有还原 globalThis.TextDecoder**（实测确认）。
+   * 后果：本文件第 184 行之后的所有用例都在「没有 GBK 解码器」的环境里跑，
+   * 包括第 422 行「候选表里不许出现重复条目」等依赖真实解码的断言。
+   * 实测探针：紧接这条之后 `new TextDecoder('gbk')` 直接抛
+   * `RangeError: Unknown encoding: gbk`。
+   * 更隐蔽的是它**当时仍然全绿** —— 后续断言恰好不依赖 GBK 解码器的存在，
+   * 于是缺陷被伪装成正常。这种「测试污染了环境但恰好没红」比直接失败更危险。
+   *
+   * 所以改成：起一个子进程跑降级验证，本进程的 TextDecoder 一个字符都不碰。
+   * 子进程里同样保留「用完即弃」的语义 —— 进程退出，全局状态自然消失。 */
+  const cp = require('child_process');
   const os = require('os');
   const path = require('path');
+  const fs = require('fs');
   const SRC = path.resolve(__dirname, '..', 'lib', 'mojibake.js');
   const stub = '\nconst __RealTD = TextDecoder;\n' +
     'globalThis.TextDecoder = class {\n' +
@@ -201,21 +215,41 @@ t('运行时没有 GBK 解码器时要退回小样本，不能崩也不能变成
     '  }\n' +
     '  decode(b) { return this._td.decode(b); }\n' +
     '};\n';
-  const tmp = path.join(os.tmpdir(), 'mj-noicu-' + Date.now() + '.js');
-  fs.writeFileSync(tmp, stub + fs.readFileSync(SRC, 'utf8'));
+  const tmp = path.join(os.tmpdir(), 'mj-noicu-' + process.pid + '-' + Date.now() + '.js');
+  /* 让子进程把结论以 JSON 打到 stdout：父进程只读结果，不 import 任何东西 */
+  const tail = '\n;process.stdout.write(JSON.stringify({\n' +
+    '  len: module.exports.COMMON_HANZI.length,\n' +
+    '  fbLen: module.exports.FALLBACK_HANZI.length,\n' +
+    '  hasReplacement: module.exports.COMMON_HANZI.indexOf(String.fromCharCode(0xFFFD)) !== -1,\n' +
+    '  scoreOk: module.exports.scoreText("\u8fd9\u662f\u4e00\u6bb5\u6b63\u5e38\u4e2d\u6587") > 0,\n' +
+    '  analyzeOk: !!module.exports.analyzeMojibake("\u6d4b\u8bd5").best\n' +
+    '}));\n';
+  fs.writeFileSync(tmp, stub + fs.readFileSync(SRC, 'utf8') + tail);
+  let out;
   try {
-    delete require.cache[tmp];
-    const M2 = require(tmp);
-    assert.strictEqual(M2.COMMON_HANZI.length, M2.FALLBACK_HANZI.length,
-      '没有 GBK 解码器时字库长度是 ' + M2.COMMON_HANZI.length + '，应当退回保底样本');
-    assert.ok(M2.COMMON_HANZI.length > 0, '字库退回成了空集（比不退回更糟）');
-    assert.strictEqual(M2.COMMON_HANZI.indexOf('\uFFFD'), -1, '保底样本里混进了替换字符');
-    assert.ok(M2.scoreText('这是一段正常中文') > 0, '降级后判分不可用');
-    assert.ok(M2.analyzeMojibake('测试').best, '降级后分析不可用');
-  } finally {
-    try { fs.unlinkSync(tmp); } catch (e) { /* 清理失败不影响结论 */ }
-    delete require.cache[tmp];
+    out = cp.execFileSync(process.execPath, [tmp], { encoding: 'utf8', timeout: 30000 });
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (e2) { /* 清理失败不影响结论 */ }
+    assert.fail('降级验证的子进程没能跑完（' +
+      (e.stderr || e.message || '').toString().slice(0, 300) + '）');
   }
+  try { fs.unlinkSync(tmp); } catch (e) { /* 清理失败不影响结论 */ }
+
+  const r = JSON.parse(out);
+  assert.strictEqual(r.len, r.fbLen,
+    '没有 GBK 解码器时字库长度是 ' + r.len + '，应当退回保底样本（' + r.fbLen + ' 字）');
+  assert.ok(r.len > 0, '字库退回成了空集（比不退回更糟）');
+  assert.strictEqual(r.hasReplacement, false, '保底样本里混进了替换字符');
+  assert.strictEqual(r.scoreOk, true, '降级后判分不可用');
+  assert.strictEqual(r.analyzeOk, true, '降级后分析不可用');
+
+  /* 再确认本进程没被污染 —— 这条是上面那个缺陷的回归锁。
+   * 如果哪天有人把实现改回「在本进程替换 TextDecoder」，这里立刻红。 */
+  let realGbk;
+  try { realGbk = new TextDecoder('gbk').decode(new Uint8Array([0xC4, 0xE3])); } catch (e) { realGbk = 'THROW'; }
+  assert.strictEqual(realGbk, '你',
+    '本进程的 TextDecoder 被降级测试污染了（GBK 解码返回 ' + JSON.stringify(realGbk) +
+    '），后续用例会在错误的环境里跑');
 });
 
 /* 【三条「报告案例」的写法说明】

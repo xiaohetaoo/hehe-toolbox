@@ -21,7 +21,23 @@ const strip = (s) => require(path.join(ROOT, 'lib', 'src-scan')).stripComments(s
 t('main.js 行数确实下降了（拆分前 7722 行）', () => {
   const n = read(MAIN).split('\n').length;
   assert.ok(n < 7000, 'main.js 仍是 ' + n + ' 行 —— 拆分没生效，或搬出去的东西又被搬回来了');
-  assert.ok(n > 5000, 'main.js 只剩 ' + n + ' 行，疑似误删（正常情况下应在 6000 上下）');
+  /* 【下限不能用硬编码的绝对行数】
+   * 原实现是 `assert.ok(n > 5000, '…疑似误删…')`。这个下限离当时的 6213 行
+   * 只有 1200 行余量，而这个文件自身的目的就是「main.js 瘦身」：
+   * 再搬走两个域（就像任务 5 那样，一次 1500 行）就会掉到 4999，
+   * CI 立刻报「疑似误删」，而实际上什么都没丢。
+   *
+   * 改成**是否还有实现留在 main.js** 的结构性判断：
+   * 只要 main.js 里仍注册着大量 handler、仍有顶层函数定义，就不可能是误删。
+   * 这比行数直接：真误删会把 handler 一起删掉，那种情况下面这条会红。
+   * 上限（< 7000）保留 —— 它防的是「搬出去的东西又搬回来了」，那个方向是对的。 */
+  const src = read(MAIN);
+  const handlers = (src.match(/^handle\(/gm) || []).length;
+  const topFns = (src.match(/^(?:async\s+)?function\s+\w+/gm) || []).length;
+  assert.ok(handlers >= 100,
+    'main.js 里只剩 ' + handlers + ' 个 handle() 注册 —— 疑似误删（正常还有 150+ 个 IPC 处理器）');
+  assert.ok(topFns >= 80,
+    'main.js 里只剩 ' + topFns + ' 个顶层函数 —— 疑似误删（正常还有 100+ 个）');
 });
 
 /* ---- 2. 搬走的代码不再留在 main.js（否则是两份实现，必然分叉） ---- */

@@ -181,6 +181,29 @@ function createSuite(opts) {
       await Promise.all(pending);
       pending.length = 0;
     }
+    /* 【一条用例都没注册 = 失败，不是通过】
+     * 有些脚本的前置探针失败时走 `done(); return;`（例如 test-tool-i18n-e2e
+     * 没拿到 Electron 落盘的 TI18N）。那时 0 条用例被注册，
+     * 原来的行为是打印「0 通过 / 0 失败」并 exit 0 —— CI 的
+     * `grep -E '^(FAIL|SKIP) '` 抓不到任何东西，看起来全绿。
+     * 实测过这个形态：一个只 `require(harness); done();` 的脚本
+     * 输出「结果: 0 通过 / 0 失败」、退出码 0。
+     *
+     * 这正是「CI 静默少跑」最隐蔽的一种：不是测试失败，是测试消失了。
+     * 所以这里硬性要求至少注册过一条用例；想表达「环境不满足、主动跳过」
+     * 的脚本必须显式打印一行以 `SKIP ` 开头的日志（CI 会把它当 annotation
+     * 报出来，人能看见），而不是悄悄以 0 结束。
+     *
+     * 为什么做成 harness 级而不是逐个脚本改：这个形态在 44 个用 harness 的
+     * 脚本里都可能出现（任何「前置条件不满足就提前收尾」的分支），
+     * 逐处防守必然会漏。收在出口处，新增脚本自动受保护。 */
+    if (pass + fail === 0) {
+      console.log('\n结果: 0 通过 / 0 失败');
+      console.log('FAIL  套件一条用例都没注册' + failSep +
+        '前置探针失败或条件分支提前收尾时，必须打印以「SKIP 」开头的说明并自行决定退出码，' +
+        '不能用 done() 静默通过（CI 的 grep 抓不到任何输出）');
+      process.exit(1);
+    }
     console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
     process.exit(fail ? 1 : 0);
   }
