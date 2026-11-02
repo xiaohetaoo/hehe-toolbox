@@ -26,7 +26,6 @@ const fs = require('fs');
 const path = require('path');
 
 const { t, done, ROOT, readSrc } = require('./lib/harness');
-const { stripComments } = require(path.join(ROOT, 'lib', 'src-scan'));
 
 /* ============================================================
  * 白名单：确实没有独立测试、且理由成立的模块。
