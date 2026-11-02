@@ -128,5 +128,44 @@ chk(/@keyframes pageEnter/.test(cssSrc), 'pageEnter 关键帧存在');
 chk(!/\.page\s*\{[\s\S]{0,80}pageEnter/.test(cssSrc.replace(/\.page\.page-enter/g, '')),
     '首帧动画没有和切页用的 fadeIn 混在一起');
 
+/* ============ 首帧语言（原 test-round8-fixes.js ④c） ============ */
+const appSrcText = fs.readFileSync(path.join(ROOT, 'js', 'app.js'), 'utf8');
+/* ^ 首帧语言、applyLang、readLangSync 都在渲染层外壳里，不在主进程 */
+/*
+ * 锁的是：启动时先 await store:get('settings.lang') 再 buildShell()，
+ * 于是壳用默认中文建好了、语言才回来 —— 用户看到的第一帧是中文，
+ * 然后闪一下变成英文。改成同步读 localStorage 再建壳，首帧就是对的。
+ * 另一条锁的是"同步读"这件事必须被写进缓存：只读不写的话，
+ * 用户第一次切语言之后仍然要等一次 store 往返。 */
+if (!/applyLang\(readLangSync\(\)\)/.test(appSrcText)) {
+  chk(false, '首帧语言没有走同步读取（应 applyLang(readLangSync())）');
+} else {
+  chk(true, '首帧语言走同步读取（applyLang(readLangSync())）');
+}
+
+chk(/function readLangSync/.test(appSrcText), '渲染层有 readLangSync 定义（同步读缓存的入口）');
+
+/* buildShell 必须排在 store:get 之前 —— 否则首帧仍会闪中文 */
+const domStart = appSrcText.indexOf("document.addEventListener('DOMContentLoaded'");
+chk(domStart > 0, '能找到 DOMContentLoaded 处理器');
+if (domStart > 0) {
+  const dom = appSrcText.slice(domStart);
+  const buildIdx = dom.indexOf('buildShell()');
+  const storeIdx = dom.indexOf("invoke('store:get', 'settings.lang'");
+  chk(buildIdx > 0 && storeIdx > 0, '能找到 buildShell() 与 store:get 调用');
+  chk(!(buildIdx > 0 && storeIdx > 0) || buildIdx < storeIdx,
+    'buildShell 在 store:get 之后 —— 首帧仍会闪中文');
+}
+
+/* applyLang 要把语言同步写进 localStorage（readLangSync 才能读到） */
+const langBody = (() => {
+  const s = appSrcText.indexOf('function applyLang(v)');
+  if (s < 0) return '';
+  const e = appSrcText.indexOf('\n  }', s);
+  return appSrcText.slice(s, e);
+})();
+chk(/localStorage\.setItem\('hehe-lang'/.test(langBody), 'applyLang 把语言写进了本地缓存');
+chk(/localStorage\.getItem\('hehe-lang'/.test(appSrcText), 'readLangSync 从本地缓存读语言');
+
 console.log('\n结果: ' + (fail === 0 ? '全部通过' : fail + ' 项失败'));
 process.exit(fail === 0 ? 0 : 1);

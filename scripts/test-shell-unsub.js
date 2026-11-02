@@ -1,5 +1,9 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readSrc, readMain } = require('./lib/harness');
+/* 渲染层外壳源码（首帧语言、托盘通知、sub 登记都在这里）。 */
+const appSrc = readSrc('js/app.js', { raw: true });
+/* 主进程源码：shellCleanup / sub 的实现在 main.js 里。 */
+const mainSrc = readMain({ raw: true });
 /* ① 的机制验证：证明「sub 收集 + shellCleanup 统一退订」这个模式真的不累积。
  *
  * 为什么不在 Electron 里直接数监听器：主进程 send 到渲染层的桥在测试环境里
@@ -100,5 +104,55 @@ t('cleanup 是幂等的（重复调用不会报错）', () => {
   s.cleanup(); s.cleanup(); s.cleanup();
   for (const e of EVENTS) assert.strictEqual(bus.count(e), 0, e + ' 应已清空');
 });
+
+t('buildShell 里没有裸 on(...) 订阅（全部经 sub 登记退订）', () => {
+  const bs = (() => {
+    const start = appSrc.indexOf('function buildShell()');
+    assert.ok(start > 0, '找不到 buildShell');
+    // 用括号配平取出函数体
+    let i = appSrc.indexOf('{', start), depth = 0;
+    for (; i < appSrc.length; i++) {
+      if (appSrc[i] === '{') depth++;
+      else if (appSrc[i] === '}') { depth--; if (depth === 0) break; }
+    }
+    return appSrc.slice(start, i + 1);
+  })();
+
+  // 裸 on('x:y', …) 出现即失败（注释里提到 on( 的不算，先剥注释）
+  const code = bs.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const bare = [...code.matchAll(/\bon\(\s*'([^']+)'/g)].map((m) => m[1]);
+  // 允许：定义 sub 自己内部的那次 on(...)
+  const offenders = bare.filter((n) => {
+    const idx = code.indexOf("on('" + n);
+    const before = code.slice(Math.max(0, idx - 40), idx);
+    return !/const\s+u\s*=/.test(before);
+  });
+  assert.deepStrictEqual(offenders, [], '这些订阅没登记退订：' + offenders.join(', '));
+});
+
+t('shellCleanup 会调用所有已登记的退订函数', () => {
+  assert.ok(mainSrc.length > 0);
+  /* 锁的是：shellCleanup 用 `for (const u of shellUnsubs)` 遍历但不 splice。
+   * 那样数组永远不清空，重建一次就多攒一批 —— 第 N 次切语言后
+   * 同一个事件会触发 N 次回调（托盘更新 N 次、通知弹 N 个）。
+   * 为什么只能断言形态：本文件另外 3 条用真实 bus 验行为，
+   * 但那条验的是"同一个模式如果写对就不累积"，不能证明源码里真的清空了。 */
+  assert.ok(/shellUnsubs\.splice\(0\)/.test(appSrc), 'shellCleanup 里没有清空 shellUnsubs');
+  /* 锁的是：只清空数组但不调用退订函数 —— 监听器还在，只是不再被管理，
+   * 变成永久泄漏（比不清空更糟：连"重建前统一清理"的机会都没了）。 */
+  assert.ok(/for \(const u of shellUnsubs\.splice\(0\)\)/.test(appSrc), '没有逐个调用退订函数');
+});
+
+t('报告点名的 9 个事件都走 sub 登记', () => {
+  const EVENTS = ['sys:stats', 'win:maximized', 'hotkey:pressed', 'snip:ocr',
+                  'sched:fire', 'tray:err', 'snip:region', 'app:open-tool', 'app:already-running'];
+  const missing = [];
+  for (const ev of EVENTS) {
+    if (!new RegExp("sub\\('" + ev + "'").test(appSrc)) missing.push(ev);
+  }
+  assert.deepStrictEqual(missing, [], '这些事件没用 sub 登记：' + missing.join(', '));
+});
+
+/* ============ ② 录制覆盖 ============ */
 
 done();

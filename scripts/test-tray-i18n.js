@@ -1,5 +1,12 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain, readSrc } = require('./lib/harness');
+/* 【迁移说明】用例来自 test-round8-fixes.js，原先用 fs.readFileSync(main.js)。
+ * 任务 6 之后 ffmpeg:/target:/rec: 等域搬到了 ipc/，所以读「主进程全部源码」——
+ * 断言的语义一直是"主进程里有这个实现"，与它在哪个文件无关。 */
+const mainSrc = readMain({ raw: true });
+
+/* 渲染层外壳源码（首帧语言、托盘通知、sub 登记都在这里）。 */
+const appSrc = readSrc('js/app.js', { raw: true });
 /* ④b 的**行为**验证：托盘文案真的会随语言切换。
  *
  * 静态测试只能证明「源码里没有写死中文」，证明不了「切语言时真的重建了」。
@@ -142,4 +149,40 @@ t('渲染层启动时通过 app:set-lang 把语言传给了主进程', () => {
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });
+
+t('主进程托盘菜单有中英两套文案，不再写死中文', () => {
+  assert.ok(/const TRAY_I18N/.test(mainSrc), '主进程没有托盘文案表');
+  const decl = mainSrc.slice(mainSrc.indexOf('const TRAY_I18N'));
+  const block = decl.slice(0, decl.indexOf('\n};') + 3);
+  assert.ok(/zh:\s*\{/.test(block), '缺少中文文案');
+  assert.ok(/en:\s*\{/.test(block), '缺少英文文案');
+  // 托盘菜单必须走 trayText()，不能有裸中文字面量
+  const trayFn = mainSrc.slice(mainSrc.indexOf('function createTray()'));
+  const trayBody = trayFn.slice(0, trayFn.indexOf('\n}') + 2);
+  assert.ok(/trayText\('show'\)/.test(trayBody), '菜单项没用 trayText');
+  const CJK = /[\u4e00-\u9fff]/;
+  const hard = [...trayBody.matchAll(/label:\s*'([^']*)'/g)]
+    .map((m) => m[1]).filter((s) => CJK.test(s));
+  assert.deepStrictEqual(hard, [], '托盘菜单仍有写死中文：' + hard.join(' | '));
+});
+
+t('渲染层切语言时会通知主进程更新托盘', () => {
+  assert.ok(/handle\('app:set-lang'/.test(mainSrc), '主进程没有 app:set-lang 通道');
+  const body = (() => {
+    const s = appSrc.indexOf('function applyLang(v)');
+    const e = appSrc.indexOf('\n  }', s);
+    return appSrc.slice(s, e);
+  })();
+  assert.ok(/invoke\('app:set-lang',\s*lang\)/.test(body), 'applyLang 没把语言传给主进程');
+});
+
+t('定时任务通知的标题走 i18n', () => {
+  const i18n = fs.readFileSync(path.join(ROOT, 'js', 'i18n.js'), 'utf8');
+  assert.ok(/notify\.schedTitle/.test(i18n), '缺 notify.schedTitle 词条');
+  assert.ok(/notify\.schedBody/.test(i18n), '缺 notify.schedBody 词条');
+  // app.js 里那条通知不能再写死中文标题
+  assert.ok(!/new Notification\('核核工具箱 · 定时任务'/.test(appSrc),
+    '定时任务通知标题仍是写死的中文');
+});
+
 done();

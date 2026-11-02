@@ -142,5 +142,32 @@ t('main.js 引用了 lib/power-gate 且无本地正则副本', () => {
   assert.ok(/powerGate\.checkPowerGate/.test(src), 'assertPowerAllowed 未委托');
 });
 
+t('文件名/参数里带危险词的日常命令不被误拦', () => {
+  const pg = require('../lib/power-gate');
+  const SAFE = [
+    'del shutdown.log', 'ren shutdown.txt x.txt', 'copy shutdown.exe d:\\',
+    'tasklist | findstr shutdown', 'move shutdown.log backup\\',
+    'notepad shutdown.log', 'type shutdown.txt', 'echo shutdown',
+    'python shutdown.py', 'node shutdown.js', 'git commit -m "shutdown fix"',
+    'mkdir shutdown_backup', 'attrib +r shutdown.log', 'msiexec /i shutdown.msi',
+    'taskkill /f /im shutdown.exe', 'del C:\\Windows\\System32\\shutdown.exe',
+  ];
+  const wrong = SAFE.filter((c) => pg.isPowerCommand(c));
+  assert.deepStrictEqual(wrong, [], '被误判为电源命令：' + wrong.join(' | '));
+});
+
+t('真正的电源命令仍然拦得住', () => {
+  const pg = require('../lib/power-gate');
+  const DANGER = [
+    'shutdown /s /t 0', 'shutdown -h now', 'cmd /c shutdown /s',
+    'powershell -Command "Stop-Computer"',
+    'rundll32 powrprof.dll,SetSuspendState 0,1,0',
+  ];
+  const missed = DANGER.filter((c) => !pg.isPowerCommand(c));
+  assert.deepStrictEqual(missed, [], '漏拦了真正的电源命令：' + missed.join(' | '));
+});
+
+/* ============ ④b 托盘/通知跟随语言 ============ */
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

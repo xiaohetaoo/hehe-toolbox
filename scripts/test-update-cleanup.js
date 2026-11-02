@@ -1,5 +1,9 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
+/* 【迁移说明】用例来自 test-round8-fixes.js，原先用 fs.readFileSync(main.js)。
+ * 任务 6 之后 ffmpeg:/target:/rec: 等域搬到了 ipc/，所以读「主进程全部源码」——
+ * 断言的语义一直是"主进程里有这个实现"，与它在哪个文件无关。 */
+const mainSrc = readMain({ raw: true });
 /* 行为验证：update:cleanup 的判定逻辑（不能靠“代码里有 cmpVer”就算数）。
  * 复刻 main.js 里的取舍规则，在临时目录造出各种版本号的包，看谁被删、谁被留。
  */
@@ -100,4 +104,65 @@ t('cmpVer 语义正确', () => {
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });
+
+t('升级备份有回收逻辑且保留最近几份', () => {
+  assert.ok(/function pruneExeBackups/.test(mainSrc), '没有 pruneExeBackups');
+  const body = (() => {
+    const s = mainSrc.indexOf('async function pruneExeBackups');
+    const e = mainSrc.indexOf('\n}', s);
+    return mainSrc.slice(s, e);
+  })();
+  assert.ok(/\.slice\(keep\)/.test(body), '没有按保留数截断');
+  assert.ok(/\.bak\./.test(body), '没有识别带时间戳的备份');
+  assert.ok(/update:cleanup/.test(mainSrc), 'update:cleanup 应存在');
+  // 接入点
+  const uc = mainSrc.slice(mainSrc.indexOf("handle('update:cleanup'"));
+  assert.ok(/pruneExeBackups/.test(uc.slice(0, 2500)), 'update:cleanup 没有调用 pruneExeBackups');
+});
+
+/* 真实跑一遍 prune 的文件名排序逻辑（不依赖 Electron）
+ *
+ * 【这条用例是异步的，输出位置因此与迁移前不同 —— 这是修好了一个隐患】
+ * 它返回 Promise。迁移前那份自建 t() 是**同步**的：
+ *     try { fn(); pass++; console.log('PASS  ' + name); } catch ...
+ * 于是它拿到 Promise 就当通过了，立刻打 PASS（所以原来这条排在第 7 位），
+ * **异步断言如果失败根本不会被记录**（Promise reject 时已经没人接了）。
+ * 公共骨架 scripts/lib/harness.js 的 t() 会识别 thenable 并等待，
+ * 因此这条现在落在结果行之前（最后一位），而且失败能被抓到了。
+ * 断言集合与原版完全一致（已逐条核对）。
+ */
+
+t('时间戳备份按时间排序、只留最新的', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bakprune-'));
+  const exe = 'hehe-toolbox-Portable-9.9.9.exe';
+  fs.writeFileSync(path.join(dir, exe + '.bak'), 'x');
+  const stamps = ['20260101-010101', '20260202-020202', '20260303-030303',
+                  '20260404-040404', '20260505-050505'];
+  for (const s of stamps) fs.writeFileSync(path.join(dir, exe + '.bak.' + s), 'x');
+
+  // 复用主进程里的实现：抽出来在本地求值
+  const impl = (() => {
+    const s = mainSrc.indexOf('async function pruneExeBackups');
+    const e = mainSrc.indexOf('\n}', s);
+    return mainSrc.slice(s, e + 2);
+  })();
+  // 用 Function 包一层，注入 fsp/path
+  const fsp = require('fs/promises');
+  const fn = new Function('fsp', 'path', impl + '\nreturn pruneExeBackups;')(fsp, path);
+  return fn(path.join(dir, exe), 3).then((r) => {
+    const left = fs.readdirSync(dir).filter((n) => n.includes('.bak.'));
+    assert.strictEqual(left.length, 3, '应剩 3 份时间戳备份，实际 ' + left.length);
+    assert.strictEqual(r.removed, 2, '应删掉 2 份，实际 ' + r.removed);
+    // 保留的必须是**最新**的三份
+    for (const keep of ['20260303-030303', '20260404-040404', '20260505-050505']) {
+      assert.ok(left.includes(exe + '.bak.' + keep), '应保留最新的一份 ' + keep);
+    }
+    // .bak 本体永远不动
+    assert.ok(fs.existsSync(path.join(dir, exe + '.bak')), '.bak 本体不该被删');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/* ============ ④c 首帧语言 ============ */
+
 done();
