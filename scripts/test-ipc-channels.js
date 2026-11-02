@@ -23,7 +23,7 @@ const strip = (s) => require(path.join(ROOT, 'lib', 'src-scan')).stripComments(s
 /* 主进程注册的通道。
  *
  * 【任务 5 之后必须扫**整个主进程**，不能只读 main.js】
- * 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/acl-links.js ——
+ * 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/dir-acl-links.js ——
  * 那 8 个 handle(dirMoveCh.X.Y, ...) 现在不在 main.js 里了。
  * 只读 main.js 的话，注册总数会从 164 掉到 156，而渲染层仍在用这 8 个通道，
  * 于是「渲染层引用了没注册的通道」会误报 8 条 —— 看起来像功能被删了。

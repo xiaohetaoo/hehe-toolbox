@@ -97,7 +97,7 @@ function readTree(relDir, opts) {
  * 读「主进程」全部源码：main.js + ipc/ 目录下所有文件，按固定顺序拼接。
  *
  * 【为什么需要它】任务 5 把「目录搬家 + 权限/链接」两个域从 main.js 搬到了
- * ipc/acl-links.js。原来的测试都用 `readSrc('main.js')` 或
+ * ipc/dir-acl-links.js。原来的测试都用 `readSrc('main.js')` 或
  * `fs.readFileSync('main.js')` 去找 handler / 找函数实现，搬完之后统一报
  * 「找不到 handler: link:remove」「找不到 rmQueryLockers」—— 而它们要验的
  * 语义是「主进程里有没有这个实现」，与代码在哪个文件无关。

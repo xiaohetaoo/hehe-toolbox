@@ -2,7 +2,7 @@
 const { t, done, ROOT } = require('./lib/harness');
 /* 任务 5 拆分的完整性守卫。
  *
- * 这一轮把 1561 行从 main.js 搬到 ipc/acl-links.js。下面每一条都对应一个
+ * 这一轮把 1561 行从 main.js 搬到 ipc/dir-acl-links.js。下面每一条都对应一个
  * 真实会让拆分静默失效的断裂点 —— 它们在搬迁过程中全部实际踩过一遍，
  * 而且**没有一个**会被 node --check 或单纯跑测试抓到。
  */
@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MAIN = path.join(ROOT, 'main.js');
-const ACL = path.join(ROOT, 'ipc', 'acl-links.js');
+const ACL = path.join(ROOT, 'ipc', 'dir-acl-links.js');
 const CTX = path.join(ROOT, 'ipc', 'ctx.js');
 
 const read = (p) => fs.readFileSync(p, 'utf8');
@@ -56,11 +56,11 @@ t('搬走的 21 个函数在 main.js 里已经没有定义', () => {
     if (new RegExp('(?:async\\s+)?function\\s+' + n + '\\s*\\(').test(code)) dup.push(n);
   }
   assert.deepStrictEqual(dup, [],
-    '这些函数在 main.js 与 ipc/acl-links.js 里各有一份（两份实现必然分叉）：\n  ' + dup.join('\n  '));
+    '这些函数在 main.js 与 ipc/dir-acl-links.js 里各有一份（两份实现必然分叉）：\n  ' + dup.join('\n  '));
 });
 
 /* ---- 3. 两个域的 8 个通道全部搬到了模块里 ---- */
-t('8 个通道的 handle 注册都在 ipc/acl-links.js 里', () => {
+t('8 个通道的 handle 注册都在 ipc/dir-acl-links.js 里', () => {
   const acl = strip(read(ACL));
   const KEYS = [
     'DIR_MOVE.PRECHECK', 'DIR_MOVE.MOVE',
@@ -112,9 +112,9 @@ t('搬走的代码不直接引用 win / send / jobSeq（必须走 ctx）', () =>
 /* ---- 7. ctx 真的被当参数传进去了 ---- */
 t('main.js 用 register(ctx, deps) 调用模块，且 deps 里带 handle', () => {
   const code = strip(read(MAIN));
-  assert.ok(/require\('\.\/ipc\/acl-links'\)(\(|$)/.test(code) || /require\('\.\/ipc\/acl-links'\)\(ipcCtx/.test(code),
-    'main.js 没有调用 ipc/acl-links 的 register');
-  const call = code.slice(code.indexOf("require('./ipc/acl-links')"));
+  assert.ok(/require\('\.\/ipc\/dir-acl-links'\)(\(|$)/.test(code) || /require\('\.\/ipc\/dir-acl-links'\)\(ipcCtx/.test(code),
+    'main.js 没有调用 ipc/dir-acl-links 的 register');
+  const call = code.slice(code.indexOf("require('./ipc/dir-acl-links')"));
   const seg = call.slice(0, 700);
   assert.ok(/ipcCtx/.test(seg), '没有把 ipcCtx 传进去');
   for (const k of ['handle', 'ps', 'runCmd', 'pathExists', 'shortErr', 'PS_PATH_BATCH']) {

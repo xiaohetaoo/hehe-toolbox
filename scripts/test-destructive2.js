@@ -44,7 +44,7 @@ function body(src, channel) {
 
 const stripComments = require('../lib/src-scan').stripComments;
 
-/* 任务 5 把搬家/权限两个域搬到 ipc/acl-links.js：这里读「主进程全部源码」
+/* 任务 5 把搬家/权限两个域搬到 ipc/dir-acl-links.js：这里读「主进程全部源码」
  * （main.js + ipc/），断言的语义是「主进程里有这个实现」，与文件无关。 */
 const main = readMain();
 

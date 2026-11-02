@@ -26,7 +26,7 @@ function rendererUses(src, literal, expr) {
   return src.includes("invoke('" + literal + "'") || src.includes(expr);
 }
 function handlerBlock(mainSrc, literal, expr) {
-  /* 任务 5 把这两个域搬到了 ipc/acl-links.js，那里的常量别名是 CH，
+  /* 任务 5 把这两个域搬到了 ipc/dir-acl-links.js，那里的常量别名是 CH，
    * 而调用方传进来的是 readMain()（main.js + ipc/ 拼接）。
    * 所以三种形态都要试：字面量 / dirMoveCh.<键> / CH.<键>。 */
   let i = mainSrc.indexOf("handle('" + literal + "'");

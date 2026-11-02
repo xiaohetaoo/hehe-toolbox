@@ -1,6 +1,13 @@
 'use strict';
 /* 目录搬家（dir:move*）+ 权限与链接（acl:* / link:* / file:who-locks*）两个 IPC 域。
  *
+ * 【文件名为什么叫 dir-acl-links，而不是原来的 acl-links】
+ * 本文件最大的两块逻辑是**目录搬家**：dirMoveRun（约 320 行）、
+ * copyTreeExcludingLinks、restoreLinksIntoTarget、verifyCopy、
+ * linkTargetAbs、isInsideTree、normalizeForComparePath。原来的名字只提
+ * acl/links，想找 `dir:move` 的人 grep `ipc/dir-move` 会一无所获。
+ * 改名不改变任何代码归属 —— 下面这段「为什么合在一起」的论证仍然成立。
+ *
  * 【任务 5 从 main.js 搬出，逻辑逐字搬移，未改语义】
  * 函数体与 handler 体原样来自 main.js，只把两类引用改成显式参数：
  *   1) 闭包状态（win / jobs / send / jobSeq）→ ctx（见 ipc/ctx.js）；
@@ -10,7 +17,7 @@
  * 【为什么这两个域在同一个文件里】
  * 实测依赖图：它们共享 19 个辅助函数。dirMoveRun 直接调用 collectLinks 与
  * linkNatures；ACL 诊断用 readAclFacts；verifyCopy 用 hashFile。
- * 硬拆成 ipc/dir-move.js + ipc/acl-links.js 会让其中一半变成「必须跨模块
+ * 硬拆成 ipc/dir-move.js + ipc/dir-acl-links.js 会让其中一半变成「必须跨模块
  * 导出才能用」，反而制造新的耦合 —— 与「降低维护成本」的目标相反。
  * 所以按真实依赖组织成一个模块。
  *

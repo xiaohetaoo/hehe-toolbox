@@ -51,7 +51,7 @@ js/
   tools/media/     多媒体工具（任务 9 从 media.js 拆成 17 个文件，shared.js 必须最先加载）
 ipc/
   ctx.js           主进程闭包状态的显式上下文（窗口/任务表/任务序号/推送）
-  acl-links.js     目录搬家 + 权限/链接两个 IPC 域（任务 5 从 main.js 搬出）
+  dir-acl-links.js     目录搬家 + 权限/链接两个 IPC 域（任务 5 从 main.js 搬出）
 ```
 
 - 配置与数据保存在 `%APPDATA%/hehe-toolbox/hehe-data.json`（收藏、最近使用、剪贴板历史、便签、快捷项、命令收藏），全部本地存储。

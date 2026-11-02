@@ -39,7 +39,7 @@ const lanScanLib = require('./lib/lan-scan');         // 局域网扫描：ARP �
  * 避免"新增一种产物忘了登记白名单"（.hehe-7zx-* 那次残留事故的根因）。 */
 const tempNames = require('./lib/temp-names');
 /* 【任务 5 之后这里少了 5 个 require】rm-lockers / links / dir-move /
- * acl-repair / channels 现在只被 ipc/acl-links.js 使用 —— 那两个域连同
+ * acl-repair / channels 现在只被 ipc/dir-acl-links.js 使用 —— 那两个域连同
  * handle(dirMoveCh.X.Y, ...) 一起搬过去了，模块自己 require 它们。
  * 留着这些 require 就是「main.js 顶部引了但没人用」，ESLint 的
  * no-unused-vars 会立刻报出来（它确实报了，我才发现的）。 */
@@ -5849,7 +5849,8 @@ async function ctxClassicState() {
 }
 handle('ctxmenu:classic-status', async () => ({ on: await ctxClassicState() }));
 
-/* ============ 目录搬家 + 权限/链接 两个域（任务 5 搬到 ipc/acl-links.js）============
+/* ============ 目录搬家 + 权限/链接 两个域（任务 5 搬到 ipc/dir-acl-links.js）============
+ * dir:move 的实现也在那个模块里（历史原因见该文件头部）。
  * 这两个域原来在这里占 1561 行。搬走之后 main.js 只留这一处注册调用。
  *
  * 【为什么传 deps 而不是让模块自己 require】
@@ -5861,7 +5862,7 @@ handle('ctxmenu:classic-status', async () => ({ on: await ctxClassicState() }));
  * disk-health 缓存、硬件面板耦合更紧），但需要管理员判定。
  * 其余 20 个函数搬走后 main.js 已无调用方，不导出（导出越多越容易被顺手引用，
  * 又把耦合接回去）。 */
-const aclLinks = require('./ipc/acl-links')(ipcCtx, {
+const aclLinks = require('./ipc/dir-acl-links')(ipcCtx, {
   handle,
   ps,
   runCmd,

@@ -72,7 +72,7 @@ for (const f of ['main.js', 'preload.js', 'index.html', 'package.json']) {
   fs.writeFileSync(path.join(tmp, f), body);
 }
 /* 【必须把 ipc/ 也拷过去】任务 5 把「目录搬家 + 权限/链接」两个域搬到了
- * ipc/acl-links.js，main.js 里是 require('./ipc/acl-links')。
+ * ipc/dir-acl-links.js，main.js 里是 require('./ipc/dir-acl-links')。
  * 只拷 js/css/lib/assets 的话，临时目录里的应用启动时会直接
  * MODULE_NOT_FOUND —— 而这个测试只在 SKIP 分支里打日志，
  * 很容易被当成「环境受限」而不是「漏拷目录」。 */

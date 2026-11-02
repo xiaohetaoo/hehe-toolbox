@@ -35,7 +35,7 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-/* 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/acl-links.js：
+/* 任务 5 把「目录搬家 + 权限/链接」两个域搬到了 ipc/dir-acl-links.js：
  * 这里读「主进程全部源码」（main.js + ipc/），断言的语义是
  * 「主进程里有这个实现」，与它被放在哪个文件无关。 */
 const mainSrc = readMain();

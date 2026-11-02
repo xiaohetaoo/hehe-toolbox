@@ -22,7 +22,7 @@ const readMedia = () => readTree('js/tools/media');
  * 【要认三种注册形态】任务 6 把两个域的通道名换成了常量（见 lib/channels.js），
  * 所以 handle 可能是 handle('link:remove', ...) ，也可能是
  * handle(dirMoveCh.ACL_LINKS.LINK_REMOVE, ...)；而任务 5 把这两个域搬到了
- * ipc/acl-links.js，那里的常量别名是 CH —— handle(CH.ACL_LINKS.LINK_REMOVE, ...)。
+ * ipc/dir-acl-links.js，那里的常量别名是 CH —— handle(CH.ACL_LINKS.LINK_REMOVE, ...)。
  * 三种都要认，否则「找不到 handler」会误报（本轮真的出现过）。
  *
  * 前提是调用方传进来的是 readMain()（main.js + ipc/ 拼接），不是只有 main.js。 */
@@ -35,7 +35,7 @@ function handlerBody(src, channel) {
       for (const k of Object.keys(table)) if (table[k] === channel) { key = k; break; }
     } catch (e) { /* 表不可用时保持字面量行为 */ }
     if (key) {
-      /* 两种常量别名都试：main.js 用 dirMoveCh，ipc/acl-links.js 用 CH */
+      /* 两种常量别名都试：main.js 用 dirMoveCh，ipc/dir-acl-links.js 用 CH */
       for (const alias of ['dirMoveCh.', 'CH.']) {
         const at = src.indexOf('handle(' + alias + key + ',');
         if (at > 0) { start = at; break; }
@@ -45,7 +45,7 @@ function handlerBody(src, channel) {
   assert.ok(start > 0, '找不到 handler: ' + channel);
   /* 【必须括号配平，不能用 '\n});' 找结尾】
    * 原实现是 `src.indexOf('\n});', start)`。它在 main.js 的单文件时代勉强能用，
-   * 但任务 5 把两个域搬到 ipc/acl-links.js 后，那里的 handler 收尾是
+   * 但任务 5 把两个域搬到 ipc/dir-acl-links.js 后，那里的 handler 收尾是
    * `\n})` 而**不是** `\n});`。于是 indexOf 返回 -1，
    * slice(start, -1) 直接切到**整个文件倒数第二个字符**。
    * 实测：link:remove 14732 字符、link:scan 19124 字符、

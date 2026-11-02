@@ -77,7 +77,7 @@ for (const f of ['main.js', 'preload.js', 'index.html', 'package.json']) {
   if (f === 'main.js') body += PROBE;
   fs.writeFileSync(path.join(tmp, f), body);
 }
-/* 任务 5：main.js require('./ipc/acl-links')，ipc/ 必须一起拷，
+/* 任务 5：main.js require('./ipc/dir-acl-links')，ipc/ 必须一起拷，
  * 否则临时目录里的应用启动即 MODULE_NOT_FOUND（而这个测试只会打一行
  * 「环境受限」的 SKIP，不会变红 —— 很容易被误判成环境问题）。 */
 for (const d of ['js', 'css', 'lib', 'assets', 'ipc']) {

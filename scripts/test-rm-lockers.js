@@ -22,7 +22,7 @@
  * 「注册目录整批 ERR 5」：RmRegisterResources 对**目录**返回
  * ERROR_ACCESS_DENIED(5)，而且是整批失败 —— 只要列表里混进一个目录，
  * 同一批里所有正常文件的占用信息也一起没了。修法是在上层先过滤成文件
- * （见 ipc/acl-links.js 的 rmQueryLockers 注释）。本文件锁住"C# 侧必须把
+ * （见 ipc/dir-acl-links.js 的 rmQueryLockers 注释）。本文件锁住"C# 侧必须把
  * 注册失败如实回报"，否则上层永远不知道该过滤什么。
  */
 const assert = require('assert');
@@ -90,7 +90,7 @@ t('RmEndSession 在 finally 里（系统上限 64，泄漏会耗尽）', () => {
 });
 
 t('Tab 分隔的输出格式与上层解析对得上', () => {
-  /* 上层（ipc/acl-links.js 的 rmQueryLockers）按 '\t' 切分：
+  /* 上层（ipc/dir-acl-links.js 的 rmQueryLockers）按 '\t' 切分：
    *   pid \t name \t type
    * 而且是 `line.split('\t')` 后取 p[0]/p[1]/p[2]。
    * 这里锁住 C# 侧 Append 的顺序，以及**名字里的 Tab 必须被替换掉**——
@@ -108,7 +108,7 @@ t('Tab 分隔的输出格式与上层解析对得上', () => {
    * 锁的是：C# 侧与 JS 侧的输出协议漂移——两边分别改过之后，
    * 「ERR 行被当成正常行解析」会让一次查询失败显示成「没有进程占用」，
    * 而那正是用户最需要看到错误的一刻。 */
-  assert.ok(/\^ERR\\t/.test(readSrc('ipc/acl-links.js')),
+  assert.ok(/\^ERR\\t/.test(readSrc('ipc/dir-acl-links.js')),
     '上层的 ERR 行匹配规则变了，与 C# 侧不再对应');
 });
 
