@@ -90,6 +90,12 @@ module.exports = [
       '.ciunpack/**',
       '.verify-unpacked/**',
       '.hehe-build-stage/**',
+      /* 根目录下以点开头的临时探针脚本（.probe*.js / .review-probe.js 等）。
+       * 它们是审查/排查时随手写的复现脚本，不进产物、不进仓库，
+       * 但 `eslint .` 会扫到并按正式代码的规则报错（含解析错误），
+       * 实测会让 `npm run lint` 直接失败。
+       * 用 `.*` 而不是逐个列 —— 这类文件的名字是随机的。 */
+      '.*.js',
     ],
   },
   js.configs.recommended ? {

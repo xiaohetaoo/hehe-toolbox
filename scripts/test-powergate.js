@@ -35,7 +35,32 @@ const mustBlock = [
   'Stop-Computer -Force',
   'Restart-Computer',
   '  \tshutdown /s',                             // 前导空白
-  (B === '\\' ? 'C:' + B + 'Windows' + B + 'System32' + B + 'shutdown.exe /s' : '')
+  (B === '\\' ? 'C:' + B + 'Windows' + B + 'System32' + B + 'shutdown.exe /s' : ''),
+
+  /* 【start 的开关形态：本轮实测抓到的漏拦】
+   * `start` 的第一个参数可以是它自己的开关而不是程序名。
+   * 早先 headWord 只剥 `start ` 这一层，于是剥完停在 "/b shutdown /s"，
+   * 首词成了 "/b" —— 不是危险词，整条被放行。
+   * 而 `start shutdown /s`（后面直接就是程序名）反而拦得住，
+   * 说明漏的正是「开关」这一步，不是 start 本身没处理。
+   * 下面四种开关形态实测全部漏拦，现在都要拦住。 */
+  'start /b shutdown /s /t 0',
+  'start /min shutdown /s',
+  'start "" /b shutdown /s',
+  'start /wait shutdown /s',
+  'start shutdown /s',
+  /* start 后面再接一层外壳：剥掉 start 后首词是 cmd，
+   * 里层的 shutdown 从来没被看到。 */
+  'start /b cmd /c shutdown /s',
+  'start cmd /c shutdown /s',
+
+  /* 【Start-Process：PowerShell 版的 start，同样能启动 shutdown】
+   * 实测全部漏拦。`Start-Process` 以 start 开头，但 start 的剥壳正则
+   * 要求后面跟空白，所以它不会被误剥 —— 也就完全没被处理过。 */
+  'Start-Process shutdown',
+  'powershell -c "Start-Process shutdown"',
+  'powershell -Command "Start-Process shutdown -ArgumentList /s"',
+  'Start-Process -FilePath shutdown'
 ];
 
 const mustAllow = [
