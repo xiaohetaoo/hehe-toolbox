@@ -11,6 +11,10 @@
  * 本测试直接 require lib/power-gate.js（main.js 用的同一份实现）。
  */
 const assert = require('assert');
+/* 读项目内文件（迁移来的用例用）。 */
+const fsx = require('fs');
+function read(rel) { return fsx.readFileSync(require('path').join(__dirname, '..', rel), 'utf8'); }
+const stripComments = require('../lib/src-scan').stripComments;
 const gate = require('../lib/power-gate');
 const B = String.fromCharCode(92);
 
@@ -190,7 +194,40 @@ t('分段要认引号：参数里的 & 不该被当成命令分隔符（PG-4）'
   assert.strictEqual(P.isPowerCommand('echo hi & shutdown /s'), true, '引号外的真命令仍要拦');
 });
 
-/* ================= ⑤ 链接体检 ================= */
+/* ================= ⑤ 链接体检 ================= */
+
+t('/a 豁免必须逐段判：混着真关机命令时要拦', () => {
+  const P = require('../lib/power-gate.js');
+  for (const cmd of ['shutdown /a & shutdown /s', 'shutdown /s /t 0 & shutdown /a',
+    'shutdown /? & shutdown /s']) {
+    assert.strictEqual(P.isPowerCommand(cmd), true, '穿透了：' + cmd);
+  }
+  /* 真·取消/帮助仍要放行 */
+  for (const cmd of ['shutdown /a', 'shutdown /?', 'cmd /c shutdown /a', 'shutdown /a /t 0']) {
+    assert.strictEqual(P.isPowerCommand(cmd), false, '被误拦：' + cmd);
+  }
+});
+
+t('换行不能被归一成空格（PowerShell 认换行当分隔符）', () => {
+  const P = require('../lib/power-gate.js');
+  assert.ok(P.normalizeCommand('echo hi\nshutdown /s').indexOf('\n') !== -1,
+    'normalizeCommand 把换行吃掉了：' + JSON.stringify(P.normalizeCommand('echo hi\nshutdown /s')));
+  for (const cmd of ['echo hi\nshutdown /s', 'echo shutdown\nshutdown /s', 'exit\nshutdown /s /t 0']) {
+    assert.strictEqual(P.isPowerCommand(cmd), true, '换行绕过了门禁：' + JSON.stringify(cmd));
+  }
+  /* 真文本仍放行 */
+  assert.strictEqual(P.isPowerCommand('echo shutdown'), false);
+  assert.strictEqual(P.isPowerCommand('type shutdown.txt'), false);
+});
+
+t('不再对 norm 做「整条都是文本命令」的豁免', () => {
+  const code = stripComments(read('lib/power-gate.js'));
+  assert.ok(!/allTextSegments\(norm\)/.test(code),
+    '仍保留了 allTextSegments(norm) —— 那是一条没有真实语义的放行路径');
+  assert.ok(/allTextSegments\(raw\)/.test(code), 'raw 的逐段判定必须保留');
+});
+
+/* ================= ③ 分批 ================= */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);
