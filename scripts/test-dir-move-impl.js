@@ -67,6 +67,8 @@ function makeLinkNatures(ps) {
 /* ---------------------------------------------------------------- */
 
 const stripComments = require('../lib/src-scan').stripComments;
+/* 迁移来的 round14 用例用裸 extractFn（抽源码段跑真实现）。 */
+const { extractFn } = require('../lib/src-scan');
 
 
 /* 抽出某个函数的完整源码段（按花括号配平）。 */
@@ -105,6 +107,29 @@ function shortPath(p) {
  * 一次性 rmSync 会 EPERM —— 那不是失败，只是还没放开。 */
 function rmDir(p) {
   try { fs.rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (e) {}
+}
+
+/* loadVerifyCopyWithStub：把 verifyCopy 的真实现抽出来，注入一个可控制
+ * 的 fsp 桩 —— "复制期间源文件消失"是竞态，真实磁盘上无法稳定复现，
+ * 只有让 readdir 正常返回、而 stat(源) 单独抛 ENOENT 才能精确命中目标分支。 */
+function loadVerifyCopyWithStub(vanishSuffix, vanishInSrc) {
+  const vBlock = extractFn(mainSrc, 'async function verifyCopy(');
+  const hBlock = extractFn(mainSrc, 'function hashFile(');
+  const realFsp = fs.promises;
+  const fspStub = {
+    readdir: (...a) => realFsp.readdir(...a),
+    stat: async (p) => {
+      if (vanishSuffix && p.endsWith(vanishSuffix) && (!vanishInSrc || p.includes(vanishInSrc))) {
+        const e = new Error('ENOENT: no such file or directory, stat ' + p);
+        e.code = 'ENOENT';
+        throw e;
+      }
+      return realFsp.stat(p);
+    },
+  };
+  const { verifyCopy } = new Function('fs', 'fsp', 'path', 'crypto',
+    hBlock + '\n' + vBlock + '\nreturn { verifyCopy };')(fs, fspStub, path, require('crypto'));
+  return verifyCopy;
 }
 
 t('normalizeForComparePath 把 8.3 短名解析成长名', () => {
@@ -661,6 +686,149 @@ t('问题8：LOCKED 文案说「进程」不说「文件」，advice 指向占�
   assert.ok(/文件占用解锁/.test(r.advice), 'advice 应指向占用解锁工具：' + r.advice);
 });
 
-/* ================= 额外项 ================= */
+/* ================= 额外项 ================= */
+
+t('5a restoreLinksIntoTarget：同名目录要能删，且清不掉要记账', () => {
+  const code = stripComments(mainSrc);
+  const fn = extractFn(code, 'async function restoreLinksIntoTarget(');
+  /* 反面：不能再是「unlinkSync + 空 catch」 */
+  assert.ok(!/catch\s*\(\s*e\s*\)\s*\{\s*\}/.test(fn),
+    '仍有空 catch（清不掉同名项会被静默忽略，后面 symlink 再撞一次，报错说不清原因）');
+  assert.ok(/lstatSync/.test(fn), '没有先判类型：unlinkSync 删不掉目录');
+  assert.ok(/rmSync/.test(fn), '没有针对目录的删除分支');
+  assert.ok(/created\.failed\.push|throw new Error/.test(fn),
+    '清不掉时既没记进 failed 也没抛出 —— 上层无法说清原因');
+});
+
+t('5b 行为验证：unlinkSync 对目录确实失败（这是必须分类型删除的理由）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r14-unlink-'));
+  try {
+    const d = path.join(dir, 'sub');
+    fs.mkdirSync(d);
+    let err = null;
+    try { fs.unlinkSync(d); } catch (e) { err = e; }
+    assert.ok(err, 'unlinkSync 居然能删目录？本项前提不成立');
+    assert.ok(/EPERM|EISDIR|EACCES/.test(err.code || ''), 'unlinkSync 删目录的错误码异常：' + err.code);
+    // 而按类型分派的写法能删掉
+    fs.rmSync(d, { recursive: true, force: true });
+    assert.ok(!fs.existsSync(d), 'rmSync 应当能删掉目录');
+  } finally { rmDir(dir); }
+});
+
+/* ==================== 6. UNC 目标与 freeBytes 未知 ==================== */
+
+t('7a verifyCopy：源文件在复制后消失 → 不抛错，计入 skippedFiles', async () => {
+  const verifyCopy = loadVerifyCopyWithStub('c.txt', 'src');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r14-vc-'));
+  try {
+    const src = path.join(dir, 'src'), dst = path.join(dir, 'dst');
+    fs.mkdirSync(src); fs.mkdirSync(dst);
+    for (const n of ['a.txt', 'b.txt', 'c.txt']) {
+      fs.writeFileSync(path.join(src, n), 'x');
+      fs.writeFileSync(path.join(dst, n), 'x');
+    }
+    const r = await verifyCopy(src, dst);
+    assert.strictEqual(r.ok, true, '源里少了一个文件不该让校验失败（旧行为是抛「读取源文件失败」）');
+    assert.strictEqual(r.skippedFiles, 1, '消失的文件没有被计数');
+    assert.strictEqual(r.skippedDirs, 0, '没有目录消失，skippedDirs 应为 0');
+    assert.strictEqual(r.files, 2, '剩余 2 个文件仍应被校验');
+    assert.ok(r.skippedList.includes('c.txt'), '消失的条目名应当被记下来：' + JSON.stringify(r.skippedList));
+  } finally { rmDir(dir); }
+});
+
+t('7b verifyCopy：目标侧真的缺文件时才必须失败（不能一律容忍）', async () => {
+  const verifyCopy = loadVerifyCopyWithStub(null, null);   // 不制造任何"消失"
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r14-vc2-'));
+  try {
+    const src = path.join(dir, 'src'), dst = path.join(dir, 'dst');
+    fs.mkdirSync(src); fs.mkdirSync(dst);
+    fs.writeFileSync(path.join(src, 'a.txt'), 'x');
+    fs.writeFileSync(path.join(src, 'b.txt'), 'x');
+    fs.writeFileSync(path.join(dst, 'a.txt'), 'x');
+    // b.txt 在源侧存在、目标侧缺失 —— 这是真正的不完整副本
+    await assert.rejects(() => verifyCopy(src, dst), /目标缺少文件/,
+      '源侧在、目标侧缺，必须仍然报校验失败（否则搬家会说成功但少了文件）');
+  } finally { rmDir(dir); }
+});
+
+t('7c verifyCopy：源子目录整个消失 → 不当致命错，计入 skippedDirs', async () => {
+  const vBlock = extractFn(mainSrc, 'async function verifyCopy(');
+  const hBlock = extractFn(mainSrc, 'function hashFile(');
+  const realFsp = fs.promises;
+  const fspStub = {
+    /* 让 readdir 对"已消失的子目录"抛 ENOENT，模拟目录在遍历中被删掉 */
+    readdir: async (p, o) => {
+      if (String(p).includes('gone')) {
+        const e = new Error('ENOENT: no such file or directory, scandir ' + p);
+        e.code = 'ENOENT';
+        throw e;
+      }
+      return realFsp.readdir(p, o);
+    },
+    stat: (...a) => realFsp.stat(...a),
+  };
+  const { verifyCopy } = new Function('fs', 'fsp', 'path', 'crypto',
+    hBlock + '\n' + vBlock + '\nreturn { verifyCopy };')(fs, fspStub, path, require('crypto'));
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r14-vc3-'));
+  try {
+    const src = path.join(dir, 'src'), dst = path.join(dir, 'dst');
+    fs.mkdirSync(src); fs.mkdirSync(dst);
+    fs.mkdirSync(path.join(src, 'keep')); fs.mkdirSync(path.join(dst, 'keep'));
+    fs.writeFileSync(path.join(src, 'keep', 'a.txt'), 'x');
+    fs.writeFileSync(path.join(dst, 'keep', 'a.txt'), 'x');
+    // 一个子目录：源侧存在（readdir 能看到 dirent），但遍历它时已不存在
+    fs.mkdirSync(path.join(src, 'gone'));
+    fs.mkdirSync(path.join(dst, 'gone'));
+    const r = await verifyCopy(src, dst);
+    assert.strictEqual(r.ok, true, '源目录消失不该让整次校验失败（旧行为是抛「读取源目录失败」）');
+    assert.ok(r.skippedDirs >= 1, '消失的目录没有被计入 skippedDirs，实际 ' + r.skippedDirs);
+    assert.strictEqual(r.skippedFiles, 0, '这是目录消失，不该记成文件');
+  } finally { rmDir(dir); }
+});
+
+t('7d copyTreeExcludingLinks：复制期间源文件消失 → 跳过并计数，不抛出', async () => {
+  /* 抽出真实现来跑：构造源目录，然后在复制开始后删掉一个源文件。
+   * 直接实现"中途删除"较难精确，改用等价场景：
+   * 让 readdir 能看到文件、但 copyFile 时文件已不存在 ——
+   * 用一个同名目录占位不现实，所以这里用「复制前删掉」+ 伪造 dirent
+   * 的方式验证分支：直接传一个不存在的文件路径给 copyFile 触发 ENOENT。 */
+  const code = stripComments(mainSrc);
+  const fn = extractFn(code, 'async function copyTreeExcludingLinks(');
+  /* 结构断言（剥注释后）：ENOENT 分支必须跳过并计数，EBUSY/EPERM 必须抛出 */
+  assert.ok(/ENOENT/.test(fn) && /noteGone/.test(fn), '复制循环里没有 ENOENT 的容忍分支');
+  assert.ok(/EBUSY|EPERM|EACCES/.test(fn), '被占用/没权限的分支不存在（真被占用必须让用户处理）');
+  assert.ok(/throw/.test(fn), '被占用时没有抛出 —— 会得到一份悄悄变少的副本');
+  assert.ok(/skippedFiles/.test(fn) && /skippedDirs/.test(fn),
+    '文件与目录没有分开计数（文案会把目录说成「文件」）');
+  /* 行为：verify 一下 stats 结构真的区分两类 */
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r14-cp-'));
+  try {
+    const src = path.join(dir, 'src'), dst = path.join(dir, 'dst');
+    fs.mkdirSync(src);
+    fs.writeFileSync(path.join(src, 'a.txt'), 'hello');
+    /* 依赖 relKey/buildLinkKeySet，这两个也在主进程源码里 —— 一并注入 */
+    const helperBlock = extractFn(code, 'function relKey(') + '\n' + extractFn(code, 'function buildLinkKeySet(');
+    const realFn = new Function('fs', 'fsp', 'path',
+      helperBlock + '\n' + fn + '\nreturn copyTreeExcludingLinks;')(fs, fs.promises, path);
+    const stats = await realFn(src, dst, []);
+    assert.strictEqual(stats.files, 1, '正常复制应计入 1 个文件');
+    assert.strictEqual(stats.skippedFiles, 0, '没有消失的文件');
+    assert.strictEqual(stats.skippedDirs, 0, '没有消失的目录');
+    assert.strictEqual(stats.skippedDisappeared, 0, '汇总计数应为 0');
+    assert.ok(fs.existsSync(path.join(dst, 'a.txt')), '文件应当被复制过去');
+  } finally { rmDir(dir); }
+});
+
+t('7e copyTreeExcludingLinks：消失的目录不会在目标侧留下空目录', async () => {
+  const code = stripComments(mainSrc);
+  const fn = extractFn(code, 'async function copyTreeExcludingLinks(');
+  /* 结构断言：判为消失的目录必须清理掉刚建的空目录（否则目标树多一个空目录，
+   * 而 verifyCopy 只从源侧往目标侧对，永远发现不了它）。 */
+  assert.ok(/readdir\(/.test(fn) && /rm\(/.test(fn),
+    '消失目录的分支没有清理目标侧刚建出来的空目录');
+});
+
+/* ==================== 8. target-size 早退解锁 ==================== */
 
 done();

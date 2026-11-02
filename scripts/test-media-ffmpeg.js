@@ -1,4 +1,6 @@
 'use strict';
+const path = require('path');
+const fs = require('fs');
 /* 媒体与 FFmpeg 域（ipc/media-ffmpeg.js）的测试。
  *
  * ============ 这个文件为什么存在 ============
@@ -19,7 +21,8 @@ const assert = require('assert');
 const { scanBrace } = require('../lib/src-scan');
 
 const { t, done, readMain, readTree } = require('./lib/harness');
-const path = require('path');
+const ROOT = path.join(__dirname, '..');
+const stripComments = require('../lib/src-scan').stripComments;
 
 const mainSrc = readMain({ raw: true });
 
@@ -60,6 +63,22 @@ function extractGifTarget() {
   const body = mainSrc.slice(start, after + 1);
   return new Function('recOut', 'path', body + '\nreturn gifTarget;');
 }
+
+/* ---------------- 以下助手随 round14 的用例一起迁来 ---------------- */
+const { extractFn } = require('../lib/src-scan');
+function loadPinKeyBlock() {
+  const block = extractFn(
+    mainSrc,
+    'function pinWinOf(',
+    'pinWinOf');
+  // 还需要 pinKey 与 pinWins 的声明
+  const kStart = mainSrc.indexOf('const pinKey =');
+  const kEnd = mainSrc.indexOf('const pinWins = new Map();', kStart);
+  assert.ok(kStart > 0 && kEnd > kStart, '找不到 pinKey 声明');
+  const decls = mainSrc.slice(kStart, kEnd + 'const pinWins = new Map();'.length);
+  return new Function(decls + '\n' + block + '\nreturn { pinKey, pinWins, pinWinOf };')();
+}
+function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
 
 t('9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结果', () => {
   const seg = segFromHandler('target:compress-av');
@@ -158,6 +177,224 @@ t('36 rec:stop：GIF 目标名不能因为文件名含点而跑偏', () => {
     '失败清理没检查「文件是不是我们建的」—— 撞上用户既有 gif 时会删掉它');
   assert.ok(/if \(!gifPreexisted\)/.test(seg), '删除必须被 gifPreexisted 守卫');
 });
+
+t('1a pinKey：数字、字符串、带空格的值都归一成同一个键', () => {
+  const { pinKey } = loadPinKeyBlock();
+  assert.strictEqual(pinKey(12), '12', '数字 12 应归一成字符串 "12"');
+  assert.strictEqual(pinKey('12'), '12', '字符串 "12" 应保持原样');
+  assert.strictEqual(pinKey(12), pinKey('12'), '同一次窗口的两个来源必须得到同一个键');
+  assert.strictEqual(pinKey(null), '', 'null 不能变成 "null"');
+  assert.strictEqual(pinKey(undefined), '', 'undefined 不能变成 "undefined"');
+  assert.strictEqual(pinKey(0), '0', '0 是合法的窗口 id，不能被当成空');
+});
+
+t('1b pinWinOf：登记时用数字、查询时用字符串（渲染层的真实路径）也找得到', () => {
+  const { pinKey, pinWins, pinWinOf } = loadPinKeyBlock();
+  const fakeWin = { id: 12, isDestroyed: () => false, _pos: null, setPosition(x, y) { this._pos = [x, y]; } };
+  // 模拟 createPinWindow 的登记：必须用 pinKey 包一层（旧写法直接 set(bw.id))
+  pinWins.set(pinKey(fakeWin.id), fakeWin);
+  // 模拟渲染层：URLSearchParams.get('id') 拿回来的是字符串，原样 IPC 发回来
+  const found = pinWinOf('12');
+  assert.ok(found, "Map 里存 12、查 '12' 必须找到窗口（这正是拖动/缩放/关闭全失效的根因）");
+  assert.strictEqual(found, fakeWin);
+  // 反向：真的不存在的 id 依然找不到
+  assert.strictEqual(pinWinOf('99'), null, '不存在的 id 应返回 null');
+  // 已销毁的窗口也当找不到
+  const dead = { id: 7, isDestroyed: () => true };
+  pinWins.set(pinKey(dead.id), dead);
+  assert.strictEqual(pinWinOf('7'), null, '已销毁的窗口应返回 null');
+});
+
+t('1c 三个贴图 handler 取不到窗口时必须返回 false，不能假装成功', () => {
+  const code = stripComments(mainSrc);
+  for (const ch of ['win:pin-move', 'win:pin-resize', 'win:pin-close']) {
+    const i = code.indexOf("handle('" + ch + "'");
+    assert.ok(i > 0, '找不到 handler ' + ch);
+    const seg = code.slice(i, code.indexOf('\n});', i));
+    /* 旧写法：const bw = pinWins.get(id); if (bw && ...) ...; return true;
+     * —— 取不到也 return true。新写法必须显式 return false。 */
+    assert.ok(/if\s*\(\s*!bw\s*\)\s*return false/.test(seg),
+      ch + ' 取不到窗口时没有 return false（会静默假装成功）');
+    assert.ok(!/pinWins\.get\(id\)/.test(seg),
+      ch + ' 仍在直接用 pinWins.get(id)（没有做键类型归一）');
+    assert.ok(/pinWinOf\(/.test(seg), ch + ' 没有走 pinWinOf 的归一查找');
+  }
+});
+
+t('1d createPinWindow 登记与删除都用同一个归一键', () => {
+  const code = stripComments(mainSrc);
+  assert.ok(/pinWins\.set\(\s*pinKey\(bw\.id\)\s*,\s*bw\s*\)/.test(code),
+    '登记时没用 pinKey（数字键与字符串键会分家）');
+  assert.ok(/pinWins\.delete\(\s*pinKey\(bw\.id\)\s*\)/.test(code),
+    'closed 里没用 pinKey 删除，会留下一个查不到的僵尸条目');
+  assert.ok(/String\(bw\.id\)/.test(code), 'URL 里传的仍然应是 String(bw.id)');
+});
+
+/* ==================== 2. finally 不能引用 try 内的 let ==================== */
+
+t('4a 截图导出：源矩形必须乘 dpr，目标尺寸用逻辑像素', () => {
+  const raw = read('js/auxwin/snip-2.js');
+  const code = stripComments(raw);
+  const i = code.indexOf('const dpr = devicePixelRatio');
+  assert.ok(i > 0, '找不到导出裁剪那段');
+  /* 取到 payload.dataUrl 之前，即整段「算坐标 → 建 canvas → drawImage」 */
+  const seg = code.slice(i, code.indexOf('payload.dataUrl', i));
+  assert.ok(seg.indexOf('drawImage') > 0, '取到的片段里没有 drawImage，抽取边界已失效');
+
+  /* 【必须真的执行源码里那一段，不能另写一份同构代码】
+   * 本用例最初的写法是：先 new Function 建了 `fn`（包住真实 seg），
+   * 但**从未调用它**；真正跑的是紧跟着另写的 `run` —— 里面是手抄的算式。
+   * 于是这条测试测的是测试自己写的代码，与 snip-2.js 无关。
+   * 实测确认：把源码里 `sw = sel.w * dpr` 改成 `sw = sel.w`
+   * （非 100% 缩放下截图横向错位），6 个 drawImage 断言仍然全绿。
+   *
+   * 现在改成：把 seg 里真实那段塞进函数执行，只注入它需要的外部量
+   * （devicePixelRatio / canvas / document / sel / payload）。
+   * document.createElement 返回一个会记录调用的假 canvas。 */
+  const calls = [];
+  const fakeOctx = {
+    scale: (x, y) => calls.push({ op: 'scale', x, y }),
+    drawImage: (cv, sx, sy, sw, sh, dx, dy, dw, dh) =>
+      calls.push({ op: 'drawImage', sx, sy, sw, sh, dx, dy, dw, dh }),
+  };
+  const makeFakeCanvas = () => ({
+    width: 0,
+    height: 0,
+    getContext: () => fakeOctx,
+    toDataURL: () => 'data:image/png;base64,STUB',
+  });
+
+  const dpr = 1.5;
+  const sel = { x: 100, y: 50, w: 200, h: 120 };
+  const payload = {};
+  /* 真实源码片段里引用的外部量全部由形参注入，片段本身不改一字 */
+  const run = new Function('devicePixelRatio', 'canvas', 'document', 'sel', 'payload',
+    `return (function () {
+       ${seg}
+       return { out: out, octx: octx, sx: sx, sy: sy, sw: sw, sh: sh };
+     })();`);
+  const got = run(dpr, {}, { createElement: makeFakeCanvas }, sel, payload);
+
+  const draw = calls.find((c) => c.op === 'drawImage');
+  assert.ok(draw, '源码片段没有调用 drawImage（抽取的代码段可能已不完整）');
+  assert.strictEqual(draw.sx, sel.x * dpr, '源矩形 x 没乘 dpr（只截到左上角 1/dpr 那块再拉满，内容会错位）');
+  assert.strictEqual(draw.sy, sel.y * dpr, '源矩形 y 没乘 dpr');
+  assert.strictEqual(draw.sw, sel.w * dpr, '源矩形宽没乘 dpr');
+  assert.strictEqual(draw.sh, sel.h * dpr, '源矩形高没乘 dpr');
+  // 目标矩形保持逻辑尺寸（由 octx.scale 放大）
+  assert.strictEqual(draw.dw, sel.w, '目标宽应当保持逻辑尺寸（缩放交给 octx.scale）');
+  assert.strictEqual(draw.dh, sel.h, '目标高应当保持逻辑尺寸');
+  const sc = calls.find((c) => c.op === 'scale');
+  assert.ok(sc && sc.x === dpr, 'octx.scale 没有按 dpr 缩放');
+  /* 输出画布也必须是位图尺寸（逻辑 × dpr），否则高清屏导出会糊 */
+  assert.strictEqual(got.out.width, sel.w * dpr, '输出画布宽没用位图尺寸');
+  assert.strictEqual(got.out.height, sel.h * dpr, '输出画布高没用位图尺寸');
+});
+
+/* 【4b 已删除 —— 它是 4a 的源码断言副本，且覆盖更窄】
+ *
+ * 原来的 4b 做两件事：
+ *   ① 正则查源码里有 sel.x * dpr（源矩形起点乘了 dpr）
+ *   ② 查源码没有 drawImage(canvas, sel.x, …)（没把逻辑坐标直接当源起点）
+ * 但它**完全不查 sw / sh**（源矩形的宽和高）。实测确认：
+ * 把源码里 sw = sel.w * dpr 改成 sw = sel.w（非 100% 缩放下截图横向
+ * 错位、内容被拉伸），4b 仍然 PASS。
+ *
+ * 而 4a 现在是真的把那段源码抽出来执行、断言 drawImage 收到的四个源参数
+ * 全部等于「逻辑值 × dpr」—— 4b 那两条正则能覆盖的、以及覆盖不了的维度，
+ * 4a 的行为断言都覆盖了，而且不会因为「等价写法 / 换行 / 改注释」误报。
+ *
+ * 留一份窄口径的源码断言只会制造虚假的安全感：它绿着，但真正会出错的那
+ * 两个维度（sw/sh）它看不见。按 harness 头部定的规矩
+ * ——「能写成行为断言的，一律写成行为断言」—— 删掉是对的。
+ */
+
+/* ==================== 5. 清目标侧同名项 ==================== */
+
+t('10a 除零与溢出必须抛错，不能返回 Infinity', () => {
+  const ev = require(path.join(ROOT, 'lib', 'expr-eval'));
+  const evaluate = (s) => ev.evaluate(s);
+  for (const s of ['1/0', '-1/0', '1e308*10', '2^1024']) {
+    assert.throws(() => evaluate(s), /无法计算/,
+      s + ' 应当抛错（原来会原样返回 Infinity，下游算出"∞"这种无意义结果）');
+  }
+  // 0/0 与取余 0 原本就抛，保持
+  assert.throws(() => evaluate('0/0'), /无法计算/);
+  assert.throws(() => evaluate('1%0'), /无法计算/);
+  // 正常计算不受影响
+  assert.strictEqual(evaluate('1/3'), 1 / 3);
+  assert.strictEqual(evaluate('2+3'), 5);
+  assert.strictEqual(evaluate('100-10%'), 99.9, '百分比语义不能被误伤');
+  assert.strictEqual(evaluate('50%+10%'), 0.6);
+});
+
+t('10b 错误文案要说明原因（不能只说「无法计算」）', () => {
+  const ev = require(path.join(ROOT, 'lib', 'expr-eval'));
+  try { ev.evaluate('1/0'); assert.fail('应当抛错'); }
+  catch (e) {
+    assert.ok(/除数|溢出|有限/.test(e.message),
+      '错误文案没说明是除零还是溢出，用户无从判断：' + e.message);
+  }
+});
+
+/* ==================== 11. 摄像头清理注册位置 ==================== */
+
+t('11a 清理回调的注册不在 rec:audio-devices 的 then 里', () => {
+  const code = stripComments(readTree('js/tools/media'));
+  /* 定位 invoke('rec:audio-devices') 到它配对的 .catch(() => {}) 之间的那段，
+   * 断言 onCleanup 不在其中 —— 枚举失败时也要注册清理。 */
+  const i = code.indexOf("invoke('rec:audio-devices')");
+  assert.ok(i > 0, "找不到 invoke('rec:audio-devices')");
+  /* 取这段 then 链的结束：从上往下找第一个 "}).catch(() => {});" */
+  const endMark = '}).catch(() => {});';
+  const end = code.indexOf(endMark, i);
+  assert.ok(end > i, '找不到 rec:audio-devices 的 catch 结尾');
+  const chain = code.slice(i, end);
+  assert.ok(!/onCleanup/.test(chain),
+    'onCleanup 仍写在 rec:audio-devices 的 then 里：枚举失败时清理不会注册，摄像头灯会一直亮');
+  // 但必须仍然注册了（从全文件层面确认它没被删掉）
+  const after = code.slice(end);
+  assert.ok(/onCleanup[\s\S]{0,200}stopPreview/.test(after) || /onCleanup[\s\S]{0,200}stopPreview/.test(code),
+    '停止预览的清理回调整体丢了');
+});
+
+t('11b 行为验证：rec:audio-devices reject 时清理回调仍被注册', async () => {
+  /* 用桩模拟页面：invoke 对 rec:audio-devices 直接 reject，
+   * 断言 onCleanup 仍然被调用了注册（旧写法会因为 .catch 吞掉而不执行）。 */
+  const cleanups = [];
+  const App = { onCleanup: (fn) => { cleanups.push(fn); } };
+  let registered = false;
+  const invoke = async (ch) => {
+    if (ch === 'rec:audio-devices') throw new Error('ffmpeg 不可用');
+    return {};
+  };
+  /* 旧写法（把注册放在 then 里）： */
+  invoke('rec:audio-devices').then(() => { App.onCleanup(() => {}); registered = true; }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 0));
+  assert.strictEqual(registered, false, '旧写法（then 内注册）在 reject 时确实没注册（前提成立）');
+  assert.strictEqual(cleanups.length, 0, '旧写法确实一条清理都没注册');
+
+  /* 新写法（注册在 then 之外）： */
+  const cleanups2 = [];
+  const App2 = { onCleanup: (fn) => cleanups2.push(fn) };
+  invoke('rec:audio-devices').catch(() => {});          // 枚举自己失败，不影响下面
+  App2.onCleanup(() => {});                              // 无条件注册
+  await new Promise((r) => setTimeout(r, 0));
+  assert.strictEqual(cleanups2.length, 1, '新写法应当在枚举失败时也注册清理');
+});
+
+t('11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）', () => {
+  const code = stripComments(readTree('js/tools/media'));
+  const fn = extractFn(code, 'async function startPreview(');
+  assert.ok(/destroyed/.test(fn), 'startPreview 里没有 destroyed 判断');
+  const n = (fn.match(/destroyed/g) || []).length;
+  assert.ok(n >= 3, 'destroyed 判断太少（至少要在入口、await 之后、拿到 stream 之后各查一次），实际 ' + n + ' 处');
+  assert.ok(/getTracks\(\)[\s\S]{0,80}stop/.test(fn),
+    '拿到 stream 后发现页面已销毁，必须把 track 停掉，否则摄像头一直亮着');
+  assert.ok(/destroyed\s*=\s*true/.test(code), '清理回调里没有置 destroyed 标志');
+});
+
+/* ==================== 执行 ==================== */
 
 done();
 

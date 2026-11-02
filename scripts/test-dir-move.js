@@ -338,6 +338,70 @@ t('33 dir-move：剩余空间未知（null）不该报「空间不足」', () =>
     'freeBytes=null 表示「读不到剩余空间」，Number(null)===0 会让它变成「剩余 0 GB」而永久拒绝搬家：' + r.reason);
 });
 
-/* ==================== 34. archive-guard：文件/目录冲突要双向查 ==================== */
+/* ==================== 34. archive-guard：文件/目录冲突要双向查 ==================== */
+
+t('6a UNC 目标必须在预检阶段就被拒（不是等到建链接才失败）', () => {
+  const dm = require(path.join(ROOT, 'lib', 'dir-move'));
+  const B = String.fromCharCode(92);
+  const base = { srcExists: true, srcIsDir: true, dstExists: false, needBytes: 1000, freeBytes: 1e12, allowSameVolume: false };
+  const uncCases = [
+    ['反斜杠', B + B + 'nas' + B + 'share' + B + 'x'],
+    ['正斜杠', '//nas/share/x'],
+    ['长路径', B + B + '?' + B + 'UNC' + B + 'nas' + B + 's' + B + 'x'],
+  ];
+  for (const [label, dst] of uncCases) {
+    const v = dm.validateMove(Object.assign({}, base, { src: 'C:' + B + 'a', dst }));
+    assert.strictEqual(v.ok, false, label + ' UNC 目标应当被拒');
+    assert.strictEqual(v.code, 'DST_UNC', label + ' 拒绝码应为 DST_UNC，实际 ' + v.code);
+    assert.ok(/网络|UNC|联接|本地/.test(v.reason), label + ' 理由没讲清为什么不行：' + v.reason);
+  }
+  // 不误伤本地路径
+  const local = [B + B + '?' + B + 'D:' + B + 'moved', 'D:' + B + 'moved', 'D:' + B + 'a' + B + 'b'];
+  for (const dst of local) {
+    const v = dm.validateMove(Object.assign({}, base, { src: 'C:' + B + 'a', dst }));
+    assert.strictEqual(v.ok, true, '本地路径 ' + dst + ' 被误判成 UNC 拒绝了');
+  }
+});
+
+t('6b isUncPath 用原始字符串判断（不能被 normWin 折叠掉开头两个反斜杠）', () => {
+  const dm = require(path.join(ROOT, 'lib', 'dir-move'));
+  const B = String.fromCharCode(92);
+  assert.strictEqual(dm.isUncPath(B + B + 'server' + B + 'share'), true);
+  assert.strictEqual(dm.isUncPath('  ' + B + B + 'server' + B + 'share  '), true, '首尾空格应当被 trim');
+  assert.strictEqual(dm.isUncPath('D:' + B + 'data'), false);
+  /* 关键对照：normWin 会把 \\ 折叠成 \，所以用它判 UNC 永远为假 */
+  assert.strictEqual(dm.normWin(B + B + 'server' + B + 'share').startsWith(B + B), false,
+    'normWin 折叠了双反斜杠 —— 这正说明 UNC 判据不能用归一后的值');
+});
+
+t('6c freeBytes 读不到时必须显式标记「未校验」，不能静默跳过空间检查', () => {
+  const dm = require(path.join(ROOT, 'lib', 'dir-move'));
+  const B = String.fromCharCode(92);
+  const base = { src: 'C:' + B + 'a', dst: 'D:' + B + 'b', srcExists: true, srcIsDir: true, dstExists: false, needBytes: 1e9, allowSameVolume: false };
+  const unknown = dm.validateMove(Object.assign({}, base, { freeBytes: null }));
+  assert.strictEqual(unknown.ok, true, '空间未知不该直接拒绝（未知 ≠ 不够）');
+  assert.strictEqual(unknown.freeBytesUnknown, true, 'freeBytes=null 时没有标记「未知」');
+  const known = dm.validateMove(Object.assign({}, base, { freeBytes: 1e12 }));
+  assert.strictEqual(known.freeBytesUnknown, false, 'freeBytes 正常时不该标成未知');
+  // 真的不够时仍然要拒
+  const tight = dm.validateMove(Object.assign({}, base, { freeBytes: 1e6 }));
+  assert.strictEqual(tight.code, 'NO_SPACE', '空间确实不够时应当拒绝');
+});
+
+t('6d 界面把「未校验」如实说出来', () => {
+  const code = stripComments(read('js/tools/dir-move.js'));
+  assert.ok(/freeBytesUnknown/.test(code), '界面没有使用 freeBytesUnknown 标记');
+  assert.ok(/未校验|空间是否足够未校验/.test(code),
+    '界面没明说「空间是否足够未校验」，只写「未知」用户会以为校验过了');
+});
+
+/* ==================== 7. 复制期间源条目消失 ==================== */
+/* 用可注入的 fsp 桩跑真 verifyCopy。
+ *
+ * 【为什么必须用桩】"源文件在 readdir 之后、stat 之前被删掉"是一个竞态，
+ * 在真实磁盘上无法稳定复现 —— 我先试过"复制完就删源文件"，
+ * 结果 verifyCopy 的 readdir 压根看不到它，计数恒为 0（测试假绿）。
+ * 只有让 readdir 正常返回目录项、而 stat(源) 单独抛 ENOENT，才能精确命中目标分支。
+ * 注意桩要区分源侧/目标侧路径：只让**源**路径消失，目标侧照常返回。 */
 
 done();

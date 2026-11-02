@@ -8,11 +8,14 @@
  */
 const fs = require('fs');
 const path = require('path');
+/* 读项目内文件（迁移来的 round14 用例要读 main.js 的测速任务实现）。 */
+function read(rel) { return require('fs').readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
 const assert = require('assert');
 /* 只借用 readTree（任务 9 把 media.js 拆成目录后，需要按目录拼源码）。
  * 不接管本文件自己的 t()：它是行内箭头形式，输出格式与 harness 的
  * deferred 版不同，换掉会改变这个脚本的输出形态。 */
 const { readTree } = require('./lib/harness');
+const stripComments = require('../lib/src-scan').stripComments;
 
 let pass = 0, fail = 0;
 const t = (n, f) => { try { f(); pass++; console.log('PASS  ' + n); } catch (e) { fail++; console.log('FAIL  ' + n + '  -> ' + e.message); } };
@@ -98,6 +101,36 @@ t('32 job-id：前缀互为前缀不能串号（通用下载器已改名为 dlg�
 });
 
 /* ==================== 33. dir-move：freeBytes 未知不能被当成 0 ==================== */
+
+t('9a 测速任务按 speed 前缀认领，不能先到先得', () => {
+  const code = stripComments(read('js/tools/net-tools.js'));
+  /* 反面：不许再有 `if (!speedId) speedId = d.id` 这种接管任意 id 的写法 */
+  assert.ok(!/if\s*\(\s*!speedId\s*\)\s*speedId\s*=\s*d\.id/.test(code),
+    '仍在"先到先得"：别的任务先广播就会抢走 id，曲线画的是别人的数据');
+  assert.ok(/speed/.test(code), '没有用 speed 前缀判定归属');
+  assert.ok(/belongsTo|JobPrefix/.test(code), '没有走统一的 belongsTo 判定');
+});
+
+t('9b 行为验证：先到来的其它 id 不会被认领，本前缀的才认领', () => {
+  const JP = require(path.join(ROOT, 'lib', 'job-id'));
+  /* 复刻页面里的认领顺序：用真实的 belongsTo，验证"先到先得"与"按前缀"的区别 */
+  const claimByPrefix = (incoming, current) => {
+    if (current) return incoming === current ? current : null;
+    return JP.belongsTo(incoming, 'speed') ? incoming : null;
+  };
+  const claimFirstCome = (incoming, current) => current || incoming || null;
+
+  // 别的任务先来
+  assert.strictEqual(claimByPrefix('job42', null), null, '别的任务（job42）不该被当成测速任务');
+  assert.strictEqual(claimFirstCome('job42', null), 'job42', '旧写法确实会接管（证明缺陷前提成立）');
+  // 本任务来了才认领
+  assert.strictEqual(claimByPrefix('speed7', null), 'speed7', '本前缀的 id 应当被认领');
+  // 已认领后别的 id 一律忽略
+  assert.strictEqual(claimByPrefix('job9', 'speed7'), null, '认领后不该被别的 id 打断');
+  assert.strictEqual(claimByPrefix('speed7', 'speed7'), 'speed7', '自己的 id 应当继续接受');
+});
+
+/* ==================== 10. 表达式求值的 ±Infinity ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

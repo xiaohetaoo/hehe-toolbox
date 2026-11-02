@@ -11,6 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const srcScan = require('../lib/src-scan');
+/* 迁移来的 round14 用例用裸 extractFn（抽源码段跑真实现）。 */
+const { extractFn } = srcScan;
 /* 迁移来的用例用裸 stripComments（原 test-round15 里也是这个名字）。 */
 const stripComments = srcScan.stripComments;
 
@@ -695,5 +697,96 @@ t('7b clean-junk 会缓存扫描结果', () => {
 });
 
 /* ==================== 8. fs:rename 的闸门与门禁 ==================== */
+
+t('2a app.js：dlId 与 unsub 都在 try 之外声明', () => {
+  const raw = read('js/app.js');
+  const code = stripComments(raw);
+  const fnStart = code.indexOf('async function checkUpdate(');
+  assert.ok(fnStart > 0, '找不到 checkUpdate');
+  const fnBody = extractFn(code, 'async function checkUpdate(');
+
+  /* 【不能用 indexOf('try {')】前面那句 `if (updUnsub) { try { updUnsub(); } ... }` 里
+   * 也有一个内联的 try，会被先命中，导致 beforeTry 只取到函数头一小段。
+   * 找**行首**的主 try：前面只有空白。 */
+  const mMain = fnBody.match(new RegExp('\\n[ \\t]*try[ \\t]*\\{'));
+  assert.ok(mMain, 'checkUpdate 里找不到主 try');
+  const tryAt = mMain.index;
+  assert.ok(tryAt > 0, 'checkUpdate 里找不到 try');
+  const declBefore = fnBody.slice(0, tryAt);
+  assert.ok(/let\s+dlId\s*=/.test(declBefore), 'dlId 必须在 try 之前声明（否则 finally 读不到）');
+  assert.ok(/let\s+unsub\s*=/.test(declBefore), 'unsub 必须在 try 之前声明');
+  // 反面：try 内部不许再出现一次 let dlId（那会遮蔽外层，finally 永远读到 null）
+  const tryToFinally = fnBody.slice(tryAt, fnBody.indexOf('finally'));
+  assert.ok(!/let\s+dlId/.test(tryToFinally), 'try 内又声明了一次 dlId，会遮蔽外层变量');
+  // finally 里确实在用它 —— 这才是必须提前声明的理由
+  const fin = fnBody.slice(fnBody.indexOf('finally'));
+  assert.ok(/dlId/.test(fin), 'finally 里已不再引用 dlId，本项约束失去意义（请同步更新测试）');
+});
+
+t('2b 行为验证：块级作用域下 finally 读 try 内 let 会抛 ReferenceError', () => {
+  /* 用最小样例证明这个缺陷机理是真的（而不是"我以为会抛"）。
+   * 这段代码不依赖项目，只演示 JS 语义。
+   *
+   * 【为什么用 new Function 而不是直接写这段代码】
+   * 要验证的正是「finally 里读一个只存在于 try 块内的 let」，
+   * 直接写出来会被 lint 的 no-undef 判为「引用未定义变量」——
+   * 而这里**引用一个不存在的变量恰是实验本身**。
+   * 与其加一行 disable 注释（那会把 no-undef 在这附近的真实报警也一起关掉），
+   * 不如把这段实验代码放进 new Function：它是一个自包含的字符串，
+   * 作用域与文件隔离，既保住了实验语义，又不会污染本文件的静态检查。 */
+  const makeThrowing = new Function(
+    'try { let inner = 1; throw new Error("boom"); }\n'
+    + 'finally { void inner; }');
+  let thrown = null;
+  try { makeThrowing(); } catch (e) { thrown = e; }
+  assert.ok(thrown && /ReferenceError/.test(thrown.name || ''),
+    'JS 语义与预期不符：finally 读 try 内 let 应当抛 ReferenceError，实际 ' + (thrown && thrown.name));
+});
+
+t('2c 行为验证：提到外部之后，finally 能正常读到（模拟修好的写法）', () => {
+  let seen = undefined, ran = false;
+  try {
+    (function () {
+      let dlId = null;
+      try { dlId = 'dlg123'; }
+      finally { seen = dlId; ran = true; }
+    })();
+  } catch (e) { assert.fail('修好的写法不应该抛：' + e.message); }
+  assert.strictEqual(seen, 'dlg123', 'finally 应该读到 try 里赋的值');
+  assert.strictEqual(ran, true, 'finally 必须真的执行完（原来异常会把它后半段顶掉）');
+});
+
+/* ==================== 3. alertBox 的对象实参 ==================== */
+
+t('3a alertBox 收到对象时兼容，并且 console.warn 提示调用方', () => {
+  const uiSrc = read('js/ui.js');
+  const block = extractFn(uiSrc, 'function alertBox(');
+  /* 真的跑一遍：用一个假的 modal/h 桩，验证对象形态不会得到空白正文。 */
+  let modalTitle = null, modalBody = null;
+  const fakeH = (tag, attrs, child) => ({ tag, attrs, child });
+  const fakeModal = (opts) => { modalTitle = opts.title; opts.body({ appendChild: (n) => { modalBody = n; } }); return { close() {} }; };
+  const warns = [];
+  const alertBox = new Function('modal', 'h', 'console', block + '\nreturn alertBox;')(
+    fakeModal, fakeH, { warn: (...a) => warns.push(a.join(' ')) });
+
+  alertBox({ title: '部分文件未能重命名', message: '明细文本' });
+  assert.ok(modalBody && modalBody.child === '明细文本', '对象实参的 message 字段没有被取出来当正文');
+  assert.strictEqual(modalTitle, '部分文件未能重命名', '对象实参的 title 字段没有被用上');
+  assert.ok(warns.length >= 1 && /alertBox/.test(warns[0]), '误用对象时应当 console.warn 提醒');
+
+  // 正常写法不受影响
+  alertBox('普通文本', '自定义标题');
+  assert.strictEqual(modalBody.child, '普通文本');
+  assert.strictEqual(modalTitle, '自定义标题');
+});
+
+t('3b 失败明细的空白框问题：正文必须保留换行（pre-wrap）', () => {
+  const uiSrc = read('js/ui.js');
+  const block = stripComments(extractFn(uiSrc, 'function alertBox('));
+  assert.ok(/whiteSpace\s*:\s*'pre-wrap'/.test(block),
+    'alertBox 正文没有 pre-wrap：多行失败明细会被压成一长条，文件名与原因对不上号');
+});
+
+/* ==================== 4. 截图导出裁剪乘 dpr ==================== */
 
 done();

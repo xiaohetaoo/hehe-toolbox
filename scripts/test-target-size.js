@@ -3,6 +3,8 @@
  * 用法：node scripts/test-target-size.js
  */
 const assert = require('assert');
+const stripComments = require('../lib/src-scan').stripComments;
+const { extractFn } = require('../lib/src-scan');
 const t = require('../lib/target-size');
 
 let pass = 0, fail = 0;
@@ -12,6 +14,11 @@ function c(name, fn) {
 }
 
 /* ---------- planBitrates ---------- */
+/* 读渲染层源码（迁移来的 round14 用例要看 js/tools/target-size.js 的实现）。
+ * 用 harness 的 readSrc：它会剥注释，源码断言必须在没有注释干扰的文本上做。 */
+const { readSrc } = require('./lib/harness');
+function read(rel) { return readSrc(rel, { raw: true }); }
+
 c('10 分钟视频压到 100MB -> 码率合理', () => {
   const r = t.planBitrates({ targetBytes: 100 * 1024 * 1024, durationSec: 600, hasAudio: true });
   assert.ok(r.ok, '应可规划: ' + r.reason);
@@ -221,4 +228,12 @@ t('31 target-size：目标太小时不该算出负码率', () => {
     '提示里出现了负码率（「视频码率仅剩 -31kbps」这种不存在的值）：' + p.reason);
 });
 
+c('8a target-size：解锁动作收在一个函数里，早退与 finally 都调用', () => {
+  const code = stripComments(read('js/tools/target-size.js'));
+  const fn = extractFn(code, 'async function run(');
+  assert.ok(/function unlockUi\s*\(\s*\)/.test(fn), '没有统一的解锁函数');
+  assert.ok(/finally\s*\{[\s\S]*?unlockUi\s*\(\s*\)/.test(fn), 'finally 里没调用 unlockUi');
+  assert.ok(/fs:mkdir[\s\S]{0,300}?unlockUi\s*\(\s*\)/.test(fn), 'fs:mkdir 失败分支没调用 unlockUi');
+  assert.ok(/setLocked\s*\(false\)/.test(fn), 'unlockUi 里没解锁选择器');
+});
 

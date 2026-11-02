@@ -1,21 +1,19 @@
 'use strict';
-/* 【文件定位：历史轮次回归，不是模块测试】
- * 本文件为历史轮次回归，行为断言应逐步迁往 test-<模块>.js；新测试不要加到这里。
- * 迁移目标见 scripts/test-test-map.js 打印的「lib 模块 → 测试文件」地图：
- * 找某个模块的测试时，先看那张表，再按模块名找 test-<模块>.js。
- * 保留按轮次命名的理由：每一条断言都对应一次真实故障的现场，
- * 合并进模块文件会丢掉「这一批是一起发现的」这条线索。
- */
-/* E2E（第二版）：用**真实的 main.js** 启动应用，再验证本轮改动。
+/* 应用冒烟测试：用**真实的 main.js** 启动打包版/开发版应用，验证能跑起来。
+ *（原 test-round14-app.js，按实际作用重命名。）
  *
- * 上一版失败的原因值得记下来：我只用 bare electron + index.html，
- * 主进程是空壳，所以 `win:pin-move` 报「No handler registered」——
- * 那些 handler 全在 main.js 里。这正说明了「必须在真应用里验」的意义。
+ * ============ 为什么这个文件必须存在 ============
+ * 单测能验逻辑，但验不了「主进程整体能不能启动」—— 而这是最贵的一类故障：
+ * 一个 require 写错、一个 handler 名字对不上，单测全绿、应用起不来。
+ * 上一版 e2e 只用了 bare electron + index.html（主进程是空壳），
+ * 于是 `win:pin-move` 报「No handler registered」，看起来像功能坏了，
+ * 实际是测试环境不真实。现在改为以 main.js 为入口启动，
+ * 通过主进程全局钩子做断言。
  *
- * 这里改为：以 main.js 为入口启动（HEHE_TEST_DATA 指向临时目录），
- * 通过主进程的全局钩子做断言。贴图窗口的键类型问题在单测里已经跑过真实现
- * （test-round14-fixes.js 的 1a/1b/1c/1d），这里只补「真应用能启动 + 渲染层不报错」。
- */
+ * ============ 它验什么、不验什么 ============
+ * 验：主窗口创建成功、preload 的 window.api 可用、IPC 真链路可用、
+ *     渲染层无未捕获 JS 错误、alertBox 在真 DOM 里不是空白框。
+ * 不验：各工具的具体逻辑（那些在对应的 test-<模块>.js 里）。 */
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
