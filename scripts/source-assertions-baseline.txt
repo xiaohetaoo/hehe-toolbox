@@ -27,7 +27,7 @@ scripts/test-click-sweep.js | A=1 | B=0 | e2e-fixture
 scripts/test-critical-dirs.js | A=1 | B=1 | legacy-source-assertion
 scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
 scripts/test-danger-inline-enable.js | A=2 | B=0 | e2e-fixture
-scripts/test-destructive.js | A=1 | B=1 | legacy-source-assertion
+scripts/test-destructive.js | A=1 | B=45 | legacy-source-assertion
 scripts/test-dir-move-e2e.js | A=4 | B=0 | e2e-fixture
 scripts/test-disk-health-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-dz-el.js | A=2 | B=13 | legacy-source-assertion
@@ -53,7 +53,7 @@ scripts/test-picker-func.js | A=1 | B=0 | e2e-fixture
 scripts/test-powergate.js | A=1 | B=3 | legacy-source-assertion
 scripts/test-pwd-bias.js | A=1 | B=2 | legacy-source-assertion
 scripts/test-reentry-guard.js | A=7 | B=0 | legacy-read
-scripts/test-regressions.js | A=1 | B=2 | legacy-source-assertion
+scripts/test-regressions.js | A=1 | B=48 | legacy-source-assertion
 scripts/test-report-fixes.js | A=1 | B=0 | legacy-read
 scripts/test-round10-fixes.js | A=1 | B=0 | legacy-read
 scripts/test-round11-fixes.js | A=2 | B=0 | legacy-read
@@ -62,7 +62,7 @@ scripts/test-round13-fixes.js | A=11 | B=2 | legacy-source-assertion
 scripts/test-round14-fixes.js | A=1 | B=37 | legacy-source-assertion
 scripts/test-round15-fixes.js | A=1 | B=78 | legacy-source-assertion
 scripts/test-round2-fixes.js | A=3 | B=4 | legacy-source-assertion
-scripts/test-round8-fixes.js | A=3 | B=0 | legacy-read
+scripts/test-round8-fixes.js | A=2 | B=0 | legacy-read
 scripts/test-round9-fixes.js | A=2 | B=0 | legacy-read
 scripts/test-single-instance.js | A=2 | B=0 | legacy-read
 scripts/test-source-assertions.js | A=1 | B=0 | meta-self

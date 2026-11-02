@@ -484,16 +484,34 @@ t('P2 notes:pdf 用原子写', () => {
 
 /* P2-11 GIF 残file */
 t('P2 GIF 转码失败时清理残缺文件', () => {
-  const s = read('main.js');
-  const i = s.indexOf('let gifOut = null;');
-  const seg = s.slice(i, i + 900);
+  /* 任务 6 把 rec:* 搬到了 ipc/media-ffmpeg.js —— 这条断言要的是
+   * 「主进程里有这个实现」，与它在哪个文件无关，所以读主进程全部源码
+   * （main.js + ipc/）。
+   *
+   * 【不能再用「indexOf 某个变量名 + 往后切 N 个字符」的窗口】
+   * 原来写的是 slice(i, i + 900)。这段代码上方有三十多行说明注释，
+   * 而 readMain() 默认剥注释（注释变成空行），900 个字符里大半是空行，
+   * 真正要匹配的语句落在窗口外 —— 断言于是报「没有删除残缺 gif」，
+   * 而代码明明在。这正是「按版面切窗口」的失效方式：改注释就会红。
+   *
+   * 改成锚定语义：定位 makeGif 分支起点，用括号配平取出**整个分支**，
+   * 在整段里找那两件事。注释多长、代码在第几行都不影响。 */
+  const s = readMain();
+  const at = s.indexOf('let gifOut = null;');
+  assert.ok(at > 0, '找不到 GIF 转码分支（let gifOut）');
+  const open = s.indexOf('{', s.indexOf('if (makeGif)', at));
+  assert.ok(open > 0, '找不到 if (makeGif) 的块');
+  const end = srcScan.scanBrace(s, open);
+  assert.ok(end > 0, 'if (makeGif) 的块括号不配平');
+  const seg = s.slice(open, end);
   assert.ok(seg.includes('gifTarget'), '没有独立的 gif 目标变量');
-  assert.ok(/rm\(gifTarget/.test(seg), '失败时没有删除残缺 gif');
+  assert.ok(/rm\(\s*gifTarget/.test(seg), '失败时没有删除残缺 gif');
 });
 
 /* P2 audio-cut 自我覆盖防护 */
 t('P2 ffmpeg:audio-cut 拒绝输出等于输入', () => {
-  const s = read('main.js');
+  /* 同上：ffmpeg:audio-cut 已搬到 ipc/media-ffmpeg.js。 */
+  const s = readMain();
   const i = s.indexOf("handle('ffmpeg:audio-cut'");
   const seg = s.slice(i, i + 700);
   assert.ok(seg.includes('输出文件不能与源文件相同'), '没有自我覆盖检查');

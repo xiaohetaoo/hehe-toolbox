@@ -8,7 +8,7 @@
  */
 /* 原脚本用 cases 收集 + 串行 for 循环，输出严格按注册顺序。
  * 这里显式指定 order:'sequential' 以保持迁移前的输出顺序不变。 */
-const { createSuite, readTree } = require('./lib/harness');
+const { createSuite, readTree, readMain } = require('./lib/harness');
 const { t, done } = createSuite({ order: 'sequential' });
 /* 本轮（第 13 轮全量审查）修复项的回归测试。
  *
@@ -40,7 +40,14 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
  * 于是 11 条断言一起报「找不到 xxx」—— 本轮真的踩了。
  * 这里要验的（runCmd / moveFile / normSchedule / sanitizeCmdError …）本来就
  * 都留在 main.js 里，所以继续只读 main.js 是正确的边界。 */
-const mainSrc = read('main.js');
+/* 【任务 6 之后读「主进程全部源码」，且必须保留原文】
+ * 本文件里不少断言按原文切片（segFromHandler / indexOf 定位 /
+ * stripComments(mainSrc) 之后再做匹配），而任务 6 把 ffmpeg:/target:/rec:
+ * 三个域搬到了 ipc/media-ffmpeg.js。只读 main.js 会报「找不到 REC_VIDEO_EXT」
+ * 「找不到 handler: target:compress-av」—— 看着像功能没了，其实只是换了文件。
+ * 用 readMain({ raw: true })：拼上 ipc/ 下的文件，且不剥注释（等价于原来的
+ * 原始文本读取，按版面切片的断言行为不变）。 */
+const mainSrc = readMain({ raw: true });
 
 /* 【取「从某个 needle 到下一个顶层定义」的片段，不要用注释做右边界】
  *

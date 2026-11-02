@@ -1,5 +1,5 @@
 'use strict';
-const { t, done, readTree } = require('./lib/harness');
+const { t, done, readTree, readMain } = require('./lib/harness');
 /* 任务 9 把 media.js 拆成了 js/tools/media/*.js —— 媒体相关的源码断言
  * 一律改读整棵树：断言的语义是「媒体工具里有这个实现」，与文件数无关。 */
 const readMedia = () => readTree('js/tools/media');
@@ -140,8 +140,20 @@ t('P3 armSchedule 对 NaN 间隔兜底', () => {
 
 /* ---------- P3：录制拼接降级 ---------- */
 t('P3 rec:stop 降级时如实返回 degraded', () => {
-  const s = read('main.js');
-  const fn = s.match(/handle\('rec:stop'[\s\S]*?\n\}\);/)[0];
+  /* 任务 6 把 rec:* 搬到了 ipc/media-ffmpeg.js —— 这条断言要的是
+   * 「主进程里有这个实现」，与它在哪个文件无关，所以读主进程全部源码。
+   *
+   * 【原来的写法会崩，不只是失败】
+   *   const fn = s.match(/handle\(.rec:stop.[\s\S]*?\n\}\);/)[0];
+   * 匹配不到时 match() 返回 null，紧接着的 [0] 抛
+   *   TypeError: Cannot read properties of null (reading 0)
+   * 于是报错信息变成一句与业务无关的 JS 异常，看日志的人根本不知道
+   * 是「handler 搬家了」还是「degraded 逻辑没了」。
+   * 现在改为先判空再断言，并把「找不到」写成明确的失败原因。 */
+  const s = readMain();
+  const m = s.match(/handle\('rec:stop'[\s\S]*?\n\}\);/);
+  assert.ok(m, '找不到 rec:stop 的注册（它可能又被搬到别的文件了）');
+  const fn = m[0];
   assert.ok(fn.includes('degraded'), '没有降级标记');
   assert.ok(/return \{ ok: true[^}]*degraded/.test(fn), '返回值里没有 degraded');
 });

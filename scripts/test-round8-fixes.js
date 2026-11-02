@@ -11,7 +11,7 @@
  * 那是原版的**隐患**：异步断言失败时没人接，会静默通过。
  * 这里用 order:'sequential' 保持迁移前的输出顺序，同时 harness 会**等待**
  * 该 Promise —— 顺序与原版一致，而且异步失败现在能被抓住了。 */
-const { createSuite, readTree } = require('./lib/harness');
+const { createSuite, readTree, readMain } = require('./lib/harness');
 const { t, done } = createSuite({ order: 'sequential' });
 /* 本轮四项的回归测试（其中两项是 v0.2.7 的遗留/回归）。
  *
@@ -35,7 +35,15 @@ const os = require('os');
 const ROOT = path.join(__dirname, '..');
 
 const appSrc = fs.readFileSync(path.join(ROOT, 'js', 'app.js'), 'utf8');
-const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+/* 【任务 6 之后这里不能只读 main.js】
+ * 本文件所有用到 mainSrc 的断言，语义都是「主进程里有这个实现」：
+ * handle('rec:start') / pruneExeBackups / update:cleanup / TRAY_I18N /
+ * createTray / app:set-lang…… 而任务 6 已经把 rec:* 等域搬到了
+ * ipc/media-ffmpeg.js。只读 main.js 的话，那些断言会报「找不到 rec:start」
+ * —— 表现像是功能被删了，其实只是换了文件。
+ * readMain() 把 main.js 与 ipc/ 下的文件按固定顺序拼起来，正好对应这个语义。
+ * （同 test-destructive / test-regressions 里对 readMain 的说明。） */
+const mainSrc = readMain();
 
 /* ============ ① IPC 订阅不得裸挂在 buildShell 里 ============ */
 t('① buildShell 里没有裸 on(...) 订阅（全部经 sub 登记退订）', () => {

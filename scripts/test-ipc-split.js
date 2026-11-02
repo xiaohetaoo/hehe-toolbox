@@ -30,14 +30,25 @@ t('main.js 行数确实下降了（拆分前 7722 行）', () => {
    * 改成**是否还有实现留在 main.js** 的结构性判断：
    * 只要 main.js 里仍注册着大量 handler、仍有顶层函数定义，就不可能是误删。
    * 这比行数直接：真误删会把 handler 一起删掉，那种情况下面这条会红。
-   * 上限（< 7000）保留 —— 它防的是「搬出去的东西又搬回来了」，那个方向是对的。 */
+   * 上限（< 7000）保留 —— 它防的是「搬出去的东西又搬回来了」，那个方向是对的。
+   *
+   * 【阈值随搬迁调整的历史】
+   *   任务 5 搬走 dir:/acl:/link: 两域（1561 行）后：handlers ≥100、topFns ≥80。
+   *   任务 6 又搬走 ffmpeg:/target:/rec: 三个域（947 行，71 个 handler、
+   *   11 个顶层函数）后：实测 handlers 85、topFns 79。
+   * 所以阈值下调到 handlers ≥70、topFns ≥60。
+   * 【这个下调不是"为了让测试变绿"】判据的含义没变 —— 仍然是「还有一大堆
+   * handler 与顶层函数留在 main.js」。只是分母从 156 变成 85，
+   * 按比例留出同样的余量（各约 15~20%），误删时照样会红。
+   * 真正的保护区是下面第 2 条（搬走的函数不许留在 main.js 里）与
+   * test-ipc-channels 的通道总数（164）—— 那两条与行数无关。 */
   const src = read(MAIN);
   const handlers = (src.match(/^handle\(/gm) || []).length;
   const topFns = (src.match(/^(?:async\s+)?function\s+\w+/gm) || []).length;
-  assert.ok(handlers >= 100,
-    'main.js 里只剩 ' + handlers + ' 个 handle() 注册 —— 疑似误删（正常还有 150+ 个 IPC 处理器）');
-  assert.ok(topFns >= 80,
-    'main.js 里只剩 ' + topFns + ' 个顶层函数 —— 疑似误删（正常还有 100+ 个）');
+  assert.ok(handlers >= 70,
+    'main.js 里只剩 ' + handlers + ' 个 handle() 注册 —— 疑似误删（正常还有 85+ 个 IPC 处理器）');
+  assert.ok(topFns >= 60,
+    'main.js 里只剩 ' + topFns + ' 个顶层函数 —— 疑似误删（正常还有 79+ 个）');
 });
 
 /* ---- 2. 搬走的代码不再留在 main.js（否则是两份实现，必然分叉） ---- */
