@@ -8,7 +8,6 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
 const fsOps = require('../lib/fs-ops');
 
 let pass = 0, fail = 0;

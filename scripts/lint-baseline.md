@@ -2,6 +2,40 @@
 
 > 由 `scripts/gen-lint-baseline.js` 生成。**不要手改**，改完 lint 后重跑该脚本。
 
+## 关于 `scripts/`：已纳入检查，且**零压制**
+
+`scripts/**` 此前被整目录排除在 eslint 之外（理由：测试脚本写法反常规，
+按主进程规则查会喷几百条）。这条理由成立，但代价是 98 个脚本 18427 行
+完全没有静态检查 —— 而上一轮修的 16 项测试缺陷里有 4 项正是 P1「测试假绿」。
+
+现在 `eslint.config.js` 为 `scripts/**` 单开了一个 config 块，**只开四条规则**
+（no-undef / no-unused-vars / no-dupe-keys / no-unreachable），并把从主 config
+继承来的 no-shadow / eqeqeq / no-async-promise-executor / no-misleading-character-class
+显式关掉（它们在测试脚本里几乎全是假阳性，例如 `filter((t, i) => …)` 与
+顶部的测试函数 `t` 同名）。
+
+首次接入报 1283 条，其中 1253 条是 no-undef —— 全部因为缺少 node 全局声明
+（require/console/process/__dirname/Buffer 等），补上 globals 后降到 34 条。
+剩下 34 条**没有一条靠 disable 压制**，全部当真问题处理，见下节。
+
+本节由人工维护（`gen-lint-baseline.js` 只覆盖 js/ lib/ main.js preload.js）。
+
+## `scripts/` 里真修掉的 10 处（不是压制，是改代码）
+
+| 位置 | 规则 | 问题 | 修法 |
+|---|---|---|---|
+| `scripts/test-dir-move-e2e.js:39` | no-undef | 收尾分支引用了一对**从未声明**的 `pass`/`fail`（脚本用的是 harness，没有本地计数器）。本机没有第二块可写磁盘时不是打印 SKIP，而是抛 ReferenceError 崩掉；而 CI 的 `grep -E '^(FAIL\|SKIP) '` 两条都抓不到 | 改成打印显式 `SKIP ` 行 + `done()`（走 harness 的 0 用例保护） |
+| `scripts/test-round14-fixes.js:149` | no-undef | `void inner` 引用 try 块内的 let，靠"引用不存在的变量"来演示 ReferenceError | 把实验代码放进 `new Function` 字符串，作用域隔离，不再污染本文件的静态检查 |
+| `scripts/test-dir-move.js:91` | no-unused-vars | `r` 算出来却从未断言 —— 「同卷且目标在源内部」这条**从未被验证** | 补上 `assert.strictEqual(r.code, 'DST_INSIDE_SRC')` |
+| `scripts/test-update-cleanup.js:68` | no-unused-vars | `cleanup()` 的返回值 `r` 没人看，「文件还在」无法区分"真豁免"与"根本没跑到" | 断言 `r.kept` 等于 `[['…0.0.12.exe','待安装']]`、`r.removed` 为空 |
+| `scripts/test-round14-fixes.js` | no-unused-vars | `loadVerifyCopy` / `goneDir` / `fullFn` 是历史迭代留下的死代码（已被内联版本取代） | 删除，断言数不变（29 条仍全过） |
+| `scripts/test-round13-fixes.js` | no-unused-vars | `kvOf` / `catchBlk` / `B` 三处算完不用（`kvOf` 后面还有一个真正在用的同名变量） | 删除，59 条仍全过 |
+| `scripts/test-destructive.js` 等 7 个文件 | no-unused-vars | 未使用的 `require`（os / guard / fs / path / crypto）与未使用的小助手（read / p / srcSize / out / files） | 删除 |
+| `scripts/test-tool-order.js:32` | — | 「Unused eslint-disable directive」：那条 `no-new-func` 压制没有对应问题 | 删除 |
+
+> 其中 `test-dir-move-e2e.js:39` 是**真崩溃路径**：`pass`/`fail` 在该文件里
+> 从未声明。这类"脚本崩了但 CI 抓不到"的形态，正是把 scripts/ 纳入 lint 的直接理由。
+
 本文件登记的是本轮**不修**的既有问题。每一条都在源码里用**行级**
 `/* eslint-disable-next-line <规则> -- 理由 */` 压制，而不是文件级 disable ——
 文件级会让整个文件永不再被检查，以后真的 bug 也抓不到。

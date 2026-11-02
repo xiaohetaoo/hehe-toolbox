@@ -16,7 +16,6 @@ let pass = 0, fail = 0;
 const t = (n, f) => { try { f(); pass++; console.log('PASS  ' + n); } catch (e) { fail++; console.log('FAIL  ' + n + '  -> ' + e.message); } };
 
 const B = String.fromCharCode(92);
-const p = (s) => s.split('/').join(B);
 
 /* ---- 1. resolveReal 对普通路径的行为 ---- */
 t('resolveReal 对不存在的路径用「父目录 realpath + 名字」', () => {

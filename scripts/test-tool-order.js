@@ -29,7 +29,6 @@ function readOrder() {
   }
   if (end < 0) throw new Error('ORDER 表括号不配对');
   const body = src.slice(src.indexOf('{', start), end + 1);
-  // eslint-disable-next-line no-new-func
   return new Function('return ' + body)();
 }
 

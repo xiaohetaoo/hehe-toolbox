@@ -1,5 +1,5 @@
 'use strict';
-const { t, done, readMain, ROOT } = require('./lib/harness');
+const { t, done, ROOT } = require('./lib/harness');
 /* 任务 5 拆分的完整性守卫。
  *
  * 这一轮把 1561 行从 main.js 搬到 ipc/acl-links.js。下面每一条都对应一个

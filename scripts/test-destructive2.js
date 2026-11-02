@@ -4,11 +4,7 @@ const { t, done, readMain } = require('./lib/harness');
  * 重点覆盖：门禁绕过、系统进程保护、密码脱敏、字段缺失守卫。
  */
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 
-const ROOT = path.resolve(__dirname, '..');
-const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
 /* 取某个通道的 handle 体。
  *

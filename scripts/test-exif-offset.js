@@ -99,7 +99,7 @@ t('Orientation（SHORT 内联）读到 6', () => {
 
 /* ---- 对照：如果「短标签也加 base」会读到什么 ---- */
 t('对照实验：短标签若错误地加 base，读到的是错误内容', () => {
-  const { dv, base, entries } = buildTiff();
+  const { dv, entries } = buildTiff();
   const e = entries[1].e;
   const num = dv.getUint32(e + 4, true);
   // 故意用 base + (e+8) 这种错误写法（base=0 时碰巧相同，故这里把 base 设为非 0 验证）

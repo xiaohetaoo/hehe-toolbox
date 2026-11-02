@@ -39,7 +39,7 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const { readTree } = require('./lib/harness');
 const readAny = (p) => (p.endsWith('.js') ? read(p) : readTree(p));
 const mainSrc = read('main.js');
-const { stripComments, extractFn, scanBrace } = require(path.join(ROOT, 'lib', 'src-scan'));
+const { stripComments, scanBrace } = require(path.join(ROOT, 'lib', 'src-scan'));
 
 function rmDir(dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {} }
 

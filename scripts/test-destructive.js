@@ -8,8 +8,6 @@ const { t, done, readTree, readMain } = require('./lib/harness');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const guard = require('../lib/path-guard');
 const srcScan = require('../lib/src-scan');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -317,8 +315,6 @@ t('P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）', () => {
 /* P0-2 Office 转换覆盖同基名文件 */
 t('P0 office:convert COM 分支用 uniqueTarget', () => {
   const s = read('main.js');
-  const fn = s.match(/\/\/ Office COM 引擎[\s\S]*?\n\}\);/);
-  const body = fn ? fn[0] : s.slice(s.indexOf("results.push({ input: f, out: null, ok: false, err: `COM 引擎不支持"), s.indexOf('return { engine: \'Office COM\''));
   assert.ok(s.includes('uniqueTarget(outDir, base + \'.\' + target)'), 'COM 分支没有唯一化输出名');
 });
 t('P0 office:convert LibreOffice 分支先转临时目录再挪', () => {

@@ -10,7 +10,6 @@ const chk = (c, m) => { if (c) { pass++; console.log('PASS  ' + m); } else { fai
 
 /* ---- 1. createSuite 的默认分隔符是双空格（与原项目绝大多数脚本一致） ---- */
 {
-  const out = [];
   const s = H.createSuite();
   assert.ok(s.t, 'createSuite 应返回 t');
   assert.ok(s.done, 'createSuite 应返回 done');

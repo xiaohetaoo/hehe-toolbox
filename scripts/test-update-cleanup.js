@@ -68,6 +68,14 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'updclean-'));
   const r = cleanup(dir, '0.0.13', 'hehe-toolbox-Portable-0.0.12.exe');
   t('显式登记待安装的包被豁免', () => {
     assert.ok(fs.existsSync(path.join(dir, 'hehe-toolbox-Portable-0.0.12.exe')), '待安装包不应被删');
+    /* 【这一条原来只检查「文件还在」，cleanup() 的返回值 r 算了却没人看】
+     * 「文件还在」有两种可能：① 真的被「待安装」这条规则豁免（期望）
+     * ② 整个 cleanup 根本没扫到这个目录（同样是"文件还在"，但假绿）。
+     * 返回值里的 kept 正是用来区分这两者的，所以必须断言它 ——
+     * 断言到具体的豁免理由，而不是只断言"数组非空"。 */
+    assert.deepStrictEqual(r.kept, [['hehe-toolbox-Portable-0.0.12.exe', '待安装']],
+      '应由「待安装」这条规则豁免，实际 kept=' + JSON.stringify(r.kept));
+    assert.deepStrictEqual(r.removed, [], '这个目录里没有该删的包');
   });
 }
 

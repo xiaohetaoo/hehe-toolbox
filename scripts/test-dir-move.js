@@ -89,7 +89,15 @@ t('目标与源相同 → 拒绝', () => {
 
 t('目标在源内部 → 拒绝（会无限递归）', () => {
   const r = D.validateMove(Object.assign({}, OK, { src: 'D:\\a', dst: 'D:\\a\\b' }));
-  // 注意同卷也会被拒；这里把 allowSameVolume 打开以便单独验证「内部」这条
+  /* 【这一条原来只算不用】r 算出来之后没有任何断言碰过它，
+   * 于是「同卷时目标在源内部也要拒绝」这件事其实一直没被验证 ——
+   * 真正被断言的只有下面打开 allowSameVolume 之后的 r2。
+   * 补上对 r 的断言：同卷 + 内部，拒绝码应当是 DST_INSIDE_SRC
+   * （而不是先被同卷规则拦成 DST_SAME —— 那会让用户看到"同盘"这种
+   * 与真实原因无关的提示）。 */
+  assert.strictEqual(r.code, 'DST_INSIDE_SRC',
+    '同卷且目标在源内部时应优先报「目标在源内部」，实际 ' + r.code);
+  // 这里把 allowSameVolume 打开以便单独验证「内部」这条
   const r2 = D.validateMove(Object.assign({}, OK, { src: 'D:\\a', dst: 'D:\\a\\b', allowSameVolume: true }));
   assert.strictEqual(r2.code, 'DST_INSIDE_SRC', '应报「目标在源内部」，实际 ' + r2.code);
 });

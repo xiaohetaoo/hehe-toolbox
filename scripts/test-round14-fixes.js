@@ -141,14 +141,20 @@ t('2a app.js：dlId 与 unsub 都在 try 之外声明', () => {
 
 t('2b 行为验证：块级作用域下 finally 读 try 内 let 会抛 ReferenceError', () => {
   /* 用最小样例证明这个缺陷机理是真的（而不是"我以为会抛"）。
-   * 这段代码不依赖项目，只演示 JS 语义。 */
+   * 这段代码不依赖项目，只演示 JS 语义。
+   *
+   * 【为什么用 new Function 而不是直接写这段代码】
+   * 要验证的正是「finally 里读一个只存在于 try 块内的 let」，
+   * 直接写出来会被 lint 的 no-undef 判为「引用未定义变量」——
+   * 而这里**引用一个不存在的变量恰是实验本身**。
+   * 与其加一行 disable 注释（那会把 no-undef 在这附近的真实报警也一起关掉），
+   * 不如把这段实验代码放进 new Function：它是一个自包含的字符串，
+   * 作用域与文件隔离，既保住了实验语义，又不会污染本文件的静态检查。 */
+  const makeThrowing = new Function(
+    'try { let inner = 1; throw new Error("boom"); }\n'
+    + 'finally { void inner; }');
   let thrown = null;
-  try {
-    (function () {
-      try { let inner = 1; throw new Error('boom'); }
-      finally { /* eslint-disable-next-line */ void inner; }
-    })();
-  } catch (e) { thrown = e; }
+  try { makeThrowing(); } catch (e) { thrown = e; }
   assert.ok(thrown && /ReferenceError/.test(thrown.name || ''),
     'JS 语义与预期不符：finally 读 try 内 let 应当抛 ReferenceError，实际 ' + (thrown && thrown.name));
 });
@@ -358,16 +364,6 @@ t('6d 界面把「未校验」如实说出来', () => {
 });
 
 /* ==================== 7. 复制期间源条目消失 ==================== */
-/* 从 main.js 抽出 verifyCopy 与 hashFile 的真实现来跑。
- * 之所以能跑：这两个函数只依赖 path/fs/crypto，没有 Electron 上下文。 */
-function loadVerifyCopy() {
-  const vBlock = extractFn(mainSrc, 'async function verifyCopy(');
-  const hBlock = extractFn(mainSrc, 'function hashFile(');
-  return new Function('fs', 'fsp', 'path', 'crypto',
-    hBlock + '\n' + vBlock + '\nreturn { verifyCopy, hashFile };')(
-    fs, fs.promises, path, require('crypto'));
-}
-
 /* 用可注入的 fsp 桩跑真 verifyCopy。
  *
  * 【为什么必须用桩】"源文件在 readdir 之后、stat 之前被删掉"是一个竞态，
@@ -433,7 +429,6 @@ t('7c verifyCopy：源子目录整个消失 → 不当致命错，计入 skipped
   const vBlock = extractFn(mainSrc, 'async function verifyCopy(');
   const hBlock = extractFn(mainSrc, 'function hashFile(');
   const realFsp = fs.promises;
-  const goneDir = path.join('gone', '');   // 用其目录名做匹配
   const fspStub = {
     /* 让 readdir 对"已消失的子目录"抛 ENOENT，模拟目录在遍历中被删掉 */
     readdir: async (p, o) => {
@@ -486,9 +481,7 @@ t('7d copyTreeExcludingLinks：复制期间源文件消失 → 跳过并计数�
     const src = path.join(dir, 'src'), dst = path.join(dir, 'dst');
     fs.mkdirSync(src);
     fs.writeFileSync(path.join(src, 'a.txt'), 'hello');
-    const fullFn = new Function('fs', 'fsp', 'path', 'collectLinksPlaceholder',
-      fn + '\nreturn copyTreeExcludingLinks;')(fs, fs.promises, path, null);
-    /* 依赖 relKey/buildLinkKeySet，这两个也在 main.js 里 —— 一并注入 */
+    /* 依赖 relKey/buildLinkKeySet，这两个也在主进程源码里 —— 一并注入 */
     const helperBlock = extractFn(code, 'function relKey(') + '\n' + extractFn(code, 'function buildLinkKeySet(');
     const realFn = new Function('fs', 'fsp', 'path',
       helperBlock + '\n' + fn + '\nreturn copyTreeExcludingLinks;')(fs, fs.promises, path);

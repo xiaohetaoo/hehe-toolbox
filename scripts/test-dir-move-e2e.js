@@ -35,9 +35,21 @@ function pickOtherDrive() {
 
 const otherDrive = pickOtherDrive();
 if (!otherDrive) {
-  console.log('SKIP 本机没有第二块可写磁盘，跳过跨盘搬家实测');
-  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-  process.exit(fail ? 1 : 0);
+  /* 【这里原先引用了一对从未声明过的变量 pass / fail】
+   * 脚本用的是 harness（t/done 自己计数），并没有本地计数器。
+   * 于是本机没有第二块可写磁盘时，这段收尾会抛
+   *   ReferenceError: pass is not defined
+   * 而不是打印 SKIP —— 表现出来是「脚本崩了」，不是「跳过」。
+   * 而 CI 的 grep 抓的是 `^(FAIL|SKIP) `，崩溃时两个都抓不到，
+   * 看起来反而像是这一环跑过了。
+   * 这里显式打印 SKIP 行（CI 会把它作为 annotation 报出来），
+   * 再用 done() 走 harness 的 0 用例保护：它会以 FAIL 退出，
+   * 提醒人这台机器缺少跨盘条件、这条 e2e 没有被验证。
+   * 之所以不直接 exit 0：静默通过等于假装测过了。 */
+  console.log('SKIP 本机没有第二块可写磁盘，跳过跨盘搬家实测'
+    + '（该 e2e 未被验证，需要至少一个非系统盘卷）');
+  done();
+  return;
 }
 console.log('目标盘:', otherDrive);
 

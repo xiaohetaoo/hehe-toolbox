@@ -31,7 +31,6 @@ const path = require('path');
  * 用同步包装会「先打印 PASS 再让断言失败」，等于把所有失败都吞掉。
  * 这里改成 async 顺序执行，最后统一统计。 */
 
-const ROOT = path.resolve(__dirname, '..');
 /* 任务 5 把搬家/权限域搬到 ipc/acl-links.js：读主进程全部源码。 */
 const mainSrc = readMain({ raw: true });
 

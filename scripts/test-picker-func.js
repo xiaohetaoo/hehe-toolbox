@@ -18,7 +18,6 @@ const src1 = path.join(tmp, 'noise1.png');
 const src2 = path.join(tmp, 'noise2.png');
 writeNoisePng(src1, 700, 500);
 writeNoisePng(src2, 600, 400);
-const srcSize = fs.statSync(src1).size;
 
 const PROBE = `
 (async () => {

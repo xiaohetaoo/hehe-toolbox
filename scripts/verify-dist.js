@@ -18,7 +18,6 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'asar3-'));
 const asarPath = path.join(tmp, 'app.asar');
 fs.writeFileSync(asarPath, ent.getData());
 
-const files = asarLib.listPackage(asarPath);
 function read(rel) {
   // asar 的 listPackage 返回反斜杠路径，extractFile 需要匹配同样的形态
   const cands = [rel, BS + rel, rel.replace(/\//g, BS), BS + rel.replace(/\//g, BS)];

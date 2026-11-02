@@ -56,23 +56,13 @@ const BASE_RULES = {
 
 module.exports = [
   {
-    /* 全局忽略：依赖、产物、以及**测试脚本**。
-     * 【为什么整个 scripts/ 都排除，而不是只排除某几个】
-     * scripts/ 下有 84 个测试脚本，它们的写法刻意"反常规"：
-     *   · 大量 readFileSync + 正则匹配源码（为了源码断言）
-     *   · 用 new Function 动态求值抽出来的实现（no-new-func 会全红）
-     *   · 故意留空 catch（catch (e) {} 在"忽略失败"路径上是合理的）
-     * 把它们纳入 lint 会让 baseline 膨胀到几百条压制，收益却是零 ——
-     * 测试脚本的质量由测试自身保证（它们跑起来会自检）。
-     * 所以排除 scripts/ 整目录；scripts/lib/harness.js 是唯一的公共骨架，
-     * 单独用 node --check 保证语法正确即可。
+    /* 全局忽略：依赖、产物、以及外部工具留下的目录。
      *
      * node_modules / dist 是产物与依赖，不检查。
      */
     ignores: [
       'node_modules/**',
       'dist/**',
-      'scripts/**',
       'assets/**',
       'css/**',
       /* 【外部工具留下的目录，不属于本项目源码】
@@ -228,6 +218,83 @@ module.exports = [
         __dirname: 'readonly', __filename: 'readonly',
         process: 'readonly', Buffer: 'readonly', console: 'readonly',
       },
+    },
+  },
+
+  /* ============================================================
+   * ---- scripts/：测试与工具脚本，**只开四条规则** ----
+   *
+   * 【为什么以前整目录排除，现在又要查】
+   * 排除的理由是成立的：测试脚本写法刻意"反常规"（大量读源码匹配、
+   * new Function 求值、故意空 catch），按主进程那套规则查会喷几百条，
+   * 收益是零。但代价同样真实：98 个脚本 18427 行没有任何静态检查，
+   * 而上一轮修的 16 项测试缺陷里有 4 项是 **P1「测试假绿」**——
+   * 比如 `no-undef` 能直接抓到的"引用了不存在的变量"。
+   * 也就是说：恰恰是"测试代码不用查"这个判断，放走了最贵的缺陷。
+   *
+   * 【所以只开四条，且每条都对应一次真实故障形态】
+   *   no-undef      —— 引用了不存在的变量。测试脚本里出现这个，
+   *                    通常意味着断言对象写错了名字，而断言本身**照样通过**
+   *                    （例如断言一个从未赋值的 `fail`）。
+   *   no-unused-vars—— 声明后从未读取。上一轮 test-round14 的 4a 就是
+   *                    "定义了一个 fn 但断言跑的是手写副本"，
+   *                    这条规则能直接指出来。
+   *   no-dupe-keys  —— 对象字面量重复键，后者静默覆盖前者。夹具对象里
+   *                    重复写一个字段，测试就永远看不到前一个值。
+   *   no-unreachable—— return 之后的代码永不执行。断言的收尾代码写在
+   *                    return 之后，等于这条断言从来没生效过。
+   * 其余规则（风格、复杂度、new-func、空 catch）一律不开：
+   * 那些在测试代码里是**合理写法**，开了只会换来一片 disable。
+   *
+   * 【环境】node + 允许 require。scripts/ 里全是 CommonJS 脚本。
+   * ============================================================ */
+  {
+    files: ['scripts/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly', module: 'writable', exports: 'writable',
+        __dirname: 'readonly', __filename: 'readonly',
+        process: 'readonly', Buffer: 'readonly', console: 'readonly',
+        setTimeout: 'readonly', clearTimeout: 'readonly',
+        setInterval: 'readonly', clearInterval: 'readonly',
+        setImmediate: 'readonly', clearImmediate: 'readonly',
+        queueMicrotask: 'readonly',
+        URL: 'readonly', URLSearchParams: 'readonly',
+        TextEncoder: 'readonly', TextDecoder: 'readonly',
+        AbortController: 'readonly', AbortSignal: 'readonly',
+        fetch: 'readonly', performance: 'readonly', structuredClone: 'readonly',
+        crypto: 'readonly',
+        /* 【global 与 globalThis 都要声明】有脚本用 `global.X = ...` 装桩
+         * （例如把 TextDecoder 临时换掉再恢复）。这是 node 的既有全局，
+         * 不是笔误。 */
+        global: 'writable', globalThis: 'readonly',
+      },
+    },
+    rules: {
+      'no-undef': 'error',
+      /* args:'none' 与主 config 同理：回调形参按接口约定固定，
+       * 用不到某个参数是正常的（dropzone(files, opts) 之类）。
+       * caughtErrors:'none'：`catch (e) { /* 忽略 *\/ }` 在清理路径上是刻意的。 */
+      'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none', ignoreRestSiblings: true }],
+      'no-dupe-keys': 'error',
+      'no-unreachable': 'error',
+      /* 【显式关掉从主 config 继承来的规则】
+       * 主 config 里开着 no-shadow（历史证据是 app.js 的 `let dlId` 遮蔽），
+       * 但它在测试脚本里几乎全是假阳性：`rename: async (s, t) => …`、
+       * `texts.filter((t, i) => …)` 这类回调参数与文件顶部的 t（测试函数）
+       * 同名，是**局部且刻意的**命名，改掉只会让回调更难读。
+       * 上一轮 test-mojibake 修过一个真正的问题（cp 重复 require），
+       * 但那是 no-unused-vars 抓到的，不是 no-shadow。
+       * 任务书要求 scripts/ 只开四条规则，所以这里把继承来的关掉，
+       * 而不是靠 6 行 disable 注释去压。 */
+      'no-shadow': 'off',
+      /* 同理：主 config 的 eqeqeq / no-misleading-character-class 等也不适用于
+       * 测试脚本（后者会误报"正则里多码点"这类刻意写法）。 */
+      eqeqeq: 'off',
+      'no-async-promise-executor': 'off',
+      'no-misleading-character-class': 'off',
     },
   },
 ];

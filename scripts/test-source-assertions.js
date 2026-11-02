@@ -108,7 +108,6 @@ const base = loadBaseline();
  * 扫描 + 比对
  * ============================================================ */
 const scanned = scan.scanAll();
-const perFile = new Map(scanned.map((r) => [r.file, r]));
 
 let aAll = 0, bAll = 0, bAnnotated = 0;
 for (const r of scanned) {

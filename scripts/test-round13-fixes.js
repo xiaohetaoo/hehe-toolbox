@@ -807,7 +807,6 @@ t('18 wifi:key：多行 netsh 输出里能取到密码与身份验证', () => {
   /* 用真实格式的输出跑一遍抽出来的取值逻辑 */
   const kvSrc = seg.match(/const kvOf = \(re\) => \{[\s\S]*?\n  \};/);
   assert.ok(kvSrc, '找不到 kvOf');
-  const kvOf = new Function('out', kvSrc[0] + '\nreturn kvOf;')(null);
   const out = [
     '接口 WLAN 的配置文件 X:',
     '安全设置',
@@ -938,7 +937,6 @@ t('22 seven:extract：失败回滚要把条目搬回 staging，不能直接删',
   /* 直接删的风险：uniqueTarget 的存在性判断若因权限/瞬时错误失准，
    * rm 掉的可能是用户原有文件 —— 解压失败反毁数据。 */
   const seg = segFromHandler('seven:extract');
-  const catchBlk = seg.slice(seg.lastIndexOf('} catch (err) {'));
   assert.ok(!/for \(const dst of movedTo\.reverse\(\)\) \{\s*try \{ await fsp\.rm\(dst/.test(seg),
     '回滚仍在直接 rm(dst)');
   assert.ok(/await fsp\.rename\(dst, back\)/.test(seg), '应把已搬出的条目改名回 staging');
@@ -1008,7 +1006,6 @@ t('25a checkDeletable：recursive 参数不能被忽略（系统目录深层要�
 
 t('25b isCriticalForOverwrite：第二套 Windows（D:\\Windows）也要挡', () => {
   const PGx = require(path.join(ROOT, 'lib', 'path-guard'));
-  const B = String.fromCharCode(92);
   const hosts = path.join('D:', 'Windows', 'System32', 'drivers', 'etc', 'hosts');
   assert.ok(PGx.checkOverwritable(hosts),
     'D:\\Windows 下的 hosts 必须拒写 —— 覆盖它会毁掉全机 DNS。' +
