@@ -31,19 +31,18 @@ const { t, done, ROOT, readSrc } = require('./lib/harness');
  * 白名单：确实没有独立测试、且理由成立的模块。
  * ============================================================ */
 const EXEMPT = {
-  'lib/errors.js': '纯常量表（错误码 → 中文文案）。本身无逻辑，'
-    + '文案的正确性由各调用方断言（例如 test-fail-text 断言的失败文案拼装）。'
-    + '为它单独写测试只会断言"常量等于常量"。'
-    + '（它被 ipc/ 与 main.js 广泛 require，但那些调用点都在主进程里，'
-    + '单个测试文件不会直接 require 它——所以本表里它是 0。）',
+  /* 目前是空的 —— 19 个 lib 模块全部有直接测试引用。 */
 };
 
-/* 【已撤掉的一条白名单】
- * lib/fs-ops.js 原先挂在这里，理由是"只被间接覆盖"。实测不成立：
- * scripts/test-round2-fixes.js 直接 require 了它（那是按轮次命名的文件，
- * 一开始没注意到）。TM-2 就是为这种情况设的——白名单只该收敛，
- * 一旦某模块已经有人测了，条目必须删掉，否则豁免表会越挂越长，
- * 最后变成"反正挂上去就绿了"。 */
+/* 【已撤掉的两条白名单，记下来免得再挂回去】
+ * 1) lib/fs-ops.js —— 原先理由是"只被间接覆盖"，实测不成立：
+ *    scripts/test-round2-fixes.js 直接 require 了它（按轮次命名的文件，
+ *    一开始没注意到）。TM-2 就是为这种情况设的：一旦某模块已经有人测了，
+ *    条目必须删掉，否则豁免表越挂越长，最后变成"反正挂上去就绿了"。
+ * 2) lib/errors.js —— 原先理由是"纯常量表，本身无逻辑"。这个判断是错的：
+ *    它有 classify / toPayload / format 三个纯函数与 9 条分类规则，
+ *    还是 main.js 里每个失败通道的必经之路（handle() 的 catch 分支）。
+ *    现在由 scripts/test-errors.js 覆盖（12 条）。 */
 
 /* 【已知局限，写在这里以免本表被当成"全覆盖"】
  * 按轮次命名的测试文件同样会 require lib 模块，本表一视同仁地统计它们
@@ -134,9 +133,37 @@ t('TM-2 白名单没有过期条目（模块已存在且有测试，却还挂在
   if (stale.length) throw new Error('白名单里的这些条目已经不需要了，请删掉：\n  ' + stale.join('\n  '));
 });
 
-t('TM-3 白名单每条都写了理由（不是"先挂上去再说"）', () => {
-  const bad = Object.keys(EXEMPT).filter((m) => !EXEMPT[m] || EXEMPT[m].length < 20);
-  if (bad.length) throw new Error('这些白名单条目没写清理由：' + bad.join(', '));
+t('TM-3 白名单每条都写了理由，且确实没有测试引用它', () => {
+  /* 【为什么不能只查「理由够不够长」】
+   * 白名单现在是空的（19/19 全覆盖），一条 `Object.keys(EXEMPT).filter(...)`
+   * 在这种状态下永远通过 —— 那是**永真断言**，等于没有。
+   * 所以补上真正的约束：**白名单里的模块必须真的没有测试引用它**。
+   * 一旦某个模块已经有了测试却还挂在豁免里，这条会红（与 TM-2 互为印证：
+   * TM-2 查「过期」，这条查「豁免是否名副其实」）。
+   * 理由长度检查保留 —— 将来重新挂条目时它仍然起作用。 */
+  const bad = [];
+  for (const m of Object.keys(EXEMPT)) {
+    const reason = EXEMPT[m];
+    if (!reason || reason.length < 20) { bad.push(m + '：理由太短'); continue; }
+    const files = map.get(m);
+    if (files && files.size > 0) {
+      bad.push(m + '：已经有测试引用它了（' + [...files].join(', ') + '），不该再挂白名单');
+    }
+  }
+  if (bad.length) throw new Error(bad.join(String.fromCharCode(10) + "  "));
+});
+
+t('TM-3b 覆盖率本身有下限（防止靠「多挂白名单」把 TM-1 刷绿）', () => {
+  /* TM-1 允许白名单，所以「把所有没测试的模块都挂上去」也能让它绿。
+   * 这条给覆盖率设下限：至少 90% 的 lib 模块必须有直接测试。
+   * 提高覆盖率只能靠写测试，不能靠加豁免。 */
+  const covered = [...map.values()].filter((s) => s.size > 0).length;
+  const ratio = covered / map.size;
+  if (ratio < 0.9) {
+    throw new Error('lib 模块直接测试覆盖率只有 ' + covered + '/' + map.size
+      + '（' + (ratio * 100).toFixed(0) + '%），低于 90% 的下限。'
+      + '提高覆盖率要靠补测试，不是靠往 EXEMPT 里加条目。');
+  }
 });
 
 t('TM-4 扫描逻辑自身没有静默失效（至少认出了大部分模块和测试）', () => {
