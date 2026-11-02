@@ -17,7 +17,13 @@ function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'ut
 
 t('4a calcPickPoint：窗口偏移与副屏都正确', () => {
   const code = stripComments(read('js/tools/dev.js'));
+  /* 锁的是：「4a calcPickPoint：窗口偏移与副屏都正确」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/function calcPickPoint/.test(code), '没有抽出 calcPickPoint 纯函数');
+  /* 锁的是：「4a calcPickPoint：窗口偏移与副屏都正确」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/screenX/.test(code) && /screenY/.test(code), '仍在用 clientX/clientY（窗口内坐标）');
   /* 【不能用 extractFn 抽它】它的参数是解构对象 { screenX, ... }，
    * extractFn 会把第一个 '{' 当成函数体起点，抽出来只有参数那一小段。
@@ -54,7 +60,13 @@ t('4a calcPickPoint：窗口偏移与副屏都正确', () => {
 
 t('4b 越界时不取色、给出提示', () => {
   const code = stripComments(read('js/tools/dev.js'));
+  /* 锁的是：「4b 越界时不取色、给出提示」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/inRange/.test(code), '没有使用 inRange 标记');
+  /* 锁的是：「4b 越界时不取色、给出提示」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/已超出屏幕范围/.test(code), '越界时没有给出可读提示');
 });
 
@@ -76,8 +88,17 @@ t('4c 调用点必须传 e.screenX/e.screenY（不能退回 clientX）', () => {
    * 那里用 e.clientX 是**正确**的（放大镜要跟着鼠标在窗口里画）。 */
   const close = code.indexOf('})', i);
   const seg = code.slice(i, close > i ? close + 1 : i + 300);
+  /* 锁的是：「4c 调用点必须传 e.screenX/e.screenY（不能退回 clientX）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/screenX:\s*e\.screenX/.test(seg), '调用点没有用 e.screenX（用了窗口坐标 clientX）');
+  /* 锁的是：「4c 调用点必须传 e.screenX/e.screenY（不能退回 clientX）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/screenY:\s*e\.screenY/.test(seg), '调用点没有用 e.screenY');
+  /* 锁的是：「4c 调用点必须传 e.screenX/e.screenY（不能退回 clientX）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/clientX/.test(seg), 'calcPickPoint 的实参里用了 clientX（窗口内坐标与屏幕坐标混用）');
 });
 

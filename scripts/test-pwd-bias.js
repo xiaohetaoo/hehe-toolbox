@@ -71,7 +71,13 @@ t('同一字符集多次生成不重复（随机性）', () => {
 /* ---- 源码检查：confirm 用的是拒绝采样，不是裸取模 ---- */
 t('源码里不再是裸 x % chars.length 直接映射', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'js', 'tools', 'security.js'), 'utf8');
+  /* 锁的是：「源码里不再是裸 x % chars.length 直接映射」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/limit/.test(src), '源码应包含拒绝采样的 limit 计算');
+  /* 锁的是：「源码里不再是裸 x % chars.length 直接映射」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/x < limit/.test(src), '源码应拒绝落在偏差区的随机数');
 });
 

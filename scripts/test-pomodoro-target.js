@@ -16,12 +16,30 @@ function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'ut
 
 t('12a countIn 被读取，「已完成」可刷新', () => {
   const code = stripComments(read('js/tools/life.js'));
+  /* 锁的是：「12a countIn 被读取，「已完成」可刷新」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/function readTarget/.test(code), '没有读取目标番茄数');
+  /* 锁的是：「12a countIn 被读取，「已完成」可刷新」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/parseInt\(countIn\.value/.test(code), 'countIn 仍然从没被读过');
+  /* 锁的是：「12a countIn 被读取，「已完成」可刷新」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/targetPomodoros = Math\.max/.test(code), '没有做范围钳制');
+  /* 锁的是：「12a countIn 被读取，「已完成」可刷新」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/paintDone/.test(code), '「已完成」没有可刷新的绘制函数');
+  /* 锁的是：「12a countIn 被读取，「已完成」可刷新」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/countIn\.addEventListener\('change'/.test(code), '改目标后界面不更新');
   /* 反面：不能再是一次性文本 */
+  /* 锁的是：「12a countIn 被读取，「已完成」可刷新」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/h\('span', \{ class: 'field-hint' \}, `已完成 \$\{pomodoros\}`\)/.test(code),
     '「已完成」仍是一次性字符串（永远是 0）');
 });

@@ -194,6 +194,9 @@ t('九套配色主题的 name/desc 都有中英键', () => {
   // app.js 里不能再有写死的配色名
   const offenders = [];
   for (const name of ['极地白', '雾霭蓝', '苔原绿', '紫罗兰', '樱花粉', '鎏金', '青碧', '暖砂', '纯黑白']) {
+  /* 锁的是：「九套配色主题的 name/desc 都有中英键」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     if (new RegExp("name: '" + name + "'").test(fs.readFileSync(APP, 'utf8'))) {
       offenders.push(name);
     }

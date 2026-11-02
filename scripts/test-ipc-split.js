@@ -43,7 +43,13 @@ t('main.js 行数确实下降了（拆分前 7722 行）', () => {
    * 真正的保护区是下面第 2 条（搬走的函数不许留在 main.js 里）与
    * test-ipc-channels 的通道总数（164）—— 那两条与行数无关。 */
   const src = read(MAIN);
+  /* 锁的是：「main.js 行数确实下降了（拆分前 7722 行）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const handlers = (src.match(/^handle\(/gm) || []).length;
+  /* 锁的是：「main.js 行数确实下降了（拆分前 7722 行）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const topFns = (src.match(/^(?:async\s+)?function\s+\w+/gm) || []).length;
   assert.ok(handlers >= 70,
     'main.js 里只剩 ' + handlers + ' 个 handle() 注册 —— 疑似误删（正常还有 85+ 个 IPC 处理器）');
@@ -64,6 +70,9 @@ t('搬走的 21 个函数在 main.js 里已经没有定义', () => {
   ];
   const dup = [];
   for (const n of MOVED) {
+  /* 锁的是：「搬走的 21 个函数在 main.js 里已经没有定义」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     if (new RegExp('(?:async\\s+)?function\\s+' + n + '\\s*\\(').test(code)) dup.push(n);
   }
   assert.deepStrictEqual(dup, [],
@@ -79,10 +88,16 @@ t('8 个通道的 handle 注册都在 ipc/dir-acl-links.js 里', () => {
     'ACL_LINKS.LINK_SCAN', 'ACL_LINKS.LINK_REMOVE',
     'ACL_LINKS.WHO_LOCKS', 'ACL_LINKS.WHO_LOCKS_DIR',
   ];
+  /* 锁的是：「8 个通道的 handle 注册都在 ipc/dir-acl-links.js 里」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const missing = KEYS.filter((k) => !new RegExp('handle\\(dirMoveCh\\.' + k.replace('.', '\\.') + '\\s*,').test(acl));
   assert.deepStrictEqual(missing, [], '这些通道没搬过去（界面点了会「No handler registered」）：\n  ' + missing.join('\n  '));
   /* 而且 main.js 里不该再有它们 */
   const mainCode = strip(read(MAIN));
+  /* 锁的是：「8 个通道的 handle 注册都在 ipc/dir-acl-links.js 里」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const leftover = KEYS.filter((k) => mainCode.includes('handle(dirMoveCh.' + k));
   assert.deepStrictEqual(leftover, [], 'main.js 里还留着注册（重复注册会让应用启动即卡死）：' + leftover.join(', '));
 });
@@ -90,6 +105,9 @@ t('8 个通道的 handle 注册都在 ipc/dir-acl-links.js 里', () => {
 /* ---- 4. main.js 里没有裸的 dirMoveCh 引用 ---- */
 t('main.js 不再 require dirMoveCh（否则那个 require 是死代码）', () => {
   const code = strip(read(MAIN));
+  /* 锁的是：「main.js 不再 require dirMoveCh（否则那个 require 是死代码）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/const dirMoveCh = require/.test(code),
     'main.js 顶部还 require 了 dirMoveCh，但它的使用点全搬走了 —— ESLint 的 no-unused-vars 会报');
 });
@@ -102,6 +120,9 @@ t('模块只导出 isRunningAsAdmin（main.js 唯一还需要的那一个）', (
    * 用贪婪匹配会把最后一个局部 return 当成导出 —— 我第一版就是这么写错的。
    * 导出语句的特征是：位于 register 函数体的**最外层**，紧跟 `};` 收尾。 */
   const tail = acl.trimEnd().slice(-400);
+  /* 锁的是：「模块只导出 isRunningAsAdmin（main.js 唯一还需要的那一个）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const m = tail.match(/return\s*\{([^}]*)\}\s*;\s*\}\s*;/);
   assert.ok(m, '找不到模块末尾的导出 return（形态应为 return { … };  })');
   const names = m[1].split(',').map((x) => x.trim()).filter(Boolean);
@@ -114,8 +135,17 @@ t('搬走的代码不直接引用 win / send / jobSeq（必须走 ctx）', () =>
   const acl = strip(read(ACL));
   /* 排除注释与字符串已由 strip 处理。这里查的是「有没有裸的全局名」。 */
   const bad = [];
+  /* 锁的是：「搬走的代码不直接引用 win / send / jobSeq（必须走 ctx）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   if (/(^|[^.\w])win\s*&&\s*!?win\.isDestroyed/.test(acl)) bad.push('直接用了 win.isDestroyed');
+  /* 锁的是：「搬走的代码不直接引用 win / send / jobSeq（必须走 ctx）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   if (/(^|[^.\w])webContents\.send/.test(acl)) bad.push('直接用了 webContents.send');
+  /* 锁的是：「搬走的代码不直接引用 win / send / jobSeq（必须走 ctx）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   if (/(\+\+jobSeq|jobSeq\+\+)/.test(acl)) bad.push('直接自增了 jobSeq（应走 ctx.nextJobSeq）');
   assert.deepStrictEqual(bad, [], '这些必须经 ctx 访问，否则模块与 main.js 状态分裂：\n  ' + bad.join('\n  '));
 });
@@ -123,12 +153,21 @@ t('搬走的代码不直接引用 win / send / jobSeq（必须走 ctx）', () =>
 /* ---- 7. ctx 真的被当参数传进去了 ---- */
 t('main.js 用 register(ctx, deps) 调用模块，且 deps 里带 handle', () => {
   const code = strip(read(MAIN));
+  /* 锁的是：「main.js 用 register(ctx, deps) 调用模块，且 deps 里带 handle」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/require\('\.\/ipc\/dir-acl-links'\)(\(|$)/.test(code) || /require\('\.\/ipc\/dir-acl-links'\)\(ipcCtx/.test(code),
     'main.js 没有调用 ipc/dir-acl-links 的 register');
   const call = code.slice(code.indexOf("require('./ipc/dir-acl-links')"));
   const seg = call.slice(0, 700);
+  /* 锁的是：「main.js 用 register(ctx, deps) 调用模块，且 deps 里带 handle」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/ipcCtx/.test(seg), '没有把 ipcCtx 传进去');
   for (const k of ['handle', 'ps', 'runCmd', 'pathExists', 'shortErr', 'PS_PATH_BATCH']) {
+  /* 锁的是：「main.js 用 register(ctx, deps) 调用模块，且 deps 里带 handle」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(new RegExp('\\b' + k + '\\b').test(seg), 'deps 里缺 ' + k + '（模块会 ReferenceError）');
   }
 });
@@ -140,8 +179,17 @@ t('所有「拷应用再启动」的 E2E 脚本都把 ipc/ 拷进去了', () => 
     const p = path.join(ROOT, 'scripts', n);
     const s = fs.readFileSync(p, 'utf8');
     /* 只关心「确实会拷一份应用到临时目录」的脚本 */
+  /* 锁的是：「所有「拷应用再启动」的 E2E 脚本都把 ipc/ 拷进去了」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     if (!/cpSync\(/.test(s)) continue;
+  /* 锁的是：「所有「拷应用再启动」的 E2E 脚本都把 ipc/ 拷进去了」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     if (!/['"]js['"],\s*['"]css['"]/.test(s) && !/\['js',/.test(s)) continue;
+  /* 锁的是：「所有「拷应用再启动」的 E2E 脚本都把 ipc/ 拷进去了」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     if (!/['"]ipc['"]/.test(s)) offenders.push(n);
   }
   assert.deepStrictEqual(offenders, [],
@@ -152,6 +200,9 @@ t('所有「拷应用再启动」的 E2E 脚本都把 ipc/ 拷进去了', () => 
 /* ---- 9. ipc/ 在 lint 与打包范围内 ---- */
 t('ipc/ 被 ESLint 与 electron-builder 覆盖', () => {
   const eslint = fs.readFileSync(path.join(ROOT, 'eslint.config.js'), 'utf8');
+  /* 锁的是：「ipc/ 被 ESLint 与 electron-builder 覆盖」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(eslint.includes('ipc/**/*.js'), 'eslint 没覆盖 ipc/ —— 搬出去的文件没人查');
   const pkg = require(path.join(ROOT, 'package.json'));
   const files = (pkg.build && pkg.build.files) || [];
@@ -164,6 +215,9 @@ t('ipc/ 被 ESLint 与 electron-builder 覆盖', () => {
 t('ipc/ctx.js 的访问器仍是 getter', () => {
   const code = strip(read(CTX));
   for (const k of ['win', 'jobs', 'isWin', 'isMac']) {
+  /* 锁的是：「ipc/ctx.js 的访问器仍是 getter」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(new RegExp('get ' + k + '\\(\\)').test(code), 'ctx.' + k + ' 不是 getter（快照会让搬出去的代码读到构造时的值）');
   }
 });

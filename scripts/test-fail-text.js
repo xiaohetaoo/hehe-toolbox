@@ -61,7 +61,13 @@ t('lib/fail-text.js 在 node 与浏览器两种加载方式下导出同一个实
   const fs = require('fs');
   const path = require('path');
   const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'fail-text.js'), 'utf8');
+  /* 锁的是：「lib/fail-text.js 在 node 与浏览器两种加载方式下导出同一个实现」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/module\.exports\s*=\s*api/.test(src), 'node 分支没有导出');
+  /* 锁的是：「lib/fail-text.js 在 node 与浏览器两种加载方式下导出同一个实现」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/root\.FailText\s*=\s*api/.test(src), '浏览器分支没有挂 window.FailText');
   /* 用 vm 模拟浏览器分支：把 module 藏掉，只留 globalThis */
   const vm = require('vm');

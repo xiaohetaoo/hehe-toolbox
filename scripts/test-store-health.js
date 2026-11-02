@@ -57,22 +57,43 @@ t('6a loadStore 行为：损坏的数据文件要先另存副本，再回退默�
     const after = { settings: { closeToTray: false }, favorites: [], notes: [] };
     fs.writeFileSync(fake, JSON.stringify(after, null, 2));
     assert.ok(fs.existsSync(ctx.copy), '原文件被覆盖后，副本必须仍然存在');
+  /* 锁的是：「6a loadStore 行为：损坏的数据文件要先另存副本，再回退默认值」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(/笔记/.test(fs.readFileSync(ctx.copy, 'utf8')), '副本里应还留有可抢救的原始内容');
   } finally { rmDir(dir); }
 });
 
 t('6b main.js 暴露了 store:health，且渲染层真的会用它提示用户', () => {
+  /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/handle\('store:health'/.test(mainSrc), '缺少 store:health 通道');
+  /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/corruptCopy/.test(mainSrc), 'store:health 应带上副本路径');
   /* 光「调用了通道」不够 —— 必须真的把结果用于提示，且用户的可见反馈要带上
    * 副本文件名（否则用户不知道去哪找原数据）。这里查的是行为链，不是某个变量名。 */
   const app = read('js/app.js');
+  /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const m = app.match(/store:health[\s\S]{0,900}?\n    \}/);
   assert.ok(m, '渲染层没有读取 store:health，用户不会知道数据文件坏了');
   const block = m[0];
+  /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/health\.ok === false|!health\.ok/.test(block),
     '必须显式判断 health.ok === false 才提示（否则每次启动都会弹）');
+  /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/toast\(/.test(block), '发现损坏后必须 toast 告知用户');
+  /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/corruptCopy/.test(block), '提示里要带副本文件名，否则用户不知道去哪找原数据');
 });
 

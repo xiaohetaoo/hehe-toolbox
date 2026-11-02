@@ -16,8 +16,17 @@ function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'ut
 
 t('3a hash 用 Map 存结果，并通过 rowEnd 回填', () => {
   const code = stripComments(read('js/tools/hash.js'));
+  /* 锁的是：「3a hash 用 Map 存结果，并通过 rowEnd 回填」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/const results = new Map\(\)/.test(code), '没有按路径存结果（结果挂在 DOM 行上，refresh 后就丢了）');
+  /* 锁的是：「3a hash 用 Map 存结果，并通过 rowEnd 回填」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/rowEnd:/.test(code), '没有用 filePicker 的 rowEnd 回填');
+  /* 锁的是：「3a hash 用 Map 存结果，并通过 rowEnd 回填」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/paintResult/.test(code), '没有独立的回填函数');
   /* 【反面断言要精确定位到"收尾"，不能全段搜】
    * hashFile 开头把进度条挂到当前行是合法的（那是"此刻确实有这一行"）。
@@ -26,6 +35,9 @@ t('3a hash 用 Map 存结果，并通过 rowEnd 回填', () => {
   const i = code.indexOf('async function hashFile');
   const seg = code.slice(i, i + 2400);
   const tail = seg.slice(seg.indexOf('progress.remove()'));
+  /* 锁的是：「3a hash 用 Map 存结果，并通过 rowEnd 回填」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/row\.appendChild\(box\)/.test(tail),
     'hashFile 收尾仍在把结果 append 到"一开始抓到的那行"（行被 refresh 重建后就画到看不见的地方）');
   /* 【这条是关键，别再写成"包含 curRow 就算过"】
@@ -34,16 +46,28 @@ t('3a hash 用 Map 存结果，并通过 rowEnd 回填', () => {
    * 断言照样通过（反向验证 MISSED 证实了）。必须直接禁掉"往行上 append"这个动作。 */
   assert.ok(!/curRow\.appendChild/.test(tail),
     '收尾仍在往行元素上 append（应改为 paintResult(curRow, p) 按路径重画）');
+  /* 锁的是：「3a hash 用 Map 存结果，并通过 rowEnd 回填」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/paintResult\(/.test(tail), '收尾没有调用 paintResult 重画');
 });
 
 t('3b 行为：文件列表重建后，已有结果仍能画出来', () => {
   /* 用一个最小 DOM 桩验证 paintResult 的语义：结果按路径存在 → 新行能画出摘要。 */
   const code = stripComments(read('js/tools/hash.js'));
+  /* 锁的是：「3b 行为：文件列表重建后，已有结果仍能画出来」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/results\.set\(p, \{ hex \}\)/.test(code) || /results\.set\(p/.test(code),
     '算完没有把结果写进 results');
+  /* 锁的是：「3b 行为：文件列表重建后，已有结果仍能画出来」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/results\.get\(p\)/.test(code), 'paintResult 没有按路径取结果');
   /* 关键约束：hashed 只用于"别重复算"，不能用来阻止回填 */
+  /* 锁的是：「3b 行为：文件列表重建后，已有结果仍能画出来」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/if \(hashed\.has\(it\.path\)\) continue;\s*\n\s*\/\/[^\n]*\n\s*return/.test(code),
     'hashed 被用来阻止回填了');
 });

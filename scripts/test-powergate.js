@@ -172,8 +172,17 @@ t('取消关机即使未开启也放行', () => {
 /* ---- 5. main.js 必须使用这份实现（防空挂） ---- */
 t('main.js 引用了 lib/power-gate 且无本地正则副本', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8');
+  /* 锁的是：「main.js 引用了 lib/power-gate 且无本地正则副本」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(src.includes("require('./lib/power-gate')"), '未引用共享实现');
+  /* 锁的是：「main.js 引用了 lib/power-gate 且无本地正则副本」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/const POWER_CMD_RE\s*=/.test(src), 'main.js 仍有本地 POWER_CMD_RE');
+  /* 锁的是：「main.js 引用了 lib/power-gate 且无本地正则副本」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/powerGate\.checkPowerGate/.test(src), 'assertPowerAllowed 未委托');
 });
 

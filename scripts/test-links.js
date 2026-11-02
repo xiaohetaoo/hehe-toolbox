@@ -17,6 +17,9 @@ const cp = require('child_process');
 const stripComments = require('../lib/src-scan').stripComments;
 const mainSrcL = readMain({ raw: true });
 /* PS_PATH_BATCH 从 main.js 源码里读出来，与实现同源。 */
+  /* 锁的是：「同一组回归」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
 const PS_PATH_BATCH = Number((mainSrcL.match(/const PS_PATH_BATCH = (\d+);/) || [])[1]);
 const fsp = fs.promises;
 const BS = String.fromCharCode(92);
@@ -266,9 +269,15 @@ t('② 不再对 norm 做「整条都是文本命令」的豁免', () => {
 
 t('③ 两处批量 Get-Item 都按 PS_PATH_BATCH 分块', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「③ 两处批量 Get-Item 都按 PS_PATH_BATCH 分块」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/const PS_PATH_BATCH = \d+;/.test(code), '没有分块常量');
   assert.ok(PS_PATH_BATCH >= 10 && PS_PATH_BATCH <= 200,
     '分块大小应在 10~200 之间（太小起进程多、太大会超命令行上限），实际 ' + PS_PATH_BATCH);
+  /* 锁的是：「③ 两处批量 Get-Item 都按 PS_PATH_BATCH 分块」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const hits = (code.match(/i \+= PS_PATH_BATCH/g) || []).length;
   assert.ok(hits >= 2, 'link:scan 与 linkNatures 两处都要分批，实际 ' + hits + ' 处');
   assert.ok(!/const arr = found\.map\(q\)\.join\(','\)/.test(code),

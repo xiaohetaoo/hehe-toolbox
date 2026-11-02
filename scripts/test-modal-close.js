@@ -19,19 +19,40 @@ t('10a 两处 modal 都传了 onClose', () => {
   const code = stripComments(read('js/tools/launch.js'));
   const i1 = code.indexOf('function pickOne');
   assert.ok(i1 > 0, '没有抽 pickOne');
+  /* 锁的是：「10a 两处 modal 都传了 onClose」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/onClose/.test(code), '没有传 onClose —— 关掉弹窗后 Promise 永不 settle');
+  /* 锁的是：「10a 两处 modal 都传了 onClose」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const n = (code.match(/onClose/g) || []).length;
   assert.ok(n >= 1, 'onClose 没出现');
   /* await 之后必须判空 */
+  /* 锁的是：「10a 两处 modal 都传了 onClose」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/if \(!type\) return/.test(code), 'type 为空时没有提前返回');
+  /* 锁的是：「10a 两处 modal 都传了 onClose」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/if \(!shell\) return/.test(code), 'shell 为空时没有提前返回');
 });
 
 t('10b 两处都被外层 try/catch 包住，失败要 toast', () => {
   const code = stripComments(read('js/tools/launch.js'));
+  /* 锁的是：「10b 两处都被外层 try/catch 包住，失败要 toast」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const n = (code.match(/async function add\(\)/g) || []).length;
   assert.strictEqual(n, 2, '预期两个 add()，实际 ' + n);
+  /* 锁的是：「10b 两处都被外层 try/catch 包住，失败要 toast」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/添加失败/.test(code), '快捷启动的 add 没有兜底提示');
+  /* 锁的是：「10b 两处都被外层 try/catch 包住，失败要 toast」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/收藏失败/.test(code), '命令收藏的 add 没有兜底提示');
 });
 

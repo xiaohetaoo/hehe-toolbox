@@ -148,6 +148,9 @@ t('报告点名的 9 个事件都走 sub 登记', () => {
                   'sched:fire', 'tray:err', 'snip:region', 'app:open-tool', 'app:already-running'];
   const missing = [];
   for (const ev of EVENTS) {
+  /* 锁的是：「报告点名的 9 个事件都走 sub 登记」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     if (!new RegExp("sub\\('" + ev + "'").test(appSrc)) missing.push(ev);
   }
   assert.deepStrictEqual(missing, [], '这些事件没用 sub 登记：' + missing.join(', '));

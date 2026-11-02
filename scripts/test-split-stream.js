@@ -24,9 +24,21 @@ t('13a split-file 失败时销毁读流并清掉分片', () => {
   const i = code.indexOf("handle('fs:split-file'");
   assert.ok(i > 0, '找不到 fs:split-file');
   const seg = code.slice(i, i + 4200);
+  /* 锁的是：「13a split-file 失败时销毁读流并清掉分片」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/const fail = /.test(seg), '没有统一的 fail() 收口');
+  /* 锁的是：「13a split-file 失败时销毁读流并清掉分片」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/rs\.destroy\(\)/.test(seg), '失败时没有销毁读流（卡在背压暂停就再也不继续，fd 挂到进程退出）');
+  /* 锁的是：「13a split-file 失败时销毁读流并清掉分片」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/ws\.destroy\(\)/.test(seg), '失败时没有销毁写流');
+  /* 锁的是：「13a split-file 失败时销毁读流并清掉分片」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/madePaths/.test(seg), '没有记录本次产出的分片，失败后不会清理半截文件');
 });
 
@@ -88,10 +100,22 @@ t('14a 静态服务用 pipeline（或 res.on(close)) 保证销毁读流', () => 
   const tryAt = seg.indexOf('try {', seg.indexOf('createReadStream'));
   const tryEnd = seg.indexOf('} catch (e) {', tryAt);
   const mainPath = (tryAt >= 0 && tryEnd > tryAt) ? seg.slice(tryAt, tryEnd) : seg;
+  /* 锁的是：「14a 静态服务用 pipeline（或 res.on(close)) 保证销毁读流」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/stream\.pipe\(res\)/.test(mainPath),
     '主路径仍是裸 stream.pipe(res)：客户端断开只 unpipe，不销毁源流，fd 一直开着');
+  /* 锁的是：「14a 静态服务用 pipeline（或 res.on(close)) 保证销毁读流」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/pipeline\(stream, res/.test(mainPath), '主路径没有用 pipeline 让 Node 负责销毁两端');
+  /* 锁的是：「14a 静态服务用 pipeline（或 res.on(close)) 保证销毁读流」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/res\.on\('close'/.test(seg), '缺少"客户端断开"的兜底处理');
+  /* 锁的是：「14a 静态服务用 pipeline（或 res.on(close)) 保证销毁读流」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/stream\.destroy\(/.test(seg), '缺少 destroy 兜底');
 });
 

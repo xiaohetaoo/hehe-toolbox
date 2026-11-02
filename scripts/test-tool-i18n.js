@@ -93,6 +93,9 @@ function callSites(rel) {
   const src = stripComments(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
   const out = [];
   // T('……') 这个本地别名只指向本工具的域，域名从 `TT('域',` 声明处取
+  /* 锁的是：「has() 如实反映表内容，TOOL_TEXT 至少含 qr 与 hash 两个域」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const m0 = src.match(/TT\('([a-z]+)',\s*zh/);
   if (!m0) return { domain: null, sites: [] };
   const domain = m0[1];

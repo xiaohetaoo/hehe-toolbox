@@ -82,8 +82,14 @@ function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'ut
 
 t('9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结果', () => {
   const seg = segFromHandler('target:compress-av');
+  /* 锁的是：「9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结果」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/fsp\.rename\(finalOut\.file, dst\)/.test(seg),
     'target:compress-av 仍在用裸 rename 提交（跨盘 EXDEV 会丢成果）');
+  /* 锁的是：「9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结果」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/moveFile\(finalOut\.file, dst\)/.test(seg), '应改用 moveFile');
 
   const off = segFromHandler('office:convert');
@@ -96,19 +102,34 @@ t('9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结
 t('10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）', () => {
   const seg = mainSrc.slice(mainSrc.indexOf("handle('ffmpeg:convert'"), mainSrc.indexOf("handle('ffmpeg:frames'"));
   /* 取值：把 -vn 的判定条件与 isAudioOut 的定义都抓出来比对 */
+  /* 锁的是：「10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const mAudio = seg.match(/const isAudioOut = \[([^\]]+)\]\.includes\(opts\.format\)/);
   assert.ok(mAudio, '找不到 isAudioOut 定义');
   const audioFormats = mAudio[1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+  /* 锁的是：「10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(audioFormats.includes('wav') && audioFormats.includes('flac'),
     '前置：wav/flac 属于纯音频容器');
 
   /* -vn 的判定必须在 isAudioOut 算出之后、且用到它 */
+  /* 锁的是：「10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const vnLine = seg.match(/if \((isAudioOut \|\| opts\.mute|opts\.format === 'mp3'[^\n]*)\) args\.push\('-vn'\)/);
   assert.ok(vnLine, '找不到 -vn 的判定行');
   const cond = vnLine[1];
+  /* 锁的是：「10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   if (!/isAudioOut/.test(cond)) {
     /* 还写死列表：那 wav/flac 必须在列表里 */
     for (const f of ['wav', 'flac']) {
+  /* 锁的是：「10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
       assert.ok(new RegExp("'" + f + "'").test(cond),
         'WAV/FLAC 不加 -vn 会把视频流塞进音频容器：' + cond);
     }
@@ -129,9 +150,18 @@ t('11c ffmpeg:pick 判 ffmpeg 必须看输出的 "ffmpeg version"，且不覆盖
   const guard = seg.match(/if\s*\(\s*!\s*\/[^/\n]*ffmpeg version[^/\n]*\/[a-z]*\s*\.test\([^)]*\)\s*\)\s*throw/);
   assert.ok(guard,
     'ffmpeg:pick 没有「输出里不含 ffmpeg version 就拒绝」的判断 —— 任意 exe 都会被当成 ffmpeg 覆盖 bin/ffmpeg.exe');
+  /* 锁的是：「11c ffmpeg:pick 判 ffmpeg 必须看输出的 "ffmpeg version"，且不覆盖已有可用 ffmp」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/throwOnNonZero/.test(seg), 'ffmpeg:pick 应先确认退出码为 0');
+  /* 锁的是：「11c ffmpeg:pick 判 ffmpeg 必须看输出的 "ffmpeg version"，且不覆盖已有可用 ffmp」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/已有可用的 ffmpeg，未覆盖|skipped/.test(seg), '已有可用 ffmpeg 时不应静默覆盖');
   /* 覆盖前必须真的检查过 dest 是否存在 */
+  /* 锁的是：「11c ffmpeg:pick 判 ffmpeg 必须看输出的 "ffmpeg version"，且不覆盖已有可用 ffmp」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/fs\.existsSync\(dest\)/.test(seg), '覆盖前应检查目标是否已存在');
 });
 
@@ -140,10 +170,19 @@ t('11c ffmpeg:pick 判 ffmpeg 必须看输出的 "ffmpeg version"，且不覆盖
 t('12 target:compress-av：单个源文件读不到时要记录失败并继续', () => {
   const seg = segFromHandler('target:compress-av');
   /* 原来裸的 `const srcSize = (await fsp.stat(input)).size;` 必须消失 */
+  /* 锁的是：「12 target:compress-av：单个源文件读不到时要记录失败并继续」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/const srcSize = \(await fsp\.stat\(input\)\)\.size;/.test(seg),
     '仍在裸调 fsp.stat(input)：单个文件消失会中断整批，已完成的 results 也会丢');
+  /* 锁的是：「12 target:compress-av：单个源文件读不到时要记录失败并继续」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const guarded = /try \{\s*srcSize = \(await fsp\.stat\(input\)\)\.size;\s*\} catch/.test(seg);
   assert.ok(guarded, 'fsp.stat(input) 应被 try/catch 包住');
+  /* 锁的是：「12 target:compress-av：单个源文件读不到时要记录失败并继续」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/continue;/.test(seg.slice(seg.indexOf('无法读取源文件'), seg.indexOf('无法读取源文件') + 400)),
     '读不到源文件后应 continue 到下一个，而不是让异常冒出去');
 });
@@ -152,12 +191,24 @@ t('12 target:compress-av：单个源文件读不到时要记录失败并继续',
 
 t('15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧数', () => {
   const seg = segFromHandler('ffmpeg:frames');
+  /* 锁的是：「15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧数」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/n = \(await fsp\.readdir\(outDir\)\)\.filter\(f => f\.startsWith\(base \+ '_'\)/.test(seg),
     '仍在统计目录里所有同名帧 —— 重复截帧时 count 会虚高（上次 20 张 + 这次 5 张报 25）');
+  /* 锁的是：「15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧数」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/before/.test(seg) && /!before\.has/.test(seg),
     '应记录截帧前已有的文件集合，只数新增的');
+  /* 锁的是：「15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧数」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/overwritten/.test(seg), '被覆盖的旧帧数要如实回报');
   /* 渲染层也得把它显示出来，否则主进程报了没人看 */
+  /* 锁的是：「15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧数」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/overwritten/.test(readTree('js/tools/media')), '渲染层没有显示 overwritten');
 });
 
@@ -170,11 +221,20 @@ t('36 rec:stop：GIF 目标名不能因为文件名含点而跑偏', () => {
   assert.ok(end > mk, '找不到 GIF 块结尾');
   const seg = mainSrc.slice(mk, end);
   /* 必须按「已知视频扩展名」白名单剥壳，不能无条件剥最后一个扩展名 */
+  /* 锁的是：「36 rec:stop：GIF 目标名不能因为文件名含点而跑偏」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/REC_VIDEO_EXT/.test(seg),
     '仍在无条件剥掉「最后一个扩展名」：D:\\rec\\v1.2 → D:\\rec\\v1.gif、D:\\rec\\.hidden → D:\\rec.gif（跑到父目录）');
   /* 失败清理前必须确认「这个 gif 是不是我们建的」 */
+  /* 锁的是：「36 rec:stop：GIF 目标名不能因为文件名含点而跑偏」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/gifPreexisted/.test(seg),
     '失败清理没检查「文件是不是我们建的」—— 撞上用户既有 gif 时会删掉它');
+  /* 锁的是：「36 rec:stop：GIF 目标名不能因为文件名含点而跑偏」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/if \(!gifPreexisted\)/.test(seg), '删除必须被 gifPreexisted 守卫');
 });
 
@@ -215,18 +275,30 @@ t('1c 三个贴图 handler 取不到窗口时必须返回 false，不能假装�
      * —— 取不到也 return true。新写法必须显式 return false。 */
     assert.ok(/if\s*\(\s*!bw\s*\)\s*return false/.test(seg),
       ch + ' 取不到窗口时没有 return false（会静默假装成功）');
+  /* 锁的是：「1c 三个贴图 handler 取不到窗口时必须返回 false，不能假装成功」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(!/pinWins\.get\(id\)/.test(seg),
       ch + ' 仍在直接用 pinWins.get(id)（没有做键类型归一）');
+  /* 锁的是：「1c 三个贴图 handler 取不到窗口时必须返回 false，不能假装成功」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(/pinWinOf\(/.test(seg), ch + ' 没有走 pinWinOf 的归一查找');
   }
 });
 
 t('1d createPinWindow 登记与删除都用同一个归一键', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「1d createPinWindow 登记与删除都用同一个归一键」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/pinWins\.set\(\s*pinKey\(bw\.id\)\s*,\s*bw\s*\)/.test(code),
     '登记时没用 pinKey（数字键与字符串键会分家）');
   assert.ok(/pinWins\.delete\(\s*pinKey\(bw\.id\)\s*\)/.test(code),
     'closed 里没用 pinKey 删除，会留下一个查不到的僵尸条目');
+  /* 锁的是：「1d createPinWindow 登记与删除都用同一个归一键」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/String\(bw\.id\)/.test(code), 'URL 里传的仍然应是 String(bw.id)');
 });
 
@@ -350,10 +422,16 @@ t('11a 清理回调的注册不在 rec:audio-devices 的 then 里', () => {
   const end = code.indexOf(endMark, i);
   assert.ok(end > i, '找不到 rec:audio-devices 的 catch 结尾');
   const chain = code.slice(i, end);
+  /* 锁的是：「11a 清理回调的注册不在 rec:audio-devices 的 then 里」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/onCleanup/.test(chain),
     'onCleanup 仍写在 rec:audio-devices 的 then 里：枚举失败时清理不会注册，摄像头灯会一直亮');
   // 但必须仍然注册了（从全文件层面确认它没被删掉）
   const after = code.slice(end);
+  /* 锁的是：「11a 清理回调的注册不在 rec:audio-devices 的 then 里」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/onCleanup[\s\S]{0,200}stopPreview/.test(after) || /onCleanup[\s\S]{0,200}stopPreview/.test(code),
     '停止预览的清理回调整体丢了');
 });
@@ -386,11 +464,23 @@ t('11b 行为验证：rec:audio-devices reject 时清理回调仍被注册', asy
 t('11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）', () => {
   const code = stripComments(readTree('js/tools/media'));
   const fn = extractFn(code, 'async function startPreview(');
+  /* 锁的是：「11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/destroyed/.test(fn), 'startPreview 里没有 destroyed 判断');
+  /* 锁的是：「11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const n = (fn.match(/destroyed/g) || []).length;
   assert.ok(n >= 3, 'destroyed 判断太少（至少要在入口、await 之后、拿到 stream 之后各查一次），实际 ' + n + ' 处');
+  /* 锁的是：「11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/getTracks\(\)[\s\S]{0,80}stop/.test(fn),
     '拿到 stream 后发现页面已销毁，必须把 track 停掉，否则摄像头一直亮着');
+  /* 锁的是：「11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/destroyed\s*=\s*true/.test(code), '清理回调里没有置 destroyed 标志');
 });
 
@@ -406,6 +496,9 @@ t('7a rec:stop 的 GIF 目标：任何扩展名都不能与录像输出同名', 
     const gif = f(recOut, path, RE);
     assert.ok(path.resolve(gif).toLowerCase() !== path.resolve(recOut).toLowerCase(),
       recOut + ' 的 GIF 目标与录像同名（' + gif + '）—— ffmpeg 会读写同一文件，失败时还会把录像删掉');
+  /* 锁的是：「7a rec:stop 的 GIF 目标：任何扩展名都不能与录像输出同名」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(/\.gif$/i.test(gif), recOut + ' 的 GIF 目标扩展名不对：' + gif);
   }
 });

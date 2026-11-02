@@ -69,9 +69,15 @@ t('ctx 的访问器全部是 getter（源码层约束）', () => {
   const src = fs.readFileSync(path.join(ROOT, 'ipc', 'ctx.js'), 'utf8');
   const code = require(path.join(ROOT, 'lib', 'src-scan')).stripComments(src);
   for (const k of ['win', 'jobs', 'isWin', 'isMac']) {
+  /* 锁的是：「ctx 的访问器全部是 getter（源码层约束）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(new RegExp('get ' + k + '\\(\\)').test(code),
       'ctx.' + k + ' 不再是 getter —— 做成快照会让搬出去的代码永远读到构造时的值');
   }
+  /* 锁的是：「ctx 的访问器全部是 getter（源码层约束）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/^\s*(win|jobs|isWin|isMac):/m.test(code),
     'ctx 里出现了普通属性形式（win/jobs/isWin/isMac 必须是 getter）');
 });

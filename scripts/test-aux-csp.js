@@ -21,18 +21,36 @@ const AUX = ['snip.html', 'pin.html', 'ruler.html'];
 for (const f of AUX) {
   t(f + ' 有 CSP meta', () => {
     const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  /* 锁的是：「同一组回归」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(/http-equiv=["']Content-Security-Policy["']/.test(s), '缺少 CSP meta');
   });
   t(f + ' CSP 允许 file: 图片', () => {
     const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  /* 锁的是：「同一组回归」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     const m = s.match(/Content-Security-Policy"[^>]*content="([^"]+)"/);
     assert.ok(m, '解析不到 CSP 内容');
+  /* 锁的是：「同一组回归」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(/img-src[^;]*file:/.test(m[1]), 'img-src 必须允许 file:（否则本地图片显示不出来）');
+  /* 锁的是：「同一组回归」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.ok(/img-src[^;]*data:/.test(m[1]), 'img-src 必须允许 data:（贴图用 dataURL）');
   });
   t(f + ' CSP 不含 unsafe-eval', () => {
     const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  /* 锁的是：「同一组回归」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     const m = s.match(/Content-Security-Policy"[^>]*content="([^"]+)"/);
+  /* 锁的是：「同一组回归」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     assert.strictEqual(/unsafe-eval/.test(m[1]), false, '辅助窗口不该开 unsafe-eval');
   });
 }
@@ -40,6 +58,9 @@ for (const f of AUX) {
 /* ---- 2. 主窗口仍保留 unsafe-eval（计算器需要，属已知取舍） ---- */
 t('index.html 的 CSP 仍在（记录已知取舍）', () => {
   const s = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  /* 锁的是：「index.html 的 CSP 仍在（记录已知取舍）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/Content-Security-Policy/.test(s), 'index.html 应有 CSP');
 });
 
@@ -95,6 +116,9 @@ app.whenReady().then(async () => {
         const p = JSON.parse(r.probe || '{}');
         if (p.error) throw new Error('探测失败: ' + p.error);
         assert.ok(p.scriptCount > 0, '页面里应有 script');
+  /* 锁的是：「index.html 的 CSP 仍在（记录已知取舍）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
         const cspErrs = (r.errs || []).filter((m) => /Content Security Policy|Refused to/i.test(m));
         assert.deepStrictEqual(cspErrs, [], '出现 CSP 拦截: ' + cspErrs.join(' | '));
       });

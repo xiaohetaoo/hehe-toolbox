@@ -164,21 +164,42 @@ t('1c 界面：有失败时不许用 success 样式，且要列出原因', () =>
   const i = code.indexOf("invoke('fs:delete-empty'");
   assert.ok(i > 0, '找不到 delete-empty 调用');
   const seg = code.slice(i, i + 900);
+  /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/map\(/.test(seg) && /\.path/.test(seg), '仍然把对象数组原样传给主进程（没有取 .path）');
+  /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/errors/.test(seg), '界面没有读 r.errors —— 失败静默');
+  /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/warn/.test(seg), '有失败时没有用 warn 样式（仍会显示成绿色成功）');
   // 反面：不许再出现"直接报成功"的单分支
   assert.ok(!/toast\(`已删除 \$\{r\.deleted\} 个空目录`, 'success'\);\s*\n\s*scanBtn\.click\(\);\s*\n\s*\} catch/
+  /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     .test(seg) || /nErr/.test(seg), '仍然是"无条件 success"');
 });
 
 t('P0 fs:delete 有路径闸门', () => {
   const fn = handlerBody(readMain(), 'fs:delete');
+  /* 锁的是：「P0 fs:delete 有路径闸门」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('pathGuard.checkDeletable'), '没有调用删除闸门');
+  /* 锁的是：「P0 fs:delete 有路径闸门」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('pathGuard.err'), '闸门拒绝时没有返回结构化错误');
 });
 t('P0 fs:delete 不再是裸的 fsp.rm', () => {
   const fn = handlerBody(readMain(), 'fs:delete');
+  /* 锁的是：「P0 fs:delete 不再是裸的 fsp.rm」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/handle\('fs:delete'.*fsp\.rm\(p, \{ recursive: !!recursive, force: true \}\);/.test(fn),
     '仍是零校验的裸调用');
 });
@@ -186,39 +207,84 @@ t('P0 fs:delete 不再是裸的 fsp.rm', () => {
 /* ================= P0：写文件覆盖 + 半截文件 ================= */
 t('P0 fs:write-text / fs:write-file-b64 走原子写', () => {
   const s = read('main.js');
+  /* 锁的是：「P0 fs:write-text / fs:write-file-b64 走原子写」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('async function writeFileAtomic'), '没有原子写辅助函数');
   const fn = handlerBody(s, 'fs:write-text');
+  /* 锁的是：「P0 fs:write-text / fs:write-file-b64 走原子写」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('writeFileAtomic'), 'fs:write-text 没用原子写');
   const fn2 = handlerBody(s, 'fs:write-file-b64');
+  /* 锁的是：「P0 fs:write-text / fs:write-file-b64 走原子写」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn2.includes('writeFileAtomic'), 'fs:write-file-b64 没用原子写');
 });
 t('P0 原子写失败会清理临时文件', () => {
   const s = read('main.js');
+  /* 锁的是：「P0 原子写失败会清理临时文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const fn = s.match(/async function writeFileAtomic[\s\S]*?\n\}/)[0];
+  /* 锁的是：「P0 原子写失败会清理临时文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes("rm(tmp, { force: true })"), '失败时没清理临时文件');
+  /* 锁的是：「P0 原子写失败会清理临时文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('rename(tmp, dest)'), '没有用 rename 做原子提交');
 });
 t('P0 原子写有覆盖保护', () => {
   const s = read('main.js');
+  /* 锁的是：「P0 原子写有覆盖保护」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const fn = s.match(/async function writeFileAtomic[\s\S]*?\n\}/)[0];
+  /* 锁的是：「P0 原子写有覆盖保护」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('checkOverwritable'), '没有检查是否可覆盖');
 });
 
 /* ================= P0：%TEMP% 清理越界 ================= */
 t('P0 fs:scan-junk 的临时项只扫本应用产物', () => {
   const fn = handlerBody(readMain(), 'fs:scan-junk');
+  /* 锁的是：「P0 fs:scan-junk 的临时项只扫本应用产物」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('ownOnly'), '没有 ownOnly 标记');
+  /* 锁的是：「P0 fs:scan-junk 的临时项只扫本应用产物」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('isOwnTempName'), '没有用白名单过滤');
   // 关键：temp 这一项不能把整个 os.tmpdir() 作为 target
   const tempLine = fn.match(/\{ id: 'temp'[^\n]*/);
   assert.ok(tempLine, '找不到 temp 候选');
+  /* 锁的是：「P0 fs:scan-junk 的临时项只扫本应用产物」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(tempLine[0].includes('ownOnly: true'), 'temp 项未标记 ownOnly');
+  /* 锁的是：「P0 fs:scan-junk 的临时项只扫本应用产物」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/targets: \[c\.path\]/.test(fn.match(/ownOnly[\s\S]*?continue;/)[0] || ''), 'ownOnly 分支仍用了整个目录');
 });
 t('P0 fs:clean-junk 拒绝清理 %TEMP% 里的非本应用产物', () => {
   const fn = handlerBody(readMain(), 'fs:clean-junk');
+  /* 锁的是：「P0 fs:clean-junk 拒绝清理 %TEMP% 里的非本应用产物」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('tmpRoot'), '没有识别 %TEMP% 根');
+  /* 锁的是：「P0 fs:clean-junk 拒绝清理 %TEMP% 里的非本应用产物」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('isOwnTempName'), '没有用白名单校验');
+  /* 锁的是：「P0 fs:clean-junk 拒绝清理 %TEMP% 里的非本应用产物」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('checkDeletable'), '没有系统关键目录闸门');
 });
 t('P0 临时产物白名单覆盖所有本应用目录', () => {
@@ -251,6 +317,9 @@ t('P0 临时产物白名单覆盖所有本应用目录', () => {
   assert.deepStrictEqual(miss, [],
     '这些本应用产物匹配不上清理白名单（崩溃后会永久残留）：' + miss.join(', '));
   /* 另外确认 main.js 确实把判定委托给了模块（否则两边又会分家） */
+  /* 锁的是：「P0 临时产物白名单覆盖所有本应用目录」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/isOwnTempName\(name\)\s*\{\s*return tempNames\.isOwnTempName/.test(read('main.js')),
     'main.js 没有把白名单判定委托给 lib/temp-names.js');
 });
@@ -258,17 +327,32 @@ t('P0 临时产物白名单覆盖所有本应用目录', () => {
 /* ================= P1：升级脚本三个破坏点 ================= */
 t('P1 升级脚本备份不覆盖历史版本', () => {
   const fn = updateScriptBody(read('main.js'));
+  /* 锁的是：「P1 升级脚本备份不覆盖历史版本」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('$stamp'), '没有带时间戳的备份');
+  /* 锁的是：「P1 升级脚本备份不覆盖历史版本」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/Destination \(\$backup \+ "\." \+ \$stamp\)/.test(fn), '历史备份没保留');
 });
 t('P1 升级脚本替换后校验大小', () => {
   const fn = updateScriptBody(read('main.js'));
   assert.ok(fn.includes('$srcLen'), '没有记录源大小');
+  /* 锁的是：「P1 升级脚本替换后校验大小」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('$dstLen'), '没有记录目标大小');
+  /* 锁的是：「P1 升级脚本替换后校验大小」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('大小不符'), '没有大小校验');
 });
 t('P1 升级脚本启动失败时保留下载包', () => {
   const fn = updateScriptBody(read('main.js'));
+  /* 锁的是：「P1 升级脚本启动失败时保留下载包」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('$launched'), '没有记录启动成功与否');
   // Remove-Item newExe 必须在 if (-not $launched) 这道闸门之后
   const rmIdx = fn.indexOf('Remove-Item -LiteralPath $newExe');
@@ -279,12 +363,24 @@ t('P1 升级脚本启动失败时保留下载包', () => {
 /* ================= P1：hosts 写入 ================= */
 t('P1 hosts:write 备份失败时中止写入', () => {
   const fn = handlerBody(readMain(), 'hosts:write');
+  /* 锁的是：「P1 hosts:write 备份失败时中止写入」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('backedUp'), '没有记录备份是否成功');
+  /* 锁的是：「P1 hosts:write 备份失败时中止写入」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/catch \(err\) \{ \/\* 备份失败不阻断/.test(fn), '备份失败仍然继续写入');
 });
 t('P1 hosts:write 不退化成非原子覆盖写', () => {
   const fn = handlerBody(readMain(), 'hosts:write');
+  /* 锁的是：「P1 hosts:write 不退化成非原子覆盖写」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/fsp\.writeFile\(HOSTS_PATH, content/.test(fn), '仍有直接写系统 hosts 的路径');
+  /* 锁的是：「P1 hosts:write 不退化成非原子覆盖写」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('rename(tmp, HOSTS_PATH)'), '没有用 rename 原子替换');
 });
 
@@ -298,23 +394,41 @@ t('P1 rec:stop 降级时保留分段目录', () => {
 });
 t('P1 渲染层会显示 degraded', () => {
   const s = readMedia();
+  /* 锁的是：「P1 渲染层会显示 degraded」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('r.degraded'), '渲染层忽略了 degraded');
+  /* 锁的是：「P1 渲染层会显示 degraded」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('escapeHtml(r.degraded)'), 'degraded 没有转义就插入 HTML');
 });
 
 /* ================= P1：图片自我覆盖 ================= */
 t('P1 图片压缩输出一律取唯一名（既不盖原图也不盖已有输出）', () => {
   const s = readMedia();
+  /* 锁的是：「P1 图片压缩输出一律取唯一名（既不盖原图也不盖已有输出）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('function samePath'), '缺少 samePath 辅助函数（其它地方仍在用）');
   // 现在的做法比 samePath 更严：输出路径无条件过 unique-path，
   // 因此既防「输出==输入」，也防「输出与目录里已有文件同名」。
+  /* 锁的是：「P1 图片压缩输出一律取唯一名（既不盖原图也不盖已有输出）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/const finalPath = await invoke\('fs:unique-path', outPath\)/.test(s),
     '压缩输出没有无条件唯一化');
 });
 t('P1 水印输出一律取唯一名', () => {
   const s = readMedia();
+  /* 锁的是：「P1 水印输出一律取唯一名」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/const outPath = await invoke\('fs:unique-path', outDir\.replace/.test(s),
     '水印输出没有无条件唯一化');
+  /* 锁的是：「P1 水印输出一律取唯一名」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('_wm.'), '没有水印命名逻辑');
   assert.ok(s.includes('hasExt'), '没有区分有无扩展名（无扩展名时替换逻辑会失效）');
 });
@@ -322,19 +436,37 @@ t('P1 水印输出一律取唯一名', () => {
 /* ================= P1：proc:kill 自我保护 ================= */
 t('P1 proc:kill 不能杀自己', () => {
   const fn = handlerBody(readMain(), 'proc:kill');
+  /* 锁的是：「P1 proc:kill 不能杀自己」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('process.pid'), '没有自我保护');
+  /* 锁的是：「P1 proc:kill 不能杀自己」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/n === process\.pid/.test(fn), '没有比较自身 pid');
+  /* 锁的是：「P1 proc:kill 不能杀自己」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('Number.isInteger'), '没有校验 pid 合法性');
 });
 
 /* ================= P1：merge-parts 路径穿越与覆盖 ================= */
 t('P1 fs:merge-parts 限制清单里的 name 在目录内', () => {
   const fn = handlerBody(readMain(), 'fs:merge-parts');
+  /* 锁的是：「P1 fs:merge-parts 限制清单里的 name 在目录内」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('resolveInside'), '没有限制 man.name 的路径');
 });
 t('P1 fs:merge-parts 指定输出路径时不覆盖已有文件', () => {
   const fn = handlerBody(readMain(), 'fs:merge-parts');
+  /* 锁的是：「P1 fs:merge-parts 指定输出路径时不覆盖已有文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('checkOverwritable'), '没有覆盖保护');
+  /* 锁的是：「P1 fs:merge-parts 指定输出路径时不覆盖已有文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('fs.existsSync(finalOut)'), '没有检查目标是否已存在');
 });
 
@@ -345,7 +477,13 @@ t('P1 zip:extract 同名不覆盖', () => {
 });
 t('P1 uniqueTarget 自身有穿越防护', () => {
   const s = read('main.js');
+  /* 锁的是：「P1 uniqueTarget 自身有穿越防护」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const fn = s.match(/async function uniqueTarget[\s\S]*?\n\}/)[0];
+  /* 锁的是：「P1 uniqueTarget 自身有穿越防护」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('resolveInside'), 'uniqueTarget 没有路径校验');
 });
 
@@ -377,12 +515,18 @@ t('P2 path-guard 测试已接入 npm test', () => {
     const body = pkg.scripts[scriptName];
     if (typeof body !== 'string') return;
     for (const piece of body.split('&&').map((s) => s.trim()).filter(Boolean)) {
+  /* 锁的是：「P2 path-guard 测试已接入 npm test」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
       const m = piece.match(/^npm\s+run\s+([^\s]+)$/);
       if (m) { collect(m[1], depth + 1); continue; }
       seen.add(piece);
     }
   };
   collect('test', 0);
+  /* 锁的是：「P2 path-guard 测试已接入 npm test」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok([...seen].some((s) => s.includes('test-path-guard.js')),
     '未接入 npm test（展开 test 后实际执行的脚本里没有 test-path-guard.js）');
 });
@@ -392,19 +536,40 @@ t('P2 path-guard 测试已接入 npm test', () => {
 /* P0-1 下载器文件名路径穿越 */
 t('P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）', () => {
   const s = read('js/tools/net-tools.js');
+  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('safeNameFromUrl'), '没有安全文件名函数');
   // 旧的裸 decodeURIComponent 拼接必须消失
+  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const code = s.split(/\r?\n/).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/decodeURIComponent\(url\.split\('\?'\)\[0\]\.split\('\/'\)\.pop\(\)/.test(code),
     '仍在直接用 URL 末段当文件名');
+  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const fn = s.match(/function safeNameFromUrl[\s\S]*?\n  \}/)[0];
+  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('split(/[\\\\/]/)'), '没有取 basename');
+  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('BAD_NAME_BASE'), '没有挡 Windows 设备名');
 });
 
 /* P0-2 Office 转换覆盖同基名文件 */
 t('P0 office:convert COM 分支用 uniqueTarget', () => {
   const s = read('main.js');
+  /* 锁的是：「P0 office:convert COM 分支用 uniqueTarget」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('uniqueTarget(outDir, base + \'.\' + target)'), 'COM 分支没有唯一化输出名');
 });
 t('P0 office:convert LibreOffice 分支先转临时目录再挪', () => {
@@ -426,8 +591,14 @@ t('P0 office:convert LibreOffice 分支先转临时目录再挪', () => {
    * 所以给到 4000，并且下面只断言**语义动作存在**（临时目录、唯一化、提交），
    * 不断言它们的具体顺序或版面。 */
   const seg = s.slice(i, i + 4000);
+  /* 锁的是：「P0 office:convert LibreOffice 分支先转临时目录再挪」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/tempNames\.uniqTmpDir\(/.test(seg),
     '没有一点用临时目录中转（应调用 tempNames.uniqTmpDir）');
+  /* 锁的是：「P0 office:convert LibreOffice 分支先转临时目录再挪」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(seg.includes('uniqueTarget') || seg.includes('fsOps.uniquePath'),
     '没有唯一化输出名');
   /* 提交动作可能是 moveFile（跨盘时裸 rename 会 EXDEV）而不是 fsp.rename，
@@ -439,43 +610,88 @@ t('P0 office:convert LibreOffice 分支先转临时目录再挪', () => {
 t('P0 PDF 拆分输出目录带时间戳', () => {
   const s = read('js/tools/office.js');
   assert.ok(/-split-' \+ stamp/.test(s), '拆分目录没有时间戳');
+  /* 锁的是：「P0 PDF 拆分输出目录带时间戳」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes("'fs:unique-path', `${dir}/part-"), '分片没有唯一化');
 });
 t('P0 PDF 转图片输出目录带时间戳', () => {
   const s = read('js/tools/office.js');
+  /* 锁的是：「P0 PDF 转图片输出目录带时间戳」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/-images-' \+ stamp/.test(s), '图片目录没有时间戳');
+  /* 锁的是：「P0 PDF 转图片输出目录带时间戳」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes("'fs:unique-path', `${outDir}/page-"), '页面图片没有唯一化');
 });
 
 /* P0 writeFileAtomic 不得先删原文件 */
 t('P0 writeFileAtomic 不用「先 rm 后 rename」', () => {
   const s = read('main.js');
+  /* 锁的是：「P0 writeFileAtomic 不用「先 rm 后 rename」」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const fn = s.match(/async function writeFileAtomic[\s\S]*?\n\}/)[0];
+  /* 锁的是：「P0 writeFileAtomic 不用「先 rm 后 rename」」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/fsp\.rm\(dest, \{ force: true \}\)\.catch\(\(\) => \{\}\);\s*\n\s*await fsp\.rename\(tmp, dest\)/.test(fn),
     '仍是先删目标再改名（会丢原文件）');
+  /* 锁的是：「P0 writeFileAtomic 不用「先 rm 后 rename」」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('.hehe-bak-'), '没有备份中转');
+  /* 锁的是：「P0 writeFileAtomic 不用「先 rm 后 rename」」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/rename\(bak, dest\)/.test(fn), '失败时没有把备份搬回去');
 });
 
 /* P1-4 笔记文件名过滤 */
 t('P1 笔记文件名挡住设备名与尾随点', () => {
   const s = read('js/tools/text-tools.js');
+  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('safeNoteName'), '没有安全文件名函数');
+  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const fn = s.match(/function safeNoteName[\s\S]*?\n      \}/)[0];
   assert.ok(fn.includes('DEVICE_BASE'), '没有挡 Windows 设备名');
+  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/\[\. \]\+\$/.test(fn), '没有去尾随点/空格');
+  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(fn.includes('replace(/^\\.+/, \'\')'), '没有去首部点');
 });
 
 /* P1-5 批量改后缀 */
 t('P1 批量改后缀拒绝非法后缀字符', () => {
   const s = read('js/tools/file-tools.js');
+  /* 锁的是：「P1 批量改后缀拒绝非法后缀字符」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/新后缀不能包含/.test(s), '没有校验新后缀');
 });
 t('P1 批量改后缀正确处理无扩展名文件', () => {
   const s = read('js/tools/file-tools.js');
+  /* 锁的是：「P1 批量改后缀正确处理无扩展名文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('lastIndexOf(\'.\')'), '没有正确判断扩展名');
+  /* 锁的是：「P1 批量改后缀正确处理无扩展名文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('hasExt'), '没有区分有无扩展名');
+  /* 锁的是：「P1 批量改后缀正确处理无扩展名文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/item\.path\.slice\(0, item\.path\.length - ext\.length\) \+ to/.test(s), '仍是旧拼接写法');
 });
 
@@ -507,6 +723,9 @@ const { buildFailText } = require('../lib/fail-text');
 
 t('P1 批量改后缀失败时列出明细', () => {
   const s = read('js/tools/file-tools.js');
+  /* 锁的是：「P1 批量改后缀失败时列出明细」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(s.includes('failures.push'), '没有收集失败明细');
   const failures = [
     { from: 'D:/a/one.txt', to: 'D:/a/one.md', err: '被占用' },
@@ -547,11 +766,20 @@ t('P1 两处调用都用 alertBox(文本, 标题) 而不是配置对象', () => 
   const raw = read('js/tools/file-tools.js');
   const s = strip(raw);
   // 反面：不许再出现 alertBox(…) 后紧跟对象字面量的调用形态
+  /* 锁的是：「P1 两处调用都用 alertBox(文本, 标题) 而不是配置对象」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/alertBox\s*\(\s*\{/.test(s),
     '仍在用 alertBox({ title, message }) —— 对象会被 h() 丢掉，弹出空白框');
   // 正面：两处标题都作为第二个实参出现
+  /* 锁的是：「P1 两处调用都用 alertBox(文本, 标题) 而不是配置对象」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/alertBox\s*\(\s*buildFailText[\s\S]{0,80}?'部分文件未能重命名'/.test(s),
     '重命名那处没有把标题作为第二个实参');
+  /* 锁的是：「P1 两处调用都用 alertBox(文本, 标题) 而不是配置对象」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/alertBox\s*\(\s*buildFailText[\s\S]{0,80}?'部分文件未能修改'/.test(s),
     '改后缀那处没有把标题作为第二个实参');
 });
@@ -559,6 +787,9 @@ t('P1 两处调用都用 alertBox(文本, 标题) 而不是配置对象', () => 
 /* P2-8 音频剪辑固定命名 */
 t('P2 音频剪辑输出名唯一化', () => {
   const s = readMedia();
+  /* 锁的是：「P2 音频剪辑输出名唯一化」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/fs:unique-path', src\.replace\(\/\\\.\\w\+\$\/, '_cut\./.test(s), '音频剪辑没有唯一化');
 });
 
@@ -567,7 +798,13 @@ t('P2 notes:pdf 用原子写', () => {
   const s = read('main.js');
   const i = s.indexOf("handle('notes:pdf'");
   const seg = s.slice(i, i + 1200);
+  /* 锁的是：「P2 notes:pdf 用原子写」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/fs\.writeFileSync\(outFile/.test(seg), '仍是 writeFileSync 直写');
+  /* 锁的是：「P2 notes:pdf 用原子写」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(seg.includes('writeFileAtomic'), '没有用原子写');
 });
 
@@ -593,7 +830,13 @@ t('P2 GIF 转码失败时清理残缺文件', () => {
   const end = srcScan.scanBrace(s, open);
   assert.ok(end > 0, 'if (makeGif) 的块括号不配平');
   const seg = s.slice(open, end);
+  /* 锁的是：「P2 GIF 转码失败时清理残缺文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(seg.includes('gifTarget'), '没有独立的 gif 目标变量');
+  /* 锁的是：「P2 GIF 转码失败时清理残缺文件」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/rm\(\s*gifTarget/.test(seg), '失败时没有删除残缺 gif');
 });
 
@@ -603,6 +846,9 @@ t('P2 ffmpeg:audio-cut 拒绝输出等于输入', () => {
   const s = readMain();
   const i = s.indexOf("handle('ffmpeg:audio-cut'");
   const seg = s.slice(i, i + 700);
+  /* 锁的是：「P2 ffmpeg:audio-cut 拒绝输出等于输入」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(seg.includes('输出文件不能与源文件相同'), '没有自我覆盖检查');
   assert.ok(seg.includes('checkOverwritable'), '没有覆盖闸门');
 });
@@ -658,8 +904,17 @@ t('1c 界面：有失败时不许用 success 样式，且要列出原因', () =>
   const i = code.indexOf("invoke('fs:delete-empty'");
   assert.ok(i > 0, '找不到 delete-empty 调用');
   const seg = code.slice(i, i + 900);
+  /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/map\(/.test(seg) && /\.path/.test(seg), '仍然把对象数组原样传给主进程（没有取 .path）');
+  /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/errors/.test(seg), '界面没有读 r.errors —— 失败静默');
+  /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/warn/.test(seg), '有失败时没有用 warn 样式（仍会显示成绿色成功）');
   // 反面：不许再出现"直接报成功"的单分支
   assert.ok(!/toast\(`已删除 \$\{r\.deleted\} 个空目录`, 'success'\);\s*\n\s*scanBtn\.click\(\);\s*\n\s*\} catch/
@@ -679,11 +934,20 @@ t('7a clean-junk 只接受本次扫描命中的路径', () => {
    * 断言照样绿（反向验证 MISSED 证实）。必须断言 guards 调用**本身**没被短路。 */
   assert.ok(/junkScanCache\.paths\.has\(normForJunk\(abs\)\)/.test(seg),
     '没有真正的"是否在扫描结果内"判断');
+  /* 锁的是：「7a clean-junk 只接受本次扫描命中的路径」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/if \(false\)[\s\S]{0,120}junkScanCache/.test(seg),
     '存在把来源校验短路掉的写法（if (false) 之类的开关）');
   // 缓存为空时必须拒绝（没扫过就没有清理依据）
+  /* 锁的是：「7a clean-junk 只接受本次扫描命中的路径」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/junkScanCache\.paths\.size/.test(seg), '没有处理"缓存为空"的情形');
   /* 反面：keepRoot=false 的连根删分支必须消失 */
+  /* 锁的是：「7a clean-junk 只接受本次扫描命中的路径」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/keepRoot[\s\S]{0,400}fsp\.rm\(abs, \{ recursive: true, force: true \}\)/.test(seg),
     'keepRoot=false 的「递归删掉整个目标」分支仍存在（能力范围外溢）');
 });
@@ -692,7 +956,13 @@ t('7b clean-junk 会缓存扫描结果', () => {
   const code = stripComments(mainSrc);
   const i = code.indexOf("handle('fs:scan-junk'");
   const seg = code.slice(i, code.indexOf("handle('fs:clean-junk'"));
+  /* 锁的是：「7b clean-junk 会缓存扫描结果」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/junkScanCache = \{/.test(seg), 'scan-junk 没有把候选集合记下来');
+  /* 锁的是：「7b clean-junk 会缓存扫描结果」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/cachePaths/.test(seg), '没有收集候选路径');
 });
 
@@ -713,13 +983,25 @@ t('2a app.js：dlId 与 unsub 都在 try 之外声明', () => {
   const tryAt = mMain.index;
   assert.ok(tryAt > 0, 'checkUpdate 里找不到 try');
   const declBefore = fnBody.slice(0, tryAt);
+  /* 锁的是：「2a app.js：dlId 与 unsub 都在 try 之外声明」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/let\s+dlId\s*=/.test(declBefore), 'dlId 必须在 try 之前声明（否则 finally 读不到）');
+  /* 锁的是：「2a app.js：dlId 与 unsub 都在 try 之外声明」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/let\s+unsub\s*=/.test(declBefore), 'unsub 必须在 try 之前声明');
   // 反面：try 内部不许再出现一次 let dlId（那会遮蔽外层，finally 永远读到 null）
   const tryToFinally = fnBody.slice(tryAt, fnBody.indexOf('finally'));
+  /* 锁的是：「2a app.js：dlId 与 unsub 都在 try 之外声明」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/let\s+dlId/.test(tryToFinally), 'try 内又声明了一次 dlId，会遮蔽外层变量');
   // finally 里确实在用它 —— 这才是必须提前声明的理由
   const fin = fnBody.slice(fnBody.indexOf('finally'));
+  /* 锁的是：「2a app.js：dlId 与 unsub 都在 try 之外声明」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/dlId/.test(fin), 'finally 里已不再引用 dlId，本项约束失去意义（请同步更新测试）');
 });
 
@@ -772,6 +1054,9 @@ t('3a alertBox 收到对象时兼容，并且 console.warn 提示调用方', () 
   alertBox({ title: '部分文件未能重命名', message: '明细文本' });
   assert.ok(modalBody && modalBody.child === '明细文本', '对象实参的 message 字段没有被取出来当正文');
   assert.strictEqual(modalTitle, '部分文件未能重命名', '对象实参的 title 字段没有被用上');
+  /* 锁的是：「3a alertBox 收到对象时兼容，并且 console.warn 提示调用方」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(warns.length >= 1 && /alertBox/.test(warns[0]), '误用对象时应当 console.warn 提醒');
 
   // 正常写法不受影响
@@ -783,6 +1068,9 @@ t('3a alertBox 收到对象时兼容，并且 console.warn 提示调用方', () 
 t('3b 失败明细的空白框问题：正文必须保留换行（pre-wrap）', () => {
   const uiSrc = read('js/ui.js');
   const block = stripComments(extractFn(uiSrc, 'function alertBox('));
+  /* 锁的是：「3b 失败明细的空白框问题：正文必须保留换行（pre-wrap）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/whiteSpace\s*:\s*'pre-wrap'/.test(block),
     'alertBox 正文没有 pre-wrap：多行失败明细会被压成一长条，文件名与原因对不上号');
 });

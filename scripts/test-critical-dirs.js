@@ -26,6 +26,9 @@ t('CRITICAL_DIRS 不再包含写死的 C 盘字符串（改为动态）', () => 
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'lib', 'path-guard.js'), 'utf8');
   /* 旧实现的特征：一个数组里连续 9 行 C:\\ 开头的字符串 */
   const hardcodedBlock = /const CRITICAL_DIRS\s*=\s*\[\s*\n\s*'C:\\\\Windows'/;
+  /* 锁的是：「CRITICAL_DIRS 不再包含写死的 C 盘字符串（改为动态）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!hardcodedBlock.test(src), '仍存在硬编码的 CRITICAL_DIRS 数组');
 });
 

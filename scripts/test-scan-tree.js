@@ -32,8 +32,14 @@ t('17b 聚合用的是路径比较，不是字符串长度', () => {
   const code = stripComments(mainSrc);
   const i = code.indexOf("handle('fs:scan-tree'");
   const seg = code.slice(i, i + 2400);
+  /* 锁的是：「17b 聚合用的是路径比较，不是字符串长度」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/cur\.length >= root\.length/.test(seg),
     '仍在用字符串长度做包含判断（root 带尾斜杠时循环一次都不进，根统计恒为 0）');
+  /* 锁的是：「17b 聚合用的是路径比较，不是字符串长度」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/cur === scanRoot/.test(seg) && /startsWith\(scanRoot \+ path\.sep\)/.test(seg),
     '没有改成 cur === root || cur.startsWith(root + sep) 的判定');
 });

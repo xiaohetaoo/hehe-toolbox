@@ -17,20 +17,38 @@ function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'ut
 
 t('5a 主进程有只读的 server:status', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「5a 主进程有只读的 server:status」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/handle\('server:status'/.test(code), '没有 server:status 通道');
   const i = code.indexOf("handle('server:status'");
   const seg = code.slice(i, i + 400);
+  /* 锁的是：「5a 主进程有只读的 server:status」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/running/.test(seg) && /url/.test(seg) && /root/.test(seg), 'status 返回字段不全');
   // 必须记录 root/port，否则回填不了
+  /* 锁的是：「5a 主进程有只读的 server:status」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/serverRoot = root/.test(code) || /serverRoot\s*=\s*root/.test(code), 'server:start 没有记录根目录');
 });
 
 t('5b 页面初始化会查一次状态并回填按钮', () => {
   const code = stripComments(read('js/tools/dev.js'));
+  /* 锁的是：「5b 页面初始化会查一次状态并回填按钮」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/invoke\('server:status'\)/.test(code), '页面没有查询服务状态（切页回来会是死局）');
   const i = code.indexOf("invoke('server:status')");
   const seg = code.slice(i, i + 700);
+  /* 锁的是：「5b 页面初始化会查一次状态并回填按钮」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/paintRunning/.test(seg), '查到在跑却没有回填界面状态');
+  /* 锁的是：「5b 页面初始化会查一次状态并回填按钮」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/dirIn\.value/.test(seg) && /portIn\.value/.test(seg), '没有把目录/端口填回输入框');
 });
 

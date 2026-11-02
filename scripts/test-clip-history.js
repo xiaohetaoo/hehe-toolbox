@@ -24,8 +24,14 @@ t('2 倒计时分支里不许出现 clip:write-text', () => {
   assert.ok(i > 0, '找不到 finishPhase');
   const j = code.indexOf('if (phase === \'work\')', i);
   const seg = code.slice(i, j > 0 ? j : i + 1200);
+  /* 锁的是：「2 倒计时分支里不许出现 clip:write-text」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/clip:write-text/.test(seg),
     '倒计时结束仍在写剪贴板（空串会把用户复制的内容清掉）');
+  /* 锁的是：「2 倒计时分支里不许出现 clip:write-text」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/toast/.test(seg) && /Notification/.test(seg), '提醒仍应通过 toast + Notification');
 });
 
@@ -33,10 +39,22 @@ t('2 倒计时分支里不许出现 clip:write-text', () => {
 
 t('16a 两条裁剪路径共用同一上限', () => {
   const code = stripComments(read('js/tools/security.js'));
+  /* 锁的是：「16a 两条裁剪路径共用同一上限」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/const HISTORY_LIMIT = 200/.test(code), '没有统一上限常量');
+  /* 锁的是：「16a 两条裁剪路径共用同一上限」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/trimHistory\(history\)/.test(code), '没有走统一裁剪');
   // 反面：不许再出现写死的 200 与 100
+  /* 锁的是：「16a 两条裁剪路径共用同一上限」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/history = history\.slice\(0, 200\)/.test(code), '文本路径仍是硬编码 slice(0,200)（不回收图片）');
+  /* 锁的是：「16a 两条裁剪路径共用同一上限」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/trimHistory\(history, 100\)/.test(code), '图片路径仍用另一个上限 100');
 });
 

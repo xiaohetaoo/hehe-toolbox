@@ -32,6 +32,9 @@ const BS = String.fromCharCode(92);
 const fsp = fs.promises;
 /* PS_PATH_BATCH 在 main.js 里是常量，这里从源码里读出来（与实现同源）。 */
 const mainSrc = readMain();
+  /* 锁的是：「同一组回归」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
 const PS_PATH_BATCH = Number((mainSrc.match(/const PS_PATH_BATCH = (\d+);/) || [])[1]);
 function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
 function extract(name, isAsync) {
@@ -408,6 +411,9 @@ t('第 5 步（源改名之后）真的会抽查目标树里的链接', () => {
    * 单测里复刻整条链的成本远大于收益，而这里要钉住的是「有没有接上」。
    * 行为层面的判据已由上面那条「源改名后的抽查」用例覆盖。 */
   const code = stripComments(mainSrc);
+  /* 锁的是：「第 5 步（源改名之后）真的会抽查目标树里的链接」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/verifyInnerLinksReadable\(dstAbs, srcAbs, innerLinkCheckList\)/.test(code),
     '第 5 步没有调用 verifyInnerLinksReadable（源改名后就没人在看树里的链接了）');
   /* 必须在 linkcheck 这一段里、且排在 verifyLinkReadable 之后（源改名之后） */
@@ -417,13 +423,22 @@ t('第 5 步（源改名之后）真的会抽查目标树里的链接', () => {
   assert.ok(seg.indexOf('verifyLinkReadable') < seg.indexOf('verifyInnerLinksReadable'),
     '抽查应排在顶层验证之后');
   /* 抽查清单必须由复制阶段传下来，且不能恒为空 */
+  /* 锁的是：「第 5 步（源改名之后）真的会抽查目标树里的链接」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/innerLinkCheckList = linkRestore\.srcReadableLinks/.test(code),
     '复制阶段没有把「源侧可读的链接」交给第 5 步');
+  /* 锁的是：「第 5 步（源改名之后）真的会抽查目标树里的链接」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/let innerLinkCheckList = \[\];/.test(code), 'innerLinkCheckList 应有函数级作用域声明');
 });
 
 t('预检返回 innerLinkCount，界面也用它', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「预检返回 innerLinkCount，界面也用它」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/innerLinkCount/.test(code), 'main.js 没返回 innerLinkCount');
   const ui = read('js/tools/dir-move.js');
   assert.ok(/r\.innerLinkCount/.test(ui), '界面没用 innerLinkCount');
@@ -435,11 +450,20 @@ t('预检返回 innerLinkCount，界面也用它', () => {
 
 t('两处批量 Get-Item 都按 PS_PATH_BATCH 分块', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「两处批量 Get-Item 都按 PS_PATH_BATCH 分块」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/const PS_PATH_BATCH = \d+;/.test(code), '没有分块常量');
   assert.ok(PS_PATH_BATCH >= 10 && PS_PATH_BATCH <= 200,
     '分块大小应在 10~200 之间（太小起进程多、太大会超命令行上限），实际 ' + PS_PATH_BATCH);
+  /* 锁的是：「两处批量 Get-Item 都按 PS_PATH_BATCH 分块」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const hits = (code.match(/i \+= PS_PATH_BATCH/g) || []).length;
   assert.ok(hits >= 2, 'link:scan 与 linkNatures 两处都要分批，实际 ' + hits + ' 处');
+  /* 锁的是：「两处批量 Get-Item 都按 PS_PATH_BATCH 分块」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/const arr = found\.map\(q\)\.join\(','\)/.test(code),
     'link:scan 仍把全部路径拼成一条');
 });
@@ -491,6 +515,9 @@ t('SRC_CRITICAL 的 reason 里带上具体原因（与目标侧对齐）', () =>
 
 t('main.js 两处都把 srcProtectedReason 传给 validateMove', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「main.js 两处都把 srcProtectedReason 传给 validateMove」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const hits = (code.match(/srcProtectedReason:/g) || []).length;
   assert.ok(hits >= 3, '预检与执行都应传（含返回值），实际 ' + hits + ' 处');
 });
@@ -541,18 +568,33 @@ t('悬空链接不算查询失败（它本来就正常）', async () => {
 
 t('问题1：两处占用检查都用 collectLockProbe（只注册普通文件）', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「问题1：两处占用检查都用 collectLockProbe（只注册普通文件）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const n = (code.match(/collectLockProbe\(/g) || []).length;
   /* 定义 1 次 + 两处调用 */
   assert.ok(n >= 3, 'collectLockProbe 出现 ' + n + ' 次，应有定义 + 两处调用');
+  /* 锁的是：「问题1：两处占用检查都用 collectLockProbe（只注册普通文件）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/names\.map\(\(n\)\s*=>\s*path\.join\(srcAbs,\s*n\)\)/.test(code),
     '还在把 readdir 的全部条目名拼成 probe（目录/链接会留下，整批 ERR 5）');
 });
 
 t('问题1：collectLockProbe 只收 isFile()，且不跟随链接', () => {
+  /* 锁的是：「问题1：collectLockProbe 只收 isFile()，且不跟随链接」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   const fn = mainSrc.match(/async function collectLockProbe\(dir\)[\s\S]*?\n\}/);
   assert.ok(fn, '找不到 collectLockProbe');
   const code = stripComments(fn[0]);
+  /* 锁的是：「问题1：collectLockProbe 只收 isFile()，且不跟随链接」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/withFileTypes: true/.test(code), '必须用 withFileTypes 拿 Dirent');
+  /* 锁的是：「问题1：collectLockProbe 只收 isFile()，且不跟随链接」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/if \(!ent\.isFile\(\)\) continue;/.test(code),
     '必须只收普通文件 —— 目录/junction 会让整批查询 ERR 5');
 });
@@ -560,8 +602,14 @@ t('问题1：collectLockProbe 只收 isFile()，且不跟随链接', () => {
 t('问题1：占用查询失败不再被 .catch(() => null) 静默吞掉', () => {
   const code = stripComments(mainSrc);
   /* 只检查搬家相关的两段：不允许出现「rmQueryLockers(...).catch(() => null)」 */
+  /* 锁的是：「问题1：占用查询失败不再被 .catch(() => null) 静默吞掉」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/rmQueryLockers\([^)]*\)\.catch\(\(\)\s*=>\s*null\)/.test(code),
     '仍在用 .catch(() => null) 把查询失败吞成「没有占用」');
+  /* 锁的是：「问题1：占用查询失败不再被 .catch(() => null) 静默吞掉」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/lockCheckError/.test(code),
     '应把查询失败带进 lockCheckError，让用户看到「查询失败」而不是「没有占用」');
 });
@@ -578,6 +626,9 @@ t('问题1（行为）：含 junction 的目录，collectLockProbe 不会把链�
       { windowsHide: true, stdio: 'ignore' });
 
     /* 抽出真实现求值 */
+  /* 锁的是：「问题1（行为）：含 junction 的目录，collectLockProbe 不会把链接注册进去」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
     const srcFn = mainSrc.match(/async function collectLockProbe\(dir\)[\s\S]*?\n\}/)[0];
     const fsp = fs.promises;
     const fn = new Function('fsp', 'path', srcFn + '\nreturn collectLockProbe;')(fsp, path);
@@ -596,10 +647,22 @@ t('问题1（行为）：含 junction 的目录，collectLockProbe 不会把链�
 
 t('问题5：不再用 fsp.cp 直接复制整棵树（会被 junction 打成 EPERM）', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「问题5：不再用 fsp.cp 直接复制整棵树（会被 junction 打成 EPERM）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/await fsp\.cp\(srcAbs, dstAbs/.test(code),
     '仍在用 fsp.cp 整树复制 —— 遇到 junction 会 EPERM');
+  /* 锁的是：「问题5：不再用 fsp.cp 直接复制整棵树（会被 junction 打成 EPERM）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/copyTreeExcludingLinks/.test(code), '应有「排除链接后复制」的实现');
+  /* 锁的是：「问题5：不再用 fsp.cp 直接复制整棵树（会被 junction 打成 EPERM）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/restoreLinksIntoTarget/.test(code), '应有「在目标侧重建链接」的实现');
+  /* 锁的是：「问题5：不再用 fsp.cp 直接复制整棵树（会被 junction 打成 EPERM）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/dereference:\s*true/.test(code),
     '不能靠 dereference: true 绕过 —— 那会把链接目标内容整个复制进来');
 });
@@ -659,7 +722,13 @@ t('问题5（行为）：源目录含 junction 时，复制 + 重建能完成', 
 
 t('问题5：重建失败不会被静默吞掉（应中止并回退）', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「问题5：重建失败不会被静默吞掉（应中止并回退）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/linkRestore\.failed/.test(code), '应检查重建失败列表');
+  /* 锁的是：「问题5：重建失败不会被静默吞掉（应中止并回退）」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/重建链接失败/.test(code), '失败时应给出明确错误');
 });
 
@@ -667,6 +736,9 @@ t('问题5：重建失败不会被静默吞掉（应中止并回退）', () => {
 
 t('问题8：lockedPaths 不再假设 lockers 元素有 files 字段', () => {
   const code = stripComments(mainSrc);
+  /* 锁的是：「问题8：lockedPaths 不再假设 lockers 元素有 files 字段」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/x\.files\s\?\s*x\.files\.join/.test(code),
     '仍在用 x.files（rmQueryLockers 返回的 {pid,name,type} 根本没有这个字段）');
 });
