@@ -46,7 +46,7 @@ scripts/test-job-prefix-sync.js | A=4 | B=3 | legacy-source-assertion
 scripts/test-job-stream-isolation.js | A=2 | B=0 | legacy-read
 scripts/test-job-subscribe.js | A=2 | B=0 | legacy-read
 scripts/test-media-split.js | A=6 | B=8 | legacy-source-assertion
-scripts/test-mojibake.js | A=1 | B=0 | legacy-read
+scripts/test-mojibake.js | A=2 | B=0 | exact:第 1 处读 lib/mojibake 源码（legacy-read 同理）；第 2 处读 scripts/fixtures/mojibake-golden.json —— 那是测试夹具（预存的外部编码器结果），不是项目源码，也没有注释要剥
 scripts/test-packaged-assets.js | A=1 | B=0 | legacy-read
 scripts/test-packaged-isdev.js | A=2 | B=0 | e2e-fixture
 scripts/test-picker-func.js | A=1 | B=0 | e2e-fixture

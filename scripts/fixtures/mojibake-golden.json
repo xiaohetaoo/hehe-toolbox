@@ -1,0 +1,113 @@
+{
+  "_comment": "由 scripts/gen-mojibake-golden.js 生成。样本表改动后必须重跑（--write）。",
+  "_why": "analyzeWithEncoder 需要真 PowerShell，单次 812ms × 13 条 ≈ 10.5 秒，占 test:unit 的 40%。这里预存结果，测试平时只比对。",
+  "samplesHash": "84632148713ec2602ad256aebdd506a74f00d645c0f0f53a96458e6d43433ad4",
+  "generatedAt": "2026-11-02T13:08:23.957Z",
+  "elapsedMs": 10462,
+  "rows": [
+    {
+      "input": "Hello 世界",
+      "bestText": "Hello 世界",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 3
+    },
+    {
+      "input": "ok",
+      "bestText": "ok",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 1
+    },
+    {
+      "input": "file saved",
+      "bestText": "file saved",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 1
+    },
+    {
+      "input": "ERROR: 无法打开文件",
+      "bestText": "ERROR: 无法打开文件",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 4
+    },
+    {
+      "input": "测试文本",
+      "bestText": "测试文本",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 4
+    },
+    {
+      "input": "这是一段完全正常的中文，不应该被改坏。",
+      "bestText": "这是一段完全正常的中文，不应该被改坏。",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 1
+    },
+    {
+      "input": "数据库连接失败，请检查配置文件。",
+      "bestText": "数据库连接失败，请检查配置文件。",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 1
+    },
+    {
+      "input": "当前版本已是最新",
+      "bestText": "当前版本已是最新",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 1
+    },
+    {
+      "input": "https://example.com/路径/文件.txt",
+      "bestText": "https://example.com/路径/文件.txt",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 3
+    },
+    {
+      "input": "C:\\Users\\张三\\文档\\报告.docx",
+      "bestText": "C:\\Users\\张三\\文档\\报告.docx",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 3
+    },
+    {
+      "input": "混合 English and 中文 text 123",
+      "bestText": "混合 English and 中文 text 123",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 2
+    },
+    {
+      "input": "訂單已確認，將於三個工作日內出貨。",
+      "bestText": "訂單已確認，將於三個工作日內出貨。",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 1
+    },
+    {
+      "input": "資料庫連線失敗，請檢查設定檔。",
+      "bestText": "資料庫連線失敗，請檢查設定檔。",
+      "bestFrom": "（原样）",
+      "bestTo": "（不转换）",
+      "externalTried": true,
+      "candidateCount": 1
+    }
+  ]
+}

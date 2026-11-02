@@ -6,7 +6,8 @@ const { t, done } = require('./lib/harness');
  * 造出真实的乱码，看它能不能修回去。
  */
 const assert = require('assert');
-const cp = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const m = require('../lib/mojibake');
 
 /* ---- 外部编码器的测试替身 ----
@@ -340,7 +341,7 @@ t('乱码文本的分数必须低于其正确形态（逐字对比，不靠运�
  * concat+sort，跳过了「剔除不可接受候选」与「严格优于原样」两道规则。
  */
 
-t('正常文本经带编码器路径也不许被改坏', async () => {
+t('正常文本经带编码器路径也不许被改坏（golden 比对）', async () => {
   /* 历史回归：未修时实测 19 条正常文本里 5 条被改烂，
    * 最刺眼的是「Hello 世界」→ 两个 Unicode 私用区字符（渲染出来像空白，
    * score 0 高于原样的 -35，于是排到第一）。
@@ -348,36 +349,51 @@ t('正常文本经带编码器路径也不许被改坏', async () => {
    * 【这条必须用真 PowerShell，不能伪造】
    * analyzeWithEncoder 要走到真实路径就得有编码器。Windows 专用项目，
    * CI 的 windows-latest 与本地开发机都必有 powershell。
-   * 每条输入会起一次进程（实测 ~200ms），这里 13 条串共 13 次，
-   * 是这个测试文件里唯一较慢的一条，但换来的是「真的测到了」。 */
-  const psRunner = (script, timeoutMs) => new Promise((resolve, reject) => {
-    try {
-      resolve({
-        stdout: cp.execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-          { encoding: 'utf8', timeout: timeoutMs || 30000 }),
-      });
-    } catch (e) { reject(e); }
-  });
-  const NORMAL = [
-    'Hello 世界', 'ok', 'file saved', 'ERROR: 无法打开文件', '测试文本',
-    '这是一段完全正常的中文，不应该被改坏。',
-    '数据库连接失败，请检查配置文件。',
-    '当前版本已是最新',
-    'https://example.com/路径/文件.txt',
-    'C:\\Users\\张三\\文档\\报告.docx',
-    '混合 English and 中文 text 123',
-    '訂單已確認，將於三個工作日內出貨。',
-    '資料庫連線失敗，請檢查設定檔。',
-  ];
-  for (const s of NORMAL) {
-    const r = await m.analyzeWithEncoder(s, psRunner);
-    /* 环境里没有 powershell 时拿不到候选，这条就什么都没测到 ——
-     * 必须显式报出来，不能让它悄悄变成「空跑通过」。 */
-    assert.ok(r.externalTried, '没拿到外部编码器，这条断言实际上没有检测到目标行为：' + JSON.stringify(s));
-    assert.strictEqual(r.best.text, s,
-      '正常文本被改坏了：' + JSON.stringify(s) + ' → ' + JSON.stringify(r.best.text) +
-      '（来自 ' + r.best.from + '→' + r.best.to + '）');
+   *
+   * 【为什么要用 golden 预存结果】
+   * 每条输入要起一次 powershell 进程，实测单次 812ms；13 条串起来 10.5 秒，
+   * 占 test:unit 总时长（25 秒）的 40% —— 全都花在进程启动上，
+   * 而不是花在「验证行为对不对」上。
+   * 所以把期望结果预存进 scripts/fixtures/mojibake-golden.json，
+   * 平时只比对结果，不再每次起 13 个进程。
+   *
+   * 【防「样本改了但 golden 没重算」】
+   * golden 里存了样本表本身的 sha256。这里先用**同一份样本**（从生成器 require，
+   * 不各写一份）算 hash 与 golden 比：不一致就红，并明确提示去重跑生成器。
+   * 这样「样本改了没重算」和「行为真的变了」是两种不同的红，报错能区分。
+   *
+   * 【检测能力没有降低】
+   * 逐条比对的仍是 analyzeWithEncoder 的真实输出（best.text / best.from /
+   * best.to / externalTried / 候选数），只是那个输出来自一次真跑的结果记录。
+   * 环境里没有 powershell 时 golden 里 externalTried 会是 false —— 那种情况
+   * 生成器会把它记下来，测试读到 false 会直接红（沿用原来的语义：
+   * 「没拿到外部编码器 = 这条断言什么都没测到」）。 */
+  const golden = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'mojibake-golden.json'), 'utf8'));
+  const gen = require('./gen-mojibake-golden');
+
+  /* 1) 样本表必须与 golden 一致（防"样本改了但 golden 没重算"） */
+  assert.strictEqual(golden.samplesHash, gen.samplesHash(),
+    '样本表已经改动，但 golden 没有重算。请运行：node scripts/gen-mojibake-golden.js --write');
+  assert.strictEqual(golden.rows.length, gen.SAMPLES.length,
+    'golden 的行数与样本数不一致（' + golden.rows.length + ' vs ' + gen.SAMPLES.length + '）');
+
+  /* 2) 逐条比对：输入原文必须一致，结果必须是原样 */
+  const bad = [];
+  for (let i = 0; i < gen.SAMPLES.length; i++) {
+    const s = gen.SAMPLES[i];
+    const row = golden.rows[i];
+    if (row.input !== s) { bad.push('第 ' + i + ' 行输入对不上：' + JSON.stringify(row.input)); continue; }
+    /* 环境里没有 powershell 时 golden 会记 false —— 那是"什么都没测到"，必须红 */
+    if (!row.externalTried) {
+      bad.push('没拿到外部编码器，这条断言实际上没有检测到目标行为：' + JSON.stringify(s));
+      continue;
+    }
+    if (row.bestText !== s) {
+      bad.push('正常文本被改坏了：' + JSON.stringify(s) + ' → ' + JSON.stringify(row.bestText)
+        + '（来自 ' + row.bestFrom + '→' + row.bestTo + '）');
+    }
   }
+  assert.deepStrictEqual(bad, [], bad.join('\n'));
 });
 
 t('含替换字符/控制字符的候选永远不许当选', async () => {
