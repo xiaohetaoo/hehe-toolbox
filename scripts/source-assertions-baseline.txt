@@ -1,0 +1,78 @@
+# 源码断言的存量基线（由 scripts/gen-source-assertions-baseline.js 生成）
+#
+# 每一行 = 一个脚本的存量违规计数。格式：
+#   <相对路径> | A=<裸 readFileSync 处数> | B=<无「锁的是」的源码断言数> | <类别>
+#
+# 规则（由 scripts/test-source-assertions.js 执行）：
+#   · 某文件实际数 > 基线数 → 红，报出新增处的「文件:行号 + 原文」
+#   · 某文件实际数 < 基线数 → 绿，但会打印提示让你把基线改小
+#   · 某文件不在本文件里     → 必须 A=0 且 B=0，否则红
+# 也就是说：这张表只能往下走，不能往上走。
+#
+# 类别必须是元测试 CATEGORIES 里登记过的键，或者 `exact:<具体理由>`。
+
+scripts/check-installer-name.js | A=1 | B=8 | build-meta
+scripts/ensure-release-notes.js | A=1 | B=0 | build-meta
+scripts/fix-release-title.js | A=1 | B=0 | build-meta
+scripts/gen-lint-baseline.js | A=1 | B=3 | build-meta
+scripts/gen-source-assertions-baseline.js | A=1 | B=0 | meta-self
+scripts/pack-zip.js | A=1 | B=0 | build-meta
+scripts/test-acl-diagnose-e2e.js | A=2 | B=0 | e2e-fixture
+scripts/test-acl-gate-e2e.js | A=2 | B=0 | e2e-fixture
+scripts/test-acl-repair.js | A=1 | B=0 | legacy-read
+scripts/test-aux-csp.js | A=4 | B=8 | legacy-source-assertion
+scripts/test-aux-windows-csp.js | A=4 | B=0 | legacy-read
+scripts/test-channels-sync.js | A=2 | B=0 | legacy-read
+scripts/test-click-sweep.js | A=1 | B=0 | e2e-fixture
+scripts/test-critical-dirs.js | A=1 | B=1 | legacy-source-assertion
+scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
+scripts/test-danger-inline-enable.js | A=2 | B=0 | e2e-fixture
+scripts/test-destructive.js | A=1 | B=1 | legacy-source-assertion
+scripts/test-destructive2.js | A=1 | B=0 | legacy-read
+scripts/test-dir-move-e2e.js | A=4 | B=0 | e2e-fixture
+scripts/test-disk-health-e2e.js | A=2 | B=0 | e2e-fixture
+scripts/test-dz-el.js | A=2 | B=13 | legacy-source-assertion
+scripts/test-expr-eval.js | A=1 | B=2 | legacy-source-assertion
+scripts/test-extract-safety.js | A=2 | B=0 | e2e-fixture
+scripts/test-fail-text.js | A=1 | B=2 | legacy-source-assertion
+scripts/test-file-unlock-e2e.js | A=2 | B=0 | e2e-fixture
+scripts/test-harness.js | A=0 | B=2 | legacy-source-assertion
+scripts/test-hosts-fallback.js | A=2 | B=0 | e2e-fixture
+scripts/test-hosts-restore.js | A=4 | B=0 | e2e-fixture
+scripts/test-i18n-coverage.js | A=9 | B=1 | legacy-source-assertion
+scripts/test-ipc-channels.js | A=4 | B=0 | legacy-read
+scripts/test-ipc-ctx.js | A=2 | B=2 | legacy-source-assertion
+scripts/test-ipc-split.js | A=3 | B=18 | legacy-source-assertion
+scripts/test-job-prefix-sync.js | A=4 | B=3 | legacy-source-assertion
+scripts/test-job-stream-isolation.js | A=2 | B=0 | legacy-read
+scripts/test-job-subscribe.js | A=2 | B=0 | legacy-read
+scripts/test-media-split.js | A=6 | B=8 | legacy-source-assertion
+scripts/test-mojibake.js | A=1 | B=0 | legacy-read
+scripts/test-packaged-assets.js | A=1 | B=0 | legacy-read
+scripts/test-packaged-isdev.js | A=2 | B=0 | e2e-fixture
+scripts/test-picker-func.js | A=1 | B=0 | e2e-fixture
+scripts/test-powergate.js | A=1 | B=3 | legacy-source-assertion
+scripts/test-pwd-bias.js | A=1 | B=2 | legacy-source-assertion
+scripts/test-reentry-guard.js | A=7 | B=0 | legacy-read
+scripts/test-regressions.js | A=1 | B=2 | legacy-source-assertion
+scripts/test-report-fixes.js | A=1 | B=0 | legacy-read
+scripts/test-round10-fixes.js | A=1 | B=0 | legacy-read
+scripts/test-round11-fixes.js | A=2 | B=0 | legacy-read
+scripts/test-round12-fixes.js | A=1 | B=0 | legacy-read
+scripts/test-round13-fixes.js | A=11 | B=2 | legacy-source-assertion
+scripts/test-round14-fixes.js | A=1 | B=37 | legacy-source-assertion
+scripts/test-round15-fixes.js | A=1 | B=78 | legacy-source-assertion
+scripts/test-round2-fixes.js | A=3 | B=4 | legacy-source-assertion
+scripts/test-round8-fixes.js | A=3 | B=0 | legacy-read
+scripts/test-round9-fixes.js | A=2 | B=0 | legacy-read
+scripts/test-single-instance.js | A=2 | B=0 | legacy-read
+scripts/test-source-assertions.js | A=1 | B=0 | meta-self
+scripts/test-startup-timing.js | A=6 | B=25 | legacy-source-assertion
+scripts/test-stopwatch-resume.js | A=1 | B=5 | legacy-source-assertion
+scripts/test-target-e2e.js | A=1 | B=0 | e2e-fixture
+scripts/test-tool-i18n.js | A=4 | B=5 | legacy-source-assertion
+scripts/test-tool-order.js | A=2 | B=2 | legacy-source-assertion
+scripts/test-tray-i18n.js | A=2 | B=0 | e2e-fixture
+scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
+scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
+scripts/version.js | A=2 | B=0 | build-meta

@@ -290,6 +290,45 @@ t('stripComments：块注释不会把前后两段代码粘连', () => {
   assert.ok(!/return ab;/.test(stripped), 'a/*c*/b 被粘成了 ab');
 });
 
+/* 【2026-11 补：剥完的文本必须与原文本**行号一一对应**】
+ *
+ * 现象：stripComments 原先把整段块注释替换成**一个空格**（`out += ' '`），
+ * 块注释内部的换行全部丢失。一个 40 行的文件头注释就能让后续每一行
+ * 上移 39 行。实测 main.js 剥完少 400+ 行，scripts 里 28 个脚本的行号
+ * 全部对不上 —— 而剥注释的**唯一目的**就是在同一份文本上做断言，
+ * 一旦行号错位，所有以行号定位的能力（基线压制、白名单按行号索引、
+ * CI annotation 指到出错行）都静默失效，且不会报任何错。
+ *
+ * 为什么用逐行比对而不是只比行数：要保证的是「第 N 行在两份文本里说的
+ * 是同一件事」。只比总数能抓到这个缺陷，但抓不到「行数凑巧相等、内容却
+ * 错位」的情形。
+ *
+ * 锁的是：stripComments 吞掉块注释内换行导致的行号漂移（2026-11 修复）。 */
+t('stripComments：保留块注释内部的换行（行号必须与原文一一对应）', () => {
+  const src = [
+    'const a = 1;',
+    '/* 第一行说明',
+    ' * 第二行说明',
+    ' * 第三行说明',
+    ' */',
+    'const b = 2; // 尾注释',
+    'const c = 3;',
+  ].join('\n');
+  const stripped = stripComments(src);
+  const srcLines = src.split('\n');
+  const outLines = stripped.split('\n');
+  assert.strictEqual(outLines.length, srcLines.length,
+    '剥注释后行数变了：原 ' + srcLines.length + ' 行 → ' + outLines.length + ' 行。'
+    + '块注释里的换行必须保留，否则行号全部错位。实际输出：' + JSON.stringify(outLines));
+  assert.strictEqual(outLines[0].trim(), 'const a = 1;', '第 1 行对不上：' + JSON.stringify(outLines[0]));
+  assert.strictEqual(outLines[5].trim(), 'const b = 2;',
+    '第 6 行对不上（尾注释应被剥掉但本行必须还在）：' + JSON.stringify(outLines[5]));
+  assert.strictEqual(outLines[6].trim(), 'const c = 3;', '第 7 行对不上：' + JSON.stringify(outLines[6]));
+  /* 不能为了保行号就把注释内容留下来 */
+  assert.ok(!stripped.includes('第二行说明'), '块注释内容没被剥掉');
+  assert.ok(!stripped.includes('尾注释'), '行注释内容没被剥掉');
+});
+
 /* 【这一条来自实战踩坑，必须留下】
  * 真实缺陷（是我自己写的测试代码里的缺陷）：
  * stripComments 不识别正则字面量，于是 js/tools/net-tools.js 里
