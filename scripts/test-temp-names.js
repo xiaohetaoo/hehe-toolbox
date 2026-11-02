@@ -9,7 +9,9 @@ const assert = require('assert');
 const path = require('path');
 const T = require('../lib/temp-names');
 
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
+/* 主进程源码：迁移来的 17 号用例要扫全项目查裸 rename。 */
+const mainSrc = readMain({ raw: true });
 
 const NOW = 1700000000000;
 const HEX = 'abc123';
@@ -131,5 +133,32 @@ t('10e OWN_TEMP_PATTERNS 非空且每条都是正则', () => {
   assert.ok(T.OWN_TEMP_PATTERNS.length > 0, '白名单不能是空的');
   for (const re of T.OWN_TEMP_PATTERNS) assert.ok(re instanceof RegExp, '白名单里混进了非正则');
 });
+
+t('17 全项目：凡是从 %TEMP% 提交到用户输出目录的地方，都不该用裸 rename', () => {
+  /* 扫所有 handler 里出现的 fsp.rename(，逐一人工分类过一次：
+   * 允许的只有「同目录内的原子改名」——即源和目标都由我们自己造、
+   * 且一定同卷的场合（写临时文件后改名、源改名为 .bak、.bak 改回原名）。
+   * 这里用「源头是不是 temp」作为粗略判据做回归锚点。 */
+  const allowed = [
+    'fsp.rename(tmp, dest)',            // writeFileAtomic：同目录临时文件
+    'fsp.rename(dest, bak)',            // writeFileAtomic：同目录备份
+    'fsp.rename(bak, dest)',            // writeFileAtomic：回滚
+    'fsp.rename(from, to)',             // fs:rename 通道本身
+    'fsp.rename(cryptTmp, outPath)',    // 临时名与目标是同一个父目录（outPath + 后缀）
+    'fsp.rename(partTmp, finalOut)',    // fsOps.tempPathFor(finalOut)：同目录
+    'fsp.rename(tmp, HOSTS_PATH)',      // hosts 临时文件在同目录
+    'fsp.rename(tmp, dest)',            // downloadToFile：dest + '.part-...' 同目录
+    'fsp.rename(srcAbs, bakPath)',      // 搬家：源改名为同级 .bak
+    'fsp.rename(bakPath, srcPath)',     // 搬家回滚
+    'fsp.rename(src, dst)',             // moveFile 内部（EXDEV 已兜底）
+    'fsp.rename(dst, back)',            // 7z 解压失败回滚：把条目搬回 staging（同卷）
+  ];
+  const hits = [...mainSrc.matchAll(/fsp\.rename\(([^)]*)\)/g)].map((m) => 'fsp.rename(' + m[1] + ')');
+  const unknown = [...new Set(hits)].filter((h) => !allowed.includes(h));
+  assert.deepStrictEqual(unknown, [],
+    '出现了未分类的 fsp.rename：' + unknown.join(' | ') +
+    '。如果它跨卷（源在 %TEMP%、目标在用户盘），必须改用 moveFile。');
+});
+
 
 done();

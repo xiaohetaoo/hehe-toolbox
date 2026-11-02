@@ -1,5 +1,11 @@
 'use strict';
+const path = require('path');
+/* 读项目内文件（迁移来的 25a 用例要读 lib/path-guard.js 的源码）。 */
+function read(rel) { return require('fs').readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
+const os = require('os');
+const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+const ROOT = path.join(__dirname, '..');
 const BS = String.fromCharCode(92);
 const stripComments = require('../lib/src-scan').stripComments;
 const mainSrc = readMain({ raw: true });
@@ -7,9 +13,6 @@ const mainSrc = readMain({ raw: true });
  *
  * 这些断言守护的是「用户数据被毁掉」的场景，比功能 bug 更严重。
  */
-const assert = require('assert');
-const path = require('path');
-const os = require('os');
 const guard = require('../lib/path-guard');
 
 /* ---------- 文件名检查 ---------- */
@@ -210,6 +213,54 @@ t('问题4：提示语区分系统目录与家目录，不用同一句吓人的�
     '家目录的提示应给出可操作建议，而不是「会导致系统更新失败」');
 });
 
-/* ================= 问题 5：含 junction 的目录能复制 ================= */
+/* ================= 问题 5：含 junction 的目录能复制 ================= */
+
+t('25a checkDeletable：recursive 参数不能被忽略（系统目录深层要拦住）', () => {
+  const PGx = require(path.join(ROOT, 'lib', 'path-guard'));
+  const B = String.fromCharCode(92);
+  const sys = (x) => path.join('C:', 'Windows', x);
+  /* 关键：这些都是「关键目录的第二层以后」，isCriticalPath 判不出来 */
+  for (const p of [sys('System32' + B + 'drivers'), sys('System32' + B + 'config' + B + 'SAM'),
+    path.join('C:', 'Program Files', 'nodejs', 'node.exe')]) {
+    assert.ok(PGx.checkDeletable(p, true), p + ' 递归删除必须被拒（删掉会让系统起不来/无法登录）');
+  }
+  /* 用户自己的目录照常可删，不能矫枉过正 */
+  const mine = path.join(require('os').homedir(), 'Documents', 'a.txt');
+  assert.strictEqual(PGx.checkDeletable(mine, true), null, '自己文档目录下的文件应可删');
+  /* 源码级：recursive 形参必须真的被读 */
+  const src = read(path.join('lib', 'path-guard.js'));
+  const fn = src.slice(src.indexOf('function checkDeletable'), src.indexOf('function checkOverwritable'));
+  assert.ok(/recursive/.test(fn.slice(fn.indexOf('{'))) || /recursive && /i.test(fn),
+    'checkDeletable 的 recursive 形参仍未被使用');
+});
+
+t('25b isCriticalForOverwrite：第二套 Windows（D:\\Windows）也要挡', () => {
+  const PGx = require(path.join(ROOT, 'lib', 'path-guard'));
+  const hosts = path.join('D:', 'Windows', 'System32', 'drivers', 'etc', 'hosts');
+  assert.ok(PGx.checkOverwritable(hosts),
+    'D:\\Windows 下的 hosts 必须拒写 —— 覆盖它会毁掉全机 DNS。' +
+    '原实现只查环境变量那套系统目录，注释却写「任意盘符」');
+  /* 普通路径不受影响 */
+  assert.strictEqual(PGx.checkOverwritable(path.join('D:', 'data', 'a.txt')), null);
+});
+
+t('25c resolveInside / resolveTarget：盘符根不能误判为越界', () => {
+  const PGx = require(path.join(ROOT, 'lib', 'path-guard'));
+  const AGx = require(path.join(ROOT, 'lib', 'archive-guard'));
+  const B = String.fromCharCode(92);
+  const root = 'D:' + B;
+  assert.strictEqual(PGx.resolveInside(root, 'a.txt'), 'D:' + B + 'a.txt',
+    '「解压到 D:\\」是常见操作，不能因为 root 以分隔符结尾就判越界');
+  assert.strictEqual(AGx.resolveTarget(root, 'a.txt'), 'D:' + B + 'a.txt');
+  /* 安全边界不能被放宽：绝对路径 / UNC / 设备名照旧拒绝 */
+  assert.throws(() => PGx.resolveInside(root, 'C:' + B + 'x'), /绝对路径|ABS_PATH/);
+  assert.throws(() => PGx.resolveInside(root, '//srv/share'), /UNC/);
+  /* 盘符根下的 `..` 解析后仍落在本卷（path.resolve('D:\', '../x') === 'D:\x'），
+   * 这不是逃逸，不该被拦 —— 但**跨到别的卷**必须拦。 */
+  assert.throws(() => PGx.resolveInside(root, 'D:' + B + '..' + B + '..' + B + 'C:' + B + 'x'),
+    /绝对路径|ESCAPE/);
+});
+
+/* ==================== 26. power-gate 包装剥离 ==================== */
 
 done();

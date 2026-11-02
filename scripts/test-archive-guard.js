@@ -1,10 +1,17 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
 /* lib/archive-guard.js 的单元测试：恶意条目必须被拒，正常条目必须放行。
  * 用法：node scripts/test-archive-guard.js
  */
 const assert = require('assert');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const cp = require('child_process');
+const { scanBrace } = require('../lib/src-scan');
+/* 主进程全部源码（22 号用例要点名 seven:extract 的实现）。 */
+const mainSrc = readMain({ raw: true });
+const ROOT = path.join(__dirname, '..');
 const guard = require('../lib/archive-guard');
 
 function expectCode(fn, code) {
@@ -14,6 +21,46 @@ function expectCode(fn, code) {
 }
 
 /* ---------- 应当拒绝 ---------- */
+
+function segFromHandler(channel, label) {
+  const start = mainSrc.indexOf("handle('" + channel + "'");
+  assert.ok(start > 0, '找不到 handler: ' + channel);
+  /* handler 签名里可能有默认参数对象 `opts = {}`，不能取 start 之后的第一个 '{'，
+   * 要跳到 `=> {` 之后的那个函数体开括号。 */
+  const arrow = mainSrc.indexOf('=>', start);
+  const from = arrow > 0 ? arrow : start;
+  const open = mainSrc.indexOf('{', from);
+  assert.ok(open > 0, 'handler ' + channel + ' 没有函数体');
+  const end = scanBrace(mainSrc, open);
+  assert.ok(end > open, 'handler ' + channel + ' 括号不配平');
+  return mainSrc.slice(start, end);
+}
+
+function rmDir(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); }
+  catch (e) { try { cp.execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', dir], { windowsHide: true }); } catch (e2) {} }
+}
+
+function extractZipCompress() {
+  const i = mainSrc.indexOf("handle('zip:compress'");
+  const j = mainSrc.indexOf("handle('zip:extract'");
+  assert.ok(i > 0 && j > i, '找不到 zip:compress');
+  const open = mainSrc.indexOf('{', i);
+  /* 从 handler 的 `{` 到 `});` 之间：按括号配对找结束，避免正则跨块。 */
+  let depth = 0, end = -1;
+  for (let k = open; k < j; k++) {
+    const c = mainSrc[k];
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) { end = k; break; } }
+  }
+  assert.ok(end > open, '找不到 zip:compress 的函数体结尾');
+  const body = mainSrc.slice(open + 1, end);
+  return new AsyncFunction('e', 'paths', 'outZip', 'fs', 'fsp', 'path', 'pathGuard', 'AdmZip', body);
+}
+
+/* zip:compress 的 handler 体是 async 的，抽出来时要包成 AsyncFunction。 */
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
 t('路径穿越 ../', () => expectCode(
   () => guard.inspectEntries([{ name: '../../Windows/win.ini', size: 1 }]), 'PATH_TRAVERSAL'));
 
@@ -116,5 +163,90 @@ t('resolveTarget 正常路径通过', () => {
   const tgt = guard.resolveTarget(root, 'sub/a.txt');
   assert.ok(tgt.startsWith(root + path.sep), '应落在 root 之内: ' + tgt);
 });
+
+t('4a zip:compress 行为：两个不同目录下的同名子目录，内容都要保留', async () => {
+  let AdmZip;
+  try { AdmZip = require(path.join(ROOT, 'node_modules', 'adm-zip')); }
+  catch (e) {
+    /* 【依赖缺失要显式报出来，不能静默 return】
+     * 原来只打一行 5 个空格缩进的「跳过：没有 adm-zip」然后 return ——
+     * CI 的 `grep -E '^(FAIL|SKIP) '` 抓不到，这两条会静默消失。
+     * adm-zip 是 package.json 的正式 dependency，缺了说明环境坏了，
+     * 不该悄悄跳过（那样「zip 同名子目录互相覆盖」这个 P1 缺陷就没人看着了）。 */
+    console.log('SKIP 缺少 adm-zip 依赖，zip 同名子目录合并的行为未被测到（请检查 npm ci）');
+    return;
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r12x-zip-'));
+  try {
+    const a = path.join(dir, 'A', 'docs');
+    const b = path.join(dir, 'B', 'docs');
+    fs.mkdirSync(a, { recursive: true });
+    fs.mkdirSync(b, { recursive: true });
+    fs.writeFileSync(path.join(a, 'x.txt'), 'AAAA');
+    fs.writeFileSync(path.join(b, 'x.txt'), 'BBBB');
+    const out = path.join(dir, 'o.zip');
+
+    const run = extractZipCompress();
+    await run(null, [a, b], out, fs, fs.promises, path,
+      require(path.join(ROOT, 'lib', 'path-guard')), AdmZip);
+
+    const zip = new AdmZip(out);
+    const names = zip.getEntries().map((x) => x.entryName);
+    assert.strictEqual(names.length, 2, '两个目录应各留一个条目，实际：' + JSON.stringify(names));
+    const bodies = names.map((n) => zip.getEntry(n).getData().toString()).sort();
+    assert.deepStrictEqual(bodies, ['AAAA', 'BBBB'],
+      '两份内容必须都在，实际：' + JSON.stringify(bodies) + '（条目 ' + JSON.stringify(names) + '）');
+  } finally { rmDir(dir); }
+});
+
+t('4b zip:compress：顶层同名*文件*的去重没有被这次改动破坏', async () => {
+  let AdmZip;
+  try { AdmZip = require(path.join(ROOT, 'node_modules', 'adm-zip')); }
+  catch (e) { return; }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r12x-zip2-'));
+  try {
+    const d1 = path.join(dir, 'p1'); const d2 = path.join(dir, 'p2');
+    fs.mkdirSync(d1, { recursive: true }); fs.mkdirSync(d2, { recursive: true });
+    fs.writeFileSync(path.join(d1, 'same.txt'), 'ONE');
+    fs.writeFileSync(path.join(d2, 'same.txt'), 'TWO');
+    const out = path.join(dir, 'o.zip');
+    const run = extractZipCompress();
+    await run(null, [path.join(d1, 'same.txt'), path.join(d2, 'same.txt')], out,
+      fs, fs.promises, path, require(path.join(ROOT, 'lib', 'path-guard')), AdmZip);
+    const zip = new AdmZip(out);
+    const bodies = zip.getEntries().map((x) => x.getData().toString()).sort();
+    assert.deepStrictEqual(bodies, ['ONE', 'TWO'], '同名文件必须各自保留，实际：' + JSON.stringify(bodies));
+  } finally { rmDir(dir); }
+});
+
+/* ==================== 5. cmpVer 与预发布后缀 ==================== */
+
+t('22 seven:extract：失败回滚要把条目搬回 staging，不能直接删', () => {
+  /* 直接删的风险：uniqueTarget 的存在性判断若因权限/瞬时错误失准，
+   * rm 掉的可能是用户原有文件 —— 解压失败反毁数据。 */
+  const seg = segFromHandler('seven:extract');
+  assert.ok(!/for \(const dst of movedTo\.reverse\(\)\) \{\s*try \{ await fsp\.rm\(dst/.test(seg),
+    '回滚仍在直接 rm(dst)');
+  assert.ok(/await fsp\.rename\(dst, back\)/.test(seg), '应把已搬出的条目改名回 staging');
+});
+
+/* ==================== 23. svc:action 失败识别 ==================== */
+
+t('34 archive-guard：先文件后目录的顺序也要拦住冲突', () => {
+  const AGr = require(path.join(ROOT, 'lib', 'archive-guard'));
+  /* 条目顺序由压缩包作者控制：先 a/b.txt 再 a（文件），后者需要 a 是文件、
+   * 前者需要 a 是目录 —— 这样的包必须被预检拒掉。 */
+  for (const list of [
+    [{ name: 'a', isDir: false, size: 1 }, { name: 'a/b', isDir: false, size: 1 }],
+    [{ name: 'a/b', isDir: false, size: 1 }, { name: 'a', isDir: false, size: 1 }],
+  ]) {
+    assert.throws(() => AGr.inspectEntries(list), /FILE_DIR_CONFLICT|文件|目录/,
+      '顺序 ' + JSON.stringify(list.map((x) => x.name)) + ' 的冲突包应被拒');
+  }
+});
+
+/* ==================== 35. links：drive-relative 也要认成盘符根 ==================== */
 
 done();

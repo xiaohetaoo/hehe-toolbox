@@ -1,5 +1,10 @@
 'use strict';
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+const ROOT = path.join(__dirname, '..');
 
 /* ================= ① 内部链接改写 ================= */
 
@@ -8,9 +13,6 @@ const { t, done, readMain } = require('./lib/harness');
  * 声明放在用例后面的话，用例跑起来时还在 TDZ —— 报错是
  * "Cannot access 'assert' before initialization"，看着莫名其妙，
  * 实际是声明顺序问题。 */
-const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 const cp = require('child_process');
 const stripComments = require('../lib/src-scan').stripComments;
 const mainSrcL = readMain({ raw: true });
@@ -18,7 +20,6 @@ const mainSrcL = readMain({ raw: true });
 const PS_PATH_BATCH = Number((mainSrcL.match(/const PS_PATH_BATCH = (\d+);/) || [])[1]);
 const fsp = fs.promises;
 const BS = String.fromCharCode(92);
-const os = require('os');
 /* mainSrc：主进程全部源码。迁移来的用例里一半要看 handler 形态，
  * 它们的语义是「主进程里有这个实现」，与在哪个文件无关。 */
 const mainSrc = mainSrcL;
@@ -893,6 +894,16 @@ t('额外项1：link:scan 不再递归重扫全树取 LinkType', () => {
     '仍在用 Get-ChildItem -Recurse 重扫全树（collectLinks 已经遍历过一次）');
   assert.ok(/Get-Item -LiteralPath @\(/.test(code),
     '应改成对已收集的链接做批量 Get-Item');
+});
+
+t('35 links：isVolumeRootOnly 要认 D: 这种 drive-relative 写法', () => {
+  const Lx = require(path.join(ROOT, 'lib', 'links'));
+  const B = String.fromCharCode(92);
+  assert.strictEqual(Lx.isVolumeRootOnly('D:'), true, '"D:" 在 Windows 上是「D 盘当前目录」，同样是盘符根');
+  assert.strictEqual(Lx.isVolumeRootOnly('D:' + B), true);
+  assert.strictEqual(Lx.isVolumeRootOnly('D:' + B + 'data'), false);
 });
+
+/* ==================== 36. 录像 GIF 目标名 ==================== */
 
 done();

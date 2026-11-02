@@ -1,4 +1,6 @@
 'use strict';
+const path = require('path');
+const assert = require('assert');
 /* 电源门禁回归：v0.1.9 修「等价写法绕过」。
  *
  * 旧实现是行首锚定单层正则，以下写法全部穿透（实测）：
@@ -10,8 +12,10 @@
  *
  * 本测试直接 require lib/power-gate.js（main.js 用的同一份实现）。
  */
-const assert = require('assert');
-const path = require('path');
+/* 主进程全部源码（迁移来的 round13 用例要点名 handler）。 */
+const { readMain } = require('./lib/harness');
+const mainSrc = readMain({ raw: true });
+const PG = require('../lib/power-gate');
 const ROOT = path.join(__dirname, '..');
 /* 读项目内文件（迁移来的用例用）。 */
 const fsx = require('fs');
@@ -97,6 +101,31 @@ const mustAllow = [
 ];
 
 /* ---- 1. 必须拦截 ---- */
+/* 断言「某处调用 powerGate 时必须把 cmd 与 args 拼成整条再判」。
+ * 分开判会漏掉 cmd.exe /c shutdown 这类包装 —— 单看 argv[0] 是 cmd.exe，无害。 */
+function assertPowerArgIsWholeCommand(body, label) {
+  const marker = 'assertPowerAllowed(';
+  const at = body.indexOf(marker);
+  assert.ok(at >= 0, label + ' 里找不到 assertPowerAllowed');
+  const start = at + marker.length;
+  let depth = 1, end = -1;
+  for (let k = start; k < body.length; k++) {
+    const c = body[k];
+    if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') { depth--; if (depth === 0) { end = k; break; } }
+  }
+  assert.ok(end > start, label + ' 里 assertPowerAllowed 的实参不完整');
+  const arg = body.slice(start, end).trim();
+  assert.ok(/\.join\(\s*' '\s*\)/.test(arg),
+    label + ' 没有把 cmd 与 args 拼成整条命令再判 —— 分开判会漏掉 ' +
+    '`cmd.exe` + `/c shutdown /s /t 0` 这类组合。实际实参：' + arg);
+  /* 必须同时用了命令行主体与 args，而不是只用其中一个。
+   * 注意用 /i：实现里变量叫 flatArgs（首字母大写），区分大小写会误判。 */
+  assert.ok(/(cmd|command)/i.test(arg) && /args/i.test(arg),
+    label + ' 的判定实参应同时包含命令与参数：' + arg);
+  return arg;
+}
+
 t('全部等价写法都被识别（v0.1.9 核心）', () => {
   const missed = mustBlock.filter((c) => c && !gate.isPowerCommand(c));
   assert.deepStrictEqual(missed, [], '漏拦: ' + missed.join(' | '));
@@ -273,6 +302,62 @@ t('6d 未展开的变量 fail-closed，已知变量要能展开', () => {
 });
 
 /* ==================== 7. clean-junk 来源校验 ==================== */
+
+t('8a 电源门禁：cmd 与 args 必须拼成整条再判（分开判会漏掉 cmd.exe /c shutdown）', () => {
+  const i = mainSrc.indexOf("handle('exec:run'");
+  const j = mainSrc.indexOf("handle('exec:stream'");
+  assertPowerArgIsWholeCommand(mainSrc.slice(i, j), 'exec:run');
+
+  /* 行为验证：证明「分开判」确实会让这些命令通过（否则这条测试守的是空气） */
+  const c1 = PG.isPowerCommand('cmd.exe');
+  const a1 = PG.isPowerCommand('/c shutdown /s /t 0');
+  const whole1 = PG.isPowerCommand('cmd.exe /c shutdown /s /t 0');
+  assert.strictEqual(c1, false, '前置：cmd.exe 单独不是危险命令');
+  assert.strictEqual(a1, false, '前置：参数串单独被剥壳后也不命中');
+  assert.strictEqual(whole1, true, '前置：拼起来必须被识别为电源命令');
+  /* 结论：只要实现是分开判的，c1/a1 都为 false，就放行了 whole1 —— 正是缺陷形态 */
+});
+
+t('8b 电源门禁：powershell -Command Stop-Computer 同样要被整条判住', () => {
+  const body = mainSrc.slice(mainSrc.indexOf("handle('exec:stream'"), mainSrc.indexOf("handle('job:kill'"));
+  assertPowerArgIsWholeCommand(body, 'exec:stream');
+  assert.strictEqual(PG.isPowerCommand('powershell.exe'), false);
+  assert.strictEqual(PG.isPowerCommand('-NoProfile -Command Stop-Computer'), false);
+  assert.strictEqual(PG.isPowerCommand('powershell.exe -NoProfile -Command Stop-Computer'), true,
+    '前置：整条拼接必须命中');
+});
+
+t('8c 电源门禁：无害命令与 shutdown /a 仍要放行（别矫枉过正）', () => {
+  assert.strictEqual(PG.isPowerCommand('cmd.exe /c dir'), false);
+  assert.strictEqual(PG.isPowerCommand('cmd.exe /c shutdown /a'), false, '取消关机必须放行');
+  assert.strictEqual(PG.isPowerCommand('powershell.exe -Command Get-Date'), false);
+  assert.strictEqual(PG.isPowerCommand('notepad.exe shutdown.log'), false, '文件名里带 shutdown 不算');
+});
+
+/* ==================== 9. 跨盘提交不能裸 rename ==================== */
+
+t('26 power-gate：cmd 开关形（/d /c）与解释器包装不能绕过', () => {
+  const PGg = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 这些都是「没开系统电源操作」时也必须被认出来的写法 */
+  const mustBlock = [
+    'shutdown /s /t 0',
+    'cmd /c shutdown /s',
+    'cmd /d /c shutdown /s',
+    'cmd /e:on /c shutdown /s',
+    'powershell -Command Stop-Computer',
+    'powershell -NoProfile -Command Restart-Computer',
+  ];
+  for (const c of mustBlock) {
+    assert.ok(PGg.isPowerCommand(c), '应被识别为电源命令：' + c);
+  }
+  /* 而无害的必须放行 */
+  for (const c of ['cmd /c dir', 'cmd /d /c ver', 'powershell -Command Get-Date',
+    'shutdown /a', 'cmd /c shutdown /a', 'notepad shutdown.log']) {
+    assert.ok(!PGg.isPowerCommand(c), '不该被当成电源命令：' + c);
+  }
+});
+
+/* ==================== 27. expr-eval 取余 vs 百分比 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

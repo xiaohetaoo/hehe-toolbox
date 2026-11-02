@@ -1,5 +1,7 @@
 'use strict';
 const { t, done } = require('./lib/harness');
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
 /* 磁盘健康库测试。重点验证「诚实处理缺失数据」这一点。
  */
 const assert = require('assert');
@@ -154,5 +156,17 @@ t('HealthStatus 为 Warning 时判 bad', () => {
   const r = H.shape({ disks: [{ model: 'X', healthStatus: 'Warning' }] });
   assert.strictEqual(r.disks[0].verdict.level, 'bad', 'Warning 必须判 bad');
 });
+
+t('30 disk-health：wear=0 是「全新」，不能说成「厂商没给数据」', () => {
+  const DHx = require(path.join(ROOT, 'lib', 'disk-health'));
+  const r = DHx.estimateRemaining(0);
+  /* shape() 把 wear=0 当作有效 SMART 读数（hasSmart=true、verdict 说「已用寿命 0%」），
+   * estimateRemaining 却说「厂商未给出磨损数据」—— 同一块盘两个相反结论。 */
+  assert.ok(r, 'wear=0 应给出结论而不是 null');
+  assert.ok(!/未给出/.test(r.text),
+    'wear=0 是有效值（全新盘），不应报「厂商未给出磨损数据」：' + r.text);
+});
+
+/* ==================== 31. target-size：负数码率不能出现在文案里 ==================== */
 
 done();

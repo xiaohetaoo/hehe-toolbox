@@ -195,3 +195,30 @@ c('码率按整数 k 传递（不允许小数进入命令行）', () => {
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);
+
+/* ---------------- 以下助手随 round13 的用例一起迁来 ----------------
+ * segFromFn / segFromHandler 按花括号配平取源码段 —— 因为 handler 体里有
+ * 嵌套的 {}、正则字面量与默认参数对象，简单切字符串会切歪。 */
+const TS = require('../lib/target-size');
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
+t('16b tierTargetBytes：非法 ratio 不能返回 NaN', () => {
+  for (const r of [NaN, undefined, null, -1, Infinity]) {
+    const v = TS.tierTargetBytes(100, r);
+    assert.ok(Number.isFinite(v) && v >= 1,
+      'tierTargetBytes(100, ' + String(r) + ') 应是有限正整数，实际 ' + String(v));
+  }
+  assert.strictEqual(TS.tierTargetBytes(100, 0.15), 15, '正常比例不能被改坏');
+  assert.strictEqual(TS.tierTargetBytes(0, 0.15), 1, '0 字节源也要给出至少 1');
+  assert.strictEqual(TS.tierTargetBytes(Infinity, 0.5), 1, '非法源体积给确定值而非 Infinity');
+});
+
+t('31 target-size：目标太小时不该算出负码率', () => {
+  const TSx = require(path.join(ROOT, 'lib', 'target-size'));
+  const p = TSx.planBitrates({ targetBytes: 10240, durationSec: 60, hasAudio: true });
+  assert.strictEqual(p.ok, false, '这么小的目标确实压不了');
+  assert.ok(!/-\d+kbps/.test(p.reason),
+    '提示里出现了负码率（「视频码率仅剩 -31kbps」这种不存在的值）：' + p.reason);
+});
+
+

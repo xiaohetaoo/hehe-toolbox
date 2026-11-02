@@ -1,5 +1,10 @@
 'use strict';
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+const ROOT = path.join(__dirname, '..');
 const stripComments = require('../lib/src-scan').stripComments;
 const mainSrc = readMain({ raw: true });
 /* 起子进程（外部编码器探测、降级验证）。原 test-round10 的用例也用它。 */
@@ -9,9 +14,6 @@ const cp = require('child_process');
  * 重点验证「能真正接到东西」而不是只返回空壳：
  * 造出真实的乱码，看它能不能修回去。
  */
-const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 const m = require('../lib/mojibake');
 
 /* ---- 外部编码器的测试替身 ----
@@ -47,6 +49,7 @@ const m = require('../lib/mojibake');
 
 
 /* ---- 1. 打分函数：好文本 vs 垃圾 ---- */
+
 t('自然中文比乱码得分高得多', () => {
   const good = m.scoreText('这是一段正常的中文文本，用于测试编码识别是否正确。');
   const bad = m.scoreText('\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD');
@@ -208,9 +211,6 @@ t('运行时没有 GBK 解码器时要退回小样本，不能崩也不能变成
    * 所以改成：起一个子进程跑降级验证，本进程的 TextDecoder 一个字符都不碰。
    * 子进程里同样保留「用完即弃」的语义 —— 进程退出，全局状态自然消失。 */
   const cp = require('child_process');
-  const os = require('os');
-  const path = require('path');
-  const fs = require('fs');
   const SRC = path.resolve(__dirname, '..', 'lib', 'mojibake.js');
   const stub = '\nconst __RealTD = TextDecoder;\n' +
     'globalThis.TextDecoder = class {\n' +
@@ -521,5 +521,29 @@ t('锟斤拷这类字符串乱码现在能修（借 .NET 的 CP936 编码器）'
 });
 
 /* 等异步用例结束 */
+
+t('29 mojibake：正常文本必须原样返回（不能「修」成乱码）', () => {
+  const MBx = require(path.join(ROOT, 'lib', 'mojibake'));
+  const normal = [
+    'Hello 世界',
+    'ok',
+    'file saved',
+    'ERROR: 无法打开文件',
+    '这是正常的中文文本，不应该被改动。',
+    '测试文本',
+  ];
+  for (const s of normal) {
+    const r = MBx.analyzeMojibake(s);
+    assert.strictEqual(r.best.text, s,
+      '正常文本被改坏了：' + JSON.stringify(s) + ' → ' + JSON.stringify(r.best.text) +
+      '（用户点一下「修复」就会拿到二次损坏的内容）');
+  }
+  /* 候选里也不许出现替换字符（那是「越修越坏」的产物） */
+  const r2 = MBx.analyzeMojibake('Hello 世界');
+  assert.ok(!r2.candidates.some((c) => (c.text || '').includes('\uFFFD')),
+    '候选里仍有 U+FFFD');
+});
+
+/* ==================== 30. disk-health：wear=0 是有效读数 ==================== */
 
 done();

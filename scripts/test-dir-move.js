@@ -1,5 +1,7 @@
 'use strict';
 const { t, done, readSrc, readMain } = require('./lib/harness');
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
 /* 定位 dir:move-precheck 的注册位置：任务 6 之后通道名换成了常量，
  * 所以两种形态都要认。 */
 function precheckAt(code) {
@@ -323,6 +325,19 @@ t('问题7：换目标路径才复位递归（onChange 与「用这个路径」�
   assert.ok(/state\.recursive = false/.test(usePathSeg), '「用这个路径」也应复位');
 });
 
-/* ================= 问题 8：lockedPaths 语义与文案 ================= */
+/* ================= 问题 8：lockedPaths 语义与文案 ================= */
+
+t('33 dir-move：剩余空间未知（null）不该报「空间不足」', () => {
+  const DMx = require(path.join(ROOT, 'lib', 'dir-move'));
+  const r = DMx.validateMove({
+    src: 'C:\\a', dst: 'D:\\a', srcExists: true, srcIsDir: true, srcIsLink: false, srcIsRoot: false,
+    srcIsCritical: false, dstExists: false, dstProtected: false,
+    needBytes: 100 * 1024 * 1024, freeBytes: null, lockedPaths: [],
+  });
+  assert.strictEqual(r.ok, true,
+    'freeBytes=null 表示「读不到剩余空间」，Number(null)===0 会让它变成「剩余 0 GB」而永久拒绝搬家：' + r.reason);
+});
+
+/* ==================== 34. archive-guard：文件/目录冲突要双向查 ==================== */
 
 done();

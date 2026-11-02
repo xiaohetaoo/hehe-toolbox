@@ -80,5 +80,24 @@ t('index.html 引入了 job-prefixes.js 且在 ui.js 之前', () => {
   assert.ok(iJob < iUi, 'job-prefixes.js 应在 ui.js 之前加载');
 });
 
+t('32 job-id：前缀互为前缀不能串号（通用下载器已改名为 dlg）', () => {
+  const Jx = require(path.join(ROOT, 'lib', 'job-id'));
+  /* 现在的 id 形态：FFmpeg 下载 dl<n>、通用下载器 dlg<n>。
+   * 关键不变量：任何一个 id 只归属一个前缀。 */
+  const ids = ['dl1', 'dl2', 'dl12', 'dl2123', 'dlg1', 'dlg123', 'scanp12', 'scan12'];
+  const prefixes = Object.keys(Jx.JOB_PREFIXES);
+  for (const id of ids) {
+    const owners = prefixes.filter((p) => Jx.belongsTo(id, p));
+    assert.ok(owners.length <= 1,
+      'id ' + id + ' 同时归属于多个前缀：' + JSON.stringify(owners) +
+      ' —— 渲染层会用它来过滤 job:stream，串号会导致进度条被别的任务驱动');
+  }
+  /* 具体回归：dlg<n> 不能被 dl 前缀认领（'dl' 是旧名 dl2 的真前缀） */
+  assert.strictEqual(Jx.belongsTo('dlg123', 'dl'), false, 'dlg123 不该归属 dl');
+  assert.strictEqual(Jx.belongsTo('dlg123', 'dlg'), true);
+});
+
+/* ==================== 33. dir-move：freeBytes 未知不能被当成 0 ==================== */
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

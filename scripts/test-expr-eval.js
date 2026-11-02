@@ -9,6 +9,8 @@
  *   2) 任何「试图执行代码」的输入都必须报错，而不是被执行
  */
 const assert = require('assert');
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
 const ev = require('../lib/expr-eval');
 
 let pass = 0, fail = 0;
@@ -127,6 +129,24 @@ t('实现源码里没有 eval / Function 构造', () => {
   assert.ok(!/\beval\s*\(/.test(code), '实现里仍有 eval(');
   assert.ok(!/new\s+Function/.test(code), '实现里仍有 new Function');
 });
+
+t('27 expr-eval：% 取余不能被当成百分比（10 % -3 应为 1）', () => {
+  const EEx = require(path.join(ROOT, 'lib', 'expr-eval'));
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  const cases = [
+    ['10 % -3', 1], ['7 % +2', 1], ['10 % - 3', 1],
+    ['10%3', 1], ['5%2', 1], ['8%3*2', 4],
+    ['50%', 0.5], ['100-10%', 99.9], ['50%+10%', 0.6], ['50%-10%', 0.4],
+  ];
+  for (const [e, want] of cases) {
+    const got = EEx.evaluate(e);
+    assert.ok(near(got, want),
+      'evaluate(' + JSON.stringify(e) + ') 应为 ' + want + '，实际 ' + got +
+      '（早期实现把 `% -3` 当百分比，算出 -2.9）');
+  }
+});
+
+/* ==================== 28. acl-repair：写权限 ≠ 完全控制 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

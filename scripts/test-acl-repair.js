@@ -1,5 +1,9 @@
 'use strict';
+const path = require('path');
+const fs = require('fs');
+const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+const ROOT = path.join(__dirname, '..');
 /* 主进程全部源码：迁移来的 ownerIsMe 用例要对比渲染层与主进程两个判定。 */
 const mainSrc = readMain({ raw: true });
 /* 读项目内文件（原 test-round10-fixes.js 的 local 助手）。 */
@@ -12,9 +16,6 @@ const stripComments = require('../lib/src-scan').stripComments;
  * 重点：判定要准（区分占用/权限/系统目录）、分寸要守住（只处理用户选中的目标）、
  * 命令构造顺序要对（takeown 必须先于 icacls）。
  */
-const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 const A = require('../lib/acl-repair');
 
 /* 以下几条用的都是**真实 icacls 输出格式**（本机实测抓的）：
@@ -479,6 +480,85 @@ t('额外项2：ownerIsMe 与 mine 共用同一个判定（principalEq）', () =
     'ownerIsMe 应调用 lib 的 principalEq');
   const A = require('../lib/acl-repair');
   assert.strictEqual(typeof A.principalEq, 'function', 'principalEq 应已导出');
+});
+
+t('19 isRunningAsAdmin：查询失败不能永久缓存成 false', () => {
+  /* 【任务 5 之后这个函数在 ipc/dir-acl-links.js】这里显式读那个文件，
+   * 而不是复用 mainSrc —— mainSrc 固定是 main.js（见文件头的说明），
+   * 拿它切片会报「找不到 isRunningAsAdmin」。 */
+  const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'dir-acl-links.js'), 'utf8');
+  const i = movedSrc.indexOf('async function isRunningAsAdmin');
+  /* 【右边界用「下一个函数定义」而不是某段注释】
+   * 原来取的是 `/* 读当前所有者与 ACL 摘要` 那段说明注释 —— 搬文件时
+   * 那段长注释没有被一起带过去（它写在 main.js 里的位置被一并删掉了），
+   * 于是 indexOf 返回 -1、断言报「找不到 isRunningAsAdmin」。
+   * 改成配平花括号取整个函数体：与注释排布无关。 */
+  assert.ok(i > 0, '找不到 isRunningAsAdmin（应在 ipc/dir-acl-links.js 里）');
+  let body = '';
+  {
+    const open = movedSrc.indexOf('{', i);
+    let depth = 0, k = open;
+    for (; k < movedSrc.length; k++) {
+      if (movedSrc[k] === '{') depth++;
+      else if (movedSrc[k] === '}') { depth--; if (depth === 0) { k++; break; } }
+    }
+    assert.ok(depth === 0, 'isRunningAsAdmin 括号不配平');
+    body = movedSrc.slice(i, k);
+  }
+  assert.ok(!/catch \(err\) \{ _isAdminCache = false; \}/.test(body),
+    'catch 里写死 false 并永久缓存 —— 一次瞬时失败会让这个进程余生都自认不是管理员');
+  assert.ok(/return null/.test(body), '查询失败应返回 null（未知），由调用方区分处理');
+  /* 只有确定拿到 0/1 才缓存 */
+  assert.ok(/if \(v === '1' \|\| v === '0'\)/.test(body), '应只在拿到明确 0/1 时缓存');
 });
+
+t('19b acl:repair：把「未知」和「确定不是管理员」分开提示', () => {
+  /* 【任务 5 之后这个 handler 在 ipc/dir-acl-links.js，常量别名是 CH】
+   * 所以必须显式读那个文件 —— mainSrc 是 main.js。
+   * 三种形态都认：字面量 / dirMoveCh.<键> / CH.<键>。
+   * （只写字面量的话 indexOf 拿到 -1，slice(-1, …) 会把几乎整段吃进来，
+   *  断言退化成"扫全文件"—— 恰好还能过，但切片失去意义。） */
+  const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'dir-acl-links.js'), 'utf8');
+  const lit = movedSrc.indexOf("handle('acl:repair'");
+  const from = lit >= 0 ? lit
+    : movedSrc.indexOf('handle(dirMoveCh.ACL_LINKS.ACL_REPAIR,');
+  assert.ok(from > 0, '找不到 acl:repair 的注册（应在 ipc/dir-acl-links.js 里）');
+  /* 这个 handler 的右边界不取「下一个 handler」—— 那对排版太敏感。
+   * 用定长窗口即可：断言只在这个 handler 里找 admin === false / null 两处，
+   * 而它本身约 3.5k 字符。 */
+  const seg = movedSrc.slice(from, from + 4000);
+  assert.ok(/admin === false/.test(seg), '应显式区分 admin === false');
+  assert.ok(/admin === null/.test(seg), '应显式处理 admin === null（查询失败）');
+});
+
+/* ==================== 20. update:apply 单飞 ==================== */
+
+t('28 acl-repair：(M)/(W) 算有写权限，不能报「缺少写入/删除权限」', () => {
+  const Ax = require(path.join(ROOT, 'lib', 'acl-repair'));
+  const B = String.fromCharCode(92);
+  const me = 'HOME' + B + 'u';
+  const parse = (perm) => Ax.parseIcacls('C:' + B + 'x' + B + 'a.txt ' + me + ':(' + perm + ')', me);
+  assert.strictEqual(parse('F').hasWrite, true, '(F) 应算有写权限');
+  assert.strictEqual(parse('M').hasWrite, true,
+    '(M) 修改权限能读能写能删，判成「没有写权限」会让用户白跑一趟提权流程');
+  assert.strictEqual(parse('W').hasWrite, true, '(W) 写权限至少能写');
+  assert.strictEqual(parse('RX').hasWrite, false, '只读不应算有写权限');
+  assert.strictEqual(parse('F').hasFull, true, 'hasFull 的语义（真正的完全控制）不能被放宽');
+  assert.strictEqual(parse('M').hasFull, false, '(M) 不是完全控制，hasFull 不应为 true');
+
+  /* 【关键：要验 diagnose 的最终结论，不能只验解析结果】
+   * 反向验证时发现过：只断言 hasWrite 的话，把 diagnose 里的判据改回 hasFull
+   * 测试仍然是绿的 —— 而用户看到的是界面上的那句「你缺少写入/删除权限」。 */
+  const dx = (perm) => Ax.diagnose({ exists: true, isDir: false, acl: parse(perm), ownerIsMe: true, isAdmin: false });
+  const m = dx('M');
+  assert.ok(!m.codes.includes('NO_WRITE'),
+    '有 (M) 权限时不该报 NO_WRITE（实际 codes=' + JSON.stringify(m.codes) + '）');
+  const w = dx('W');
+  assert.ok(!w.codes.includes('NO_WRITE'), '有 (W) 权限时不该报 NO_WRITE');
+  const rx = dx('RX');
+  assert.ok(rx.codes.includes('NO_WRITE'), '只有 (RX) 时应报 NO_WRITE（否则真问题被掩盖）');
+});
+
+/* ==================== 29. mojibake：不能把正常文本改坏 ==================== */
 
 done();
