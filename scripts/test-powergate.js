@@ -169,5 +169,28 @@ t('真正的电源命令仍然拦得住', () => {
 
 /* ============ ④b 托盘/通知跟随语言 ============ */
 
+t('纯文本命令的豁免不能作用在整条命令上（链式命令必须被拦）', () => {
+  const P = require('../lib/power-gate.js');
+  for (const cmd of ['echo hi & shutdown /s /t 0', 'type nul & shutdown /s', 'dir > x.txt && shutdown /s',
+    'cmd /c echo hi & shutdown /s', 'foo.exe\r\nshutdown /s']) {
+    assert.strictEqual(P.isPowerCommand(cmd), true, '穿透了：' + cmd);
+  }
+  /* 真·纯文本仍要放行，否则日常命令会被误拦 */
+  for (const cmd of ['echo shutdown', 'type shutdown.txt', 'dir shutdown.log', 'tasklist | findstr shutdown',
+    'echo a; echo b', 'echo shutdown & echo ok']) {
+    assert.strictEqual(P.isPowerCommand(cmd), false, '被误拦：' + cmd);
+  }
+});
+
+t('分段要认引号：参数里的 & 不该被当成命令分隔符（PG-4）', () => {
+  const P = require('../lib/power-gate.js');
+  assert.strictEqual(P.isPowerCommand('app.exe --msg "hello & shutdown now"'), false,
+    '引号内的 & 被当成了分隔符（普通参数被误判成电源操作）');
+  assert.strictEqual(P.isPowerCommand("app.exe --msg 'x; shutdown /s'"), false);
+  assert.strictEqual(P.isPowerCommand('echo hi & shutdown /s'), true, '引号外的真命令仍要拦');
+});
+
+/* ================= ⑤ 链接体检 ================= */
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

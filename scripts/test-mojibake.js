@@ -1,5 +1,9 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
+const stripComments = require('../lib/src-scan').stripComments;
+const mainSrc = readMain({ raw: true });
+/* 起子进程（外部编码器探测、降级验证）。原 test-round10 的用例也用它。 */
+const cp = require('child_process');
 /* 乱码修复核心逻辑测试。
  *
  * 重点验证「能真正接到东西」而不是只返回空壳：
@@ -496,5 +500,26 @@ t('繁体正常文本不该被当成乱码（样本加宽后不许误伤）', ()
       '繁体正常文本被判成负分：' + JSON.stringify(trad) + ' = ' + m.scoreText(trad).toFixed(1));
   }
 });
+
+t('锟斤拷这类字符串乱码现在能修（借 .NET 的 CP936 编码器）', () => {
+  const m = require('../lib/mojibake.js');
+  assert.ok(m.EXTERNAL_CHAINS.some(([f, to]) => f === 'gbk' && to === 'utf-8'), '缺少 GBK→UTF-8 这条链');
+  assert.strictEqual(m.PS_CODEPAGE.gbk, 936);
+  const code = stripComments(mainSrc);
+  assert.ok(/analyzeWithEncoder/.test(code), '主进程没有走带编码器的分析路径');
+  return (async () => {
+    const psRunner = (script, timeoutMs) => Promise.resolve({
+      stdout: cp.execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        { encoding: 'utf8', timeout: timeoutMs || 30000 }),
+    });
+    const orig = '中文测试内容';
+    const broken = new TextDecoder('gbk', { fatal: false }).decode(Buffer.from(orig, 'utf8'));
+    const r = await m.analyzeWithEncoder(broken, psRunner);
+    assert.strictEqual(r.best.text, orig, '没能还原：' + JSON.stringify(r.best.text));
+    assert.strictEqual(r.externalTried, true);
+  })();
+});
+
+/* 等异步用例结束 */
 
 done();

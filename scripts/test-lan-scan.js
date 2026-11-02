@@ -1,5 +1,12 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
+const fs = require('fs');
+const path = require('path');
+/* 读项目内文件（原 test-round10-fixes.js 的 local 助手）。 */
+function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
+
+const stripComments = require('../lib/src-scan').stripComments;
+const mainSrc = readMain({ raw: true });
 /* 局域网扫描纯逻辑测试：ARP 解析、网段计算、结果合并。
  * ARP 输出用的是本机实测的真实格式。 */
 const assert = require('assert');
@@ -218,5 +225,16 @@ t('isPrivateIp 拒绝非私有段（172.32 不属 172.16/12）', () => {
   assert.strictEqual(L.isPrivateIp('8.8.8.8'), false);
   assert.strictEqual(L.isPrivateIp('203.0.113.5'), false);
 });
+
+t('lan-scan 文案与实现一致：是 TCP 80 探测，不是 ping/ICMP', () => {
+  const ui = read('js/tools/lan-scan.js');
+  assert.ok(!/挡 ICMP|不回应 ICMP|仅 ping/.test(ui), '界面仍把探测说成 ping/ICMP');
+  assert.ok(/TCP 80 端口探测/.test(ui), '界面应说明是 TCP 80 探测');
+  const lib = read('lib/lan-scan.js');
+  assert.ok(!/Windows 防火墙默认会挡掉 ping/.test(lib), 'lib 的 caveats 仍说 ping');
+  assert.ok(/TCP 80 端口探测/.test(lib), 'lib 的 caveats 应说明 TCP 80');
+  /* 而实现确实是 TCP 80 */
+  assert.ok(/s\.connect\(80, ip\)/.test(stripComments(mainSrc)), '实现应仍是 TCP 80');
+});
 
 done();

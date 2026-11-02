@@ -1,5 +1,21 @@
 'use strict';
-const { t, done, readSrc } = require('./lib/harness');
+const { t, done, readSrc, readMain } = require('./lib/harness');
+/* 定位 dir:move-precheck 的注册位置：任务 6 之后通道名换成了常量，
+ * 所以两种形态都要认。 */
+function precheckAt(code) {
+  const a = code.indexOf("handle('dir:move-precheck'");
+  if (a >= 0) return a;
+  return code.indexOf('handle(dirMoveCh.DIR_MOVE.PRECHECK,');
+}
+/* 定位 dir:move 的注册位置（与 precheckAt 同一套双形态识别）。 */
+function moveAt(code) {
+  const a = code.indexOf("handle('dir:move'");
+  if (a >= 0) return a;
+  return code.indexOf('handle(dirMoveCh.DIR_MOVE.MOVE,');
+}
+
+const BS = String.fromCharCode(92);
+const mainSrc = readMain({ raw: true });
 /* 目录搬家的校验与状态机测试（纯逻辑，不碰真实磁盘）。
  * 搬家出错就是数据事故，所以这些规则必须逐条钉死。
  */
@@ -241,5 +257,52 @@ t('搬完之后作废预检、按钮保持禁用，改路径才恢复', () => {
     'invalidate 必须同时处理「已搬完」状态，否则改路径后那张卡永远不消失');
   assert.ok(/已搬完/.test(src), '应换成「已搬完」的说明卡');
 });
+
+t('目标落在系统目录时必须被拒（即使调用方没传 dstProtected）', () => {
+  const D = require('../lib/dir-move.js');
+  const OK = {
+    src: 'C:' + BS + 'Users' + BS + 'u' + BS + 'bigdir', dst: 'D:' + BS + 'backup' + BS + 'bigdir',
+    srcExists: true, srcIsDir: true, srcIsLink: false, srcIsRoot: false, srcIsCritical: false,
+    dstExists: false, needBytes: 1000, freeBytes: 10737418240, lockedPaths: [],
+  };
+  const win = process.env.SystemRoot || 'C:' + BS + 'Windows';
+  for (const dst of [win, win + BS + 'moved', (process.env.ProgramFiles || 'C:' + BS + 'Program Files') + BS + 'x']) {
+    const r = D.validateMove(Object.assign({}, OK, { dst }));
+    assert.strictEqual(r.code, 'DST_PROTECTED', dst + ' 应被拒，实际 ' + r.code + ' / ' + r.reason);
+  }
+  /* 正常目标不受影响 */
+  assert.strictEqual(D.validateMove(OK).ok, true, '正常目标不该被误拒');
+  /* 显式结论也要生效（main.js 的调用方式） */
+  assert.strictEqual(D.validateMove(Object.assign({}, OK, { dstProtected: true })).code, 'DST_PROTECTED');
+});
+
+t('main.js 的两处调用都传了 dstProtected（预检 + 执行）', () => {
+  const code = stripComments(mainSrc);
+  const hits = (code.match(/dstProtected:/g) || []).length;
+  assert.ok(hits >= 3, '预检与执行都应传 dstProtected（含返回值），实际 ' + hits + ' 处');
+  assert.ok(/isProtectedForModify\(dstAbs\)/.test(code), '目标侧应复用 isProtectedForModify');
+});
+
+/* ================= ③ principalEq ================= */
+
+t('预检只走一遍全树（体积 + 链接同一次遍历）', () => {
+  const code = stripComments(mainSrc);
+  const seg = code.slice(precheckAt(code), moveAt(code));
+  assert.ok(/collectLinks\(srcAbs, \{ wantSize: true \}\)/.test(seg), '预检没有用一次遍历同时取体积与链接');
+  assert.ok(!/links\.dirSize\(srcAbs\)/.test(seg), '预检里仍在走第二遍（dirSize）');
+  assert.ok(/linkCount: treeLinks\.length/.test(seg), 'linkCount 应直接复用遍历结果');
+  /* 结果要真的被界面用上（之前算了却没人显示） */
+  const ui = stripComments(read('js/tools/dir-move.js'));
+  assert.ok(/r\.linkCount/.test(ui), '预检结果里的 linkCount 没有显示给用户');
+});
+
+t('盘符根保护：任何存在的盘上的 Windows/Program Files 都拦，不存在的盘不误伤', () => {
+  const p = require('../lib/path-guard.js');
+  const win = process.env.SystemRoot || 'C:' + BS + 'Windows';
+  assert.strictEqual(p.isProtectedForModify(win).protected, true, 'Windows 目录应受保护');
+  assert.strictEqual(p.isProtectedForModify(win + BS + 'System32').protected, true);
+  assert.strictEqual(p.isProtectedForModify('Q:' + BS + 'Windows').protected, false,
+    '不存在的盘不该凭空产生保护项（会误伤同名的普通目录）');
+});
 
 done();

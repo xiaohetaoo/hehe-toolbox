@@ -238,5 +238,6 @@ if (R.fatal) {
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
+
 console.log('\n结果: ' + (fail === 0 ? '全部通过' : fail + ' 项失败'));
 process.exit(fail === 0 ? 0 : 1);

@@ -19,7 +19,7 @@ scripts/gen-source-assertions-baseline.js | A=1 | B=0 | meta-self
 scripts/pack-zip.js | A=1 | B=0 | build-meta
 scripts/test-acl-diagnose-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-acl-gate-e2e.js | A=2 | B=0 | e2e-fixture
-scripts/test-acl-repair.js | A=1 | B=0 | legacy-read
+scripts/test-acl-repair.js | A=2 | B=0 | legacy-read
 scripts/test-aux-csp.js | A=4 | B=8 | legacy-source-assertion
 scripts/test-aux-windows-csp.js | A=4 | B=0 | legacy-read
 scripts/test-channels-sync.js | A=2 | B=0 | legacy-read
@@ -38,14 +38,16 @@ scripts/test-file-unlock-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-harness.js | A=0 | B=2 | legacy-source-assertion
 scripts/test-hosts-fallback.js | A=2 | B=0 | e2e-fixture
 scripts/test-hosts-restore.js | A=4 | B=0 | e2e-fixture
-scripts/test-i18n-coverage.js | A=9 | B=1 | legacy-source-assertion
+scripts/test-i18n-coverage.js | A=10 | B=1 | legacy-source-assertion
 scripts/test-ipc-channels.js | A=4 | B=0 | legacy-read
 scripts/test-ipc-ctx.js | A=2 | B=2 | legacy-source-assertion
 scripts/test-ipc-split.js | A=3 | B=18 | legacy-source-assertion
 scripts/test-job-prefix-sync.js | A=4 | B=3 | legacy-source-assertion
 scripts/test-job-stream-isolation.js | A=2 | B=0 | legacy-read
 scripts/test-job-subscribe.js | A=2 | B=0 | legacy-read
-scripts/test-media-ffmpeg.js | A=0 | B=2 | exact:rec:start 覆盖语义与系统闸门的分离，只能看源码形态（真开录要 ffmpeg+桌面捕获），行为面由 test-destructive 的 rec:stop 覆盖
+scripts/test-lan-scan.js | A=1 | B=0 | exact:迁移来的 read() 助手用 fs.readFileSync 读 js/tools/lan-scan.js 源码（该文件整体形态是自建助手，改成 readSrc 会改变既有行为，属语义变更）
+scripts/test-links.js | A=1 | B=0 | exact:同上：迁移来的 read() 助手读 lib/links.js 与 js/tools/link-doctor.js 源码，与文件原有的助手风格一致
+scripts/test-media-ffmpeg.js | A=0 | B=1 | exact:rec:start 覆盖语义与系统闸门的分离，只能看源码形态（真开录要 ffmpeg+桌面捕获），行为面由 test-destructive 的 rec:stop 覆盖
 scripts/test-media-split.js | A=6 | B=8 | legacy-source-assertion
 scripts/test-mojibake.js | A=2 | B=0 | exact:第 1 处读 lib/mojibake 源码（legacy-read 同理）；第 2 处读 scripts/fixtures/mojibake-golden.json —— 那是测试夹具（预存的外部编码器结果），不是项目源码，也没有注释要剥
 scripts/test-packaged-assets.js | A=1 | B=0 | legacy-read
@@ -56,14 +58,13 @@ scripts/test-pwd-bias.js | A=1 | B=2 | legacy-source-assertion
 scripts/test-reentry-guard.js | A=7 | B=0 | legacy-read
 scripts/test-regressions.js | A=1 | B=48 | legacy-source-assertion
 scripts/test-report-fixes.js | A=1 | B=0 | legacy-read
-scripts/test-round10-fixes.js | A=1 | B=0 | legacy-read
 scripts/test-round11-fixes.js | A=2 | B=0 | legacy-read
 scripts/test-round13-fixes.js | A=11 | B=2 | legacy-source-assertion
 scripts/test-round14-fixes.js | A=1 | B=37 | legacy-source-assertion
 scripts/test-round15-fixes.js | A=1 | B=78 | legacy-source-assertion
 scripts/test-round2-fixes.js | A=3 | B=4 | legacy-source-assertion
 scripts/test-round9-fixes.js | A=2 | B=0 | legacy-read
-scripts/test-shell-unsub.js | A=0 | B=3 | exact:shellCleanup 的 splice 形态与 9 个事件的 sub 登记，行为面已由本文件前 3 条真实 bus 断言覆盖，这 3 条锁的是源码里确实这么写
+scripts/test-shell-unsub.js | A=0 | B=2 | exact:shellCleanup 的 splice 形态与 9 个事件的 sub 登记，行为面已由本文件前 3 条真实 bus 断言覆盖，这 3 条锁的是源码里确实这么写
 scripts/test-single-instance.js | A=2 | B=0 | legacy-read
 scripts/test-source-assertions.js | A=1 | B=0 | meta-self
 scripts/test-startup-timing.js | A=7 | B=29 | legacy-source-assertion

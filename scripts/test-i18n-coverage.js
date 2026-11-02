@@ -1,5 +1,6 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
+const mainSrc = readMain({ raw: true });
 /* 英文界面的设置页不能有中文残留（P1-2 的回归测试）。
  *
  * 做法：不启动 Electron，直接分析 js/app.js 的源文本——
@@ -13,6 +14,8 @@ const { t, done } = require('./lib/harness');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+/* 读项目内文件（原 test-round10 的 local 助手，迁移后并入这里）。 */
+function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
 
 const ROOT = path.join(__dirname, '..');
 const APP = path.join(ROOT, 'js', 'app.js');
@@ -365,5 +368,69 @@ t('regexAllowed：除号与正则要能分开', () => {
   assert.strictEqual(regexAllowed('a[0] '), false, '右方括号之后应当是除号');
   assert.strictEqual(regexAllowed('typeof x '), false, 'typeof 后跟标识符，再之后是除号');
 });
+
+t('DANGEROUS_CAPS 的名称/描述中英双语，且随语言切换', () => {
+  const a = mainSrc.indexOf('const CAP_TEXT = {');
+  const b = mainSrc.indexOf("handle('dangerous:list'");
+  assert.ok(a > 0 && b > a, '找不到 CAP_TEXT 区块');
+  const body = mainSrc.slice(a, b);
+  const mk = new Function('let uiLang = "zh"; ' + body +
+    ' return { caps: DANGEROUS_CAPS, ids: DANGEROUS_CAP_IDS, capText, setLang(l){ uiLang = l; } };');
+  const m = mk();
+  const IDS = ['file-delete', 'junk-clean', 'recycle-empty', 'process-kill', 'service-stop',
+    'system-power', 'hosts-edit', 'registry-edit', 'dir-move', 'acl-repair'];
+  assert.deepStrictEqual(m.ids, IDS, '能力清单的项或顺序变了（设置页顺序由它决定）');
+  assert.strictEqual(m.caps['acl-repair'].name, '取得所有权 / 修复权限', 'zh 名称不对');
+  m.setLang('en');
+  const zhLeft = [];
+  for (const id of IDS) {
+    const c = m.caps[id];
+    if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(c.name + c.desc)) zhLeft.push(id);
+  }
+  assert.deepStrictEqual(zhLeft, [], '英文界面下这些能力名/描述仍是中文：' + zhLeft.join(','));
+  assert.strictEqual(m.caps['file-delete'].name, 'Delete files');
+  m.setLang('zh');
+  assert.strictEqual(m.caps['file-delete'].name, '删除文件', '切回中文要能复原');
+});
+
+t('门禁拒绝文案也是双语的', () => {
+  const code = stripComments(mainSrc);
+  assert.ok(/const GATE_TEXT = \{/.test(code), '没有 GATE_TEXT');
+  assert.ok(/GATE_TEXT\[uiLang\]/.test(code), 'dangerousDenied 没有按语言取文案');
+  assert.ok(/dangerousDenied\('system-power'\)/.test(code), '电源门禁也应走双语文案');
+});
+
+/* ================= ⑩ P4 批次 ================= */
+
+t('用户可见文案里不再有 Markdown 星号', () => {
+  const FILES = ['js/tools/lan-scan.js', 'js/tools/mojibake-fix.js', 'js/tools/disk-health.js',
+    'js/tools/link-doctor.js', 'js/tools/dir-move.js', 'js/tools/acl-repair.js', 'lib/lan-scan.js'];
+  const offenders = [];
+  for (const rel of FILES) {
+    /* 只看字符串字面量里的 **：注释里的 ** 是排版习惯，用户看不到 */
+    const src = read(rel);
+    const re = /'([^'\\]|\\.)*'/g;
+    let m;
+    while ((m = re.exec(src))) {
+      if (m[0].includes('**')) offenders.push(rel + ': ' + m[0].slice(0, 60));
+    }
+  }
+  assert.deepStrictEqual(offenders, [], '这些文案会被原样显示星号：\n  ' + offenders.join('\n  '));
+});
+
+t('danger.text 的 {name} 真的被传进去了', () => {
+  const app = read('js/app.js');
+  assert.ok(/T\('danger\.text', \{ name: T\('danger\.category'\) \}\)/.test(app),
+    'danger.text 仍未插值（界面上会显示「{name}」）');
+  /* i18n.js 是浏览器脚本（引用 window），这里按源码检查两套字典都有键 */
+  const i18n = read('js/i18n.js');
+  const cats = i18n.match(/'danger\.category':/g) || [];
+  assert.strictEqual(cats.length, 2, 'danger.category 必须在 zh / en 两套字典里都有，实际 ' + cats.length + ' 处');
+  const texts = i18n.match(/'danger\.text':[^\n]*/g) || [];
+  assert.strictEqual(texts.length, 2, 'danger.text 应有两条（zh/en）');
+  for (const line of texts) {
+    assert.ok(/\{name\}/.test(line), 'danger.text 应保留 {name} 占位符：' + line);
+  }
+});
 
 done();
