@@ -1,5 +1,8 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readMain } = require('./lib/harness');
+const BS = String.fromCharCode(92);
+const stripComments = require('../lib/src-scan').stripComments;
+const mainSrc = readMain({ raw: true });
 /* 破坏性操作安全网测试（lib/path-guard.js）。
  *
  * 这些断言守护的是「用户数据被毁掉」的场景，比功能 bug 更严重。
@@ -159,5 +162,54 @@ t('normalizeForCompare 归一化正确', () => {
   assert.strictEqual(guard.normalizeForCompare('C:\\Windows\\'), 'c:\\windows');
   assert.strictEqual(guard.normalizeForCompare('C:\\A.\\B.'), 'c:\\a\\b');
 });
+
+t('问题4：自己家目录下的 Documents/Desktop/Downloads 允许改权限与搬家', () => {
+  const pg = require('../lib/path-guard');
+  const home = os.homedir();
+  for (const sub of ['Documents', 'Desktop', 'Downloads']) {
+    const p = path.join(home, sub);
+    const r = pg.isProtectedForModify(p);
+    assert.strictEqual(r.protected, false, sub + ' 不该被拦（用户就是要在自己目录里操作）');
+  }
+});
+
+t('问题4：系统目录/盘符根/别人的家目录仍然要拦', () => {
+  const pg = require('../lib/path-guard');
+  const home = os.homedir();
+  const usersRoot = path.dirname(home);
+  const checks = [
+    ['C:' + BS + 'Windows', 'SYSTEM'],
+    ['C:' + BS + 'Windows' + BS + 'System32', 'SYSTEM'],
+    ['C:' + BS + 'Program Files', 'SYSTEM'],
+    [usersRoot, null],                        // C:\Users 本身
+    [home, 'OWN_HOME'],                       // 自己家目录本身
+    ['C:' + BS, 'VOLUME_ROOT'],
+  ];
+  for (const [p, kind] of checks) {
+    const r = pg.isProtectedForModify(p);
+    assert.strictEqual(r.protected, true, p + ' 应被拦');
+    if (kind) assert.strictEqual(r.kind, kind, p + ' 的 kind 应为 ' + kind + '，实际 ' + r.kind);
+  }
+});
+
+t('问题4：acl:repair 与 dir:move 都改用 isProtectedForModify', () => {
+  const code = stripComments(mainSrc);
+  assert.ok(!/pathGuard\.isCriticalPath\(target\)/.test(code),
+    'acl:repair 仍在用 isCriticalPath（会把家目录下的 Documents 拦掉）');
+  assert.ok(!/srcIsCritical:\s*pathGuard\.isCriticalPath\(/.test(code),
+    'dir:move 仍在用 isCriticalPath');
+  const n = (code.match(/isProtectedForModify/g) || []).length;
+  assert.ok(n >= 3, 'isProtectedForModify 应出现至少 3 处（acl + 预检 + 执行），实际 ' + n);
+});
+
+t('问题4：提示语区分系统目录与家目录，不用同一句吓人的话', () => {
+  const code = mainSrc;
+  assert.ok(/kind === 'SYSTEM'/.test(code), '应针对 SYSTEM 单独给提示');
+  assert.ok(/kind === 'OWN_HOME'/.test(code), '应针对 OWN_HOME 单独给提示');
+  assert.ok(/请直接选中那个文件或它所在的子文件夹/.test(code),
+    '家目录的提示应给出可操作建议，而不是「会导致系统更新失败」');
+});
+
+/* ================= 问题 5：含 junction 的目录能复制 ================= */
 
 done();

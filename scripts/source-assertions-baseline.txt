@@ -29,7 +29,7 @@ scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
 scripts/test-danger-inline-enable.js | A=2 | B=0 | e2e-fixture
 scripts/test-destructive.js | A=1 | B=45 | legacy-source-assertion
 scripts/test-dir-move-e2e.js | A=4 | B=0 | e2e-fixture
-scripts/test-dir-move-impl.js | A=2 | B=9 | exact:这 9 条锁的是内部链接改写 / 悬空链接 stat 判据 / PS_PATH_BATCH 分块 / innerLinkCount 同源，都只能看源码形态（真搬家要完整目录树与真实链接）；2 处 readFileSync 是 read() 助手与 8.3 短名测试读 %TEMP% 夹具
+scripts/test-dir-move-impl.js | A=3 | B=24 | exact:这 9 条锁的是内部链接改写 / 悬空链接 stat 判据 / PS_PATH_BATCH 分块 / innerLinkCount 同源，都只能看源码形态（真搬家要完整目录树与真实链接）；2 处 readFileSync 是 read() 助手与 8.3 短名测试读 %TEMP% 夹具
 scripts/test-disk-health-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-dz-el.js | A=2 | B=13 | legacy-source-assertion
 scripts/test-expr-eval.js | A=1 | B=2 | legacy-source-assertion
@@ -51,7 +51,7 @@ scripts/test-links.js | A=2 | B=3 | exact:同上：迁移来的 read() 助手读
 scripts/test-media-ffmpeg.js | A=0 | B=1 | exact:rec:start 覆盖语义与系统闸门的分离，只能看源码形态（真开录要 ffmpeg+桌面捕获），行为面由 test-destructive 的 rec:stop 覆盖
 scripts/test-media-split.js | A=6 | B=8 | legacy-source-assertion
 scripts/test-mojibake.js | A=2 | B=0 | exact:第 1 处读 lib/mojibake 源码（legacy-read 同理）；第 2 处读 scripts/fixtures/mojibake-golden.json —— 那是测试夹具（预存的外部编码器结果），不是项目源码，也没有注释要剥
-scripts/test-packaged-assets.js | A=1 | B=0 | legacy-read
+scripts/test-packaged-assets.js | A=2 | B=4 | legacy-read
 scripts/test-packaged-isdev.js | A=2 | B=0 | e2e-fixture
 scripts/test-picker-func.js | A=1 | B=0 | e2e-fixture
 scripts/test-powergate.js | A=2 | B=3 | legacy-source-assertion
@@ -63,7 +63,6 @@ scripts/test-round13-fixes.js | A=11 | B=2 | legacy-source-assertion
 scripts/test-round14-fixes.js | A=1 | B=37 | legacy-source-assertion
 scripts/test-round15-fixes.js | A=1 | B=78 | legacy-source-assertion
 scripts/test-round2-fixes.js | A=3 | B=4 | legacy-source-assertion
-scripts/test-round9-fixes.js | A=2 | B=0 | legacy-read
 scripts/test-shell-unsub.js | A=0 | B=2 | exact:shellCleanup 的 splice 形态与 9 个事件的 sub 登记，行为面已由本文件前 3 条真实 bus 断言覆盖，这 3 条锁的是源码里确实这么写
 scripts/test-single-instance.js | A=2 | B=0 | legacy-read
 scripts/test-source-assertions.js | A=1 | B=0 | meta-self

@@ -1,5 +1,7 @@
 'use strict';
 const { t, done, readMain } = require('./lib/harness');
+/* 主进程全部源码：迁移来的 ownerIsMe 用例要对比渲染层与主进程两个判定。 */
+const mainSrc = readMain({ raw: true });
 /* 读项目内文件（原 test-round10-fixes.js 的 local 助手）。 */
 function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
 
@@ -384,6 +386,99 @@ t('部分锁提示卡复述「本工具的哪一项」而不是一句删除文�
     '标题仍是「删除功能默认关闭」，与链接清理/权限修复对不上');
 });
 
-/* ================= ⑧ danger.text 占位符 ================= */
+/* ================= ⑧ danger.text 占位符 ================= */
+
+t('问题2：DOMAIN\\admin + BUILTIN\\Administrators(F) 时 hasFull 必须为 false', () => {
+  const A = require('../lib/acl-repair');
+  const out = [
+    'C:' + BS + 'x' + BS + 'a.txt BUILTIN' + BS + 'Administrators:(I)(F)',
+    '            BUILTIN' + BS + 'Users:(I)(RX)',
+  ].join('\n');
+  const r = A.parseIcacls(out, 'DOMAIN' + BS + 'admin');
+  assert.strictEqual(r.hasFull, false,
+    'hasFull 必须为 false —— admin 不能蹭上 Administrators 的完全控制');
+  assert.strictEqual(r.anyFull, true, 'anyFull 仍应为 true（Administrators 确实有 F）');
+});
+
+t('问题2：DOMAIN\\sys 与 DOMAIN\\user 同样不得蹭上系统/用户组', () => {
+  const A = require('../lib/acl-repair');
+  const out = [
+    'C:' + BS + 'x' + BS + 'a.txt NT AUTHORITY' + BS + 'SYSTEM:(I)(F)',
+    '            BUILTIN' + BS + 'Users:(I)(F)',
+  ].join('\n');
+  for (const u of ['DOMAIN' + BS + 'sys', 'DOMAIN' + BS + 'user']) {
+    const r = A.parseIcacls(out, u);
+    assert.strictEqual(r.hasFull, false, u + ' 不该被判成有完全控制');
+  }
+});
+
+t('问题2：真正属于自己的 ACE 仍要认出来（别矫枉过正）', () => {
+  const A = require('../lib/acl-repair');
+  const me = 'DOMAIN' + BS + 'me';
+  const out = 'C:' + BS + 'x' + BS + 'a.txt ' + me + ':(I)(F)';
+  const r = A.parseIcacls(out, me);
+  assert.strictEqual(r.hasFull, true, '自己的 (F) 必须被认出来');
+  /* 只写用户名（无域）也应匹配 */
+  const r2 = A.parseIcacls(out, 'me');
+  assert.strictEqual(r2.hasFull, true, '去掉域前缀后也应匹配');
+});
+
+t('问题2：deniedForMe 也不再用子串匹配', () => {
+  const A = require('../lib/acl-repair');
+  const out = 'C:' + BS + 'x' + BS + 'a.txt BUILTIN' + BS + 'Administrators:(DENY)(F)';
+  const r = A.parseIcacls(out, 'DOMAIN' + BS + 'admin');
+  assert.strictEqual(r.deniedForMe, false, 'admin 不该蹭上 Administrators 的 DENY 项');
+  const r2 = A.parseIcacls(out, 'BUILTIN' + BS + 'Administrators');
+  assert.strictEqual(r2.deniedForMe, true, '真的是 Administrators 时 DENY 应命中');
+});
+
+/* ================= 问题 3：含空格的域组主体不被截断 ================= */
+
+t('问题3：DOMAIN\\Power Users 解析成完整主体，不截成 Users', () => {
+  const A = require('../lib/acl-repair');
+  const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt DOMAIN' + BS + 'Power Users:(I)(M)');
+  assert.strictEqual(r.entries[0].principal, 'DOMAIN' + BS + 'Power Users',
+    '实际 ' + JSON.stringify(r.entries[0].principal));
+});
+
+t('问题3：NT AUTHORITY\\SYSTEM 保持不变（不被截成 AUTHORITY\\SYSTEM）', () => {
+  const A = require('../lib/acl-repair');
+  const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt NT AUTHORITY' + BS + 'SYSTEM:(I)(F)');
+  assert.strictEqual(r.entries[0].principal, 'NT AUTHORITY' + BS + 'SYSTEM',
+    '实际 ' + JSON.stringify(r.entries[0].principal));
+});
+
+t('问题3：Remote Desktop Users / Domain Admins / CREATOR OWNER 都完整', () => {
+  const A = require('../lib/acl-repair');
+  const samples = [
+    ['DOMAIN' + BS + 'Remote Desktop Users', 'DOMAIN' + BS + 'Remote Desktop Users'],
+    ['MyCompany' + BS + 'Domain Admins', 'MyCompany' + BS + 'Domain Admins'],
+    ['CREATOR OWNER', 'CREATOR OWNER'],
+    ['BUILTIN' + BS + 'Users', 'BUILTIN' + BS + 'Users'],
+  ];
+  for (const [raw, want] of samples) {
+    const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt ' + raw + ':(I)(F)');
+    assert.strictEqual(r.entries[0].principal, want, raw + ' -> ' + JSON.stringify(r.entries[0].principal));
+  }
+});
+
+t('问题3：路径里含空格时仍能把路径剥掉', () => {
+  const A = require('../lib/acl-repair');
+  const r = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt BUILTIN' + BS + 'Users:(I)(F)');
+  assert.strictEqual(r.entries[0].principal, 'BUILTIN' + BS + 'Users',
+    '实际 ' + JSON.stringify(r.entries[0].principal));
+});
+
+/* ================= 问题 4：家目录下的 Documents 不该被拦 ================= */
+
+t('额外项2：ownerIsMe 与 mine 共用同一个判定（principalEq）', () => {
+  const main = stripComments(mainSrc);
+  assert.ok(!/a\.endsWith\(''\\\\'' \+ b\.split/.test(main),
+    'ownerIsMe 仍在自己写后缀匹配');
+  assert.ok(/aclRepair\.principalEq\(/.test(main),
+    'ownerIsMe 应调用 lib 的 principalEq');
+  const A = require('../lib/acl-repair');
+  assert.strictEqual(typeof A.principalEq, 'function', 'principalEq 应已导出');
+});
 
 done();

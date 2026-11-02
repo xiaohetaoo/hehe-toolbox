@@ -885,6 +885,14 @@ t('附带：link:scan 的类型查询失败不再全静默，且类型真的显�
   const ui = read('js/tools/link-doctor.js');
   assert.ok(/r\.typeQueryError/.test(ui), '界面没用 typeQueryError');
   assert.ok(/key: 'linkType'/.test(ui), '一直在算 linkType 却没显示过（那条提示会变成空话）');
+});
+
+t('额外项1：link:scan 不再递归重扫全树取 LinkType', () => {
+  const code = stripComments(mainSrc);
+  assert.ok(!/Get-ChildItem -LiteralPath \$\{q\(root\)\} -Recurse/.test(code),
+    '仍在用 Get-ChildItem -Recurse 重扫全树（collectLinks 已经遍历过一次）');
+  assert.ok(/Get-Item -LiteralPath @\(/.test(code),
+    '应改成对已收集的链接做批量 Get-Item');
 });
 
 done();

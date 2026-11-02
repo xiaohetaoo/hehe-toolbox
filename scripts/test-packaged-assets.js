@@ -15,6 +15,14 @@
  * 用法：node scripts/test-packaged-assets.js [zipGuid 或 构建目录]
  */
 const fs = require('fs');
+const stripComments = require('../lib/src-scan').stripComments;
+/* 【为什么引 harness】迁移来的用例要 readMain({raw:true}) —— 主进程源码
+ * 拼 main.js + ipc/，语义是"主进程里有这个实现"。本文件其余部分用自建
+ * 计数器，不参与 harness 的套件，这里只借它的读取工具。 */
+const { readMain } = require('./lib/harness');
+/* 读项目内文件（迁移来的配平断言要读 test-packaged-isdev.js 的源码）。 */
+function read(rel) { return fs.readFileSync(require('path').join(__dirname, '..', rel), 'utf8'); }
+const mainSrc = readMain({ raw: true });
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -147,5 +155,36 @@ chk(maps.length === 0, '没有 .map 文件进包' + (maps.length ? '（仍有 ' 
 /* 清理临时解包目录 */
 if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {} }
 
+ /* ============ splash 的打包标记（原 test-round9 问题6） ============
+  * 锁的是：splash 窗口的 webPreferences 漏掉 additionalArguments 注入，
+  * 于是 preload 里的 isDev 判定把打包版当开发态 —— 表现是启动窗
+  * 走了开发分支（例如显示调试信息、或加载非打包资源）。
+  * 为什么只能断言形态：要观察 isDev 的真实取值得启动打包后的应用。
+  * 下面第二条是它的"配平"版本：不数总数，而是要求
+  * 「带 preload 的窗口数 == 带注入的窗口数」，这样新增窗口漏注入就会红。 */
+const codeMain = stripComments(mainSrc);
+const spIdx = codeMain.indexOf('function createSplash()');
+chk(spIdx > 0, '能找到 createSplash()');
+if (spIdx > 0) {
+  const seg = codeMain.slice(spIdx, spIdx + 2200);
+  chk(/--hehe-packaged=/.test(seg),
+    'splash 的 webPreferences 注入了打包标记');
+}
+
+/* 配平断言：测试脚本自己对「带 preload 的窗口」与「带注入的窗口」做等量比对，
+ * 而不是只检查注入点 >= 4（后者对"新增一个窗口但忘了注入"完全无感）。 */
+const isdevSrc = read('scripts/test-packaged-isdev.js');
+const isdevCode = stripComments(isdevSrc);
+chk(!/if \(n < 4\)/.test(isdevCode), '不再用「注入点 >= 4」的弱断言');
+chk(
+  /withPreload\.length !== withInject\.length/.test(isdevCode)
+  || /withInject\.length !== withPreload\.length/.test(isdevCode),
+  '测试脚本用配平断言（带 preload 的窗口数 == 带注入的窗口数）');
+
+/* ============ 收尾：失败必须以非零退出 ============
+ * 【这里原来什么都没有】chk() 只累加 fail，但从不读它 —— 于是任何一条
+ * 断言失败都只打印一行 FAIL，进程仍然 exit 0。CI 的判定依赖退出码，
+ * 所以这个文件实际上是「永远绿」的：打包缺资源也能过。
+ * 这不是本轮引入的（迁移前就这样），是迁移时把用例挪过来才发现的。 */
 console.log('\n结果: ' + (fail === 0 ? '全部通过' : fail + ' 项失败'));
 process.exit(fail === 0 ? 0 : 1);

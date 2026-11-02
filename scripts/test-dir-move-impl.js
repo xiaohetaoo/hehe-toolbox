@@ -100,6 +100,13 @@ function shortPath(p) {
  * 于是搬家时那条链接不会被改写 —— 源目录删掉之后目标侧变成死链，
  * 用户看到的是「文件都在，但有个目录打不开」。 */
 
+/* 递归删临时目录（round9 的清理助手）。
+ * 用 maxRetries 是因为 Windows 上刚关的句柄可能还占着几百毫秒，
+ * 一次性 rmSync 会 EPERM —— 那不是失败，只是还没放开。 */
+function rmDir(p) {
+  try { fs.rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (e) {}
+}
+
 t('normalizeForComparePath 把 8.3 短名解析成长名', () => {
   const mod = makeMoveSandbox();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-a-'));
@@ -506,5 +513,154 @@ t('悬空链接不算查询失败（它本来就正常）', async () => {
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+t('问题1：两处占用检查都用 collectLockProbe（只注册普通文件）', () => {
+  const code = stripComments(mainSrc);
+  const n = (code.match(/collectLockProbe\(/g) || []).length;
+  /* 定义 1 次 + 两处调用 */
+  assert.ok(n >= 3, 'collectLockProbe 出现 ' + n + ' 次，应有定义 + 两处调用');
+  assert.ok(!/names\.map\(\(n\)\s*=>\s*path\.join\(srcAbs,\s*n\)\)/.test(code),
+    '还在把 readdir 的全部条目名拼成 probe（目录/链接会留下，整批 ERR 5）');
+});
+
+t('问题1：collectLockProbe 只收 isFile()，且不跟随链接', () => {
+  const fn = mainSrc.match(/async function collectLockProbe\(dir\)[\s\S]*?\n\}/);
+  assert.ok(fn, '找不到 collectLockProbe');
+  const code = stripComments(fn[0]);
+  assert.ok(/withFileTypes: true/.test(code), '必须用 withFileTypes 拿 Dirent');
+  assert.ok(/if \(!ent\.isFile\(\)\) continue;/.test(code),
+    '必须只收普通文件 —— 目录/junction 会让整批查询 ERR 5');
+});
+
+t('问题1：占用查询失败不再被 .catch(() => null) 静默吞掉', () => {
+  const code = stripComments(mainSrc);
+  /* 只检查搬家相关的两段：不允许出现「rmQueryLockers(...).catch(() => null)」 */
+  assert.ok(!/rmQueryLockers\([^)]*\)\.catch\(\(\)\s*=>\s*null\)/.test(code),
+    '仍在用 .catch(() => null) 把查询失败吞成「没有占用」');
+  assert.ok(/lockCheckError/.test(code),
+    '应把查询失败带进 lockCheckError，让用户看到「查询失败」而不是「没有占用」');
+});
+
+t('问题1（行为）：含 junction 的目录，collectLockProbe 不会把链接注册进去', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lkp-'));
+  const src = path.join(root, 'src');
+  fs.mkdirSync(path.join(src, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(src, 'a.txt'), 'a');
+  fs.writeFileSync(path.join(src, 'sub', 'b.txt'), 'b');
+  const junction = path.join(src, 'jlink');
+  try {
+    cp.execFileSync('cmd.exe', ['/c', 'mklink', '/J', junction, path.join(src, 'sub')],
+      { windowsHide: true, stdio: 'ignore' });
+
+    /* 抽出真实现求值 */
+    const srcFn = mainSrc.match(/async function collectLockProbe\(dir\)[\s\S]*?\n\}/)[0];
+    const fsp = fs.promises;
+    const fn = new Function('fsp', 'path', srcFn + '\nreturn collectLockProbe;')(fsp, path);
+    const r = await fn(src);
+
+    assert.strictEqual(r.error, null, '不该报错：' + r.error);
+    assert.strictEqual(r.files.length, 1, '只应收 1 个普通文件，实际 ' + r.files.length);
+    assert.ok(r.files[0].endsWith('a.txt'), '收到的应是 a.txt，实际 ' + r.files[0]);
+    /* 关键：链接和子目录都不在里面 */
+    assert.ok(!r.files.some((f) => f.indexOf('jlink') !== -1), '链接不该被注册（会让整批 ERR 5）');
+    assert.ok(!r.files.some((f) => f.indexOf('sub') !== -1), '子目录不该被注册');
+  } finally { rmDir(root); }
+});
+
+/* ================= 问题 2：mine 精确匹配，不做子串 ================= */
+
+t('问题5：不再用 fsp.cp 直接复制整棵树（会被 junction 打成 EPERM）', () => {
+  const code = stripComments(mainSrc);
+  assert.ok(!/await fsp\.cp\(srcAbs, dstAbs/.test(code),
+    '仍在用 fsp.cp 整树复制 —— 遇到 junction 会 EPERM');
+  assert.ok(/copyTreeExcludingLinks/.test(code), '应有「排除链接后复制」的实现');
+  assert.ok(/restoreLinksIntoTarget/.test(code), '应有「在目标侧重建链接」的实现');
+  assert.ok(!/dereference:\s*true/.test(code),
+    '不能靠 dereference: true 绕过 —— 那会把链接目标内容整个复制进来');
+});
+
+t('问题5（行为）：源目录含 junction 时，复制 + 重建能完成', async () => {
+  const fsp = fs.promises;
+  function extract(name, isAsync) {
+    const pat = (isAsync ? 'async function ' : 'function ') + name + '(';
+    const start = mainSrc.indexOf(pat);
+    if (start < 0) throw new Error('not found: ' + name);
+    let i = mainSrc.indexOf('{', start);
+    let depth = 0;
+    for (; i < mainSrc.length; i++) {
+      if (mainSrc[i] === '{') depth++;
+      else if (mainSrc[i] === '}') { depth--; if (depth === 0) { i++; break; } }
+    }
+    return mainSrc.slice(start, i);
+  }
+  const pathExists = async (p) => { try { await fsp.access(p); return true; } catch (e) { return false; } };
+  /* 沙箱要跟上 main.js 的实现：restoreLinksIntoTarget 现在依赖
+   * linkTargetAbs / isInsideTree（内部链接改写），缺了会直接报未定义。 */
+  const mod = new Function('fsp', 'path', 'fs', 'pathExists',
+    extract('relKey', false) + '\n' + extract('buildLinkKeySet', false) + '\n'
+    + extract('linkNature', false) + '\n'
+    + extract('linkTargetAbs', false) + '\n'
+    + extract('normalizeForComparePath', false) + '\n'
+    + extract('isInsideTree', false) + '\n'
+    + extract('copyTreeExcludingLinks', true) + '\n' + extract('restoreLinksIntoTarget', true) + '\n'
+    + 'return { copyTreeExcludingLinks, restoreLinksIntoTarget, linkNature };')(fsp, path, fs, pathExists);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mvj2-'));
+  const src = path.join(root, 'src');
+  fs.mkdirSync(path.join(src, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(src, 'plain.txt'), 'plain');
+  fs.writeFileSync(path.join(src, 'sub', 'inner.txt'), 'inner');
+  const junction = path.join(src, 'jlink');
+  try {
+    cp.execFileSync('cmd.exe', ['/c', 'mklink', '/J', junction, path.join(src, 'sub')],
+      { windowsHide: true, stdio: 'ignore' });
+
+    const dst = path.join(root, 'dst');
+    /* 与 main.js 里 collectLinks 同语义的收集（不跟随链接） */
+    const links = [junction];
+    await mod.copyTreeExcludingLinks(src, dst, links);
+    assert.ok(fs.existsSync(path.join(dst, 'plain.txt')), '普通文件应被复制');
+    assert.ok(fs.existsSync(path.join(dst, 'sub', 'inner.txt')), '子目录文件应被复制');
+    assert.ok(!fs.existsSync(path.join(dst, 'jlink')), '复制阶段不该碰链接');
+
+    const rr = await mod.restoreLinksIntoTarget(src, dst, links);
+    assert.strictEqual(rr.created, 1, '链接应被重建，实际 created=' + rr.created +
+      ' failed=' + JSON.stringify(rr.failed));
+    assert.ok(fs.lstatSync(path.join(dst, 'jlink')).isSymbolicLink(), '目标侧应是真正的链接');
+    assert.strictEqual(fs.readFileSync(path.join(dst, 'jlink', 'inner.txt'), 'utf8'), 'inner',
+      '通过目标侧链接应能读到内容');
+  } finally { rmDir(root); }
+});
+
+t('问题5：重建失败不会被静默吞掉（应中止并回退）', () => {
+  const code = stripComments(mainSrc);
+  assert.ok(/linkRestore\.failed/.test(code), '应检查重建失败列表');
+  assert.ok(/重建链接失败/.test(code), '失败时应给出明确错误');
+});
+
+/* ================= 问题 6：splash 注入 + 配平断言 ================= */
+
+t('问题8：lockedPaths 不再假设 lockers 元素有 files 字段', () => {
+  const code = stripComments(mainSrc);
+  assert.ok(!/x\.files\s\?\s*x\.files\.join/.test(code),
+    '仍在用 x.files（rmQueryLockers 返回的 {pid,name,type} 根本没有这个字段）');
+});
+
+t('问题8：LOCKED 文案说「进程」不说「文件」，advice 指向占用解锁工具', () => {
+  const D = require('../lib/dir-move');
+  const r = D.validateMove(Object.assign({}, {
+    src: 'C:' + BS + 'a', dst: 'D:' + BS + 'a',
+    srcExists: true, srcIsDir: true, srcIsLink: false, srcIsRoot: false,
+    srcIsCritical: false, dstExists: false,
+    needBytes: 1000, freeBytes: 10 * 1024 * 1024 * 1024,
+    lockedPaths: ['123:foo.exe', '456:bar.exe'],
+  }));
+  assert.strictEqual(r.code, 'LOCKED');
+  assert.ok(/个进程/.test(r.reason), '应说「N 个进程」而不是「N 个文件」：' + r.reason);
+  assert.ok(!/个文件/.test(r.reason), '不该再说是文件数：' + r.reason);
+  assert.ok(/文件占用解锁/.test(r.advice), 'advice 应指向占用解锁工具：' + r.advice);
+});
+
+/* ================= 额外项 ================= */
 
 done();

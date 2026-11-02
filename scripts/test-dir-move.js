@@ -303,6 +303,26 @@ t('盘符根保护：任何存在的盘上的 Windows/Program Files 都拦，不
   assert.strictEqual(p.isProtectedForModify(win + BS + 'System32').protected, true);
   assert.strictEqual(p.isProtectedForModify('Q:' + BS + 'Windows').protected, false,
     '不存在的盘不该凭空产生保护项（会误伤同名的普通目录）');
+});
+
+t('问题7：checkbox 从 state.recursive 读初值，不硬设 false', () => {
+  const tool = read('js/tools/acl-repair.js');
+  const code = stripComments(tool);
+  assert.ok(/chk\.checked = !!state\.recursive;/.test(code),
+    'render() 里应读回 state.recursive —— 硬设 false 会让界面与状态脱节');
+  assert.ok(!/chk\.checked = false;/.test(code), '不该硬设 false');
 });
+
+t('问题7：换目标路径才复位递归（onChange 与「用这个路径」都要复位）', () => {
+  const tool = read('js/tools/acl-repair.js');
+  const code = stripComments(tool);
+  const onChangeSeg = code.slice(code.indexOf('onChange: (items)'), code.indexOf('onChange: (items)') + 400);
+  assert.ok(/state\.recursive = false/.test(onChangeSeg),
+    'onChange 里应复位 recursive（换路径沿用上次勾选是危险的默认值）');
+  const usePathSeg = code.slice(code.indexOf('usePathBtn'), code.indexOf('usePathBtn') + 500);
+  assert.ok(/state\.recursive = false/.test(usePathSeg), '「用这个路径」也应复位');
+});
+
+/* ================= 问题 8：lockedPaths 语义与文案 ================= */
 
 done();
