@@ -52,10 +52,20 @@ js/
 ipc/
   ctx.js           主进程闭包状态的显式上下文（窗口/任务表/任务序号/推送）
   dir-acl-links.js     目录搬家 + 权限/链接两个 IPC 域（任务 5 从 main.js 搬出）
+  media-ffmpeg.js      FFmpeg 环境与音视频转码 + 屏幕录制两个 IPC 域（任务 6 搬出）
 ```
 
 - 配置与数据保存在 `%APPDATA%/hehe-toolbox/hehe-data.json`（收藏、最近使用、剪贴板历史、便签、快捷项、命令收藏），全部本地存储。
 - 所有联网功能（公网 IP、翻译、测速）仅在用户主动点击时发起。
+- **踩过的平台坑都记在 [`docs/decisions/`](docs/decisions/)**：一议题一文件，
+  每条包含「现象 / 实测方法 / 结论 / 影响到的代码位置」。
+  源码里对应的注释末尾会写一行 `详见 docs/decisions/xxx.md`。
+  改那附近的代码之前先看一眼——那些结论都是实测出来的，不是推测。
+  目前收录：Restart Manager 拒收目录（整批 ERR 5）、RM 拿不到文件↔进程映射、
+  junction 不需要符号链接特权、PowerShell 换行即语句分隔符、
+  icacls 的 `/Date(...)/` 序列化、Windows rename 会覆盖、
+  剥注释必须识别正则、剥注释必须保留行号、全局 TextDecoder 污染、
+  零用例注册必须判失败。
 
 ## 开发与质量
 
