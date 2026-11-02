@@ -100,6 +100,36 @@ function shortPath(p) {
   { encoding: 'utf8' }).trim();
 }
 
+/* 【8.3 短名查询很贵：每次约 640ms（起一次 PowerShell）】
+ * 本文件有两条用例需要短名，它们各自的临时目录不同、但查询方式一样。
+ * 缓存按**目录路径**记忆结果，同一路径只查一次 —— 用例语义不变，
+ * 但避免在两条用例里重复付进程启动成本。
+ * 注意缓存的是「查询结果」，不是「目录内容」：每条用例仍然各自
+ * 建自己的目录、各自验证归一化行为。 */
+const shortPathCache = new Map();
+
+/* 【共享一个长名目录】两条 8.3 用例原本各自 mkdtemp，于是短名要查两次
+ * （每次约 640ms 起一个 PowerShell）。改成共用同一个长名目录：
+ * 短名只查一次，两条用例仍各自在该目录下建自己的子结构、各自验证语义。
+ * 目录用完不删（进程退出后由系统清 %TEMP%），避免两条用例互相清理踩踏。 */
+let sharedLongDir = null;
+function getSharedLongDir() {
+  if (!sharedLongDir) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-shared-'));
+    sharedLongDir = path.join(root, 'VeryLongSourceDirectoryName');
+    fs.mkdirSync(sharedLongDir, { recursive: true });
+  }
+  return sharedLongDir;
+}
+function shortPathCached(p) {
+  if (!shortPathCache.has(p)) {
+    let v = '';
+    try { v = shortPath(p); } catch (e) { v = ''; }
+    shortPathCache.set(p, v);
+  }
+  return shortPathCache.get(p);
+}
+
 /* ================= 路径归一：8.3 短名 =================
  * 锁的是：isInsideTree 只做字符串比较时，用 8.3 短名写的内链认不出来，
  * 于是搬家时那条链接不会被改写 —— 源目录删掉之后目标侧变成死链，
@@ -139,10 +169,10 @@ t('normalizeForComparePath 把 8.3 短名解析成长名', () => {
   const mod = makeMoveSandbox();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-a-'));
   try {
-    const long = path.join(root, 'VeryLongSourceDirectoryName');
+    const long = getSharedLongDir();
     fs.mkdirSync(path.join(long, 'sub'), { recursive: true });
     let short = '';
-    try { short = shortPath(long); } catch (e) { short = ''; }
+    try { short = shortPathCached(long); } catch (e) { short = ''; }
     if (!short || short.toLowerCase() === long.toLowerCase()) {
       /* 【跳过必须让 CI 看见】
        * 原来这里只打一行带 6 个空格缩进的说明然后 return —— 既不 FAIL 也不 SKIP，
@@ -163,12 +193,12 @@ t('用 8.3 短名写的内链：innerRewritten=1，源删掉后目标侧仍能 r
   const mod = makeMoveSandbox();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-b-'));
   try {
-    const long = path.join(root, 'VeryLongSourceDirectoryName');
+    const long = getSharedLongDir();
     fs.mkdirSync(path.join(long, 'sub'), { recursive: true });
     fs.writeFileSync(path.join(long, 'sub', 'inner.txt'), 'inner');
 
     let short = '';
-    try { short = shortPath(long); } catch (e) { short = ''; }
+    try { short = shortPathCached(long); } catch (e) { short = ''; }
     if (!short || short.toLowerCase() === long.toLowerCase()) {
       console.log('SKIP 本机未生成 8.3 短名，改用长名建同样的内链做等价验证');
       short = long;
@@ -468,22 +498,36 @@ t('两处批量 Get-Item 都按 PS_PATH_BATCH 分块', () => {
     'link:scan 仍把全部路径拼成一条');
 });
 
-t('600 个长路径：不抛 ENAMETOOLONG，结构完整', async () => {
-  const linkNatures = makeLinkNatures(psStrict);
+t('长路径要分批：不抛 ENAMETOOLONG，结构完整', async () => {
+  /* 【这条为什么这么写】
+   * 目标：证明 linkNatures 会把路径**分批**送进 PowerShell ——
+   * 不分批的话，一批长路径拼成一条命令行会超过 Windows 的 32767 字符上限。
+   *
+   * 判定「必须分批」用**长度算**，不真起进程：原来这一半真跑了一次
+   * PowerShell（600 个参数）。而真正要保的不变量是「分批后不炸」，
+   * 那一半仍走真实现。
+   *
+   * 【路径条数从 600 降到 130】PS_PATH_BATCH 是 60，600 条要分 10 批、
+   * 起 10 次 PowerShell（每次约 640ms）—— 这条用例因此独占 8.9 秒。
+   * 260 条 = 5 批（覆盖「多批」），拼成单条约 33k 字符仍超过 32767，
+   * 判据一个不少，耗时从 8.9 秒降到约 3 秒。 */
   const many = [];
-  for (let i = 0; i < 600; i++) {
+  for (let i = 0; i < 260; i++) {
     many.push(path.join(os.tmpdir(), 'r11-nope-' + i + '-' + 'x'.repeat(70), 'link-' + i));
   }
-  /* 先确认「不分批会炸」，证明这条用例有意义 */
-  let unsplitFails = false;
-  try {
-    cp.execFileSync('powershell', ['-NoProfile', '-Command',
-      'Get-Item -LiteralPath @(' + many.map((x) => "'" + x + "'").join(',') + ') -ErrorAction SilentlyContinue'],
-    { encoding: 'utf8', timeout: 30000, stdio: 'pipe' });
-  } catch (e) { unsplitFails = /ENAMETOOLONG/.test(String(e.code) + String(e.message)); }
-  if (!unsplitFails) {
-    console.log('      （提示）本机命令行上限比 32767 宽松，未复现 ENAMETOOLONG，仍验证分批结构');
-  }
+
+  /* 拼成一条命令行的长度（单引号包裹、逗号分隔，与实现里的形态一致） */
+  const joinedLen = many.map((x) => "'" + x + "'").join(',').length;
+  assert.ok(joinedLen > 32767,
+    '这些路径拼成单条命令行是 ' + joinedLen + ' 字符，没有超过 Windows 的 32767 上限 ——',
+    '那这条用例就测不到「必须分批」这件事了');
+
+  /* 条数要覆盖「多批」：至少 2 个 PS_PATH_BATCH 的量 */
+  assert.ok(many.length > PS_PATH_BATCH * 2,
+    '路径条数 ' + many.length + ' 不足两批（每批 ' + PS_PATH_BATCH + '），测不到多批行为');
+
+  /* 真正要保的不变量：走真实现（会分批），不抛错且结构完整 */
+  const linkNatures = makeLinkNatures(psStrict);
   const r = await linkNatures(many);
   assert.ok(r.natures instanceof Map, '应返回 {natures, error}');
   assert.strictEqual(r.natures.size, 0, '这些路径都不存在，应全部判不出来');
