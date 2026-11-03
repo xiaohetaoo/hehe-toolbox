@@ -52,11 +52,19 @@ chk(lib.includes("'-pass', '2'"), 'pass2 参数带 -pass 2');
 
 const main = read('main.js') || '';
 chk(!!main, 'main.js 可读');
-chk(main.includes('passlogFile'), '主进程使用 passlogfile');
-chk(main.includes('pass1Done'), '主进程有「分析只做一次」的复用开关');
-chk(main.includes('buildSinglePassArgs'), '分析失败能回退单遍');
+/* 【这三项现在都在 ipc/media-ffmpeg.js，不在 main.js】
+ * 任务 6 把 ffmpeg:* / target:* 域整体搬走了。原来查 main.js 的写法会让
+ * 这三条永远假红 —— 而一个「反正一直红」的产物校验等于没有校验。
+ * 改成读真正的位置；同时断言 main.js 里不再留副本（防止两处各一份）。 */
+const mediaSrc = read('ipc/media-ffmpeg.js') || read('ipc\\media-ffmpeg.js') || '';
+chk(!!mediaSrc, 'ipc/media-ffmpeg.js 可读（ffmpeg/target 域的实际位置）');
+chk(mediaSrc.includes('passlogFile'), '两遍法使用 passlogfile（ipc/media-ffmpeg.js）');
+chk(mediaSrc.includes('pass1Done'), '有「分析只做一次」的复用开关（ipc/media-ffmpeg.js）');
+chk(mediaSrc.includes('buildSinglePassArgs'), '分析失败能回退单遍（ipc/media-ffmpeg.js）');
+chk(!main.includes('passlogFile') && !main.includes('pass1Done'),
+  '两遍法已整体搬到 ipc/media-ffmpeg.js（main.js 里不应再有副本）');
 // 两遍路径不该再叠 maxrate（会与两遍法的码率控制打架）
-chk(!/buildPass2Args[\s\S]{0,600}-maxrate/.test(main), '两遍路径未叠加 maxrate');
+chk(!/buildPass2Args[\s\S]{0,600}-maxrate/.test(mediaSrc), '两遍路径未叠加 maxrate');
 
 /* ---- 渲染层文案如实反映两遍法 ---- */
 const tsui = read('js/tools/target-size.js') || '';
@@ -69,14 +77,23 @@ const srcPkg = require(path.join(__dirname, '..', 'package.json'));
 const nsisName = srcPkg.build && srcPkg.build.nsis && srcPkg.build.nsis.artifactName;
 chk(!!nsisName && /^[\x20-\x7E]+$/.test(nsisName), 'nsis.artifactName 为 ASCII：' + nsisName);
 
-/* ---- 不重复注册 ---- */
-const handles = main.match(/^handle\('/gm) || [];
-/* 下限不是业务常量，而是「防批量误删」的护栏：
- * 本轮按审计删掉 12 个确认无调用方的通道（161 → 149）。
- * 以后再加删通道时同步调整这个下限，别让它变成假绿/假红的来源。 */
-chk(handles.length >= 140, 'IPC 通道数正常（' + handles.length + '）');
-const names = (main.match(/^handle\('([^']+)'/gm) || []).map(s => s.replace(/^handle\('/, '').replace(/'$/, ''));
-chk(new Set(names).size === names.length, '没有重复注册的 IPC 通道（' + names.length + ' 个）');
+/* ---- 不重复注册 ----
+ * 【通道现在分两处注册】任务 5/6 把 dir-move、acl、ffmpeg、rec 等域搬到了
+ * ipc/*.js，所以只扫 main.js 会漏掉 17 个。而且那两个文件里用的是
+ * handle(dirMoveCh.X.Y) / handle(CH.X.Y) 这类常量键，字面量匹配也抓不到。
+ * 这里改成「两处都扫 + 允许常量键」，与 test-ipc-channels.js 的口径一致。
+ * 阈值也不再写死 140：真实总数由 main.js + ipc/*.js 现算，只防「掉了一半」。 */
+function collectHandles(src) {
+  const out = [];
+  for (const m of src.matchAll(/^[ \t]*handle\('([^']+)'/gm)) out.push(m[1]);
+  for (const m of src.matchAll(/^[ \t]*handle\((?:dirMoveCh|CH)\.[A-Z_]+\.[A-Z_]+\s*,/gm)) out.push(m[0].trim());
+  return out;
+}
+const handles = collectHandles(main).concat(collectHandles(mediaSrc));
+chk(handles.length >= 150, 'IPC 通道数正常（main ' + collectHandles(main).length + ' + ipc ' + collectHandles(mediaSrc).length + '）');
+/* 重复判定只看字面量那些（常量键每处文本都不同，比进来没意义） */
+const names = collectHandles(main).filter((n) => !/\bdirl?MoveCh|CH\./.test(n));
+chk(new Set(names).size === names.length, 'main.js 里没有重复注册的字面量通道（' + names.length + ' 个）');
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 cleanup();

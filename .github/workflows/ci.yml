@@ -141,6 +141,21 @@ jobs:
           fi
           echo "全部测试步骤通过（共 $I 步）"
 
+      # 【断言总数护栏：防止「悄悄变少」】
+      # 前面每一步都只看「通过的算通过、失败的算失败」——
+      # 但如果在某个测试文件里删掉 50 条用例，剩下的仍然全绿，CI 不会报警。
+      # 这个坑真踩过：test-store-health.js 被自动清理脚本从 81 行删到 25 行，
+      # 86 条断言变成十几条，而 npm test 依然 PASS。
+      # 这里把整套测试再数一遍，与 scripts/assertions-baseline.json 比对：
+      # 任何文件的 PASS 条数比基线少就 FAIL，并列出少了多少条。
+      # 有意删除必须显式重拍基线（那一步会出现在 diff 里，评审看得见）。
+      - name: Assertion count guard (no silent test deletion)
+        shell: bash
+        run: |
+          set -e
+          node scripts/check-assertion-count.js
+          echo "断言数守卫通过（没有文件比基线少）"
+
       # 冒烟测试：真的把 Electron 跑起来，确认 93 个工具页全部能渲染。
       # 这是唯一能抓住「IPC handler 重复注册导致应用启动即卡死」这类
       # node --check 与单元测试都看不见的故障的手段（第五轮真踩过）。

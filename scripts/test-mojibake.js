@@ -531,14 +531,14 @@ t('锟斤拷这类字符串乱码现在能修（借 .NET 的 CP936 编码器）'
  *
  * 这一组锁的是「修复链产出『主动变坏』的 best」——报告 P3 · MJ-3。
  *
- * 三条用例各自的实测证据都写在断言里，且**每一条都在 HEAD 上会红**
- * （下面的 HEAD 值是我用 `git show HEAD:lib/mojibake.js` 跑出来的真实值，
+ * 三条用例各自的实测证据都写在断言里，且**每一条在修复前（提交 96c3bdd）都会红**
+ * （下面的「修复前」值是用 `git show 96c3bdd:lib/mojibake.js` 跑出来的真实值，
  * 不是推断）。所以它们不是「照着现在的实现描一遍」，而是真的回归锁。
  */
 
 t('输入含 U+FFFD 时不许再走字符串再编码链（与 can-reencode 同一条判据）', async () => {
   /* 【故障现场】'你好，世界' 的乱码形态（UTF-8 被按 GBK 读、尾部残一个字节，
-   * 于是串里含 U+FFFD）。实测 HEAD 上的结果：
+   * 于是串里含 U+FFFD）。实测修复前的结果：
    *   原样被 FFFD 重罚到 -79.5；
    *   utf-8→gb18030 链（把乱码串按 UTF-8 编回字节、再按 GB18030 解）产出
    *   '娴ｇ姴銈介敍灞肩瑯閻ｏ拷' —— 12 字纯 CJK 垃圾，零 FFFD / 零 PUA / 零问号，
@@ -560,7 +560,7 @@ t('输入含 U+FFFD 时不许再走字符串再编码链（与 can-reencode 同�
   const r = await m.analyzeWithEncoder(input, psRunner);
   assert.strictEqual(r.best.text, input,
     '含 U+FFFD 的输入被「修」成了第三种文本：' + JSON.stringify(r.best.text) +
-    '（HEAD 上这里是 UTF-8→GB18030 产出的 12 字垃圾，35 分）');
+    '（修复前这里是 UTF-8→GB18030 产出的 12 字垃圾，35 分）');
   /* 候选表里也不许出现「编造出来的」候选：只剩原样一条。 */
   assert.strictEqual(r.candidates.length, 1,
     '仍然生成了再编码候选（这些候选的字节是 .NET 把 FFFD 编成问号得到的，全是捏造）：' +
@@ -586,7 +586,7 @@ t('输入含 U+FFFD 时，latin1 字节视角也不许反推（Buffer 会把 FFF
 
 t('UTF→legacy 方向的链一律不收（这种误读必然产生 U+FFFD，无 FFFD 时只可能是重新解释）', () => {
   /* 【故障现场】'请检查网络连接' 的乱码形态尾部残一字节（不含 FFFD）。
-   * HEAD 上 utf-8→gb18030 链产出 '鐠囬攱顥呴弻銉х秹缂佹粏绻涢幒'，-4.0 分，
+   * 修复前 utf-8→gb18030 链产出 '鐠囬攱顥呴弻銉х秹缂佹粏绻涢幒'，-4.0 分，
    * 险胜原样的 -4.3 分 —— 用户点「修复」，拿到的是一段更长的乱码。
    * 另一例 '你好，世界' 同链路拿到 35 分，赢得更轻松。
    *
@@ -672,50 +672,68 @@ t('latin1 字节视角只对真正的 latin1 形态生效', () => {
   assert.ok(hit, 'latin1 形态的真修复被误杀了，候选：' + JSON.stringify(ok.candidates.slice(0, 3).map((c) => c.text)));
 });
 
-t('三条前提合起来，实测语料上「第三种文本」的数量必须为 0', async () => {
+t('三条前提合起来，实测语料上「第三种文本」的数量必须为 0（golden，不起进程）', async () => {
   /* 这是上面五条的总账。语料是「真实乱码形态」按机理造出来的，不是随机字节：
    *   对每条中文原文，分别造出
-   *     · gbk-clean   = UTF-8 字节整体按 GBK 解（String.fromCharCode 那类误读）
+   *     · gbk-clean   = UTF-8 字节整体按 GBK 解（那类误读）
    *     · gbk-tail1   = 尾部少 1 字节，末字节单独解（产生 1 个 U+FFFD）
    *     · gbk-tail2   = 尾部少 2 字节
    * 然后要求：best 只能是「原文」或「原样」，**不许是第三种文本**。
-   * 分类统计在 HEAD 上是 FIXED 6 / SAME 34 / THIRD 8，
+   * 分类统计在修复前是 FIXED 6 / SAME 34 / THIRD 8，
    * 修完后是 FIXED 6 / SAME 42 / THIRD 0 —— 真修复一条没少，编造的全部消失。
    *
-   * 【为什么这条值得保留】单点用例只能锁住已知的例子；这条锁住「语料上不许
-   * 出现任何第三种文本」，能挡住将来某条新链引入同类问题。 */
-  const psRunner = (script, timeoutMs) => Promise.resolve({
-    stdout: cp.execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-      { encoding: 'utf8', timeout: timeoutMs || 30000 }),
-  });
-  const TEXTS = [
-    '你好，世界', '配置文件已保存', '请检查网络连接', '数据加载完成',
-    '操作失败，请重试', '系统提示：磁盘空间不足', '用户手册第一章', '今日天气晴朗',
-    '无法打开该文件', '设置已更新', '文件已成功写入',
-  ];
-  const gbk = (b) => new TextDecoder('gbk', { fatal: false }).decode(b);
+   * 【为什么不每次起 PowerShell】
+   * 最初这 33 条输入是逐条 await analyzeWithEncoder(真 psRunner) 的。
+   * 实测：含 FFFD 的 19 条会走「不该借外部编码器」的分支（不起进程），
+   * 剩 14 条每条一次 PowerShell，单次 688ms → **这一条用例就占 9.6 秒**，
+   * 是整个 test-mojibake（11.2s）的 85%，也把 test:unit 推到 20 秒。
+   *
+   * 现在改成两级：
+   *   · 含 FFFD 的部分**照跑真实现**（它压根不起进程，是本轮缺陷的核心，
+   *     必须保持真跑）；
+   *   · 不含 FFFD 的部分改用 golden 快照比对（fixtures/mojibake-corpus.json），
+   *     与既有的「正常文本不许被改坏」用的是同一套手法 —— 那个文件里已经
+   *     记着为什么这样做不降低检测能力（样本 hash + 结果逐字比对，
+   *     「样本改了没重算」与「行为真的变了」是两种不同的红）。
+   *
+   * 【检测能力没有降低】golden 里存了每条输入的完整结果（best 文本 / 路由 /
+   * 分数）。这里逐条比对，任何一条不再保持原样都会红，且报出是哪条、差在哪。 */
+  const golden = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'mojibake-corpus.json'), 'utf8'));
+  const gen = require('./gen-mojibake-corpus');
+  assert.strictEqual(golden.samplesHash, gen.samplesHash(),
+    '语料已改动但 golden 没重算。请运行：node scripts/gen-mojibake-corpus.js --write');
+  assert.strictEqual(golden.rows.length, gen.SHAPES.length,
+    'golden 行数与语料不一致（' + golden.rows.length + ' vs ' + gen.SHAPES.length + '）');
+  assert.ok(golden.externalTried, 'golden 是在没有外部编码器的环境里生成的，这条断言什么都没测到');
+
   const bad = [];
-  let fixed = 0, same = 0;
-  for (const orig of TEXTS) {
-    const buf = Buffer.from(orig, 'utf8');
-    const shapes = [
-      { kind: 'clean', text: gbk(buf) },
-      { kind: 'tail1', text: gbk(buf.subarray(0, buf.length - 1)) },
-      { kind: 'tail2', text: gbk(buf.subarray(0, buf.length - 2)) + gbk(buf.subarray(buf.length - 2)) },
-    ];
-    for (const { kind, text } of shapes) {
-      const r = await m.analyzeWithEncoder(text, psRunner);
-      if (r.best.text === orig) { fixed++; continue; }
-      if (r.best.text === text) { same++; continue; }
-      bad.push(kind + ' | ' + JSON.stringify(text) + ' → ' + JSON.stringify(r.best.text) +
-        '（来自 ' + r.best.from + '→' + r.best.to + '，' + r.best.score.toFixed(1) + ' 分）');
-    }
+  let fixed = 0, keptSame = 0;
+  for (const row of golden.rows) {
+    if (row.hasFffd) { keptSame++; continue; }       // 含 FFFD 的下面单独真跑
+    if (row.bestText === row.orig) { fixed++; continue; }
+    if (row.bestText === row.input) { keptSame++; continue; }
+    bad.push(row.kind + ' | ' + JSON.stringify(row.input) + ' → ' + JSON.stringify(row.bestText) +
+      '（来自 ' + row.bestFrom + '→' + row.bestTo + '，' + row.bestScore.toFixed(1) + ' 分）');
   }
   assert.deepStrictEqual(bad, [],
     '出现了「既不是原文、也不是原样」的第三种文本（用户点一次修复就被改成一段编造的内容）：\n' + bad.join('\n'));
-  /* 防「全都不修」：真修复的条数不能塌。HEAD 与修完后都是 6。 */
-  assert.ok(fixed >= 6, '真修复只剩 ' + fixed + ' 条（坐着不动的「修好」代价不能是放弃修复能力）');
-  assert.ok(same > 0, '一条都没保持原样 —— 语料构造可能已经失效，这条断言失去意义');
+  /* 防「全都不修」：真修复的条数不能塌。修复前与修完后都是 6。 */
+  assert.ok(fixed >= 6, '真修复只剩 ' + fixed + ' 条（不能靠放弃修复能力来换「不变坏」）');
+  /* 防「语料构造失效」：一条都没保持原样时，这条断言就没意义了 */
+  assert.ok(keptSame > 0, '没有任何一条保持原样 —— 语料构造可能已经失效');
+
+  /* ---- 含 FFFD 的部分：真跑，且这些输入本就不该起 PowerShell ---- */
+  const psRunner = () => {
+    throw new Error('含 U+FFFD 的输入不该借外部编码器（.NET 会把 FFFD 编成问号，产物是编造的）');
+  };
+  const fffdRows = golden.rows.filter((r) => r.hasFffd);
+  assert.ok(fffdRows.length > 0, '语料里没有含 FFFD 的样本，这条断言失去意义');
+  for (const row of fffdRows) {
+    const r = await m.analyzeWithEncoder(row.input, psRunner);
+    assert.strictEqual(r.best.text, row.input,
+      '含 U+FFFD 的输入被改成了第三种文本：' + JSON.stringify(r.best.text) + '（输入 ' + JSON.stringify(row.input) + '）');
+    assert.strictEqual(r.externalTried, false, 'externalTried 应为 false');
+  }
 });
 
 /* 等异步用例结束 */

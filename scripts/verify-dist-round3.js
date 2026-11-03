@@ -39,6 +39,12 @@ const wantVer = require(path.join(__dirname, '..', 'package.json')).version;
 chk(pkg.version === wantVer, '包内版本 = ' + wantVer + '（实际 ' + pkg.version + '）');
 
 const main = read('main.js') || '';
+/* 【搬走的模块要单独读】rec:* / ffmpeg:* 域在任务 6 搬到了 ipc/media-ffmpeg.js。
+ * 校验脚本必须跟着读那里，否则断言永远是假红 —— 而假红到最后就是整段被忽略。 */
+const mediaSrc = read('ipc/media-ffmpeg.js') || read('ipc\\media-ffmpeg.js') || '';
+const tempNamesSrc = read('lib/temp-names.js') || read('lib\\temp-names.js') || '';
+chk(!!mediaSrc, 'ipc/media-ffmpeg.js 可读（rec/ffmpeg 域的实际位置）');
+chk(!!tempNamesSrc, 'lib/temp-names.js 可读（暂存目录构造的实际位置）');
 chk(!!main, 'main.js 可读');
 
 /* --- 本轮核心修复 --- */
@@ -47,7 +53,16 @@ chk(main.includes('async function writeFileAtomic'), '有原子写函数');
 chk(!/fsp\.rm\(dest, \{ force: true \}\)\.catch\(\(\) => \{\}\);\s*\n\s*await fsp\.rename\(tmp, dest\)/.test(main),
   'writeFileAtomic 不再「先删后改名」');
 chk(main.includes('.hehe-bak-'), 'writeFileAtomic 有备份中转');
-chk(/if \(!degraded\) \{\s*\n\s*await fsp\.rm\(recSegDir/.test(main.replace(/\r/g, '')), 'rec:stop 降级时保留分段');
+/* 【rec:stop 的降级保护现在在 ipc/media-ffmpeg.js，不在 main.js】
+ * 这条断言原来查 main.js，任务 6 把 rec:* 域整体搬走后它就永远假红。
+ * 但一个「反正一直红」的构建产物校验等于没有校验 —— 人会直接忽略它。
+ * 改成查真正的位置，并且**搬走这件事本身也要断言**（否则哪天又搬回来，
+ * 这条会静默变成永真）。 */
+chk(/if \(!degraded\) \{\s*\n\s*await fsp\.rm\(recSegDir/.test(mediaSrc.replace(/\r/g, '')),
+  'rec:stop 降级时保留分段（实现在 ipc/media-ffmpeg.js）');
+/* 同时确认它确实搬走了：两个都查，防止「两处都有」或「两处都没有」 */
+chk(!/if \(!degraded\) \{\s*\n\s*await fsp\.rm\(recSegDir/.test(main.replace(/\r/g, '')),
+  'rec:stop 已整体搬到 ipc/media-ffmpeg.js（不应在 main.js 里再留一份）');
 chk(main.includes('copyFile(tmp, HOSTS_PATH)'), 'hosts 兜底会先用 tmp 补回');
 chk(main.indexOf('copyFile(tmp, HOSTS_PATH)') < main.indexOf("rm(tmp, { force: true })", main.indexOf('copyFile(tmp, HOSTS_PATH)')),
   'hosts 兜底顺序正确（先补再删）');
@@ -58,7 +73,17 @@ chk(main.includes('$srcLen'), '升级脚本校验替换后大小');
 chk(main.includes('$stamp'), '升级脚本保留历史备份');
 chk(main.includes('hehe-7zx-') && !/hehe-7zx-' \+ Date\.now\(\)[^;]*app\.getPath\('temp'\)/.test(main),
   'seven:extract 暂存目录不再放 %TEMP%');
-chk(main.includes('const staging = path.join(outDir,'), 'staging 建在 outDir 下（同卷）');
+/* 【staging 现在通过 lib/temp-names.js 的 sevenStagingDir(outDir) 构造】
+ * 原来断言的是 `const staging = path.join(outDir,` —— 把「7z 暂存目录」这个
+ * 实现细节抽到 temp-names 之后，这个字面形态就不存在了。
+ * 断言真正要守的是「暂存目录跟 outDir 同卷」，所以改成查两件事：
+ *   ① main.js 调用了 sevenStagingDir(outDir)
+ *   ② temp-names.js 里那个函数确实把目录建在 baseDir 下（而不是 %TEMP%） */
+chk(/const staging = tempNames\.sevenStagingDir\(outDir\)/.test(main),
+  'staging 由 sevenStagingDir(outDir) 构造（不得退回 %TEMP%）');
+chk(/function sevenStagingDir\s*\(outDir/.test(tempNamesSrc) &&
+   /return outDir \? path\.join\(outDir, name\)/.test(tempNamesSrc),
+  'sevenStagingDir 建在传入的 outDir 下（同卷），不退回 %TEMP%');
 chk(main.includes('BOMB_RATIO') || main.includes('compressedSize'), 'zip 解压传入压缩比信息');
 chk(main.includes('清单文件损坏：分片数量非法'), 'merge-parts 校验 parts');
 chk(main.includes('源文件在分割期间发生变化'), 'split 校验源文件未变');
@@ -79,6 +104,9 @@ const office = read('js/tools/office.js') || '';
 chk(office.includes('-split-' + "' + stamp") || office.includes("-split-' + stamp"), 'PDF 拆分目录带时间戳');
 
 const media = readTree('js/tools/media') || '';
+/* 锁的是「打包后 media 工具目录里的路径归一化函数被漏掉/改名」这个回归：
+ * 它是 media 全家（压缩/去重/水印）处理长路径与中文路径的共同前提。
+ * 只能看源码形态 —— 真跑要一张 260 字符以上的深路径素材。 */
 chk(media.includes('function normAbs'), 'media.js 有路径归一化函数');
 
 /* --- 重复注册检查 --- */

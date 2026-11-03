@@ -56,7 +56,7 @@ scripts/test-links.js | A=2 | B=0 | exact:同上：迁移来的 read() 助手读
 scripts/test-media-ffmpeg.js | A=1 | B=3 | exact:rec:start 覆盖语义与系统闸门的分离，只能看源码形态（真开录要 ffmpeg+桌面捕获），行为面由 test-destructive 的 rec:stop 覆盖
 scripts/test-media-split.js | A=6 | B=8 | legacy-source-assertion
 scripts/test-modal-close.js | A=1 | B=0 | exact:迁移自 round15 的 10a/10b。modal 的 onClose 是否被传、是否被 try/catch 包住，只能看源码（要验行为得真点弹窗）；10c 用 Promise.race 把「永不 settle」变成可判定失败。
-scripts/test-mojibake.js | A=2 | B=0 | exact:第 1 处读 lib/mojibake 源码（legacy-read 同理）；第 2 处读 scripts/fixtures/mojibake-golden.json —— 那是测试夹具（预存的外部编码器结果），不是项目源码，也没有注释要剥
+scripts/test-mojibake.js | A=3 | B=0 | exact:第 1 处读 lib/mojibake 源码（legacy-read 同理）；另两处读 scripts/fixtures/mojibake-golden.json 与 mojibake-corpus.json —— 那是测试夹具（预存的外部编码器结果与语料快照），不是项目源码，也没有注释要剥
 scripts/test-packaged-assets.js | A=2 | B=4 | legacy-read
 scripts/test-packaged-isdev.js | A=2 | B=0 | e2e-fixture
 scripts/test-path-guard.js | A=1 | B=0 | exact:A=1：迁移来的 25a 用例读 lib/path-guard.js 的源码（checkDeletable 的 recursive 分支）
@@ -82,4 +82,6 @@ scripts/test-tool-order.js | A=2 | B=2 | legacy-source-assertion
 scripts/test-tray-i18n.js | A=3 | B=0 | e2e-fixture
 scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
+scripts/check-assertion-count.js | A=3 | B=0 | exact:三处 readFileSync 读的都是数据文件不是源码 —— package.json、reports/test-output.log（上一步的测试输出）、scripts/assertions-baseline.json（本守卫自己的基线）；无源码断言
+scripts/verify-dist-round4.js | A=0 | B=0 | build-meta
 scripts/version.js | A=2 | B=0 | build-meta
