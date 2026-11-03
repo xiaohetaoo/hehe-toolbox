@@ -106,7 +106,7 @@
           if (!items[0].virtual) handleFile(items[0].path).catch((e) => toast(e.message, 'error'));
         }
       });
-      const pasteBtn = btn(T('📋 从剪贴板识别'), 'btn-secondary', async () => {
+      const pasteBtn = btn(T('从剪贴板识别'), 'btn-secondary', async () => {
         try {
           const imgData = await invoke('clip:read-image');
           if (!imgData) return toast(T('剪贴板中没有图片'), 'warn');

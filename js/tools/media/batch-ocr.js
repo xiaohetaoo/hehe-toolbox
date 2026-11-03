@@ -59,7 +59,7 @@ register({
       }
       page.appendChild(div('card', div('card-title', '图片文件夹'), div('form-row', pickBtn, dirLabel, langSel)));
       page.appendChild(div('card', div('card-title', '识别'),
-        div('form-row', btn('🔍 开始批量识别', 'btn-primary', run), prog.el, status),
+        div('form-row', btn('开始批量识别', 'btn-primary', run, 'search'), prog.el, status),
         out, div('form-row', saveBtn)));
     }
   })

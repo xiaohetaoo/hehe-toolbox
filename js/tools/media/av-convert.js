@@ -48,8 +48,8 @@ register({
           row.appendChild(h('span', { class: 'field-err av-err', style: { fontSize: '11px', maxWidth: '200px' } }, ''));
         }
       });
-      const startBtn = btn('🚀 开始转换', 'btn-primary', run);
-      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); });
+      const startBtn = btn('开始转换', 'btn-primary', run, 'send');
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); }, 'square');
       cancelBtn.disabled = true;
       // 目标格式变了只刷新行上的「→ XXX」标签，不重建列表（重建会丢掉进度状态）
       fmtSel.addEventListener('change', () => picker.list.refresh());

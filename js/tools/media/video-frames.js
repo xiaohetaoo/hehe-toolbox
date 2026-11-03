@@ -25,7 +25,7 @@ register({
       const countIn = h('input', { type: 'number', class: 'input input-sm', value: '20', min: '1', max: '500', style: { width: '64px' }, title: '最多导出帧数' });
       const wIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '原尺寸', style: { width: '80px' }, title: '限制宽度（px）' });
       const outLabel = h('div', { class: 'field-hint' }, '');
-      const goBtn = btn('🚀 开始截帧', 'btn-primary', run);
+      const goBtn = btn('开始截帧', 'btn-primary', run, 'send');
       const refresh = () => { timeIn.disabled = modeSel.value !== 'single'; everyIn.disabled = countIn.disabled = modeSel.value !== 'seq'; };
       modeSel.addEventListener('change', refresh); refresh();
       async function run() {

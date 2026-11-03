@@ -52,7 +52,7 @@ register({
       const prog = progressEl(); prog.hide();
       const status = h('span', { class: 'field-hint' }, '');
       let running = false;
-      const startBtn = btn('🚀 开始压缩', 'btn-primary', run);
+      const startBtn = btn('开始压缩', 'btn-primary', run, 'send');
 
       function hasAlpha(img) {
         const c = document.createElement('canvas');

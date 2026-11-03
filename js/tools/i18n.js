@@ -57,7 +57,7 @@
       '识别成功': 'Decoded successfully',
       '未识别到二维码，请确保图片清晰完整':
         'No QR code found — make sure the image is clear and complete',
-      '📋 从剪贴板识别': '📋 Decode from clipboard',
+      '从剪贴板识别': 'Decode from clipboard',
       '剪贴板中没有图片': 'No image in the clipboard',
       '剪贴板图片': 'Clipboard image',
       '选择图片': 'Choose image',

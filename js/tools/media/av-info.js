@@ -57,7 +57,7 @@ register({
           result.innerHTML = '';
           if (/ffprobe/.test(e.message)) {
             result.appendChild(window.ui.placeholder('film', '需要 FFmpeg 引擎', '音视频信息查看依赖 ffprobe。点击下方按钮前往安装（只需一次）。'));
-            result.appendChild(div('form-row', btn('🛠 前往 FFmpeg 环境安装', 'btn-primary', () => window.App.openTool('ffmpeg-setup'))));
+            result.appendChild(div('form-row', btn('前往 FFmpeg 环境安装', 'btn-primary', () => window.App.openTool('ffmpeg-setup'), 'settings')));
           } else result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`;
         }
       }

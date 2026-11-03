@@ -24,7 +24,7 @@ register({
       const gainIn = h('input', { type: 'number', class: 'input input-sm', value: '0', step: '0.5', style: { width: '60px' }, title: '音量增益（dB，0=不变，负值降低）' });
       const fmtSel = h('select', { class: 'select input-sm' }, h('option', { value: 'keep' }, '保持原格式'), h('option', { value: 'mp3' }, 'MP3'), h('option', { value: 'm4a' }, 'M4A'), h('option', { value: 'wav' }, 'WAV'));
       const status = h('div', { class: 'field-hint' }, '');
-      const goBtn = btn('✂️ 开始剪辑', 'btn-primary', run);
+      const goBtn = btn('开始剪辑', 'btn-primary', run, 'scissors');
       async function run() {
         if (running) return; // 防重入
         running = true;

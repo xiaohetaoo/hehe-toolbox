@@ -32,14 +32,14 @@ register({
           card.style.border = '1px solid var(--border)';
           card.appendChild(window.ui.kvGrid(Object.entries(exif)));
           result.appendChild(card);
-          const cleanBtn = btn('🧹 清除 EXIF 并保存副本', 'btn-danger-plain', async () => {
+          const cleanBtn = btn('清除 EXIF 并保存副本', 'btn-danger-plain', async () => {
             // 输出必须唯一：固定 -noexif.jpg 会让第二次点击静默覆盖前一次的结果
             const out = await invoke('fs:unique-path', path.replace(/\.jpe?g$/i, '') + '-noexif.jpg');
             try {
               await invoke('fs:write-file-b64', out, stripExif(buf));
               toast('已保存无 EXIF 副本：' + out, 'success');
             } catch (e) { toast('保存失败：' + e.message, 'error'); }
-          });
+          }, 'refresh');
           result.appendChild(div('form-row', cleanBtn));
         } catch (e) { result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
       }

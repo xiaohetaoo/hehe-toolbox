@@ -70,7 +70,7 @@
        * 每次约 0.3~1 秒。双击「诊断缺什么权限」会并发两轮，两轮结果互相覆盖。
        * 统一走 ui.guard()：并发挡掉、任何 return/throw 都复位。
        * 修复完成后的自动重查走 diagBtn.click()，同样受这层保护。 */
-      const diagBtn = btn('🔍 诊断缺什么权限', 'btn-primary', guard(diagRun));
+      const diagBtn = btn('诊断缺什么权限', 'btn-primary', guard(diagRun), 'search');
 
       async function diagRun() {
         if (!state.target) return toast('请先选择文件/目录，或填一个路径', 'warn');

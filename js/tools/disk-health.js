@@ -46,7 +46,7 @@
        * 统一走 ui.guard()（并发挡掉、任何出口都复位）。
        * doScanOnce 是函数声明（会被提升），所以 guard 这行能写在按钮前面。 */
       const doScan = guard(doScanOnce);
-      const scanBtn = btn('🔍 读取磁盘健康', 'btn-primary', doScan);
+      const scanBtn = btn('读取磁盘健康', 'btn-primary', doScan, 'search');
 
       async function doScanOnce() {
         resultBox.innerHTML = '<div class="card"><div class="field-hint">读取中…</div></div>';

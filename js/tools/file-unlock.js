@@ -305,7 +305,7 @@
       }
 
       const scan = guard(scanOnce);
-      const scanBtn = btn('🔍 查出占用它的进程', 'btn-primary', scan);
+      const scanBtn = btn('查出占用它的进程', 'btn-primary', scan, 'search');
       const clearBtn = btn('清空', 'btn-sm btn-secondary', () => {
         state.items = [];
         state.lockers = [];

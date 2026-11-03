@@ -200,6 +200,18 @@ html[data-accent='mono'] {
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+/* 【color-scheme 必须跟着主题走】
+ * 这条声明管的是**浏览器自己画的那部分**：数字框的上下箭头、date/time 的日历图标、
+ * 下拉展开面板、滚动条、原生 focus ring 的底色。
+ * 不声明（默认 normal）时 Chromium 一律按浅色画：
+ *   · 深色主题下，数字框里那两个三角是 Windows 原生的浅灰底+深色块，
+ *     和周围 #333336 的输入框完全是两套视觉 —— 实机截图里就是这样；
+ *   · 下拉展开后的候选列表是白底黑字，在深色页面上是一块刺眼的白斑；
+ *   · 日期框右侧的日历图标是深色描边，深色底上几乎看不见。
+ * 声明之后这三种原生装饰都会换成深色版本，选中高亮也随之走系统深色配色。
+ * 注意写在 html 上而不是 :root —— 两者等价，但 html 与下面的 data-theme 同级，更好读。 */
+html { color-scheme: light; }
+html[data-theme='dark'] { color-scheme: dark; }
 html, body { height: 100%; overflow: hidden; }
 body {
   font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
@@ -515,6 +527,9 @@ body {
   height: 32px; padding: 0 16px; border-radius: 6px; font-size: 14px; border: 1px solid transparent;
   cursor: pointer; transition: all 0.15s; background: transparent; color: var(--text-1); font-family: inherit;
 }
+/* 文本单独一层 span（见 ui.js 的 btn）：换文案时只改这一层，不动左边的 svg 图标。
+   nowrap 是必需的 —— 长文案按钮在窄容器里会把中文折成两行，撑高按钮、挤歪整行。 */
+.btn .btn-label { white-space: nowrap; }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary { background: var(--primary); color: var(--on-primary); }
@@ -547,6 +562,26 @@ body {
 .input-sm { padding: 3px 8px; font-size: 13px; }
 textarea.input { resize: vertical; line-height: 1.6; }
 .select { cursor: pointer; }
+/* 【数字框的上下箭头必须去掉】
+ * input[type=number] 会在右侧画出两个三角。那是 Chromium 用**系统控件**画的，
+ * 不吃我们的 border/border-radius/背景，深色主题下就是一块浅灰底 + 深色三角，
+ * 和输入框其余部分完全不是一套视觉（用户截图里的「16 ↕」就是这个）。
+ * 它只在这个输入框被 hover / focus 时出现，所以平时看着没问题、一碰鼠标就露馅。
+ *
+ * 这里改成 appearance:textfield 把它整个去掉，同时补上右侧内边距。
+ * 为什么不去「美化」它：那两个三角是 8px 见方的系统位图，没有稳妥的重绘方式，
+ * 而且数值微调的语义可以由键盘（↑↓/PgUp/PgDn）和每个工具自己的「生成/应用」按钮承担。
+ * min/max/step 属性全部保留，↑↓ 键盘微调、校验、滚轮都照常工作 —— 去掉的只是那对图形。 */
+.input[type='number'] { -webkit-appearance: textfield; appearance: textfield; padding-right: 10px; }
+.input[type='number']::-webkit-outer-spin-button,
+.input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; appearance: none; margin: 0; }
+
+/* 滑块：不加 accent-color 时是系统蓝，9 套配色下都不跟主色走。
+   本项目只有「文本朗读」的语速/音量两处用到，但既然有主色就该一致。 */
+.input[type='range'], input[type='range'] { accent-color: var(--primary); cursor: pointer; }
+/* 日期/时间框右侧的小图标同理，跟着 color-scheme 走（见文件顶部） */
+.input[type='date'], .input[type='time'], .input[type='datetime-local'], .input[type='month'] { font-family: inherit; }
+
 .checkbox, .radio { accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
 .field-hint { font-size: 12px; color: var(--text-3); }
 .field-err { font-size: 12px; color: var(--danger); }

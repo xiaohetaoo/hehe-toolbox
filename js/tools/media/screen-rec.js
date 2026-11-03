@@ -95,7 +95,7 @@ register({
         }
       }
       const regionLabel = h('span', { class: 'field-hint' }, '全屏');
-      const regionBtn = btn('▭ 选择区域', 'btn-sm btn-secondary', pickRegion);
+      const regionBtn = btn('选择区域', 'btn-sm btn-secondary', pickRegion, 'crop');
       // 按钮文案改成「清除区域」：原来叫「✕ 全屏」，而紧挨着的 regionLabel 也显示「全屏」，
       // 两个「全屏」并排重复，用户分不清哪个是按钮哪个是状态。
       // 另外这里必须放在 regionLabel 之后声明 —— 原来的箭头函数引用了后面的 const，
@@ -103,10 +103,10 @@ register({
       const clearRegionBtn = btn('清除区域', 'btn-sm btn-text', () => { region = null; regionLabel.textContent = '全屏'; });
       const gifChk = h('input', { type: 'checkbox', class: 'checkbox' });
       const status = h('div', { class: 'field-hint' }, '支持区域录制、麦克风、摄像头画中画、暂停恢复；停止后自动封装');
-      const startBtn = btn('⏺ 开始录制', 'btn-primary', start);
-      const pauseBtn = btn('⏸ 暂停', 'btn-secondary', () => ctl('rec:pause'));
-      const resumeBtn = btn('▶ 继续', 'btn-secondary', () => ctl('rec:resume'));
-      const stopBtn = btn('⏹ 停止并保存', 'btn-danger-plain', stop);
+      const startBtn = btn('开始录制', 'btn-primary', start, 'activity');
+      const pauseBtn = btn('暂停', 'btn-secondary', () => ctl('rec:pause'), 'timer');
+      const resumeBtn = btn('继续', 'btn-secondary', () => ctl('rec:resume'), 'play');
+      const stopBtn = btn('停止并保存', 'btn-danger-plain', stop, 'stop');
       pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let recording = false, paused = false, region = null;
@@ -134,9 +134,9 @@ register({
       }
       invoke('rec:audio-devices').then((r) => {
         const prefsP = invoke('store:get', 'settings.recPrefs', null).catch(() => null);
-        for (const d of (r.devices || [])) audioSel.appendChild(h('option', { value: d }, '🎤 ' + d));
+        for (const d of (r.devices || [])) audioSel.appendChild(h('option', { value: d }, d));
         // 兼容旧返回：新版本才有 video 字段
-        for (const d of (r.video || [])) camSel.appendChild(h('option', { value: d }, '📷 ' + d));
+        for (const d of (r.video || [])) camSel.appendChild(h('option', { value: d }, d));
         prefsP.then((p) => {
           if (!p || typeof p !== 'object') return;
           // 只在设备仍存在时恢复，否则回落到默认值
@@ -192,14 +192,14 @@ register({
             camera: camSel.value || null, camPos: camPosSel.value, camScale: +camSizeSel.value });
           recording = true; paused = false;
           startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
-          status.textContent = '🔴 录制中…' + (region ? `（${region.w}×${region.h}）` : '（全屏）') + (audioSel.value ? ' + 🎤' : '') + (camSel.value ? ' + 📷 画中画' : '');
+          status.textContent = '录制中…' + (region ? `（${region.w}×${region.h}）` : '（全屏）') + (audioSel.value ? ' + 麦克风' : '') + (camSel.value ? ' + 摄像头画中画' : '');
           camPreviewHint.textContent = '录制中（预览已让给录制）';
         } catch (e) { toast(e.message, 'error'); if (camSel.value) startPreview(camSel.value); }
       }
       async function ctl(ch) {
         try {
-          if (ch === 'rec:pause') { await invoke('rec:pause'); paused = true; pauseBtn.disabled = true; resumeBtn.disabled = false; status.textContent = '⏸ 已暂停（分段保存，停止时自动拼接）'; }
-          else { await invoke('rec:resume'); paused = false; pauseBtn.disabled = false; resumeBtn.disabled = true; status.textContent = '🔴 继续录制中…'; }
+          if (ch === 'rec:pause') { await invoke('rec:pause'); paused = true; pauseBtn.disabled = true; resumeBtn.disabled = false; status.textContent = '已暂停（分段保存，停止时自动拼接）'; }
+          else { await invoke('rec:resume'); paused = false; pauseBtn.disabled = false; resumeBtn.disabled = true; status.textContent = '继续录制中…'; }
         } catch (e) { toast(e.message, 'error'); }
       }
       async function stop() {

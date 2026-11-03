@@ -83,7 +83,7 @@
       page.appendChild(div('card', div('card-title', '生成选项'),
         div('form-row', h('span', { class: 'form-label' }, '长度'), lenIn, h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '数量'), countIn),
         div('form-row', ...boxes)));
-      page.appendChild(div('card', div('card-title', '密码列表'), btn('🎲 生成', 'btn-primary', gen), div('', out)));
+      page.appendChild(div('card', div('card-title', '密码列表'), btn('生成', 'btn-primary', gen, 'dice'), div('', out)));
       gen();
     }
   });

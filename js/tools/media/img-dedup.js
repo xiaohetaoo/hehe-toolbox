@@ -90,7 +90,7 @@ register({
       page.appendChild(div('card', div('card-title', '图片文件夹'),
         div('form-row', pickBtn, dirLabel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '相似阈值'), threshIn,
-          btn('🔍 查找相似', 'btn-primary', run), prog.el, status)));
+          btn('查找相似', 'btn-primary', run, 'search'), prog.el, status)));
       page.appendChild(listBox);
     }
   })

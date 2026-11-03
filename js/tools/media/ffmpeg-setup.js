@@ -25,12 +25,12 @@ register({
             card.appendChild(window.ui.kvGrid([
               ['状态', '✓ 已就绪'], ['ffmpeg', r.ffmpeg], ['ffprobe', r.ffprobe || '未找到（转换功能需要）'], ['版本', r.version || '-']
             ]));
-            card.appendChild(div('form-row', btn('🗑 移除内置 FFmpeg', 'btn-sm btn-danger-plain', async () => {
+            card.appendChild(div('form-row', btn('移除内置 FFmpeg', 'btn-sm btn-danger-plain', async () => {
               if (!(await confirmBox({ title: '移除 FFmpeg', message: '将删除内置下载的 ffmpeg/ffprobe，确定？', danger: true, okText: '移除' }))) return;
               await invoke('ffmpeg:remove');
               toast('已移除', 'success');
               refresh();
-            })));
+            }, 'trash')));
           } else {
             card.appendChild(div('', h('p', { class: 'field-hint', style: { textAlign: 'left', lineHeight: 1.8 } },
               '尚未检测到 FFmpeg。安装后即可使用「音视频信息查看」「音视频格式转换」工具；',
@@ -43,7 +43,7 @@ register({
         h('option', { value: 'npmmirror' }, 'npmmirror 国内镜像（推荐，约 59MB，含 ffprobe）'),
         h('option', { value: 'gyan' }, 'gyan.dev 官方整合包（约 114MB）'),
         h('option', { value: 'btbn' }, 'BtbN GitHub 构建（约 90MB）'));
-      const dlBtn = btn('⬇ 一键下载安装', 'btn-primary', async () => {
+      const dlBtn = btn('一键下载安装', 'btn-primary', async () => {
         if (!isDesktop) return toast('桌面端可用', 'warn');
         dlBtn.disabled = true;
         prog.show(); status.textContent = '';
@@ -67,13 +67,13 @@ register({
           status.textContent = '✓ 安装完成：' + (r.ffmpeg || '');
         } catch (e) { status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; toast(e.message, 'error'); }
         finally { dlBtn.disabled = false; prog.hide(); if (unsub) unsub(); refresh(); }
-      });
-      const pickBtn = btn('📁 手动导入 ffmpeg.exe', 'btn-secondary', async () => {
+      }, 'download');
+      const pickBtn = btn('手动导入 ffmpeg.exe', 'btn-secondary', async () => {
         try {
           const r = await invoke('ffmpeg:pick');
           if (r.picked && r.picked.length) { toast('已导入：' + r.picked.join('、'), 'success'); refresh(); }
         } catch (e) { toast(e.message, 'error'); }
-      });
+      }, 'folder');
       page.appendChild(div('card', div('card-title', '当前状态'), statusBox));
       page.appendChild(div('card', div('card-title', '安装 FFmpeg'),
         div('form-row', h('span', { class: 'form-label' }, '下载源'), srcSel),

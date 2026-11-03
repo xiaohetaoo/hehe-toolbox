@@ -184,7 +184,7 @@
         div('form-row', h('span', { class: 'form-label' }, '类别'), catSel),
         div('form-row', h('span', { class: 'form-label' }, '数值'), valIn),
         div('form-row', h('span', { class: 'form-label' }, '从'), fromSel, iconSwap(), h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '到'), toSel,
-          btn('⇄ 交换', 'btn-sm btn-secondary', () => { const t = fromSel.value; fromSel.value = toSel.value; toSel.value = t; fire(); })),
+          btn('交换', 'btn-sm btn-secondary', () => { const t = fromSel.value; fromSel.value = toSel.value; toSel.value = t; fire(); }, 'git-compare')),
         resultEl));
       function iconSwap() { return h('span', { style: { color: 'var(--text-3)' } }, '→'); }
       fillUnits();

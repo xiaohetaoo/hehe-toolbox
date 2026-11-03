@@ -85,13 +85,13 @@
         if (phase === 'work') {
           pomodoros++;
           paintDone();
-          toast(`🍅 完成一个番茄！(${pomodoros}/${targetPomodoros})，休息一下`, 'success', 4000);
+          toast(`完成一个番茄！(${pomodoros}/${targetPomodoros})，休息一下`, 'success', 4000);
           new Notification('核核工具箱', { body: `完成第 ${pomodoros} 个番茄，休息 ${restIn.value} 分钟` });
           phase = 'rest';
           total = (parseInt(restIn.value) || 5) * 60;
           statusText.textContent = `休息中 · ${restIn.value} 分钟`;
         } else {
-          toast('休息结束，开始新番茄 🍅', 'success', 3000);
+          toast('休息结束，开始新番茄', 'success', 3000);
           new Notification('核核工具箱', { body: '休息结束，开始新的专注！' });
           phase = 'work';
           total = (parseInt(workIn.value) || 25) * 60;
@@ -145,19 +145,19 @@
         resetDisplay();
       }
       const btns = {};
-      for (const [m, label] of [['pomodoro', '🍅 番茄钟'], ['countdown', '⏳ 倒计时'], ['stopwatch', '⏱ 正计时']]) {
+      for (const [m, label, iconName] of [['pomodoro', '番茄钟', 'timer'], ['countdown', '倒计时', 'clock'], ['stopwatch', '正计时', 'activity']]) {
         btns[m] = btn(label, 'btn-sm btn-secondary', () => {
           setMode(m);
           Object.values(btns).forEach(b => b.className = 'btn btn-sm btn-secondary');
           btns[m].className = 'btn btn-sm btn-primary';
-        });
+        }, iconName);
       }
-      const startBtn = btn('▶ 开始计时', 'btn-primary', () => {
+      const startBtn = btn('开始计时', 'btn-primary', () => {
         if (mode === 'countdown') total = (parseInt(workIn.value) || 25) * 60;
         start();
-      });
-      const pauseBtn = btn('⏸ 暂停', 'btn-secondary', () => { stop(); if (mode !== 'stopwatch') startTs = Date.now() - (total - remain) * 1000; });
-      const resetBtn = btn('↺ 重置', 'btn-secondary', () => { stop(); setMode(mode); });
+      }, 'play');
+      const pauseBtn = btn('暂停', 'btn-secondary', () => { stop(); if (mode !== 'stopwatch') startTs = Date.now() - (total - remain) * 1000; }, 'timer');
+      const resetBtn = btn('重置', 'btn-secondary', () => { stop(); setMode(mode); }, 'refresh');
       drawRing(1);
       page.appendChild(div('card', div('card-title', '模式', ...Object.values(btns)),
         statusText, ring,
@@ -337,8 +337,8 @@
     keywords: ['标尺', '像素', '测量'],
     render(page) {
       page.appendChild(window.ui.placeholder('ruler', '屏幕标尺', '点击下方按钮将打开一个透明悬浮的像素标尺窗口，支持横向 / 纵向切换，拖动边缘可调整长度，双击关闭。'));
-      const openBtn = btn('📏 打开横向标尺', 'btn-primary btn-lg', () => openRuler('h'), 'ruler');
-      const openVBtn = btn('📐 打开纵向标尺', 'btn-secondary btn-lg', () => openRuler('v'), 'ruler');
+      const openBtn = btn('打开横向标尺', 'btn-primary btn-lg', () => openRuler('h'), 'ruler');
+      const openVBtn = btn('打开纵向标尺', 'btn-secondary btn-lg', () => openRuler('v'), 'ruler');
       async function openRuler(dir) {
         if (!isDesktop) return toast('桌面端可用', 'warn');
         try { await invoke('win:ruler', dir); } catch (e) { toast(e.message, 'error'); }

@@ -80,7 +80,7 @@
             div('field-err', '✗ ' + e.message)));
         }
       }
-      const analyzeBtn = btn('🔍 分析编码', 'btn-primary', analyze);
+      const analyzeBtn = btn('分析编码', 'btn-primary', analyze, 'search');
 
       function render() {
         resultBox.innerHTML = '';

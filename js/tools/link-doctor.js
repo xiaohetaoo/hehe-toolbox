@@ -45,7 +45,7 @@
         style: { flex: '1' },
       });
       const doScan = guard(doScanOnce);
-      const scanBtn = btn('🔍 开始体检', 'btn-primary', doScan);
+      const scanBtn = btn('开始体检', 'btn-primary', doScan, 'search');
       const browseBtn = btn('浏览…', 'btn-sm btn-secondary', async () => {
         try {
           const r = await invoke('dialog:open', { properties: ['openDirectory'] });

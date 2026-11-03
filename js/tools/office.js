@@ -30,7 +30,7 @@
       });
       const status = h('span', { class: 'field-hint' }, '');
 
-      const mergeBtn = btn('🔗 合并为一个 PDF', 'btn-primary', async () => {
+      const mergeBtn = btn('合并为一个 PDF', 'btn-primary', async () => {
         if (picker.count < 2) return toast('合并至少需要 2 个 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
@@ -47,10 +47,10 @@
           await invoke('fs:write-file-b64', outPath, arrayB64(bytes));
           toast('合并完成：' + outPath, 'success');
         } catch (e) { toast('合并失败：' + e.message, 'error'); }
-      });
+      }, 'link');
 
       const pageIn = h('input', { class: 'input input-sm mono', placeholder: '页码范围，如 1-3,5', style: { width: '160px' } });
-      const extractBtn = btn('📄 提取页面', 'btn-secondary', async () => {
+      const extractBtn = btn('提取页面', 'btn-secondary', async () => {
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
@@ -69,10 +69,10 @@
           await invoke('fs:write-file-b64', outPath, arrayB64(bytes));
           toast(`已提取 ${parsed.pages.length} 页`, 'success');
         } catch (e) { toast('提取失败：' + e.message, 'error'); }
-      });
+      }, 'file-text');
 
       const splitEvery = h('input', { type: 'number', class: 'input input-sm', value: '1', min: '1', style: { width: '70px' } });
-      const splitBtn = btn('✂ 拆分 PDF', 'btn-secondary', async () => {
+      const splitBtn = btn('拆分 PDF', 'btn-secondary', async () => {
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
@@ -96,10 +96,10 @@
           }
           toast(`已拆分为 ${Math.ceil(n / per)} 个文件：${dir}`, 'success');
         } catch (e) { toast('拆分失败：' + e.message, 'error'); }
-      });
+      }, 'scissors');
 
       const rotSel = h('select', { class: 'select input-sm' }, h('option', { value: '90' }, '90°'), h('option', { value: '180' }, '180°'), h('option', { value: '270' }, '270°'));
-      const rotBtn = btn('🔄 旋转全部页面', 'btn-secondary', async () => {
+      const rotBtn = btn('旋转全部页面', 'btn-secondary', async () => {
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument, degrees } = window.PDFLib;
@@ -113,7 +113,7 @@
           await invoke('fs:write-file-b64', outPath, arrayB64(bytes));
           toast('旋转完成', 'success');
         } catch (e) { toast('旋转失败：' + e.message, 'error'); }
-      });
+      }, 'refresh');
 
       function parseRanges(v, maxPage) {
         const set = [];
@@ -177,7 +177,7 @@
           row.appendChild(down);
         }
       });
-      const btn2 = btn('📄 转换为 PDF', 'btn-primary', async () => {
+      const btn2 = btn('转换为 PDF', 'btn-primary', async () => {
         if (!picker.count) return toast('请先选择图片', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
@@ -199,7 +199,7 @@
           await invoke('fs:write-file-b64', outPath, btoa(bin));
           toast('已生成：' + outPath, 'success');
         } catch (e) { toast('转换失败：' + e.message, 'error'); }
-      });
+      }, 'file-text');
       page.appendChild(div('card', div('card-title', '选择图片'), picker.el, div('form-row', btn2)));
     }
   });
@@ -259,7 +259,7 @@
       }
       page.appendChild(div('card', div('card-title', '选择 PDF'), picker.el, info,
         div('form-row', h('span', { class: 'form-label' }, '清晰度'), scaleIn, h('span', { class: 'field-hint' }, '倍渲染（2 = 约 192dpi）'),
-          btn('🖼 开始转换', 'btn-primary', render), status)));
+          btn('开始转换', 'btn-primary', render, 'image'), status)));
       page.appendChild(list);
     }
   });
@@ -337,7 +337,7 @@
         status.textContent = `✓ ${(r.size / 1024).toFixed(1)} KB`;
       }
       page.appendChild(div('card', div('card-title', '文档'), picker.el,
-        div('form-row', btn('👁 预览', 'btn-primary', preview), status)));
+        div('form-row', btn('预览', 'btn-primary', preview, 'eye'), status)));
       page.appendChild(div('card', div('card-title', '预览'), view));
     }
   });
@@ -376,7 +376,7 @@
       }
       page.appendChild(div('card', div('card-title', '原文'),
         div('form-row', h('span', { class: 'form-label' }, '语言'), fromSel, h('span', null, '→'), toSel,
-          btn('🌐 翻译', 'btn-primary', go), h('span', { class: 'field-hint' }, '使用公共翻译引擎，点击时才联网')),
+          btn('翻译', 'btn-primary', go, 'globe'), h('span', { class: 'field-hint' }, '使用公共翻译引擎，点击时才联网')),
         ta));
       page.appendChild(div('card', div('card-title', '译文'), out, div('form-row', btn('复制', 'btn-sm btn-secondary', () => out.value && copyText(out.value)))));
     }
@@ -411,7 +411,7 @@
         else engineEl.innerHTML = '<span class="status-warn">⚠ 未检测到 LibreOffice 或 Microsoft Office，请先安装其中之一</span>';
       }).catch(() => {});
       let running = false; // 防重入标志：转换中禁止再次点击
-      const startBtn = btn('🚀 开始转换', 'btn-primary', run);
+      const startBtn = btn('开始转换', 'btn-primary', run, 'send');
       async function run() {
         if (running) return; // 防重入：重复转换会并发占用 LibreOffice/Office COM
         running = true;

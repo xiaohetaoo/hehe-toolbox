@@ -551,7 +551,7 @@
     info.appendChild(div('tc-desc', t.desc || ''));
     // 高危标记：已开启显示「高危」，未开启显示「未启用」并加锁，提示需去设置里开启
     if (danger) {
-      info.appendChild(div('tc-danger-tag', dangerOn ? '⚠ 高危' : '🔒 未启用'));
+      info.appendChild(div('tc-danger-tag', dangerOn ? '⚠ 高危' : '未启用'));
     }
     card.appendChild(info);
     if (danger && !dangerOn) {
@@ -1300,14 +1300,14 @@
             if (!j.ok) { updLine.textContent = T('update.downloadFail', { err: (j.error || '') }); return; }
             updLine.textContent = T('update.downloaded', { v: r.latest, path: out });
             toast(T('update.readyToast'), 'success');
-            updActions.appendChild(btn('🚀 ' + T('update.confirmOk'), 'btn-sm btn-primary', async () => {
+            updActions.appendChild(btn(T('update.confirmOk'), 'btn-sm btn-primary', async () => {
               if (!(await confirmBox({ title: T('update.confirmTitle'), message: T('update.confirmMsg', { v: r.latest }), okText: T('update.confirmOk') }))) return;
               try {
                 const ap = await invoke('update:apply', { newExe: out, expectSha256: r.assetSha256 || null });
                 updLine.textContent = T('update.applying');
                 if (ap && ap.rollbackScript) updActions.appendChild(div('field-hint', T('update.rollbackScript', { path: ap.rollbackScript })));
               } catch (e) { updLine.textContent = T('update.applyFail', { err: e.message }); }
-            }));
+            }, 'send'));
             updActions.appendChild(btn(T('update.openDir'), 'btn-sm btn-secondary', () => invoke('fs:show-item', out).catch(() => {})));
           } catch (e) {}
         }

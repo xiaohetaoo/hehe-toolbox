@@ -96,7 +96,7 @@ register({
       page.appendChild(div('card', div('card-title', '水印设置'),
         div('form-row', h('span', { class: 'form-label' }, '文字'), textIn),
         div('form-row', h('span', { class: 'form-label' }, '位置'), posSel, ' 字号', sizeIn, ' 透明度%', opacityIn),
-        div('form-row', btn('💧 添加水印', 'btn-primary', run), prog.el)));
+        div('form-row', btn('添加水印', 'btn-primary', run, 'droplet'), prog.el)));
       page.appendChild(div('card', div('card-title', '首图预览'), preview));
     }
   })

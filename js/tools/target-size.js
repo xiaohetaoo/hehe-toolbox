@@ -111,11 +111,11 @@
 
       const prog = progressEl(); prog.hide();
       const status = div('field-hint', '');
-      const startBtn = btn('🚀 开始压缩', 'btn-primary', run);
-      const cancelBtn = btn('■ 停止', 'btn-danger-plain', () => {
+      const startBtn = btn('开始压缩', 'btn-primary', run, 'send');
+      const cancelBtn = btn('停止', 'btn-danger-plain', () => {
         canceled = true;
         if (runJobId) invoke('job:kill', runJobId).catch(() => {});
-      });
+      }, 'square');
       cancelBtn.disabled = true;
 
       let runJobId = null;

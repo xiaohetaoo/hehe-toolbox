@@ -107,7 +107,7 @@ register({
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '格式'), fmtSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '质量'), qualityIn),
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
-        div('form-row', btn('🚀 开始处理', 'btn-primary', run), prog.el, status)));
+        div('form-row', btn('开始处理', 'btn-primary', run, 'send'), prog.el, status)));
       page.appendChild(div('card', div('card-title', '处理结果'), preview));
     }
   })

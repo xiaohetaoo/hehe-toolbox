@@ -209,7 +209,7 @@
         } catch (e) { toast(e.message, 'error'); }
       }
       page.appendChild(div('card', div('card-title', '取色'),
-        btn('🎨 开始取色', 'btn-primary btn-lg', pick, 'target'),
+        btn('开始取色', 'btn-primary btn-lg', pick, 'target'),
         div('form-row', preview, valEl),
         div('field-hint', '点击后截取当前屏幕，在放大镜中选取像素颜色，按 Esc 退出')));
     }
@@ -381,8 +381,8 @@
       const logEl = div('term', '');
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let running = false;
-      const startBtn = btn('▶ 启动服务', 'btn-primary', start);
-      const stopBtn = btn('■ 停止服务', 'btn-danger-plain', stop);
+      const startBtn = btn('启动服务', 'btn-primary', start, 'play');
+      const stopBtn = btn('停止服务', 'btn-danger-plain', stop, 'square');
       stopBtn.disabled = true;
       /* 把「运行中」的界面状态收成一处，启动/停止/回填都走它 ——
        * 否则三处各写一遍，很容易像原来那样漏掉某条路径的按钮状态。 */

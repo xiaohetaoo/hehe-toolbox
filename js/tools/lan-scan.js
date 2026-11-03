@@ -194,7 +194,7 @@
         resultBox.appendChild(card);
       }
 
-      const scanBtn = btn('📡 扫描局域网设备', 'btn-primary', doScan);
+      const scanBtn = btn('扫描局域网设备', 'btn-primary', doScan, 'wifi');
 
       page.appendChild(div('card',
         div('card-title', '扫描'),

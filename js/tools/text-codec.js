@@ -23,16 +23,16 @@
         }
       });
       let decodeMode = false;
-      const swapBtn = window.ui.btn('⇄ 解码模式', 'btn-secondary btn-sm', () => {
+      const swapBtn = window.ui.btn('解码模式', 'btn-secondary btn-sm', () => {
         decodeMode = !decodeMode;
-        swapBtn.textContent = decodeMode ? '⇄ 编码模式' : '⇄ 解码模式';
+        swapBtn.querySelector('.btn-label').textContent = decodeMode ? '编码模式' : '解码模式';
         box.el.querySelector('.pane-head span').textContent = decodeMode ? 'Base64' : '原文';
         box.el.querySelectorAll('.pane-head span')[1] && null;
         const heads = box.el.querySelectorAll('.pane-head');
         heads[0].firstChild.textContent = decodeMode ? 'Base64 输入' : '原文';
         heads[1].firstChild.textContent = decodeMode ? '解码结果' : 'Base64';
         run(); // 用双向转换逻辑刷新，box.fire() 只会单向编码
-      });
+      }, 'git-compare');
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       const origConvert = box.fire;
       const opts = div('form-row', swapBtn);
@@ -91,14 +91,14 @@
       }
       function mode() { return swapDecode; }
       let swapDecode = false;
-      const swapBtn = window.ui.btn('⇄ 解码', 'btn-secondary btn-sm', () => {
+      const swapBtn = window.ui.btn('解码', 'btn-secondary btn-sm', () => {
         swapDecode = !swapDecode;
-        swapBtn.textContent = swapDecode ? '⇄ 编码' : '⇄ 解码';
+        swapBtn.querySelector('.btn-label').textContent = swapDecode ? '编码' : '解码';
         const heads = box.el.querySelectorAll('.pane-head');
         heads[0].firstChild.textContent = swapDecode ? 'URL 编码' : '原文';
         heads[1].firstChild.textContent = swapDecode ? '解码结果' : 'URL 编码';
         fire2();
-      });
+      }, 'git-compare');
       page.querySelector('.form-row').prepend(swapBtn);
       ta.addEventListener('input', fire2);
       fire2();
@@ -129,14 +129,14 @@
       page.appendChild(box.el);
       const ta = box.input, out = box.output;
       let decode = false;
-      const swapBtn = window.ui.btn('⇄ 解码', 'btn-secondary btn-sm', () => {
+      const swapBtn = window.ui.btn('解码', 'btn-secondary btn-sm', () => {
         decode = !decode;
-        swapBtn.textContent = decode ? '⇄ 编码' : '⇄ 解码';
+        swapBtn.querySelector('.btn-label').textContent = decode ? '编码' : '解码';
         const heads = box.el.querySelectorAll('.pane-head');
         heads[0].firstChild.textContent = decode ? 'Unicode 转义' : '原文';
         heads[1].firstChild.textContent = decode ? '解码结果' : 'Unicode 转义';
         fire();
-      });
+      }, 'git-compare');
       page.insertBefore(div('form-row', swapBtn), box.el);
       function fire() {
         try {
@@ -167,14 +167,14 @@
       page.appendChild(box.el);
       const ta = box.input, out = box.output;
       let decode = false;
-      const swapBtn = window.ui.btn('⇄ 还原', 'btn-secondary btn-sm', () => {
+      const swapBtn = window.ui.btn('还原', 'btn-secondary btn-sm', () => {
         decode = !decode;
-        swapBtn.textContent = decode ? '⇄ 转义' : '⇄ 还原';
+        swapBtn.querySelector('.btn-label').textContent = decode ? '转义' : '还原';
         const heads = box.el.querySelectorAll('.pane-head');
         heads[0].firstChild.textContent = decode ? 'HTML 转义' : '原文';
         heads[1].firstChild.textContent = decode ? '还原结果' : 'HTML 转义';
         fire();
-      });
+      }, 'git-compare');
       page.insertBefore(div('form-row', swapBtn), box.el);
       function fire() {
         if (decode) {
@@ -206,14 +206,14 @@
       page.appendChild(box.el);
       const ta = box.input, out = box.output;
       let decode = false;
-      const swapBtn = window.ui.btn('⇄ 解码', 'btn-secondary btn-sm', () => {
+      const swapBtn = window.ui.btn('解码', 'btn-secondary btn-sm', () => {
         decode = !decode;
-        swapBtn.textContent = decode ? '⇄ 编码' : '⇄ 解码';
+        swapBtn.querySelector('.btn-label').textContent = decode ? '编码' : '解码';
         const heads = box.el.querySelectorAll('.pane-head');
         heads[0].firstChild.textContent = decode ? '十六进制' : '文本';
         heads[1].firstChild.textContent = decode ? '解码结果' : '十六进制';
         fire2();
-      });
+      }, 'git-compare');
       page.querySelector('.form-row').appendChild(swapBtn);
       function fire2() {
         try {

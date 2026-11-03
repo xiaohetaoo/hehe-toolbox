@@ -119,14 +119,14 @@ register({
         canvasBox.appendChild(canvas);
         const b64 = canvas.toDataURL('image/png').split(',')[1];
         const outDefault = (loaded[0].path.replace(/[\\/][^\\/]+$/, '')) + (isV ? '/stitch-v.png' : '/stitch-h.png');
-        const saveBtn = btn('💾 保存 PNG', 'btn-primary btn-sm', async () => {
+        const saveBtn = btn('保存 PNG', 'btn-primary btn-sm', async () => {
           try {
             const p = await invoke('dialog:save', { defaultPath: outDefault });
             if (!p) return;
             await invoke('fs:write-file-b64', p, b64);
             toast('已保存：' + p, 'success');
           } catch (e) { toast(e.message || String(e), 'error'); }
-        });
+        }, 'save');
         canvasBox.appendChild(div('form-row', saveBtn, h('span', { class: 'field-hint' }, `${canvas.width}×${canvas.height}px`)));
       }
       page.appendChild(div('card', div('card-title', '添加图片'), picker.el));

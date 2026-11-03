@@ -682,8 +682,23 @@
     if (hint) row.appendChild(h('span', { class: 'field-hint' }, hint));
     return row;
   }
+  /* 【按钮文本必须单独包一层 span】
+   * 之前是 h('button', {...}, icon(iconName), text) —— 文本作为**裸文本节点**塞进去。
+   * 于是想换文案的地方只能 `btn.textContent = '新文案'`，而那会清掉整个子节点列表，
+   * 连左边那个 svg 图标一起干掉：图标闪烁一次就永久消失了。
+   * 实际踩到的：文本编解码那 5 个「编码/解码」切换按钮，
+   * 初始有图标，点一下变成纯文字。
+   *
+   * 包一层 .btn-label 之后，改文案写成 `b.querySelector('.btn-label').textContent = x`
+   * 即可保住图标。不叫 span 是为了 querySelector 能稳定命中
+   * （按钮里可能还有别的 span，比如 .icon 本身）。
+   *
+   * 注意：文本为空的按钮（纯图标按钮）不生成这个 span，
+   * 否则 flex gap 会多出一个 0 宽的元素，把图标挤偏。 */
   function btn(text, cls, onClick, iconName) {
-    const b = h('button', { class: 'btn ' + (cls || 'btn-primary'), onclick: onClick }, iconName ? icon(iconName) : null, text);
+    const b = h('button', { class: 'btn ' + (cls || 'btn-primary'), onclick: onClick }, iconName ? icon(iconName) : null);
+    const label = text == null ? '' : String(text);
+    if (label) b.appendChild(h('span', { class: 'btn-label' }, label));
     return b;
   }
   /* 双栏转换布局 */

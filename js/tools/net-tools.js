@@ -91,8 +91,8 @@
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let latencies = [], sent = 0, recv = 0, running = false;
       let unsubStream, unsubExit;
-      const startBtn = btn('▶ 开始 Ping', 'btn-primary', start);
-      const stopBtn = btn('■ 停止 Ping', 'btn-danger-plain', stop);
+      const startBtn = btn('开始 Ping', 'btn-primary', start, 'play');
+      const stopBtn = btn('停止 Ping', 'btn-danger-plain', stop, 'square');
       stopBtn.disabled = true;
       function updateStats() {
         /* 不用 Math.max(...latencies)：ping 次数虽小，但「展开传参」这类写法
@@ -192,7 +192,7 @@
         if (unsubExit) try { unsubExit(); } catch (e) {}
         if (jobId) invoke('job:kill', jobId).catch(() => {});
       });
-      const startBtn = btn('▶ 开始追踪', 'btn-primary', async () => {
+      const startBtn = btn('开始追踪', 'btn-primary', async () => {
         if (!isDesktop) return toast('桌面端可用', 'warn');
         const host = hostIn.value.trim();
         if (!host) return;
@@ -226,7 +226,7 @@
           }
         });
         unsubExit = on('job:exit', (d) => { if (d.id === jobId) startBtn.disabled = false; });
-      });
+      }, 'play');
       page.appendChild(div('card', div('card-title', '目标'),
         div('form-row', hostIn, h('label', { class: 'field-hint' }, noDns, ' 不解析域名（更快）'), startBtn)));
       page.appendChild(div('card', div('card-title', '路径'), term));
@@ -398,7 +398,7 @@
           pathEl.textContent = r.path;
         } catch (e) { toast(e.message, 'error'); }
       }
-      const saveBtn = btn('💾 保存并刷新 DNS', 'btn-primary', async () => {
+      const saveBtn = btn('保存并刷新 DNS', 'btn-primary', async () => {
         try {
           await invoke('hosts:write', ta.value);
           status.innerHTML = '<span class="status-ok">✓ 已保存并刷新 DNS 缓存</span>';
@@ -407,7 +407,7 @@
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span><br><span class="field-hint">提示：修改 hosts 需要管理员权限，请以管理员身份运行核核工具箱后再试。</span>`;
           toast('保存失败：' + e.message, 'error');
         }
-      });
+      }, 'save');
       const bakBtn = btn('备份当前', 'btn-sm btn-secondary', async () => {
         try { const r = await invoke('hosts:backup'); toast('已备份：' + r.name, 'success'); } catch (e) { toast(e.message, 'error'); }
       });
@@ -441,8 +441,8 @@
       const status = h('span', { class: 'field-hint' }, '');
       let samples = [];
       let unsub;
-      const downBtn = btn('⬇ 测下载', 'btn-primary', () => run('down'));
-      const upBtn = btn('⬆ 测上传', 'btn-secondary', () => run('up'));
+      const downBtn = btn('测下载', 'btn-primary', () => run('down'), 'download');
+      const upBtn = btn('测上传', 'btn-secondary', () => run('up'), 'upload');
       async function run(dir) {
         if (!isDesktop) return toast('桌面端可用（需联网）', 'warn');
         if (unsub) { try { unsub(); } catch (e) {} unsub = null; } // 防连点：先退订上一轮
@@ -506,7 +506,7 @@
     render(page) {
       const listBox = div('');
       const status = h('span', { class: 'field-hint' }, '');
-      const refreshBtn = btn('🔄 重新加载', 'btn-sm btn-secondary', load);
+      const refreshBtn = btn('重新加载', 'btn-sm btn-secondary', load, 'refresh');
       async function load() {
         listBox.innerHTML = '';
         listBox.appendChild(window.ui.loadingBlock('读取已保存的 WiFi…'));
@@ -558,8 +558,8 @@
       });
       const prog = progressEl(); prog.hide();
       const status = h('span', { class: 'field-hint' }, '');
-      const startBtn = btn('⬇ 开始下载', 'btn-primary', start);
-      const stopBtn = btn('■ 取消', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); });
+      const startBtn = btn('开始下载', 'btn-primary', start, 'download');
+      const stopBtn = btn('取消', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); }, 'square');
       stopBtn.disabled = true;
       let jobId = null, unsub = null, pageDead = false;
       window.App.onCleanup(() => {

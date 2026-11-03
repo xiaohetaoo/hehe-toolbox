@@ -410,8 +410,8 @@
        * 严格模式下则抛 `status is not defined`。这里补上真正的元素。 */
       const status = h('span', { class: 'field-hint' }, '');
       page.appendChild(div('card', div('card-title', '笔记'),
-        div('form-row', btn('＋ 新建', 'btn-sm btn-primary', createNew), btn('💾 保存', 'btn-sm btn-secondary', save),
-          btn('📄 导出 PDF', 'btn-sm btn-secondary', exportPdf), btn('删除', 'btn-sm btn-text', removeCur), status),
+        div('form-row', btn('新建', 'btn-sm btn-primary', createNew, 'plus'), btn('保存', 'btn-sm btn-secondary', save, 'save'),
+          btn('导出 PDF', 'btn-sm btn-secondary', exportPdf, 'file-text'), btn('删除', 'btn-sm btn-text', removeCur), status),
         div('', { style: { display: 'flex', gap: '10px' } },
           div('', { style: { minWidth: '220px' } }, searchIn, tagFilter, sideList),
           div('', { style: { flex: '1' } }, titleIn, tagsIn, panes)),
@@ -440,8 +440,8 @@
       const volIn = h('input', { type: 'range', min: '0', max: '100', value: '100', style: { width: '120px' }, title: '音量' });
       const volLabel = h('span', { class: 'field-hint' }, '100');
       const status = h('span', { class: 'field-hint' }, '');
-      const speakBtn = btn('🔊 朗读', 'btn-primary', speak);
-      const stopBtn = btn('■ 停止', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); });
+      const speakBtn = btn('朗读', 'btn-primary', speak, 'music');
+      const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); }, 'square');
       stopBtn.disabled = true;
       let jobId = null, unsub = null;
       rateIn.addEventListener('input', () => rateLabel.textContent = rateIn.value);
@@ -483,7 +483,7 @@
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '语速'), rateIn, rateLabel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '音量'), volIn, volLabel),
         div('form-row', speakBtn, ' ', stopBtn,
-          btn('💾 导出 WAV', 'btn-sm btn-secondary', async () => {
+          btn('导出 WAV', 'btn-sm btn-secondary', async () => {
             const text = ta.value.trim();
             if (!text) return toast('请输入文本', 'warn');
             const p = await invoke('dialog:save', { defaultPath: 'speech.wav', filters: [{ name: 'WAV', extensions: ['wav'] }] });
@@ -492,7 +492,7 @@
             /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
             try { const r = await invoke('tts:wav', { text, out: p, voice: voiceSel.value, rate: +rateIn.value }); status.textContent = '✓ 已导出：' + p; toast('导出完成', 'success'); }
             catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
-          }), status),
+          }, 'save'), status),
         div('field-hint', '使用 Windows 内置语音（设置 → 时间和语言 → 语音 可安装更多音色，如中文 Huihui）')));
     }
   });

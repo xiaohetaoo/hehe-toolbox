@@ -2,7 +2,7 @@
 (function () {
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-  const { div, btn, toast, copyText, confirmBox, renderTable, fmtBytes, fmtNum, fmtDate, progressEl } = window.ui;
+  const { div, btn, icon, toast, copyText, confirmBox, renderTable, fmtBytes, fmtNum, fmtDate, progressEl } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const MOD = 'system';
 
@@ -23,26 +23,26 @@
           const info = await invoke('sys:hw-info', !!force);
           if (t !== loadSeq) return;
           body.innerHTML = '';
-          body.appendChild(sectionCard('🖥 处理器 CPU', [
+          body.appendChild(sectionCard('处理器 CPU', [
             ['型号', info.cpu.Name], ['物理核心', info.cpu.NumberOfCores], ['逻辑核心', info.cpu.NumberOfLogicalProcessors],
             ['基准频率', info.cpu.MaxClockSpeed ? (info.cpu.MaxClockSpeed + ' MHz') : '-'], ['当前负载', info.cpu.LoadPercentage != null ? info.cpu.LoadPercentage + '%' : '-']
-          ]));
-          body.appendChild(sectionCard('💻 内存', [
+          ], 'cpu'));
+          body.appendChild(sectionCard('内存', [
             ['总容量', fmtBytes(info.memTotal)], ['可用', fmtBytes(info.memFree)],
             ['已用', fmtBytes(info.memTotal - info.memFree) +
               // memTotal 为 0/缺失时（虚拟机、WMI 异常返回）不能显示 NaN%
               (info.memTotal > 0 ? `（${((1 - info.memFree / info.memTotal) * 100).toFixed(0)}%）` : '')]
-          ]));
-          body.appendChild(sectionCard('🎮 显卡', info.gpu.map(g => [g.Name, `驱动 ${g.DriverVersion || '-'}`])));
-          body.appendChild(sectionCard('💾 硬盘', info.disks.map(d => [d.Model, d.Size ? fmtBytes(Number(d.Size)) + `（${d.InterfaceType || ''}）` : '-'])));
-          body.appendChild(sectionCard('📀 分区', info.partitions.filter(p => p.type === 3).map(p =>
+          ], 'monitor'));
+          body.appendChild(sectionCard('显卡', info.gpu.map(g => [g.Name, `驱动 ${g.DriverVersion || '-'}`]), 'monitor'));
+          body.appendChild(sectionCard('硬盘', info.disks.map(d => [d.Model, d.Size ? fmtBytes(Number(d.Size)) + `（${d.InterfaceType || ''}）` : '-']), 'harddrive'));
+          body.appendChild(sectionCard('分区', info.partitions.filter(p => p.type === 3).map(p =>
             [p.drive + ' ' + p.label, `${fmtBytes(p.size)} 总 / ${fmtBytes(p.free)} 可用`])));
-          body.appendChild(sectionCard('🔌 主板与 BIOS', [
+          body.appendChild(sectionCard('主板与 BIOS', [
             ['主板', `${info.board.Manufacturer || '-'} ${info.board.Product || ''}`],
             ['BIOS', `${info.bios.Manufacturer || '-'} ${info.bios.SMBIOSBIOSVersion || ''}`]
           ]));
-          body.appendChild(sectionCard('🖧 网卡', info.nic.map(n => [n.Name, n.MACAddress || '-'])));
-          body.appendChild(sectionCard('🦾 操作系统', [
+          body.appendChild(sectionCard('网卡', info.nic.map(n => [n.Name, n.MACAddress || '-'])));
+          body.appendChild(sectionCard('操作系统', [
             ['系统', info.os.Caption], ['版本', `${info.os.Version} (${info.os.BuildNumber}) ${info.os.OSArchitecture || ''}`],
             ['上次启动', fmtBoot(info.os.LastBootUpTime)],
             ['运行时长', fmtTimeDur(info.uptimeS)]
@@ -61,11 +61,11 @@
                 batRows.push(['电池健康度', h('span', { class: bat.health >= 80 ? 'status-ok' : bat.health >= 60 ? 'status-warn' : 'status-err' }, String(bat.health) + '%')]);
               }
             } catch (e) {}
-            body.appendChild(sectionCard('🔋 电池', batRows));
+            body.appendChild(sectionCard('电池', batRows));
           }
           if (info.temps && info.temps.length) {
             /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-            body.appendChild(sectionCard('🌡 温度', info.temps.map(t => [t.name, t.celsius + ' °C'])));
+            body.appendChild(sectionCard('温度', info.temps.map(t => [t.name, t.celsius + ' °C'])));
           }
         } catch (e) {
           if (t !== loadSeq) return;
@@ -97,13 +97,16 @@
         if (!Number.isFinite(ms)) return '-';
         return fmtDate(ms);
       }
-      function sectionCard(title, pairs) {
+      /* 标题左侧的图标走统一的 SVG 图标库（用 card-title 自带的主色图标位），
+       * 不再往标题文字里塞 emoji —— emoji 的字重、基线、颜色都不受控，
+       * 在本项目的深色主题下还会被系统换成彩色字形，和整套线性图标对不上。 */
+      function sectionCard(title, pairs, iconName) {
         const card = div('card');
-        card.appendChild(div('card-title', null, title));
+        card.appendChild(div('card-title', null, iconName ? icon(iconName) : null, title));
         card.appendChild(window.ui.kvGrid(pairs.length ? pairs : [['-', '-']]));
         return card;
       }
-      page.appendChild(div('card', div('card-title', '硬件概览'), btn('🔄 刷新', 'btn-sm btn-secondary', () => load(true))));
+      page.appendChild(div('card', div('card-title', '硬件概览'), btn('刷新', 'btn-sm btn-secondary', () => load(true), 'refresh')));
       page.appendChild(body);
       load(false);
     }
@@ -209,7 +212,7 @@
         if (data.length > 300) box.appendChild(div('field-hint', `共 ${data.length} 个，显示前 300`));
       }
       searchIn.addEventListener('input', window.ui.debounce(draw, 200));
-      const refreshBtn = btn('🔄 刷新', 'btn-sm btn-secondary', refresh);
+      const refreshBtn = btn('刷新', 'btn-sm btn-secondary', refresh, 'refresh');
       let autoTimer = null;
       window.App.onCleanup(() => { if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } });
       const autoSw = window.ui.switchEl(false, (v) => {
@@ -280,7 +283,7 @@
           }
         } catch (e) { status.textContent = '✗ ' + e.message; }
       }
-      page.appendChild(div('card', div('card-title', '自启项', btn('🔄 刷新', 'btn-sm btn-secondary', load)), status));
+      page.appendChild(div('card', div('card-title', '自启项', btn('刷新', 'btn-sm btn-secondary', load, 'refresh')), status));
       page.appendChild(box);
       load();
     }
@@ -367,7 +370,7 @@
             h('span', { class: 'field-hint', style: { width: '80px', textAlign: 'right' } }, it.files + ' 个文件')));
         }
       }
-      const cleanBtn = btn('🧹 清理勾选项', 'btn-danger', async () => {
+      const cleanBtn = btn('清理勾选项', 'btn-danger', async () => {
         const selected = items.filter(it => box.querySelector(`input[data-id="${it.id}"]`)?.checked);
         if (!selected.length) return toast('请先扫描并勾选', 'warn');
         const total = selected.reduce((s, i) => s + i.size, 0);
@@ -382,7 +385,7 @@
           else toast(`已清理 ${fmtBytes(r.bytes)}`, 'success');
           scanBtn.click();
         } catch (e) { toast(e.message, 'error'); }
-      });
+      }, 'refresh');
       const rbBtn = btn('清空回收站', 'btn-danger-plain', async () => {
         if (!(await confirmBox({ title: '清空回收站', message: '确定清空系统回收站？此操作不可恢复。', danger: true, okText: '清空' }))) return;
         try { await invoke('sys:recycle-empty'); toast('回收站已清空', 'success'); }
@@ -433,14 +436,14 @@
         scroll.appendChild(table);
         box.appendChild(scroll);
       }
-      const delBtn = btn('🗑 删除全部空目录', 'btn-danger', async () => {
+      const delBtn = btn('删除全部空目录', 'btn-danger', async () => {
         if (!dirs.length) return toast('请先扫描', 'warn');
         if (!(await confirmBox({ title: '删除空目录', message: `将删除 ${dirs.length} 个空目录，确定继续？`, danger: true, okText: '删除' }))) return;
         try {
           /* 【必须传路径字符串，不能传扫描结果对象】
            * r.dirs 的元素是 { path, depth } 对象。早期这里直接 invoke(..., dirs)
            * 把**对象数组**发过去，主进程 for (const p of dirs) 里 p 是个对象：
-           *   1) pathGuard.checkDeletable(obj) 内部 String(p) 得到 "[object Object]"，
+           *   1, 'trash') pathGuard.checkDeletable(obj) 内部 String(p) 得到 "[object Object]"，
            *      既不是根、不是关键目录、不是家目录 → 闸门直接放行（形同虚设）；
            *   2) fsp.rmdir(obj) 抛 ERR_INVALID_ARG_TYPE，被内层 catch 收进 errors，
            *      deleted 恒为 0；
@@ -477,32 +480,32 @@
     keywords: ['锁屏', '关机', '重启', '休眠'],
     render(page) {
       const actions = [
-        ['🔒 立即锁屏', '锁屏后需输入密码解锁，继续？', 'lock', false],
-        ['🌙 睡眠', '进入睡眠状态，继续？', 'sleep', false],
-        ['💤 休眠', '进入休眠状态（内存写入硬盘），继续？', 'hibernate', false],
-        ['🔄 重启系统', '系统将立即重启，未保存数据会丢失！', 'restart', true],
-        ['⏻ 关机', '系统将立即关机，未保存数据会丢失！', 'shutdown', true]
+        ['立即锁屏', '锁屏后需输入密码解锁，继续？', 'lock', false, 'lock'],
+        ['睡眠', '进入睡眠状态，继续？', 'sleep', false, 'moon'],
+        ['休眠', '进入休眠状态（内存写入硬盘），继续？', 'hibernate', false, 'moon'],
+        ['重启系统', '系统将立即重启，未保存数据会丢失！', 'restart', true, 'refresh'],
+        ['关机', '系统将立即关机，未保存数据会丢失！', 'shutdown', true, 'power']
       ];
       const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' } });
-      for (const [label, msg, action, danger] of actions) {
+      for (const [label, msg, action, danger, iconName] of actions) {
         const b = btn(label, danger ? 'btn-danger-plain' : 'btn-secondary', async () => {
           if (!(await confirmBox({ title: label, message: msg, danger, okText: '确认执行' }))) return;
           try { await invoke('sys:power', action); toast('已执行', 'success'); }
           catch (e) { toast(e.message, 'error'); }
-        });
+        }, iconName);
         b.style.height = '52px';
         grid.appendChild(b);
       }
       page.appendChild(div('card', div('card-title', '电源操作'), grid));
       page.appendChild(div('card', div('card-title', '清理操作'),
         div('form-row',
-          btn('🗑 清空回收站', 'btn-danger-plain', async () => {
+          btn('清空回收站', 'btn-danger-plain', async () => {
             if (!(await confirmBox({ title: '清空回收站', message: '确定清空回收站？不可恢复。', danger: true, okText: '清空' }))) return;
             try { await invoke('sys:recycle-empty'); toast('已清空', 'success'); } catch (e) { toast(e.message, 'error'); }
-          }),
-          btn('📋 清空剪贴板', 'btn-secondary', async () => {
+          }, 'trash'),
+          btn('清空剪贴板', 'btn-secondary', async () => {
             try { await invoke('clip:write-text', ''); toast('剪贴板已清空', 'success'); } catch (e) { toast(e.message, 'error'); }
-          }))));
+          }, 'clipboard'))));
     }
   });
 
@@ -514,7 +517,7 @@
     render(page) {
       const box = div('');
       const status = h('span', { class: 'field-hint' }, '');
-      page.appendChild(div('card', div('card-title', '说明', btn('🔄 刷新', 'btn-sm btn-secondary', load), status),
+      page.appendChild(div('card', div('card-title', '说明', btn('刷新', 'btn-sm btn-secondary', load, 'refresh'), status),
         div('field-hint', '列出注册表中的经典右键菜单项。禁用会写入 LegacyDisable 标记（可随时恢复，不删除任何内容）；写入需要管理员权限，普通权限下仅可查看。')));
       async function load() {
         box.innerHTML = '';
@@ -612,7 +615,7 @@
     render(page) {
       const listBox = div('');
       const status = h('span', { class: 'field-hint' }, '');
-      const refreshBtn = btn('🔄 刷新', 'btn-sm btn-secondary', load);
+      const refreshBtn = btn('刷新', 'btn-sm btn-secondary', load, 'refresh');
       async function load() {
         listBox.innerHTML = '';
         listBox.appendChild(window.ui.loadingBlock('枚举窗口…'));
@@ -734,7 +737,7 @@
         } catch (e) { powerBox.innerHTML = ''; powerBox.appendChild(div('field-err', '✗ ' + e.message)); }
       }
       page.appendChild(div('card', div('card-title', 'Windows 服务'),
-        div('form-row', btn('🔄 刷新', 'btn-sm btn-secondary', loadSvc), svcFilter, svcStatus),
+        div('form-row', btn('刷新', 'btn-sm btn-secondary', loadSvc, 'refresh'), svcFilter, svcStatus),
         div('field-hint', '启动/停止服务需要管理员权限运行'), svcBox));
       page.appendChild(div('card', div('card-title', '电源计划'), powerBox));
       loadSvc(); loadPower();
@@ -831,7 +834,7 @@
       page.appendChild(div('card', div('card-title', '一次性定时'),
         div('form-row', h('span', { class: 'form-label' }, '动作'), modeSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '分钟'), minIn, msgIn),
-        div('form-row', btn('⏲ 设置', 'btn-primary', apply), ' ', btn('取消', 'btn-danger-plain', cancel), countdown, status),
+        div('form-row', btn('设置', 'btn-primary', apply, 'timer'), ' ', btn('取消', 'btn-danger-plain', cancel), countdown, status),
         div('field-hint', '关机/重启走系统 shutdown 计划（关机前弹窗可跳过）；睡眠/锁屏/提醒在应用内计时')));
 
       /* ---- 周期任务（主进程持久化调度，重启应用后依然生效） ---- */
@@ -857,7 +860,7 @@
             btn('删除', 'btn-sm btn-text', async () => { await invoke('sched:remove', s.id); loadRecurring(); })));
         }
       }
-      const rAddBtn = btn('＋ 添加周期任务', 'btn-primary', async () => {
+      const rAddBtn = btn('添加周期任务', 'btn-primary', async () => {
         const t = rType.value;
         const s = { type: t };
         if (t === 'daily') { s.hhmm = rTime.value || '09:00'; s.message = rMsg.value.trim(); if (!s.message) return toast('请输入提醒内容', 'warn'); }

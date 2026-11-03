@@ -19,15 +19,15 @@ register({
         } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
       }
       page.appendChild(div('card', div('card-title', '截图标注'),
-        btn('✂️ 开始截图', 'btn-primary btn-lg', start),
+        btn('开始截图', 'btn-primary btn-lg', start, 'scissors'),
         div('field-hint', '拖动框选 → 工具条标注（矩形/箭头/画笔/文字/马赛克，可撤销）→ 复制 / 保存 / 贴图 / OCR'),
         status,
         div('field-hint', '完整链路：截图 → 标注 → 贴图置顶（悬浮参考）→ OCR 识别文字；托盘右键也可直接截图')));
       page.appendChild(div('card', div('card-title', '快捷贴图'),
-        div('form-row', btn('📌 贴剪贴板图片', 'btn-secondary', async () => {
+        div('form-row', btn('贴剪贴板图片', 'btn-secondary', async () => {
           try { await invoke('snip:pin-clipboard'); toast('已贴图', 'success'); }
           catch (e) { toast(e.message, 'error'); }
-        }), h('span', { class: 'field-hint' }, '把剪贴板里的图片变成置顶小窗（Snipaste 式）'))));
+        }, 'pin'), h('span', { class: 'field-hint' }, '把剪贴板里的图片变成置顶小窗（Snipaste 式）'))));
     }
   })
 })();

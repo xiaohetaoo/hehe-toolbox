@@ -53,8 +53,8 @@ register({
       const status = h('span', { class: 'field-hint' }, '');
       let running = false;
       let runJobId = null; // 本页任务的 job id：按 id 精确取消，避免 cancel-latest 取消到别的任务
-      const startBtn = btn('🚀 开始压制', 'btn-primary', run);
-      const cancelBtn = btn('■ 取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); });
+      const startBtn = btn('开始压制', 'btn-primary', run, 'send');
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); }, 'square');
       cancelBtn.disabled = true;
       function applyPreset() {
         const v = presetSel.value;

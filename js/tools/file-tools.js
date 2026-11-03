@@ -277,8 +277,8 @@
        * 以前手写 running 标志时，三条提前返回（没选文件 / 没填密码 /
        * 保存对话框点取消）全都忘了复位，按钮从此永久没反应。 */
       const runGuarded = guard(run);
-      const encBtn = btn('🔒 加密模式', 'btn-sm btn-primary', () => setMode('encrypt'));
-      const decBtn = btn('🔓 解密模式', 'btn-sm btn-secondary', () => setMode('decrypt'));
+      const encBtn = btn('加密模式', 'btn-sm btn-primary', () => setMode('encrypt'), 'lock');
+      const decBtn = btn('解密模式', 'btn-sm btn-secondary', () => setMode('decrypt'), 'unlock');
       // 主按钮必须提升为变量：原来在 appendChild 里用 btn(...) 一次性渲染，
       // 文案被写死成「开始加密」，切到解密模式后按钮仍显示「开始加密」，
       // 实际执行的是解密 —— 文案与动作相反，属于危险的误导。
@@ -558,7 +558,7 @@
       const engTag = h('span', { class: 'tag tag-gray' }, '就绪');
       const statsLine = h('span', { class: 'field-hint' }, '');
       const listBox = div('');
-      const quickBtn = btn('📂 快速扫描（无需管理员）', 'btn-secondary btn-sm', startQuick);
+      const quickBtn = btn('快速扫描（无需管理员）', 'btn-secondary btn-sm', startQuick, 'folder');
       let env = null, builtInfo = {}, searchTimer = 0, quickJob = null, quickUnsub = null, seq = 0;
       async function refreshEnv() {
         env = await invoke('search:env').catch(() => null);
@@ -579,7 +579,7 @@
         for (const v of (env.volumes || [])) {
           const info = builtInfo[v.drive];
           const gb = v.size ? (v.size / 1073741824).toFixed(0) + 'GB' : '';
-          const label = (info ? '↻ 重建 ' : '⬢ 建索引 ') + v.drive + (gb ? `（${gb}）` : '') + (info ? ` · ${info.count.toLocaleString()} 项` : '');
+          const label = (info ? '重建 ' : '建索引 ') + v.drive + (gb ? `（${gb}）` : '') + (info ? ` · ${info.count.toLocaleString()} 项` : '');
           volRow.appendChild(btn(label, 'btn-sm ' + (info ? 'btn-secondary' : 'btn-primary'), () => buildIndex(v.drive)));
         }
         if (Object.keys(builtInfo).length) volRow.appendChild(btn('清空索引', 'btn-sm btn-text', async () => {
@@ -637,8 +637,8 @@
       // 持久单表：流式批次只追加行，不重复表头
       let resTbody = null;
       const COLS = [
-        { title: '文件名', render: (td, r) => td.appendChild(h('span', { class: 'mono', style: { wordBreak: 'break-all' } }, r.name + (r.dir ? ' 📁' : ''))) },
-        { title: '大小', w: '90px', render: (td, r) => td.append(r.dir ? '📁' : (r.size != null ? fmtBytes(r.size) : '-')) },
+        { title: '文件名', render: (td, r) => td.appendChild(h('span', { class: 'mono', style: { wordBreak: 'break-all' } }, r.name + (r.dir ? ' /' : ''))) },
+        { title: '大小', w: '90px', render: (td, r) => td.append(r.dir ? '目录' : (r.size != null ? fmtBytes(r.size) : '-')) },
         { title: '完整路径', render: (td, r) => td.appendChild(h('span', { class: 'field-hint', style: { wordBreak: 'break-all', fontSize: '11px' } }, r.path)) },
         { title: '操作', w: '180px', render: (td, r) => {
           td.appendChild(btn('打开', 'btn-sm btn-text', () => invoke('fs:open-path', r.path).catch(e2 => toast(e2.message, 'error'))));
@@ -726,8 +726,8 @@
       const ciChk = h('input', { type: 'checkbox', class: 'checkbox' }); ciChk.checked = true;
       const extIn = h('input', { class: 'input input-sm', placeholder: '扩展名过滤，如 js,txt,md（留空全部）', style: { width: '230px' } });
       const status = h('span', { class: 'field-hint' }, '');
-      const startBtn = btn('🔍 搜索', 'btn-primary', start);
-      const stopBtn = btn('■ 停止', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); });
+      const startBtn = btn('搜索', 'btn-primary', start, 'search');
+      const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); }, 'square');
       stopBtn.disabled = true;
       const listBox = div('');
       let jobId = null, unsub = null, pageDead = false;
@@ -837,7 +837,7 @@
       const zipName = h('input', { class: 'input input-sm', placeholder: '输出 .7z 路径（留空自动命名）', style: { flex: '1' } });
       const pwdIn = h('input', { class: 'input input-sm', placeholder: '密码（留空不加密）', style: { width: '140px' } });
       const volIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '分卷MB', style: { width: '90px' }, title: '分卷大小（MB，留空不分卷）' });
-      const cBtn = btn('📦 压缩', 'btn-primary', async () => {
+      const cBtn = btn('压缩', 'btn-primary', async () => {
         const cPaths = sevenPicker.paths;
         if (!cPaths.length) return toast('请选择文件', 'warn');
         try {
@@ -850,7 +850,7 @@
           const r = await invoke('seven:compress', { files: cPaths, out, password: pwdIn.value || '', volumeMB: volIn.value ? +volIn.value : 0 });
           toast('压缩完成：' + fmtBytes(r.size), 'success');
         } catch (e) { toast(e.message, 'error'); }
-      });
+      }, 'box');
       /* 解压 */
       const exPath = { p: null };
       const exPicker = filePicker({
@@ -861,14 +861,14 @@
         onChange: (items) => { exPath.p = items.length ? items[0].path : null; }
       });
       const exPwd = h('input', { class: 'input input-sm', placeholder: '密码（如有）', style: { width: '140px' } });
-      const exBtn = btn('📂 解压', 'btn-primary', async () => {
+      const exBtn = btn('解压', 'btn-primary', async () => {
         if (!exPath.p) return toast('请选择压缩包', 'warn');
         try {
           const outDir = exPath.p.replace(/\.\w+$/, '') + '_extracted';
           const r = await invoke('seven:extract', { archive: exPath.p, outDir, password: exPwd.value || '' });
           toast('已解压到：' + r.outDir, 'success');
         } catch (e) { toast(e.message, 'error'); }
-      });
+      }, 'folder');
       page.appendChild(div('card', div('card-title', '引擎'), engineLine,
         div('field-hint', '内置 7za 支持 7z/zip/tar/gz 等并支持密码与分卷；RAR 等更多格式需系统安装 7-Zip 完整版。')));
       page.appendChild(div('card', div('card-title', '压缩为 7z'), sevenPicker.el,
@@ -913,7 +913,7 @@
         }
       }
       page.appendChild(div('card', div('card-title', '预览（不解压）'), pvPicker.el,
-        div('form-row', pvPwd, btn('📋 列出内容', 'btn-sm btn-secondary', listArchive)), pvBox));
+        div('form-row', pvPwd, btn('列出内容', 'btn-sm btn-secondary', listArchive, 'clipboard')), pvBox));
     }
   });
 })();

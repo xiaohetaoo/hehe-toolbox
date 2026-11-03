@@ -97,19 +97,19 @@ register({
         const imgItem = items.find(i => i.type.startsWith('image/'));
         if (imgItem) { await fromBlob(imgItem.getAsFile(), '剪贴板图片'); toast('已读取剪贴板截图', 'success', 1200); }
       });
-      const pasteBtn = btn('📋 粘贴截图（Win+Shift+S 后点这里）', 'btn-secondary', async () => {
+      const pasteBtn = btn('粘贴截图（Win+Shift+S 后点这里）', 'btn-secondary', async () => {
         try {
           const imgData = await invoke('clip:read-image');
           if (!imgData) return toast('剪贴板中没有图片', 'warn');
           const bin = Uint8Array.from(atob(imgData.split(',')[1]), c => c.charCodeAt(0));
           await fromBlob(new Blob([bin], { type: 'image/png' }), '剪贴板图片');
         } catch (e) { toast(e.message, 'error'); }
-      });
+      }, 'clipboard');
       page.appendChild(div('card', div('card-title', '图片'),
         div('form-row', pasteBtn, ' ', h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '语言'), langSel),
         picker.el, preview));
       page.appendChild(div('card', div('card-title', '识别'),
-        div('form-row', btn('🔍 开始识别', 'btn-primary', recognize), prog.el, status),
+        div('form-row', btn('开始识别', 'btn-primary', recognize, 'search'), prog.el, status),
         result,
         div('form-row', btn('复制结果', 'btn-sm btn-secondary', () => result.value && copyText(result.value)))));
     }
