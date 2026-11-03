@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          for f in main.js preload.js lib/*.js js/*.js js/tools/*.js scripts/*.js; do node --check "$f"; done
+          for f in main.js preload.js lib/*.js ipc/*.js js/*.js js/tools/*.js scripts/*.js; do node --check "$f"; done
           echo "syntax OK"
 
       # 版本号规则：每段只能是 0–9，满 10 进位（0.0.14 是错的，应写 0.1.4）。

@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          for f in main.js preload.js lib/*.js js/*.js js/tools/*.js scripts/*.js; do node --check "$f"; done
+          for f in main.js preload.js lib/*.js ipc/*.js js/*.js js/tools/*.js scripts/*.js; do node --check "$f"; done
           echo "syntax OK"
 
       # ESLint 静态检查：抓 node --check 抓不到的「写成了但引用错」。
