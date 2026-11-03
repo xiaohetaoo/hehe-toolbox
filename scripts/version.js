@@ -81,7 +81,16 @@ function bump(parts) {
 function main() {
   const args = process.argv.slice(2);
 
+  /* 【--next / --bump 默认只打印，加 --write 才真的写】
+   *
+   * 原实现只打印，但脚本名叫 `version:bump`，行为却是「只算不写」——
+   * 名字在骗人。发版时（v0.3.9）我照输出敲了一遍才发现它没写文件。
+   *
+   * 为什么默认不写：版本号通常要和发布说明（docs/release-notes/vX.Y.Z.md）
+   * 一起改，自动写包容易让人只改了版本、忘了写说明。所以保持「看一眼再确认」，
+   * 但把话说清楚 —— 输出里明确告知有没有落盘。 */
   if (args[0] === '--bump' || args[0] === '--next') {
+    const doWrite = args.includes('--write');
     let base;
     if (args[0] === '--next') {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
@@ -91,7 +100,23 @@ function main() {
       base = parse(args[1]);
       if (!base) { console.error('用法：node scripts/version.js --bump <x.y.z>'); process.exit(1); }
     }
-    console.log(fmt(bump(base)));
+    const next = fmt(bump(base));
+    if (!doWrite) {
+      console.log(next);
+      console.log('（仅预览，未写入 package.json。加 --write 才会落盘）');
+      return;
+    }
+    /* 只替换 version 字段，不重排 package.json 的其他内容 ——
+     * JSON.parse + stringify 会把格式全改一遍，让这次 diff 看起来像动了整个文件。 */
+    const raw = fs.readFileSync(pkgPath, 'utf8');
+    const updated = raw.replace(/("version"\s*:\s*)"[^"]*"/, '$1"' + next + '"');
+    if (updated === raw) {
+      console.error('✗ 没找到 version 字段，未写入');
+      process.exit(1);
+    }
+    fs.writeFileSync(pkgPath, updated);
+    console.log('✓ 已写入 package.json：' + fmt(base) + ' → ' + next);
+    console.log('别忘了同时写 docs/release-notes/v' + next + '.md');
     return;
   }
 

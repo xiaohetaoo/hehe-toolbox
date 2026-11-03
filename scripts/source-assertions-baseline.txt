@@ -90,4 +90,5 @@ scripts/test-tray-i18n.js | A=3 | B=2 | e2e-fixture
 scripts/test-update-cleanup.js | A=0 | B=2 | legacy-source-assertion
 scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
-scripts/version.js | A=2 | B=0 | build-meta
+scripts/test-version.js | A=3 | B=0 | exact:三处读的都是用例自己在 %TEMP% 里生成的 package.json 副本（验证 --write 是否落盘、是否只改一行），不是项目源码
+scripts/version.js | A=3 | B=0 | build-meta

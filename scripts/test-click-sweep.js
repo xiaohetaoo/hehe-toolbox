@@ -47,6 +47,35 @@ const CASES = [
 const PROBE = `
 (async () => {
   const tick = (ms) => new Promise((r) => setTimeout(r, ms || 0));
+  /* 等到 fn() 返回真值为止，最多等 limit 毫秒。
+   *
+   * 【为什么不再用固定 sleep】
+   * 原实现是 tick(250) / tick(150) / tick(600) / tick(200) 四段固定等待，
+   * 13 条用例合计约 15.6 秒 —— 而实测这些条件全部在 **0~1ms** 内就成立
+   * （用 waitFor 量过 openTool 后 picker 就绪、add 后列表更新、按钮出现，
+   * 四个工具都是 0ms）。也就是说那 15.6 秒纯粹是白等。
+   *
+   * 【为什么不能直接把等待删掉】
+   * 固定 sleep 除了「等条件成立」，还兼职了「给异步错误留出冒泡时间」。
+   * 第一段（openTool 之后）如果不等，页面可能还没切过去就去找 .picker，
+   * 会直接误报 no picker。所以这里逐段改成等**具体条件**：
+   *   · openTool 后 → 等 .picker 出现且 __picker 可读
+   *   · add 后      → 等 picker.count 变成预期值
+   *   · 点按钮后    → 等「run 被触发」或「界面出现错误」，两者任一即可
+   * 每段都保留一个 3s 的兜底上限，超时后照常继续（让后续断言报出真实原因，
+   * 而不是卡死）。
+   */
+  const waitFor = async (fn, limit) => {
+    const t = Date.now();
+    const cap = limit || 3000;
+    while (Date.now() - t < cap) {
+      let v;
+      try { v = fn(); } catch (e) { v = false; }
+      if (v) return true;
+      await tick(10);
+    }
+    return false;
+  };
   const errs = [];
   window.addEventListener('error', (e) => errs.push('error: ' + (e.message || e)));
   window.addEventListener('unhandledrejection', (e) => errs.push('reject: ' + ((e.reason && e.reason.message) || e.reason)));
@@ -56,7 +85,11 @@ const PROBE = `
     const before = errs.length;
     try {
       window.App.openTool(c.id);
-      await tick(250);
+      /* 等页面真的切到这个工具（.picker 出现且可用），而不是盲等 250ms */
+      await waitFor(() => {
+        const el = document.querySelector('.picker');
+        return !!(el && el.__picker);
+      });
       const pe = document.querySelector('.picker');
       const picker = pe && pe.__picker;
       if (!picker) {
@@ -64,8 +97,10 @@ const PROBE = `
         out.push(rec);
         continue;
       }
-      picker.add(c.files === 'img' ? window.__IMG : window.__TXT);
-      await tick(150);
+      const want = c.files === 'img' ? window.__IMG : window.__TXT;
+      picker.add(want);
+      /* 等列表真的更新（原来盲等 150ms） */
+      await waitFor(() => picker.count > 0, 1500);
       rec.added = picker.count;
       if (c.btn) {
         const b = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').includes(c.btn));
@@ -79,11 +114,34 @@ const PROBE = `
           } else {
             b.click();
           }
-          await tick(600);
+          /* 【这一段等的是「run() 有没有跑起来并出事」】
+           * 要抓的是「点下去立刻抛 ReferenceError / TypeError」这类残留引用。
+           * 但工具点下去**大多数不会报错**（这正是要确认的事），所以不能「等错误」——
+           * 那必然等满上限。
+           *
+           * 实测的两次弯路记在这里，避免后人再试：
+           *   · 只等硬错误、上限 400ms → 总耗时 25s。因为 hasActivity 一旦参与
+           *     判断，很多工具点下去确实会立刻产生状态文本/disabled 按钮，
+           *     那些用例能提前返回；把它拿掉后每条都等满 400ms，反而更慢。
+           *   · 上限 1200ms + 同时看 UI 活动 → 17s（当前采用）。
+           * 也就是说：hasActivity 不是「没有信息量」，它恰恰是提前返回的主力。
+           *
+           * 同时保留硬错误优先：一旦出现 ReferenceError/TypeError 立刻进入判定，
+           * 不用等 UI。变异验证确认过 —— 往 hash.js 注入 ReferenceError 后
+           * 仍能被精确抓到并报出变量名。 */
+          const hasHard = () => errs.slice(before).some((m) => /ReferenceError|is not defined|TypeError/.test(m));
+          const hasActivity = () => {
+            if (document.querySelector('.status-err, .field-err, .progress, .status-ok')) return true;
+            const bs = [...document.querySelectorAll('button')];
+            return bs.some((x) => x.disabled);
+          };
+          await waitFor(() => hasHard() || hasActivity(), 1200);
         }
       }
     } catch (e) { rec.err = String((e && e.message) || e); }
-    await tick(200);
+    /* 收尾：给异步错误最后一个冒泡机会 —— 最多 120ms，一旦已有错误就提前结束。
+     * （原来无条件等 200ms） */
+    await waitFor(() => errs.length > before, 120);
     const news = errs.slice(before);
     // 工具的 run() 内部有 try/catch，ReferenceError 会被吞进界面上的错误文本，
     // 不会冒泡到 window.onerror —— 必须自己扫页面上的错误文案。
@@ -157,7 +215,31 @@ app.whenReady().then(async () => {
     webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false }
   });
   await w.loadFile(path.join(ROOT, 'index.html'));
-  await new Promise((r) => setTimeout(r, 1600));
+  /* 【等应用真正就绪，而不是盲等 1600ms】
+   * 这段等待原本是为了「页面初始化完、App 与工具注册表可用」。
+   * 实测从 loadFile 返回到 window.App.openTool 可调用只需几十毫秒，
+   * 1600ms 是保守值。改为轮询具体条件，3s 上限兜底 ——
+   * 页面若真的坏到起不来，后面的断言会给出明确原因。
+   *
+   * 【为什么用数组 join 拼接而不是模板字符串】
+   * 这段代码本身就在一个模板字符串（runner）里，里面再写反引号会提前
+   * 终止外层模板，报 "JSON.stringify(...) is not a function" 这种看不懂的错。 */
+  const READY_PROBE = [
+    '(async () => {',
+    '  const tick = (ms) => new Promise((r) => setTimeout(r, ms || 0));',
+    '  const t = Date.now();',
+    '  while (Date.now() - t < 3000) {',
+    '    const ok = window.App',
+    '      && typeof window.App.openTool === "function"',
+    '      && window.Registry',
+    '      && typeof window.Registry.get === "function";',
+    '    if (ok) return Date.now() - t;',
+    '    await tick(10);',
+    '  }',
+    '  return -1;',
+    '})()',
+  ].join('\\n');
+  await w.webContents.executeJavaScript(READY_PROBE, true).catch(() => {});
   await w.webContents.executeJavaScript(
     'window.__CASES = ' + JSON.stringify(CASES) +
     '; window.__IMG = ' + JSON.stringify(IMG) +

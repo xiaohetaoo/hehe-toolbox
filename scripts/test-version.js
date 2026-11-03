@@ -104,4 +104,66 @@ t('5c cmpVer：无法解析的输入不抛异常，按 0 处理', () => {
 
 /* ==================== 6. 数据文件损坏时不能静默覆盖 ==================== */
 
+
+/* ==================== 7. CLI 的 --write 语义 ====================
+ *
+ * 这一组锁的是「脚本名说 bump，行为却只打印」那个坑：
+ * 发版时照着 npm run version:bump 的输出改，才发现它从来没写过文件。
+ * 现在默认仍是「只预览」，但输出里必须**明说没写**；加 --write 才落盘。
+ *
+ * 【为什么必须在临时副本上跑】
+ * 它会改 package.json。真改仓库那份，一次测试失败就能把版本号留在半路。
+ * 所以复制一份到临时目录，在副本上执行，跑完删掉。 */
+t('7a version.js --next 默认只预览，不写文件，且明说「未写入」', () => {
+  const os = require('os');
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const { execFileSync } = require('child_process');
+  const tmp = fs2.mkdtempSync(path2.join(os.tmpdir(), 'ver-'));
+  try {
+    const pkgPath = path2.join(tmp, 'package.json');
+    fs2.writeFileSync(pkgPath, JSON.stringify({ name: 'x', version: '0.3.9' }, null, 2) + '\n');
+    fs2.mkdirSync(path2.join(tmp, 'scripts'), { recursive: true });
+    fs2.copyFileSync(path2.join(__dirname, 'version.js'), path2.join(tmp, 'scripts', 'version.js'));
+
+    const out = execFileSync(process.execPath, [path2.join(tmp, 'scripts', 'version.js'), '--next'],
+      { encoding: 'utf8', cwd: tmp });
+    assert.ok(/0\.4\.0/.test(out), '应算出下一个版本 0.4.0，实际输出：' + out);
+    assert.ok(/未写入/.test(out), '必须明确告知「未写入」，否则使用者会以为已经改了：' + out);
+    const after = JSON.parse(fs2.readFileSync(pkgPath, 'utf8')).version;
+    assert.strictEqual(after, '0.3.9', '预览模式不许改文件，实际变成了 ' + after);
+  } finally {
+    fs2.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+t('7b version.js --next --write 会真的写入，且只改 version 一行', () => {
+  const os = require('os');
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const { execFileSync } = require('child_process');
+  const tmp = fs2.mkdtempSync(path2.join(os.tmpdir(), 'ver-'));
+  try {
+    const pkgPath = path2.join(tmp, 'package.json');
+    /* 特意用带缩进和额外字段的格式，检查写回时不会重排整个文件 */
+    const original = JSON.stringify({ name: 'x', version: '0.3.9', description: '保持原样' }, null, 2) + '\n';
+    fs2.writeFileSync(pkgPath, original);
+    fs2.mkdirSync(path2.join(tmp, 'scripts'), { recursive: true });
+    fs2.copyFileSync(path2.join(__dirname, 'version.js'), path2.join(tmp, 'scripts', 'version.js'));
+
+    const out = execFileSync(process.execPath, [path2.join(tmp, 'scripts', 'version.js'), '--next', '--write'],
+      { encoding: 'utf8', cwd: tmp });
+    assert.ok(/已写入/.test(out), '写了就要说写了：' + out);
+    const after = JSON.parse(fs2.readFileSync(pkgPath, 'utf8'));
+    assert.strictEqual(after.version, '0.4.0', 'version 没被改到 0.4.0');
+    assert.strictEqual(after.description, '保持原样', '其他字段被动了');
+    /* 只应该变一行 —— 用 JSON 重写会改变缩进/键序，diff 会显得像动了整个文件 */
+    const before = original.split('\n').length;
+    const now = fs2.readFileSync(pkgPath, 'utf8').split('\n').length;
+    assert.strictEqual(now, before, '行数变了（' + before + ' → ' + now + '），说明重排了整个文件');
+  } finally {
+    fs2.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 done();
