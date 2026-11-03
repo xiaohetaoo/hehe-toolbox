@@ -65,6 +65,31 @@ function parseByFile(text) {
  * 跑失败记 0。这样删掉整个文件的判定逻辑仍会掉到 0，护栏照样有效。 */
 const EXIT_ONLY_FILES = new Set(['scripts/test-target-e2e.js']);
 
+/**
+ * 找出本次运行里「因为本机环境不满足而主动跳过」的脚本。
+ *
+ * 判据是输出里的 `SKIP ` 行（与 CI 的 grep 口径一致）。这些脚本跑不了
+ * 是**环境**的问题，不是「有人删了测试」，所以只能打印、不能判红。
+ * @param {string} text 带 @@FILE 标记的完整输出
+ * @returns {Array<{file:string, reason:string}>}
+ */
+function detectSkipped(text) {
+  const lines = text.split('\n');
+  const out = [];
+  let cur = null;
+  for (const ln of lines) {
+    const m = /^@@FILE (.+)$/.exec(ln);
+    if (m) { cur = m[1].trim(); continue; }
+    if (cur && /^SKIP /.test(ln)) {
+      /* 一个文件可能有多条 SKIP，只记第一条的原因（挑有内容的） */
+      if (!out.some((x) => x.file === cur)) {
+        out.push({ file: cur, reason: ln.replace(/^SKIP\s*/, '').slice(0, 80) });
+      }
+    }
+  }
+  return out;
+}
+
 /** 逐个跑 test:unit / test:ui 里的脚本，边跑边打 @@FILE 标记。 */
 function runAll() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
@@ -123,16 +148,40 @@ function main() {
   const total = files.reduce((n, f) => n + counts[f], 0);
   console.log('统计到 ' + files.length + ' 个脚本，PASS 共 ' + total + ' 条');
 
+  /* 【本机环境跑不起来的脚本：只能「少跑」，不能判红】
+   * 有一部分测试依赖本机条件：需要第二块硬盘、需要交互式桌面会话、
+   * 需要 electron.exe 能起来。条件不满足时它们会打印 `SKIP …` 并自行 exit 0。
+   * 这时该文件的 PASS 数当然是 0 或偏少 —— 那是**环境**的问题，不是「有人删了测试」。
+   *
+   * 实测踩到过：本地基线 1270 条，CI（无交互桌面会话）上 12 个 e2e 走 SKIP 分支，
+   * 少掉约 95 条，这道守卫在 CI 上直接红 —— 而它本该保护的是「别悄悄变少」，
+   * 不是「每台机器必须跑出一模一样的数字」。
+   *
+   * 判据：该文件的输出里有 `SKIP ` 行 → 记进 skipped，只打印不判红。
+   * 但**不能就此当成全绿**：SKIP 行会逐条列出来，并且在末尾汇总「本次有多少个
+   * 脚本因环境跳过」——静默地少测 95 条和明确地说「这台机器少测了 95 条」，
+   * 是两件完全不同的事。 */
+  const skipped = detectSkipped(text);
+  const written = Object.keys(counts);
+  const baselineFiles = write ? written : Object.keys(JSON.parse(fs.readFileSync(OUT, 'utf8')).files);
+  const notRunAtAll = baselineFiles.filter((f) => !(f in counts));
+
   if (write) {
     const payload = {
       _comment: '断言总数基线。由 scripts/check-assertion-count.js --write 生成，不要手改。',
-      _why: '防止「某个测试文件里悄悄删掉一堆用例，剩下的仍然全绿」。只允许往上走。',
+      _why: '防止「某个测试文件里悄悄删掉一堆用例，剩下的仍然全绿」。只允许往上走。\n'
+        + '注意：本基线是在**这台机器**上拍的。换一台机器（缺第二块盘、无交互桌面）时，'
+        + '依赖环境的脚本会走 SKIP 分支、PASS 数偏少 —— 那种情况由 skipped 判定放行并打印，不判红。',
       generatedAt: new Date().toISOString(),
       total,
       files: counts,
     };
     fs.writeFileSync(OUT, JSON.stringify(payload, null, 2) + '\n');
     console.log('已写入 ' + OUT);
+    if (skipped.length) {
+      console.log('注意：本次有 ' + skipped.length + ' 个脚本因环境跳过（基线条数会偏低）：');
+      for (const s of skipped) console.log('  ~ ' + s.file + '：' + s.reason);
+    }
     return;
   }
 
@@ -141,10 +190,17 @@ function main() {
     process.exit(1);
   }
   const base = JSON.parse(fs.readFileSync(OUT, 'utf8'));
+  const skippedMap = new Map(skipped.map((s) => [s.file, s.reason]));
   const dropped = [];
+  const skippedShort = [];
   for (const [f, n] of Object.entries(base.files)) {
     const now = counts[f] || 0;
-    if (now < n) dropped.push(f + '：基线 ' + n + ' → 现在 ' + now + '（少 ' + (n - now) + ' 条）');
+    if (now >= n) continue;
+    if (skippedMap.has(f)) {
+      skippedShort.push(f + '：基线 ' + n + ' → 现在 ' + now + '（环境跳过：' + skippedMap.get(f) + '）');
+    } else {
+      dropped.push(f + '：基线 ' + n + ' → 现在 ' + now + '（少 ' + (n - now) + ' 条）');
+    }
   }
   const grown = [];
   let grew = 0;
@@ -158,9 +214,31 @@ function main() {
     for (const d of dropped) console.log('  · ' + d);
     console.log('\n如果这是有意删除，请跑 `node scripts/check-assertion-count.js --write` 重拍基线');
     console.log('（那一步会出现在 diff 里，评审时能看见「这次真的少测了 N 条」）。');
+    if (skippedShort.length) {
+      console.log('\n另外这些是因环境跳过（不算违规，仅列出）：');
+      for (const s of skippedShort) console.log('  ~ ' + s);
+    }
     process.exit(1);
   }
   console.log('PASS  没有文件比基线少');
+  /* 【环境跳过必须打印出来，不能默默放过】
+   * 它们不判红（那是本机条件不足），但「这次少测了 N 条」这个事实要看得见。
+   * 否则这道守卫会给出一种虚假的安心：全绿，而实际有一批断言根本没跑。 */
+  if (skippedShort.length) {
+    const shortN = skippedShort.reduce((n, s) => {
+      const m = /基线 (\d+) → 现在 (\d+)/.exec(s);
+      return n + (m ? (+m[1] - +m[2]) : 0);
+    }, 0);
+    console.log('\n注意：' + skippedShort.length + ' 个脚本因本机环境跳过，合计少跑约 ' + shortN + ' 条断言：');
+    for (const s of skippedShort) console.log('  ~ ' + s);
+    console.log('（这些不判红 —— 依赖第二块盘 / 交互式桌面 / electron 起得来，'
+      + '换台机器就会正常跑。但它们确实没跑，别把这里的「PASS」当成「全测过了」。）');
+  }
+  if (notRunAtAll.length) {
+    console.log('\n注意：基线里有 ' + notRunAtAll.length + ' 个脚本本次根本没出现在输出里：');
+    for (const f of notRunAtAll.slice(0, 10)) console.log('  ? ' + f);
+    if (notRunAtAll.length > 10) console.log('  …还有 ' + (notRunAtAll.length - 10) + ' 个');
+  }
   if (grown.length) {
     console.log('\n断言数增加了 ' + grew + ' 条（基线可以调大）：');
     for (const g of grown.slice(0, 20)) console.log('  + ' + g);
