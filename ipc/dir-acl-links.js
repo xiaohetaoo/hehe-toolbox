@@ -61,9 +61,19 @@ module.exports = function register(ctx, deps) {
   function nextJobId(prefix) { return prefix + ctx.nextJobSeq(); }
 
 
-/* 进程内单飞：同一时刻只允许一次搬家。原实现在 main.js 的模块作用域，
- * 搬到这里后仍是**模块作用域**（不是 register 内部）—— 否则每次 register
- * 调用都会拿到一个新变量，互斥就失效了。 */
+/* 进程内单飞：同一时刻只允许一次搬家。
+ *
+ * 【它在 register 内部，不是模块作用域 —— 原注释说反了】
+ * 这一点必须说清，因为它看起来像是应该放模块作用域的（「单飞标志必须是
+ * 全进程唯一」）。之所以仍然安全：main.js 只调用一次 register
+ * （第 5080 行那一次），所以这里声明的变量全进程也只有一份，互斥成立。
+ *
+ * 【为什么留在 register 内部】与 ipc/media-ffmpeg.js 的 recProc 一致 ——
+ * 两个模块都把「随 register 生命周期存在」的状态放在 register 里。
+ * 何况放到模块作用域会让人怀疑「是不是有多份实例」，那才是真误导。
+ *
+ * 【但它绝不能挪进某个 handle 回调】那样每次调用都会拿到一个新变量，
+ * 互斥就失效了。这条才是本注释真正要守的事。 */
 let dirMoveBusy = false;
 
 /* 管理员判定的三态缓存：null = 未知（查询失败），true/false = 确定结论。

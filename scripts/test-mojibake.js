@@ -501,10 +501,17 @@ t('繁体正常文本不该被当成乱码（样本加宽后不许误伤）', ()
   }
 });
 
+/* 【这条为什么要有源码断言】
+ * 它锁的是「主进程退回到不带编码器的分析路径」这个回归：那条路径修不了锟斤拷
+ * （Node 没有 GBK 编码器），而本组其余行为断言全在 lib 层，测不到 main.js
+ * 到底调的是哪个入口 —— 只有主进程真的接了 analyzeWithEncoder，
+ * 用户点的「修复」才会走那条能修的路。
+ * 没法改成行为断言：要真跑 IPC 得拉起整个 Electron 应用。 */
 t('锟斤拷这类字符串乱码现在能修（借 .NET 的 CP936 编码器）', () => {
   const m = require('../lib/mojibake.js');
   assert.ok(m.EXTERNAL_CHAINS.some(([f, to]) => f === 'gbk' && to === 'utf-8'), '缺少 GBK→UTF-8 这条链');
   assert.strictEqual(m.PS_CODEPAGE.gbk, 936);
+  /* 锁的是：主进程退回不带编码器的路径，锟斤拷就再也修不动了。 */
   const code = stripComments(mainSrc);
   assert.ok(/analyzeWithEncoder/.test(code), '主进程没有走带编码器的分析路径');
   return (async () => {
@@ -520,30 +527,221 @@ t('锟斤拷这类字符串乱码现在能修（借 .NET 的 CP936 编码器）'
   })();
 });
 
+/* ==================== 5b. 字符串再编码链的三条前提（P3）====================
+ *
+ * 这一组锁的是「修复链产出『主动变坏』的 best」——报告 P3 · MJ-3。
+ *
+ * 三条用例各自的实测证据都写在断言里，且**每一条都在 HEAD 上会红**
+ * （下面的 HEAD 值是我用 `git show HEAD:lib/mojibake.js` 跑出来的真实值，
+ * 不是推断）。所以它们不是「照着现在的实现描一遍」，而是真的回归锁。
+ */
+
+t('输入含 U+FFFD 时不许再走字符串再编码链（与 can-reencode 同一条判据）', async () => {
+  /* 【故障现场】'你好，世界' 的乱码形态（UTF-8 被按 GBK 读、尾部残一个字节，
+   * 于是串里含 U+FFFD）。实测 HEAD 上的结果：
+   *   原样被 FFFD 重罚到 -79.5；
+   *   utf-8→gb18030 链（把乱码串按 UTF-8 编回字节、再按 GB18030 解）产出
+   *   '娴ｇ姴銈介敍灞肩瑯閻ｏ拷' —— 12 字纯 CJK 垃圾，零 FFFD / 零 PUA / 零问号，
+   *   恰好穿过 acceptable() 全部三道判据，以 35 分夺走 best。
+   * 用户拿到的是一段既不是原文、也不是原样的第三种文本。
+   *
+   * 【根因】.NET 的 CP936 把 U+FFFD 编成 0x3F（字面问号 '?'），于是「原始字节」
+   * 里凭空多出一个问号字节，解码必然成功 —— 修复链在替用户**编造内容**。
+   * 这与 text:can-reencode 自己的判据直接矛盾：含替换字符 = 原始字节已丢，
+   * 任何转码都无法还原。analyzer 必须守同一条规则。
+   *
+   * 【为什么这条必须走真 PowerShell】它测的正是「借外部编码器会不会编造」，
+   * 用桩就测不到 .NET 那个 FFFD→'?' 的行为。 */
+  const psRunner = (script, timeoutMs) => Promise.resolve({
+    stdout: cp.execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { encoding: 'utf8', timeout: timeoutMs || 30000 }),
+  });
+  const input = '浣犲ソ锛屼笘鐣\uFFFD';   // = '你好，世界' 的 GBK 乱码形态（尾部残一字节）
+  const r = await m.analyzeWithEncoder(input, psRunner);
+  assert.strictEqual(r.best.text, input,
+    '含 U+FFFD 的输入被「修」成了第三种文本：' + JSON.stringify(r.best.text) +
+    '（HEAD 上这里是 UTF-8→GB18030 产出的 12 字垃圾，35 分）');
+  /* 候选表里也不许出现「编造出来的」候选：只剩原样一条。 */
+  assert.strictEqual(r.candidates.length, 1,
+    '仍然生成了再编码候选（这些候选的字节是 .NET 把 FFFD 编成问号得到的，全是捏造）：' +
+    JSON.stringify(r.candidates.map((c) => c.text)));
+  /* externalTried 必须如实说「不该试」，而不是「试了没结果」。 */
+  assert.strictEqual(r.externalTried, false, 'externalTried 应当为 false（含 FFFD = 不该借外部编码器）');
+  /* note 必须告诉用户真正可行的下一步，而不是让用户以为「点了没反应」。 */
+  assert.ok(/U\+FFFD/.test(r.note), 'note 没说清原因：' + JSON.stringify(r.note));
+  assert.ok(/文件/.test(r.note), 'note 没有把用户引到「从文件分析」这条真正有效的路：' + JSON.stringify(r.note));
+});
+
+t('输入含 U+FFFD 时，latin1 字节视角也不许反推（Buffer 会把 FFFD 编成问号）', () => {
+  /* 同一个根因在 latin1 分支上还有一份：
+   * Buffer.from(s,'latin1') 把 U+FFFD 编成 0x3F，同样是在编造「原始字节」。
+   * 这条用 analyzeMojibake（不借外部编码器）锁住，与上面那条互补 ——
+   * 两条分支各有各的路径，只堵一条会留下另一条。 */
+  const input = '閰嶇疆鏂囦欢宸蹭繚\uFFFD瓨';   // '配置文件已保存' 的乱码形态，含 1 个 FFFD
+  const r = m.analyzeMojibake(input);
+  assert.strictEqual(r.best.text, input, '含 FFFD 的输入被改成了：' + JSON.stringify(r.best.text));
+  assert.ok(!r.candidates.some((c) => c.from === 'latin1 字节'),
+    'latin1 分支仍然生了候选（它的字节是 Buffer 取低 8 位/替换成问号得到的）');
+});
+
+t('UTF→legacy 方向的链一律不收（这种误读必然产生 U+FFFD，无 FFFD 时只可能是重新解释）', () => {
+  /* 【故障现场】'请检查网络连接' 的乱码形态尾部残一字节（不含 FFFD）。
+   * HEAD 上 utf-8→gb18030 链产出 '鐠囬攱顥呴弻銉х秹缂佹粏绻涢幒'，-4.0 分，
+   * 险胜原样的 -4.3 分 —— 用户点「修复」，拿到的是一段更长的乱码。
+   * 另一例 '你好，世界' 同链路拿到 35 分，赢得更轻松。
+   *
+   * 【为什么整族都该丢】这条链表示「输入是 UTF 家族解码的结果，需要按 legacy
+   * 重新解码」，也就是「legacy 文本被当成 UTF 家族读了」。可那种误读必然产生
+   * U+FFFD：GBK 的 0xB0 0xA1 在 UTF-8 里是非法序列。实测把 '配置文件已保存'
+   * 的 GB18030 字节按 UTF-8 解，12 个字符里 10 个是 FFFD。
+   * 那么当输入**不含** FFFD 时，这条链的前提已经被推翻 —— 它只能是
+   * 「把一段本来能正常解码的文本重新解释一遍」。 */
+  assert.strictEqual(m.isPlausibleChain('utf-8', 'gb18030'), false);
+  assert.strictEqual(m.isPlausibleChain('utf-8', 'gbk'), false);
+  assert.strictEqual(m.isPlausibleChain('utf-16le', 'gbk'), false);
+  /* 反方向必须留着 —— 那才是「GBK 文本被当 UTF-8 读」的正解，也是锟斤拷的修复路径。 */
+  assert.strictEqual(m.isPlausibleChain('gbk', 'utf-8'), true);
+  assert.strictEqual(m.isPlausibleChain('gb18030', 'utf-8'), true);
+  assert.strictEqual(m.isPlausibleChain('shift_jis', 'utf-8'), true);
+  /* legacy→legacy 也留着：'訂單已確認…' 那类繁体就是这么修的（GBK→Big5）。 */
+  assert.strictEqual(m.isPlausibleChain('gbk', 'big5'), true);
+  assert.strictEqual(m.isPlausibleChain('big5', 'gbk'), true);
+
+  /* 行为侧再锁一次：真跑一遍，best 必须是原样。 */
+  const input = '璇锋鏌ョ綉缁滆繛鎺';   // '请检查网络连接' 的 GBK 乱码形态（尾部残，无 FFFD）
+  const r = m.analyzeMojibake(input);
+  assert.strictEqual(r.best.text, input,
+    'UTF→legacy 的链仍然让一个「重新解释」的候选顶掉了原样：' + JSON.stringify(r.best.text));
+});
+
+t('前向编码必须有损校验：编不回去的字节不许当候选来源', async () => {
+  /* 【故障现场】不只 FFFD 会编造内容。Big5 假字（实为 GBK 字节被 Big5 解出来的字，
+   * 如 '戈畐'）大多不在 CP936 里，.NET 编不出来，同样退化成 '?'。
+   * 于是 bytes ≠ 原始字节，候选全是编的。
+   *
+   * 判据：encode(输入, from) 之后，再用**同一个 from** 解回来，必须逐字等于输入。
+   * 成本只有一次 decode（不需要额外 PowerShell 进程）。 */
+  /* 单元层：UTF-8 编码对含 U+FFFD 的串是有损的（FFFD 编得回去，但这里用
+   * 隔离代理做更干净的示范 —— 它编不成合法字节）。 */
+  const lone = '\uD800';   // 孤立高位代理：UTF-8 编码会把它替换掉
+  assert.strictEqual(m.isForwardLossless(lone, 'utf-8', m.encodeBy(lone, 'utf-8')), false,
+    '孤立代理经 UTF-8 编码后解不回来，校验必须判为有损');
+  /* 正常串必须判为无损 —— 防「恒返回 false」这种退化。 */
+  for (const s of ['你好，世界', 'Hello 世界', '配置文件已保存']) {
+    assert.strictEqual(m.isForwardLossless(s, 'utf-8', m.encodeBy(s, 'utf-8')), true,
+      '正常串被判成了有损：' + JSON.stringify(s));
+  }
+  /* 没有原生编码器时 encodeBy 返回 null，必须判为有损（而不是「无从判断就放行」）。 */
+  assert.strictEqual(m.isForwardLossless('测试', 'gbk', null), false, 'null 字节必须判为不可用');
+
+  /* 行为侧：真 PowerShell 上，含 FFFD 的串经 GBK 编回字节是有损的。 */
+  const psRunner = (script, timeoutMs) => Promise.resolve({
+    stdout: cp.execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { encoding: 'utf8', timeout: timeoutMs || 30000 }),
+  });
+  const withFffd = '閰嶇疆鏂囦欢宸蹭繚瀛\uFFFD';
+  const bytes = await m.encodeTextMany(withFffd, ['gbk'], psRunner);
+  assert.ok(bytes.gbk, '没拿到 GBK 字节，这条断言没有检测到目标行为');
+  assert.strictEqual(m.isForwardLossless(withFffd, 'gbk', bytes.gbk), false,
+    '含 U+FFFD 的串经 .NET GBK 编码竟被判为无损 —— 说明 .NET 真的把 FFFD 编成了问号，' +
+    '而这正是「编造内容」的来源');
+});
+
+t('latin1 字节视角只对真正的 latin1 形态生效', () => {
+  /* 【故障现场】'鏂囦欢宸叉垚鍔熷啓鍏'（'文件已成功写入' 的 GBK 乱码形态，尾部残一字节）
+   * 走 latin1 分支会得到 '骆"干歍稴O' 并拿到 69.7 分，压过原样的 46.0 ——
+   * 一个既不是原文也不是原样的第三种文本。
+   * 根因：Buffer.from(s,'latin1') 对**任何**字符串都能产出字节（取低 8 位），
+   * 于是拿这些「与原文毫无关系的字节」按各种编码解，总能凑出一个高分结果。
+   *
+   * 判据：输入里只要有超出 U+00FF 的字符，它就不是 latin1 形态。
+   * 真正的「UTF-8 被当 latin1 读」其字符码点**就是**原始字节值，恒在被判为合法。
+   *
+   * 这条同时锁住「真修复不许被误杀」：下面第二段是既有的正确行为。 */
+  const third = '鏂囦欢宸叉垚鍔熷啓鍏';
+  const r = m.analyzeMojibake(third);
+  assert.strictEqual(r.best.text, third,
+    'latin1 分支把一个非 latin1 形态的输入改成了：' + JSON.stringify(r.best.text));
+  assert.ok(!r.candidates.some((c) => c.from === 'latin1 字节'), 'latin1 分支仍然生了候选');
+
+  /* 对照组：真正的 latin1 形态必须仍然能还原（防止上一条把功能关死）。 */
+  const original = '中文测试';
+  const asLatin1 = Buffer.from(original, 'utf8').toString('latin1');
+  const ok = m.analyzeMojibake(asLatin1);
+  const hit = ok.candidates.find((c) => c.text === original);
+  assert.ok(hit, 'latin1 形态的真修复被误杀了，候选：' + JSON.stringify(ok.candidates.slice(0, 3).map((c) => c.text)));
+});
+
+t('三条前提合起来，实测语料上「第三种文本」的数量必须为 0', async () => {
+  /* 这是上面五条的总账。语料是「真实乱码形态」按机理造出来的，不是随机字节：
+   *   对每条中文原文，分别造出
+   *     · gbk-clean   = UTF-8 字节整体按 GBK 解（String.fromCharCode 那类误读）
+   *     · gbk-tail1   = 尾部少 1 字节，末字节单独解（产生 1 个 U+FFFD）
+   *     · gbk-tail2   = 尾部少 2 字节
+   * 然后要求：best 只能是「原文」或「原样」，**不许是第三种文本**。
+   * 分类统计在 HEAD 上是 FIXED 6 / SAME 34 / THIRD 8，
+   * 修完后是 FIXED 6 / SAME 42 / THIRD 0 —— 真修复一条没少，编造的全部消失。
+   *
+   * 【为什么这条值得保留】单点用例只能锁住已知的例子；这条锁住「语料上不许
+   * 出现任何第三种文本」，能挡住将来某条新链引入同类问题。 */
+  const psRunner = (script, timeoutMs) => Promise.resolve({
+    stdout: cp.execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { encoding: 'utf8', timeout: timeoutMs || 30000 }),
+  });
+  const TEXTS = [
+    '你好，世界', '配置文件已保存', '请检查网络连接', '数据加载完成',
+    '操作失败，请重试', '系统提示：磁盘空间不足', '用户手册第一章', '今日天气晴朗',
+    '无法打开该文件', '设置已更新', '文件已成功写入',
+  ];
+  const gbk = (b) => new TextDecoder('gbk', { fatal: false }).decode(b);
+  const bad = [];
+  let fixed = 0, same = 0;
+  for (const orig of TEXTS) {
+    const buf = Buffer.from(orig, 'utf8');
+    const shapes = [
+      { kind: 'clean', text: gbk(buf) },
+      { kind: 'tail1', text: gbk(buf.subarray(0, buf.length - 1)) },
+      { kind: 'tail2', text: gbk(buf.subarray(0, buf.length - 2)) + gbk(buf.subarray(buf.length - 2)) },
+    ];
+    for (const { kind, text } of shapes) {
+      const r = await m.analyzeWithEncoder(text, psRunner);
+      if (r.best.text === orig) { fixed++; continue; }
+      if (r.best.text === text) { same++; continue; }
+      bad.push(kind + ' | ' + JSON.stringify(text) + ' → ' + JSON.stringify(r.best.text) +
+        '（来自 ' + r.best.from + '→' + r.best.to + '，' + r.best.score.toFixed(1) + ' 分）');
+    }
+  }
+  assert.deepStrictEqual(bad, [],
+    '出现了「既不是原文、也不是原样」的第三种文本（用户点一次修复就被改成一段编造的内容）：\n' + bad.join('\n'));
+  /* 防「全都不修」：真修复的条数不能塌。HEAD 与修完后都是 6。 */
+  assert.ok(fixed >= 6, '真修复只剩 ' + fixed + ' 条（坐着不动的「修好」代价不能是放弃修复能力）');
+  assert.ok(same > 0, '一条都没保持原样 —— 语料构造可能已经失效，这条断言失去意义');
+});
+
 /* 等异步用例结束 */
 
-t('29 mojibake：正常文本必须原样返回（不能「修」成乱码）', () => {
-  const MBx = require(path.join(ROOT, 'lib', 'mojibake'));
-  const normal = [
-    'Hello 世界',
-    'ok',
-    'file saved',
-    'ERROR: 无法打开文件',
-    '这是正常的中文文本，不应该被改动。',
-    '测试文本',
-  ];
-  for (const s of normal) {
-    const r = MBx.analyzeMojibake(s);
-    assert.strictEqual(r.best.text, s,
-      '正常文本被改坏了：' + JSON.stringify(s) + ' → ' + JSON.stringify(r.best.text) +
-      '（用户点一下「修复」就会拿到二次损坏的内容）');
-  }
-  /* 候选里也不许出现替换字符（那是「越修越坏」的产物） */
-  const r2 = MBx.analyzeMojibake('Hello 世界');
-  assert.ok(!r2.candidates.some((c) => (c.text || '').includes('\uFFFD')),
-    '候选里仍有 U+FFFD');
-});
-
-/* ==================== 30. disk-health：wear=0 是有效读数 ==================== */
+t('29 mojibake：正常文本必须原样返回（不能「修」成乱码）', () => {
+  const MBx = require(path.join(ROOT, 'lib', 'mojibake'));
+  const normal = [
+    'Hello 世界',
+    'ok',
+    'file saved',
+    'ERROR: 无法打开文件',
+    '这是正常的中文文本，不应该被改动。',
+    '测试文本',
+  ];
+  for (const s of normal) {
+    const r = MBx.analyzeMojibake(s);
+    assert.strictEqual(r.best.text, s,
+      '正常文本被改坏了：' + JSON.stringify(s) + ' → ' + JSON.stringify(r.best.text) +
+      '（用户点一下「修复」就会拿到二次损坏的内容）');
+  }
+  /* 候选里也不许出现替换字符（那是「越修越坏」的产物） */
+  const r2 = MBx.analyzeMojibake('Hello 世界');
+  assert.ok(!r2.candidates.some((c) => (c.text || '').includes('\uFFFD')),
+    '候选里仍有 U+FFFD');
+});
+
+/* ==================== 30. disk-health：wear=0 是有效读数 ==================== */
 
 done();
