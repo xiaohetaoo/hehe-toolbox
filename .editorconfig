@@ -1,0 +1,55 @@
+# 统一基础编辑约定。
+#
+# ============ 为什么这个文件值得存在 ============
+# 本仓库工作副本的行尾风格是**混的**（实测 154 个 LF、73 个 CRLF），
+# 而这一点已经造成过一个真实缺陷：
+#   scripts/lib/source-assert-scan.js 用 /^\s*(?:const|let|var)\s+…(.+)$/
+#   识别「派生自源码的变量」，而 `.` 不匹配 \r —— 同一份内容存成 CRLF 时
+#   `const code = stripComments(mainSrc);` 整行匹配不上，那个变量不被认出来，
+#   对它的断言也就不算「源码断言」，元测试 SA-4 静默放行。
+#   换句话说：**这道检查的强度取决于谁用什么编辑器存过文件。**
+#
+# 扫描器本身已改成与行尾无关（那才是根治），本文件解决的是**新的漂移** ——
+# 让「新写的文件用什么行尾」有个统一答案，而不是靠编辑器默认值。
+#
+# ============ 为什么默认 UTF-8 + LF ============
+# LF 是当前多数（154 vs 73），且根目录、.github、docs、lib/ 几乎全为 LF。
+# 选 CRLF 会重写那 154 个文件的每一行，让下一次 `git blame` 大面积失真。
+# 这里只规定**今后**的写法，不回头重写既有文件 —— 一次性的全仓换行
+# 会毁掉 blame，收益却只有一个「看起来整齐」。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Windows 专属的批处理与 PowerShell 脚本必须是 CRLF：
+# cmd.exe 对 LF-only 的 .bat/.cmd 会在跳转标签上出问题
+# （`goto :label` 找不到，表现为脚本无声退出）。
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+# Markdown 的行尾两个空格是硬换行语义，不能自动裁掉。
+[*.md]
+trim_trailing_whitespace = false
+
+# 二进制与产物：不做任何文本处理。
+[*.{png,jpg,jpeg,gif,ico,icns,exe,zip,7z,asar,woff,woff2,ttf,mp4,pdf}]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+
+[package-lock.json]
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+
+[{dist,node_modules,reports,.tmp-work,.tmp-probe}/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

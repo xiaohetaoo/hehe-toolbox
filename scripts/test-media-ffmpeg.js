@@ -18,9 +18,10 @@ const fs = require('fs');
  */
 
 const assert = require('assert');
-const { scanBrace } = require('../lib/src-scan');
 
 const { t, done, readMain, readTree } = require('./lib/harness');
+/* segFromHandler 统一到 scripts/lib/seg-from-handler.js —— 见那里的文件头说明。 */
+const { segFromHandler } = require('./lib/seg-from-handler');
 const ROOT = path.join(__dirname, '..');
 const stripComments = require('../lib/src-scan').stripComments;
 
@@ -38,19 +39,6 @@ const mainSrc = readMain({ raw: true });
 
 
 
-function segFromHandler(channel, label) {
-  const start = mainSrc.indexOf("handle('" + channel + "'");
-  assert.ok(start > 0, '找不到 handler: ' + channel);
-  /* handler 签名里可能有默认参数对象 `opts = {}`，不能取 start 之后的第一个 '{'，
-   * 要跳到 `=> {` 之后的那个函数体开括号。 */
-  const arrow = mainSrc.indexOf('=>', start);
-  const from = arrow > 0 ? arrow : start;
-  const open = mainSrc.indexOf('{', from);
-  assert.ok(open > 0, 'handler ' + channel + ' 没有函数体');
-  const end = scanBrace(mainSrc, open);
-  assert.ok(end > open, 'handler ' + channel + ' 括号不配平');
-  return mainSrc.slice(start, end);
-}
 
 function extractGifTarget() {
   const start = mainSrc.indexOf('const REC_VIDEO_EXT =');
@@ -81,7 +69,7 @@ function loadPinKeyBlock() {
 function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
 
 t('9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结果', () => {
-  const seg = segFromHandler('target:compress-av');
+  const seg = segFromHandler(mainSrc, 'target:compress-av');
   /* 锁的是：「9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结果」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
@@ -92,7 +80,7 @@ t('9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/moveFile\(finalOut\.file, dst\)/.test(seg), '应改用 moveFile');
 
-  const off = segFromHandler('office:convert');
+  const off = segFromHandler(mainSrc, 'office:convert');
   assert.ok(!/fsp\.rename\(produced, out\)/.test(off),
     'office:convert 仍在用裸 rename 提交（stage 在 %TEMP%，outDir 可能在别的盘）');
 });
@@ -168,7 +156,7 @@ t('11c ffmpeg:pick 判 ffmpeg 必须看输出的 "ffmpeg version"，且不覆盖
 /* ==================== 12. 批量处理单条失败不拖垮整批 ==================== */
 
 t('12 target:compress-av：单个源文件读不到时要记录失败并继续', () => {
-  const seg = segFromHandler('target:compress-av');
+  const seg = segFromHandler(mainSrc, 'target:compress-av');
   /* 原来裸的 `const srcSize = (await fsp.stat(input)).size;` 必须消失 */
   /* 锁的是：「12 target:compress-av：单个源文件读不到时要记录失败并继续」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
@@ -190,7 +178,7 @@ t('12 target:compress-av：单个源文件读不到时要记录失败并继续',
 /* ==================== 13. proc:kill 不能把「查询失败」当「进程已退出」 ==================== */
 
 t('15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧数', () => {
-  const seg = segFromHandler('ffmpeg:frames');
+  const seg = segFromHandler(mainSrc, 'ffmpeg:frames');
   /* 锁的是：「15 截帧：只统计本次新增的帧，并如实报出被覆盖的旧帧数」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
@@ -294,6 +282,8 @@ t('1d createPinWindow 登记与删除都用同一个归一键', () => {
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/pinWins\.set\(\s*pinKey\(bw\.id\)\s*,\s*bw\s*\)/.test(code),
     '登记时没用 pinKey（数字键与字符串键会分家）');
+  /* 锁的是「关闭时按归一键删除登记」这个内存泄漏回归：早期用裸 bw.id 删，
+   * 登记用的却是 pinKey(bw.id)，键不同就一直删不掉。真跑需要 Electron。 */
   assert.ok(/pinWins\.delete\(\s*pinKey\(bw\.id\)\s*\)/.test(code),
     'closed 里没用 pinKey 删除，会留下一个查不到的僵尸条目');
   /* 锁的是：「1d createPinWindow 登记与删除都用同一个归一键」这一组回归。

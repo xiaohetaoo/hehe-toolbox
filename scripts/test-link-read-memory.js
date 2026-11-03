@@ -1,6 +1,8 @@
 /* 原脚本用 cases 收集 + 串行 for 循环，输出严格按注册顺序。
  * 这里显式指定 order:'sequential' 以保持迁移前的输出顺序不变。 */
 const { createSuite, readMain } = require('./lib/harness');
+/* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
+const { rmDir } = require('./lib/test-fs');
 const { t, done } = createSuite({ order: 'sequential' });
 /* P1-5 回归：验证「链接可读性检查」不会把整个文件读进内存。
  *
@@ -63,13 +65,6 @@ function makeSparse(file, sizeMB) {
   fs.writeSync(fd, Buffer.from('TAIL'), 0, 4, SIZE - 4);
   fs.closeSync(fd);
   return SIZE;
-}
-
-function rmDir(dir) {
-  try { fs.rmSync(dir, { recursive: true, force: true }); }
-  catch (e) {
-    try { cp.execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', dir], { windowsHide: true }); } catch (e2) {}
-  }
 }
 
 const BIG_MB = 200;

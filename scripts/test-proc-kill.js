@@ -1,7 +1,8 @@
 'use strict';
 const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
-const { scanBrace } = require('../lib/src-scan');
+/* segFromHandler 统一到 scripts/lib/seg-from-handler.js —— 见那里的文件头说明。 */
+const { segFromHandler } = require('./lib/seg-from-handler');
 const mainSrc = readMain({ raw: true });
 
 /* proc:kill 保护检查的行为测试（原 test-round13 的 13）。
@@ -15,25 +16,22 @@ const mainSrc = readMain({ raw: true });
  * 都从主进程/渲染层源码里抽出**真实现**来跑，不是手写副本
  * （副本会与实现分叉，那样测试就假绿了）。 */
 
-function segFromHandler(channel, label) {
-  const start = mainSrc.indexOf("handle('" + channel + "'");
-  assert.ok(start > 0, '找不到 handler: ' + channel);
-  /* handler 签名里可能有默认参数对象 `opts = {}`，不能取 start 之后的第一个 '{'，
-   * 要跳到 `=> {` 之后的那个函数体开括号。 */
-  const arrow = mainSrc.indexOf('=>', start);
-  const from = arrow > 0 ? arrow : start;
-  const open = mainSrc.indexOf('{', from);
-  assert.ok(open > 0, 'handler ' + channel + ' 没有函数体');
-  const end = scanBrace(mainSrc, open);
-  assert.ok(end > open, 'handler ' + channel + ' 括号不配平');
-  return mainSrc.slice(start, end);
-}
 
 t('13 proc:kill：进程查询失败必须拒绝，而不是跳过保护检查直接 taskkill', () => {
-  const seg = segFromHandler('proc:kill');
+  const seg = segFromHandler(mainSrc, 'proc:kill');
   /* 缺陷形态：一个 try 包住保护判定，catch 里靠中文文本匹配决定是否重抛 */
+  /* 锁的是「靠中文文本匹配决定是否重抛」这个缺陷形态：查询机制坏掉时
+     * 保护检查会被整体跳过，进程直接被 taskkill。
+     * 只能看源码形态 —— 真跑要把进程查询弄坏，那需要注入故障。 */
+  /* 锁的是「靠中文文本匹配决定是否重抛」这个缺陷形态：查询机制坏掉时
+     * 保护检查会被整体跳过，进程直接被 taskkill。
+     * 只能看源码形态 —— 真跑要把进程查询弄坏，那需要注入故障。 */
   assert.ok(!/if \(\/拒绝结束\/\.test\(String\(err\.message\)\)\) throw err;/.test(seg),
     '仍在用中文文本匹配决定是否重抛 —— 查询机制坏掉时保护检查被整体跳过');
+  /* 锁的是「查询失败时必须拒绝而不是放行」：拒绝是安全的默认值。
+     * 真跑要模拟查询失败，只能靠注入。 */
+  /* 锁的是「查询失败时必须拒绝而不是放行」：拒绝是安全的默认值。
+     * 真跑要模拟查询失败，只能靠注入。 */
   assert.ok(/无法确认 PID|进程查询失败/.test(seg),
     '查询失败时应明确拒绝并说明原因');
 });

@@ -24,6 +24,8 @@ const path = require('path');
 const cp = require('child_process');
 
 const { t, done, readMain } = require('./lib/harness');
+/* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
+const { rmDir } = require('./lib/test-fs');
 /* ---------------- 以下助手随 round11 的用例一起迁来 ----------------
  * 这些是「把源码段抽出来在沙箱里跑」的脚手架：extract() 按花括号配平取一个
  * 函数的完整源码，makeLinkNatures() 把 shortErr / linkNature / linkNatures
@@ -138,9 +140,6 @@ function shortPathCached(p) {
 /* 递归删临时目录（round9 的清理助手）。
  * 用 maxRetries 是因为 Windows 上刚关的句柄可能还占着几百毫秒，
  * 一次性 rmSync 会 EPERM —— 那不是失败，只是还没放开。 */
-function rmDir(p) {
-  try { fs.rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (e) {}
-}
 
 /* loadVerifyCopyWithStub：把 verifyCopy 的真实现抽出来，注入一个可控制
  * 的 fsp 桩 —— "复制期间源文件消失"是竞态，真实磁盘上无法稳定复现，

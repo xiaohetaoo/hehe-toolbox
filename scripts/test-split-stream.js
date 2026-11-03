@@ -1,5 +1,7 @@
 'use strict';
 const { t, done } = require('./lib/harness');
+/* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
+const { rmDir } = require('./lib/test-fs');
 /* 分片与流式响应的行为测试（原 test-round15 的 13a / 13b / 14a）。
  *
  * 锁的是两类"半截文件"：
@@ -17,8 +19,6 @@ const path = require('path');
 const stripComments = require('../lib/src-scan').stripComments;
 const mainSrc = require('./lib/harness').readMain({ raw: true });
 /* 递归删临时目录。Windows 上刚关的句柄要等几百毫秒，一次性 rmSync 会 EPERM。 */
-function rmDir(p) { try { fs.rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (e) {} }
-
 t('13a split-file 失败时销毁读流并清掉分片', () => {
   const code = stripComments(mainSrc);
   const i = code.indexOf("handle('fs:split-file'");

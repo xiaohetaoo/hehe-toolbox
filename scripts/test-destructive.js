@@ -18,6 +18,12 @@ const stripComments = srcScan.stripComments;
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+/* 【主进程侧源码：main.js 加上放 fs:* 域的 ipc/fs-ops.js】
+ * 任务 7 把 fs:read-text … zip:extract 共 28 个通道搬到了 ipc/fs-ops.js。
+ * 下面几条断言的语义是「主进程里有没有这个实现、是不是这个形态」，
+ * 与它住在哪个文件无关 —— 只读 main.js 会让它们永久假红，
+ * 而假红到最后就是整段被忽略。需要「只有 main.js」的地方仍用 read('main.js')。 */
+const readMainPlusFs = () => read('main.js') + String.fromCharCode(10) + read('ipc/fs-ops.js');
 /* 任务 9 把 media.js 拆成了 js/tools/media/*.js，媒体相关的源码断言
  * 一律改读整棵树 —— 断言的语义是「媒体工具里有这个实现」，
  * 与它被拆成几个文件无关。 */
@@ -206,7 +212,7 @@ t('P0 fs:delete 不再是裸的 fsp.rm', () => {
 
 /* ================= P0：写文件覆盖 + 半截文件 ================= */
 t('P0 fs:write-text / fs:write-file-b64 走原子写', () => {
-  const s = read('main.js');
+  const s = readMainPlusFs();
   /* 锁的是：「P0 fs:write-text / fs:write-file-b64 走原子写」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
@@ -223,7 +229,7 @@ t('P0 fs:write-text / fs:write-file-b64 走原子写', () => {
   assert.ok(fn2.includes('writeFileAtomic'), 'fs:write-file-b64 没用原子写');
 });
 t('P0 原子写失败会清理临时文件', () => {
-  const s = read('main.js');
+  const s = readMainPlusFs();
   /* 锁的是：「P0 原子写失败会清理临时文件」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
@@ -238,7 +244,7 @@ t('P0 原子写失败会清理临时文件', () => {
   assert.ok(fn.includes('rename(tmp, dest)'), '没有用 rename 做原子提交');
 });
 t('P0 原子写有覆盖保护', () => {
-  const s = read('main.js');
+  const s = readMainPlusFs();
   /* 锁的是：「P0 原子写有覆盖保护」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
@@ -629,7 +635,7 @@ t('P0 PDF 转图片输出目录带时间戳', () => {
 
 /* P0 writeFileAtomic 不得先删原文件 */
 t('P0 writeFileAtomic 不用「先 rm 后 rename」', () => {
-  const s = read('main.js');
+  const s = readMainPlusFs();
   /* 锁的是：「P0 writeFileAtomic 不用「先 rm 后 rename」」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */

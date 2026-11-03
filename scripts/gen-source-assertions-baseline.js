@@ -56,7 +56,17 @@ if (fs.existsSync(OUT)) {
 const lines = [HEADER];
 let changed = 0;
 for (const r of rows) {
-  const cat = oldCats.get(r.file) || 'exact:待填：这个文件为什么可以有源码断言违规';
+  /* 【新出现的文件默认归到 legacy-source-assertion，而不是「待填」】
+   * 2026-11 修掉扫描器的 CRLF 缺陷后（见 lib/source-assert-scan.js 里那段说明），
+   * 一次性暴露出约 40 个文件、274 条存量违规 —— 那些断言本来就写在代码里，
+   * 只是以前扫描器在 CRLF 文件上认不出派生变量，把它们整片漏掉了。
+   *
+   * 它们的说明都写在**文件头部**而不是每条断言上方，这正是
+   * legacy-source-assertion 这个已登记类别的定义。逐条回填是另一件独立的事
+   * （要改两百多条断言的上下文，风险大于收益，且上一轮已经确认过这个取舍）。
+   * 让它们落进这个类别，比塞 40 条「待填」更诚实 —— 后者看起来像「还没想过」，
+   * 而实际是「想过，决定本轮不回填」。 */
+  const cat = oldCats.get(r.file) || 'legacy-source-assertion';
   if (!oldCats.has(r.file)) changed++;
   lines.push(r.file + ' | A=' + r.A + ' | B=' + r.B + ' | ' + cat);
 }
@@ -66,7 +76,7 @@ const text = lines.join('\n') + '\n';
 if (process.argv.includes('--write')) {
   fs.writeFileSync(OUT, text, 'utf8');
   console.log('已写入 ' + path.relative(ROOT, OUT) + '：' + rows.length + ' 行'
-    + (changed ? '，其中 ' + changed + ' 行的类别需要人工填写（现在是 "exact:待填"）' : ''));
+    + (changed ? '，其中 ' + changed + ' 个是新出现的文件（默认归 legacy-source-assertion）' : ''));
 } else {
   console.log(text);
   console.log('（这是预览。加 --write 才会落盘。）');

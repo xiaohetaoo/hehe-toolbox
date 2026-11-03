@@ -1,7 +1,7 @@
 {
   "_comment": "断言总数基线。由 scripts/check-assertion-count.js --write 生成，不要手改。",
   "_why": "防止「某个测试文件里悄悄删掉一堆用例，剩下的仍然全绿」。只允许往上走。",
-  "generatedAt": "2026-11-03T10:53:44.743Z",
+  "generatedAt": "2026-11-03T12:10:38.755Z",
   "total": 1270,
   "files": {
     "scripts/test-errors.js": 12,

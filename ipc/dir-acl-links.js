@@ -109,6 +109,11 @@ async function rmQueryLockers(paths) {
    * 【分块不能改变结论】RM 是「整批注册再取进程列表」，分块后每块各自
    * 给出该块内文件被谁占用；把各块的 lockers 按 pid+type 去重合并即可，
    * 与整批查询的语义等价（我们本来也无法把进程一一对应到具体文件）。 */
+  /** 占用条目。前三个字段来自 Restart Manager；后三个是「补进程信息」那一段
+   *  按需填的可选字段 —— 取不到（进程已退出 / 无权限）就不填，读的地方
+   *  一律用 `x.name || x.procName` 兜底，所以它们是**可选**的，不是漏写。
+   *  @type {Array<{pid:number, name:string, type:string,
+   *                procName?:string, path?:string, mem?:number}>} */
   const rows = [];
   const blockErrors = [];
   for (let i = 0; i < list.length; i += PS_PATH_BATCH) {
@@ -190,7 +195,7 @@ async function rmQueryLockers(paths) {
 }
 
 async function collectLinks(root, opts) {
-  const o = opts || {};
+  const o = opts || /** @type {typeof opts} */ ({});
   const maxEntries = o.maxEntries || 200000;
   const wantSize = !!o.wantSize;
   const found = [];
@@ -574,7 +579,11 @@ async function linkNatures(list) {
   };
 }
 
-async function dirMoveRun({ src, dst, jobId: clientJob } = {}) {
+async function dirMoveRun(opts) {
+  /* 【为什么不用解构默认值】`{src, dst} = {}` 那种写法会让推断把整个参数
+   * 当成空对象，src/dst/jobId 全部变成「不存在」。改成可选参数 + 显式解构，
+   * 语义一模一样（不传时得到 undefined，下面都做了 || 兜底）。 */
+  const { src, dst, jobId: clientJob } = opts || {};
   const id = clientJob || nextJobId('dirmv');
   const srcAbs = path.resolve(String(src || ''));
   const dstAbs = path.resolve(String(dst || ''));
@@ -1367,7 +1376,9 @@ handle(dirMoveCh.ACL_LINKS.LINK_REMOVE, async (e, paths, opts = {}) => {
   };
 })
 
-handle(dirMoveCh.DIR_MOVE.PRECHECK, async (e, { src, dst } = {}) => {
+handle(dirMoveCh.DIR_MOVE.PRECHECK, async (e, opts) => {
+  /* 同上：不用解构默认值，避免参数类型退化成空对象 */
+  const { src, dst } = opts || {};
   if (!dirMove) throw new Error('内部错误：搬家模块未加载');
   const srcAbs = path.resolve(String(src || ''));
   const dstAbs = path.resolve(String(dst || ''));
@@ -1509,7 +1520,9 @@ handle(dirMoveCh.DIR_MOVE.PRECHECK, async (e, { src, dst } = {}) => {
   });
 })
 
-handle(dirMoveCh.DIR_MOVE.MOVE, async (e, { src, dst, jobId: clientJob } = {}) => {
+handle(dirMoveCh.DIR_MOVE.MOVE, async (e, opts) => {
+  /* 同上 */
+  const { src, dst, jobId: clientJob } = opts || {};
   if (dirMoveBusy) throw new Error('已有搬家任务在进行，请等待它完成后再试（或重启应用）。');
   dirMoveBusy = true;
   try {
@@ -1558,6 +1571,10 @@ handle(dirMoveCh.ACL_LINKS.ACL_DIAGNOSE, async (e, target) => {
     exists, isDir, childCount,
     ownerIsMe: facts.ownerIsMe, ownerName: facts.owner,
     acl: facts.acl, isAdmin, lockedPaths,
+    /* accessError 是 diagnose 声明过的字段（用来区分「读不到 ACL」与「没有 ACL」）。
+     * 这条路径不单独记访问错误，传空串表示「取 ACL 时没有报错」，
+     * 与 diagnose 内部 String(x.accessError || '') 的处理一致。 */
+    accessError: '',
   });
 
   return Object.assign({

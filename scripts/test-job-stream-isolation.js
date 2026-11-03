@@ -18,6 +18,11 @@ const path = require('path');
 let pass = 0, fail = 0;
 const chk = (c, m) => { console.log((c ? 'PASS  ' : 'FAIL  ') + m); if (!c) fail++; else pass++; };
 
+/* readSrc：按项目根解析相对路径并自动剥注释（见 scripts/lib/harness.js）。
+ * 这里要用它读 ipc/*.js —— 注释里出现的 `const id = 'xxx' + ...` 示例
+ * 不该被当成真实存在的 job 前缀。 */
+const { readSrc } = require('./lib/harness');
+
 const jsDir = path.join(__dirname, '..', 'js');
 const files = [];
 (function walk(d) {
@@ -67,11 +72,31 @@ for (const s of subscriptions) {
   if (!hasFilter) bad.push(label);
 }
 
-/* 额外：列出所有已知 job 前缀，确认订阅里用的前缀都已登记 */
+/* 额外：列出所有已知 job 前缀，确认订阅里用的前缀都已登记
+ *
+ * 【两条规则要一起改】
+ * 任务 7 把 fs:* 域搬到 ipc/fs-ops.js 之后，这里同时失效了两件事：
+ *   ① 只读 main.js → 搬走的那 3 个前缀（scan/empty/dedupe）数不到了；
+ *   ② 只认 `++jobSeq` → 模块里已经改成 `ctx.nextJobSeq()`（与既有搬迁同构）。
+ * 所以既要把范围扩到 ipc/，也要让正则认两种写法。
+ * 断言的**语义没变**：所有在用的 job 前缀都必须在 lib/job-id.js 里登记。 */
 const jobId = require('../lib/job-id');
-const libSrc = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-const prefixes = [...libSrc.matchAll(/const id = '([a-z0-9]+)'\s*\+\s*\(\+\+jobSeq\)/g)].map((m) => m[1]);
-chk(prefixes.length >= 10, 'main.js 里识别到 ' + prefixes.length + ' 个 job 前缀');
+const libSrc = (() => {
+  const parts = [fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')];
+  const ipcDir = path.join(__dirname, '..', 'ipc');
+  if (fs.existsSync(ipcDir)) {
+    for (const n of fs.readdirSync(ipcDir).filter((x) => x.endsWith('.js')).sort()) {
+      /* 用 readSrc（会自动剥注释）而不是裸 readFileSync —— 这里是在
+       * 「找源码里的 job 前缀」，注释里出现的示例不该被当成真前缀。 */
+      parts.push(readSrc(path.join('ipc', n)));
+    }
+  }
+  return parts.join('\n');
+})();
+const prefixes = [
+  ...libSrc.matchAll(/const id = '([a-z0-9]+)'\s*\+\s*(?:\(\+\+jobSeq\)|ctx\.nextJobSeq\(\))/g),
+].map((m) => m[1]);
+chk(prefixes.length >= 10, '主进程侧识别到 ' + prefixes.length + ' 个 job 前缀');
 
 const unregistered = prefixes.filter((p) => !jobId.JOB_PREFIXES[p]);
 chk(unregistered.length === 0,

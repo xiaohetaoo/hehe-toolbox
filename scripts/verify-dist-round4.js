@@ -57,6 +57,9 @@ chk(!!main, 'main.js 可读');
  * 这三条永远假红 —— 而一个「反正一直红」的产物校验等于没有校验。
  * 改成读真正的位置；同时断言 main.js 里不再留副本（防止两处各一份）。 */
 const mediaSrc = read('ipc/media-ffmpeg.js') || read('ipc\\media-ffmpeg.js') || '';
+/* fs:* / zip:* 域（任务 7）也搬到了 ipc/fs-ops.js，通道计数要一起算 */
+const fsOpsSrc = read('ipc/fs-ops.js') || read('ipc\\fs-ops.js') || '';
+chk(!!fsOpsSrc, 'ipc/fs-ops.js 可读（fs/zip 域的实际位置）');
 chk(!!mediaSrc, 'ipc/media-ffmpeg.js 可读（ffmpeg/target 域的实际位置）');
 chk(mediaSrc.includes('passlogFile'), '两遍法使用 passlogfile（ipc/media-ffmpeg.js）');
 chk(mediaSrc.includes('pass1Done'), '有「分析只做一次」的复用开关（ipc/media-ffmpeg.js）');
@@ -89,8 +92,10 @@ function collectHandles(src) {
   for (const m of src.matchAll(/^[ \t]*handle\((?:dirMoveCh|CH)\.[A-Z_]+\.[A-Z_]+\s*,/gm)) out.push(m[0].trim());
   return out;
 }
-const handles = collectHandles(main).concat(collectHandles(mediaSrc));
-chk(handles.length >= 150, 'IPC 通道数正常（main ' + collectHandles(main).length + ' + ipc ' + collectHandles(mediaSrc).length + '）');
+const handles = collectHandles(main).concat(collectHandles(mediaSrc)).concat(collectHandles(fsOpsSrc));
+chk(handles.length >= 150, 'IPC 通道数正常（main ' + collectHandles(main).length
+  + ' + media ' + collectHandles(mediaSrc).length
+  + ' + fs ' + collectHandles(fsOpsSrc).length + '）');
 /* 重复判定只看字面量那些（常量键每处文本都不同，比进来没意义） */
 const names = collectHandles(main).filter((n) => !/\bdirl?MoveCh|CH\./.test(n));
 chk(new Set(names).size === names.length, 'main.js 里没有重复注册的字面量通道（' + names.length + ' 个）');

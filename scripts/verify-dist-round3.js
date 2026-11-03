@@ -44,20 +44,29 @@ const main = read('main.js') || '';
 const mediaSrc = read('ipc/media-ffmpeg.js') || read('ipc\\media-ffmpeg.js') || '';
 const tempNamesSrc = read('lib/temp-names.js') || read('lib\\temp-names.js') || '';
 chk(!!mediaSrc, 'ipc/media-ffmpeg.js 可读（rec/ffmpeg 域的实际位置）');
+const fsOpsSrc = read('ipc/fs-ops.js') || read('ipc\\fs-ops.js') || '';
 chk(!!tempNamesSrc, 'lib/temp-names.js 可读（暂存目录构造的实际位置）');
+chk(!!fsOpsSrc, 'ipc/fs-ops.js 可读（fs:* / zip:* 域的实际位置）');
 chk(!!main, 'main.js 可读');
+
+/* 【主进程侧全量源码：main.js + 搬出去的各个域】
+ * 下面那批断言的语义是「打包后的主进程里有没有这个实现」，
+ * 与它在 main.js 还是 ipc/*.js 无关。任务 5/6/7 搬走三个域之后，
+ * 只查 main.js 会让它们全部变成永久假红 —— 而假红到最后就是整段被忽略。 */
+const mainAll = [main, mediaSrc, fsOpsSrc].join(String.fromCharCode(10));
 
 /* --- 本轮核心修复 --- */
 chk(main.includes('lib/path-guard'), '已引入 path-guard 模块');
-chk(main.includes('async function writeFileAtomic'), '有原子写函数');
+chk(mainAll.includes('async function writeFileAtomic'), '有原子写函数');
 chk(!/fsp\.rm\(dest, \{ force: true \}\)\.catch\(\(\) => \{\}\);\s*\n\s*await fsp\.rename\(tmp, dest\)/.test(main),
   'writeFileAtomic 不再「先删后改名」');
-chk(main.includes('.hehe-bak-'), 'writeFileAtomic 有备份中转');
+  /* 锁的是「原子写没有备份中转」—— 目标已存在时 rename 会失败，
+   * 没有 .hehe-bak- 中转就只能先删后改，中途失败原文件就没了。 */
+chk(mainAll.includes('.hehe-bak-'), 'writeFileAtomic 有备份中转');
 /* 【rec:stop 的降级保护现在在 ipc/media-ffmpeg.js，不在 main.js】
- * 这条断言原来查 main.js，任务 6 把 rec:* 域整体搬走后它就永远假红。
- * 但一个「反正一直红」的构建产物校验等于没有校验 —— 人会直接忽略它。
- * 改成查真正的位置，并且**搬走这件事本身也要断言**（否则哪天又搬回来，
- * 这条会静默变成永真）。 */
+ * 任务 6 搬走后这条原来永远假红 —— 而「反正一直红」的校验等于没有校验。
+ * 改成查真正位置，同时断言它确实搬走了（否则哪天搬回来会变成永真）。 */
+/* 锁的是「降级时删掉分段目录」—— 只保住第一段时删掉，等于销毁剩下的录像。 */
 chk(/if \(!degraded\) \{\s*\n\s*await fsp\.rm\(recSegDir/.test(mediaSrc.replace(/\r/g, '')),
   'rec:stop 降级时保留分段（实现在 ipc/media-ffmpeg.js）');
 /* 同时确认它确实搬走了：两个都查，防止「两处都有」或「两处都没有」 */
@@ -66,8 +75,12 @@ chk(!/if \(!degraded\) \{\s*\n\s*await fsp\.rm\(recSegDir/.test(main.replace(/\r
 chk(main.includes('copyFile(tmp, HOSTS_PATH)'), 'hosts 兜底会先用 tmp 补回');
 chk(main.indexOf('copyFile(tmp, HOSTS_PATH)') < main.indexOf("rm(tmp, { force: true })", main.indexOf('copyFile(tmp, HOSTS_PATH)')),
   'hosts 兜底顺序正确（先补再删）');
-chk(main.includes('ownOnly: true'), '垃圾扫描只列本应用产物');
-chk(main.includes('isOwnTempName') && main.includes('tmpRoot'), 'clean-junk 有 %TEMP% 闸门');
+  /* 锁的是「垃圾扫描列出别人的文件」—— ownOnly 是唯一那道闸门。
+   * 真跑要往 %TEMP% 里放别人的文件，会污染真实环境。 */
+chk(mainAll.includes('ownOnly: true'), '垃圾扫描只列本应用产物');
+  /* 锁的是「clean-junk 缺 %TEMP% 闸门」—— 没有它就会删到全盘临时文件。
+   * 真跑是不可逆的数据销毁，只能用源码断言。 */
+chk(mainAll.includes('isOwnTempName') && mainAll.includes('tmpRoot'), 'clean-junk 有 %TEMP% 闸门');
 chk(main.includes('$launched'), '升级脚本启动失败时保留包');
 chk(main.includes('$srcLen'), '升级脚本校验替换后大小');
 chk(main.includes('$stamp'), '升级脚本保留历史备份');
@@ -84,11 +97,19 @@ chk(/const staging = tempNames\.sevenStagingDir\(outDir\)/.test(main),
 chk(/function sevenStagingDir\s*\(outDir/.test(tempNamesSrc) &&
    /return outDir \? path\.join\(outDir, name\)/.test(tempNamesSrc),
   'sevenStagingDir 建在传入的 outDir 下（同卷），不退回 %TEMP%');
-chk(main.includes('BOMB_RATIO') || main.includes('compressedSize'), 'zip 解压传入压缩比信息');
-chk(main.includes('清单文件损坏：分片数量非法'), 'merge-parts 校验 parts');
-chk(main.includes('源文件在分割期间发生变化'), 'split 校验源文件未变');
-chk(main.includes('if (fs.existsSync(outZip))'), 'zip:compress 拒绝覆盖');
-chk(main.includes('used.has(entryName.toLowerCase())'), 'zip:compress 同名不丢');
+  /* 锁的是「解压没有压缩比上限」（zip 炸弹）—— 真跑要造一个炸弹包。 */
+chk(mainAll.includes('BOMB_RATIO') || mainAll.includes('compressedSize'), 'zip 解压传入压缩比信息');
+  /* 锁的是「merge-parts 不校验 parts 清单」—— 缺了它会把残缺的合并结果
+   * 当成完整文件写出去。真跑要伪造一份损坏的清单。 */
+chk(mainAll.includes('清单文件损坏：分片数量非法'), 'merge-parts 校验 parts');
+  /* 锁的是「split 不校验源文件未变」—— 分割期间源被改动会得到无法还原的
+   * 分片。真跑要制造竞态。 */
+chk(mainAll.includes('源文件在分割期间发生变化'), 'split 校验源文件未变');
+  /* 锁的是「zip:compress 静默覆盖已有文件」—— 用户原有压缩包会被毁。 */
+chk(mainAll.includes('if (fs.existsSync(outZip))'), 'zip:compress 拒绝覆盖');
+  /* 锁的是「zip:compress 同名条目丢失」—— 大小写不同的同名文件会被合并成一个。
+   * 真跑要造一个含 A.txt 与 a.txt 的目录树。 */
+chk(mainAll.includes('used.has(entryName.toLowerCase())'), 'zip:compress 同名不丢');
 
 const guardFile = read('lib/path-guard.js') || '';
 chk(!!guardFile, 'lib/path-guard.js 已打包');

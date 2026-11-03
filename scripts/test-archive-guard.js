@@ -1,5 +1,9 @@
 'use strict';
 const { t, done, readMain } = require('./lib/harness');
+/* segFromHandler 统一到 scripts/lib/seg-from-handler.js —— 见那里的文件头说明。 */
+const { segFromHandler } = require('./lib/seg-from-handler');
+/* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
+const { rmDir } = require('./lib/test-fs');
 /* lib/archive-guard.js 的单元测试：恶意条目必须被拒，正常条目必须放行。
  * 用法：node scripts/test-archive-guard.js
  */
@@ -7,8 +11,6 @@ const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const cp = require('child_process');
-const { scanBrace } = require('../lib/src-scan');
 /* 主进程全部源码（22 号用例要点名 seven:extract 的实现）。 */
 const mainSrc = readMain({ raw: true });
 const ROOT = path.join(__dirname, '..');
@@ -22,24 +24,6 @@ function expectCode(fn, code) {
 
 /* ---------- 应当拒绝 ---------- */
 
-function segFromHandler(channel, label) {
-  const start = mainSrc.indexOf("handle('" + channel + "'");
-  assert.ok(start > 0, '找不到 handler: ' + channel);
-  /* handler 签名里可能有默认参数对象 `opts = {}`，不能取 start 之后的第一个 '{'，
-   * 要跳到 `=> {` 之后的那个函数体开括号。 */
-  const arrow = mainSrc.indexOf('=>', start);
-  const from = arrow > 0 ? arrow : start;
-  const open = mainSrc.indexOf('{', from);
-  assert.ok(open > 0, 'handler ' + channel + ' 没有函数体');
-  const end = scanBrace(mainSrc, open);
-  assert.ok(end > open, 'handler ' + channel + ' 括号不配平');
-  return mainSrc.slice(start, end);
-}
-
-function rmDir(dir) {
-  try { fs.rmSync(dir, { recursive: true, force: true }); }
-  catch (e) { try { cp.execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', dir], { windowsHide: true }); } catch (e2) {} }
-}
 
 function extractZipCompress() {
   const i = mainSrc.indexOf("handle('zip:compress'");
@@ -226,9 +210,19 @@ t('4b zip:compress：顶层同名*文件*的去重没有被这次改动破坏', 
 t('22 seven:extract：失败回滚要把条目搬回 staging，不能直接删', () => {
   /* 直接删的风险：uniqueTarget 的存在性判断若因权限/瞬时错误失准，
    * rm 掉的可能是用户原有文件 —— 解压失败反毁数据。 */
-  const seg = segFromHandler('seven:extract');
+  const seg = segFromHandler(mainSrc, 'seven:extract');
+  /* 锁的是「zip:extract 回滚时先 rm 再 rename」这个数据丢失回归：
+     * 反序 rm 已搬出的条目，一旦中途失败，原压缩包里的内容已经被删掉了。
+     * 只能看源码形态 —— 真触发要构造「解压到一半失败」的损坏包。 */
+  /* 锁的是「zip:extract 回滚时先 rm 再 rename」这个数据丢失回归：
+     * 反序 rm 已搬出的条目，一旦中途失败，原压缩包里的内容已经被删掉了。
+     * 只能看源码形态 —— 真触发要构造「解压到一半失败」的损坏包。 */
   assert.ok(!/for \(const dst of movedTo\.reverse\(\)\) \{\s*try \{ await fsp\.rm\(dst/.test(seg),
     '回滚仍在直接 rm(dst)');
+  /* 锁的是「回滚必须把已搬出的条目改名回 staging 而不是删掉」——
+     * 改名可逆，删掉不可逆。真跑要造一个中途失败的解压过程。 */
+  /* 锁的是「回滚必须把已搬出的条目改名回 staging 而不是删掉」——
+     * 改名可逆，删掉不可逆。真跑要造一个中途失败的解压过程。 */
   assert.ok(/await fsp\.rename\(dst, back\)/.test(seg), '应把已搬出的条目改名回 staging');
 });
 

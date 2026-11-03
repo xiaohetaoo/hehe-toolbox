@@ -61,10 +61,11 @@ const { dialog } = require('electron');
  * @param {object}   deps.pathGuard      lib/path-guard
  * @param {object}   deps.tempNames      lib/temp-names
  * @param {object}   deps.targetSize     lib/target-size
- * @param {Function} deps.AdmZip
+ * @param {new (p?: string) => {getEntries: Function, extractEntryTo: Function}} deps.AdmZip
+ *                                      adm-zip 的构造函数（用 new 调用）
  * @param {Function} deps.downloadToFile  通用断点续传下载器（定义在 main.js，
  *                                       net:download 与 ffmpeg:download 共用）
- * @returns {{ register: Function }}
+ * @returns {void} 全部 IPC 都在这里就地注册，没有返回值
  */
 module.exports = function register(ctx, deps) {
   const {

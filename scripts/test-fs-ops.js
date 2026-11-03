@@ -29,8 +29,9 @@ const path = require('path');
 const os = require('os');
 const fsOps = require('../lib/fs-ops');
 const { readMain } = require('./lib/harness');
+/* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
+const { rmDir } = require('./lib/test-fs');
 const { scanBrace } = require('../lib/src-scan');
-const cp = require('child_process');
 /* 主进程源码：迁移来的 round13 用例要把 uniqueTarget 等实现抽出来跑。 */
 const mainSrc = readMain({ raw: true });
 
@@ -47,16 +48,23 @@ const assert = require('assert');
     assert.strictEqual(typeof fsOps.uniquePath, 'function');
     assert.strictEqual(typeof fsOps.tempPathFor, 'function');
     const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+    /* 【扫描范围现在覆盖整个主进程侧，不只是 main.js】
+     * fs:* 域在任务 7 搬到了 ipc/fs-ops.js（28 个通道）。断言要守的东西没变 ——
+     * 「主进程用的是 lib 里的共享实现，没有内联副本」—— 但被检查的代码不再
+     * 只住在 main.js 里。只查 main.js 会让这几条永久假红，而假红到最后就是
+     * 整段被忽略。这里把两处拼起来查，任何一边出现内联副本仍然会红。 */
+    const fsOpsSrc = fs.readFileSync(path.join(__dirname, '..', 'ipc', 'fs-ops.js'), 'utf8');
+    const mainSrcAll = mainSrc + String.fromCharCode(10) + fsOpsSrc;
   /* 锁的是：「测试跑了副本」这个假绿 —— 原测试自己抄了一份唯一名/临时名规则，
    * lib 改动后照旧全绿。必须用源码断言：要验的是「main.js 确实引用了共享实现」
    * 这条依赖关系，只跑行为的话 main.js 里再出现一份内联副本也测不出来。 */
     assert.ok(/require\('\.\/lib\/fs-ops'\)/.test(mainSrc), 'main.js 未引入共享实现');
     /* 锁的是：main.js 有没有真的调用共享实现（而不是自己再写一份）。 */
-    assert.ok(/fsOps\.uniquePath/.test(mainSrc), 'main.js 未调用 fsOps.uniquePath');
-    assert.ok(/fsOps\.tempPathFor/.test(mainSrc), 'main.js 未调用 fsOps.tempPathFor');
+    assert.ok(/fsOps\.uniquePath/.test(mainSrcAll), '主进程未调用 fsOps.uniquePath');
+    assert.ok(/fsOps\.tempPathFor/.test(mainSrcAll), '主进程未调用 fsOps.tempPathFor');
     /* 锁的是：内联副本必须被删干净 —— 留着它等于有两份实现会各自漂移。 */
     assert.ok(!/for \(let i = 1; i < 1000; i\+\+\) \{ const np = path\.join\(dir, `\$\{base\}\(\$\{i\}\)`/
-      .test(mainSrc.replace(/\/\*[\s\S]*?\*\//g, '')), 'main.js 仍有内联的 unique-path 实现');
+      .test(mainSrcAll.replace(/\/\*[\s\S]*?\*\//g, '')), '主进程仍有内联的 unique-path 实现');
   });
 
   /* ---------- (1) merge-parts 半成品 ---------- */
@@ -193,10 +201,6 @@ function segFromFn(needle, label) {
 }
 
 
-function rmDir(dir) {
-  try { fs.rmSync(dir, { recursive: true, force: true }); }
-  catch (e) { try { cp.execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', dir], { windowsHide: true }); } catch (e2) {} }
-}
 
 t('9a moveFile：同卷时走 rename；跨卷（EXDEV）退回复制+删源', async () => {
   /* 【不用注释当右边界】见 segFromFn 的说明。moveFile 是顶层 async 函数。 */

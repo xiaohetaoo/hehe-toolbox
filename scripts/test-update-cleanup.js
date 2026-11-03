@@ -1,6 +1,7 @@
 'use strict';
 const { t, done, readMain } = require('./lib/harness');
-const { scanBrace } = require('../lib/src-scan');
+/* segFromHandler 统一到 scripts/lib/seg-from-handler.js —— 见那里的文件头说明。 */
+const { segFromHandler } = require('./lib/seg-from-handler');
 /* 【迁移说明】用例来自 test-round8-fixes.js，原先用 fs.readFileSync(main.js)。
  * 任务 6 之后 ffmpeg:/target:/rec: 等域搬到了 ipc/，所以读「主进程全部源码」——
  * 断言的语义一直是"主进程里有这个实现"，与它在哪个文件无关。 */
@@ -105,19 +106,6 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'updclean-'));
 
 
 
-function segFromHandler(channel, label) {
-  const start = mainSrc.indexOf("handle('" + channel + "'");
-  assert.ok(start > 0, '找不到 handler: ' + channel);
-  /* handler 签名里可能有默认参数对象 `opts = {}`，不能取 start 之后的第一个 '{'，
-   * 要跳到 `=> {` 之后的那个函数体开括号。 */
-  const arrow = mainSrc.indexOf('=>', start);
-  const from = arrow > 0 ? arrow : start;
-  const open = mainSrc.indexOf('{', from);
-  assert.ok(open > 0, 'handler ' + channel + ' 没有函数体');
-  const end = scanBrace(mainSrc, open);
-  assert.ok(end > open, 'handler ' + channel + ' 括号不配平');
-  return mainSrc.slice(start, end);
-}
 
 t('cmpVer 语义正确', () => {
   assert.strictEqual(cmpVer('0.0.14', '0.0.13'), 1);
@@ -190,7 +178,7 @@ t('时间戳备份按时间排序、只留最新的', () => {
 /* ============ ④c 首帧语言 ============ */
 
 t('20 update:apply：并发调用要被挡住（连点两次会跑两份替换脚本）', () => {
-  const seg = segFromHandler('update:apply');
+  const seg = segFromHandler(mainSrc, 'update:apply');
   assert.ok(/updateApplying/.test(seg), '缺少升级单飞标志');
   assert.ok(/if \(updateApplying\) throw/.test(seg), '第二次调用应直接拒绝');
   /* 校验失败要能重试：commit 之前的错误必须放开标志 */

@@ -83,7 +83,17 @@ function sourceTextVars(codeLines) {
   const vars = new Set();
   const assigns = [];
   codeLines.forEach((ln, i) => {
-    const m = /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.+)$/.exec(ln);
+    /* 【必须先剥掉行尾的 \r —— 否则整个元测试在 CRLF 文件上失效】
+     * 下面 `/^…(.+)$/` 里的 `.` 不匹配 \r，而本仓库工作副本里 CRLF 与 LF 混存
+     * （实测 154 个 LF、73 个 CRLF）。后果是同一份内容：
+     *     LF   → vars = ['mainSrc', 'code']
+     *     CRLF → vars = ['mainSrc']        ← 派生变量整片消失
+     * 于是「对已剥注释的 mainSrc 做断言」这类地方不再被算作源码断言，
+     * SA-4 静默放行 —— **这道检查的强度取决于谁用什么编辑器存过文件**。
+     * 实测影响面：修掉之后全仓 B 从 158 涨到 433（约 40 个文件）。
+     * 逐行 replace 是 O(行数)，扫描 120 个脚本的代价可以忽略。 */
+    const line = ln.replace(/\r$/, '');
+    const m = /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.+)$/.exec(line);
     if (m) assigns.push({ name: m[1], rhs: m[2], line: i + 1 });
   });
   const isSourceRhs = (rhs) => {

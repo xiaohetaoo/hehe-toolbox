@@ -2,9 +2,10 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const cp = require('child_process');
 const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+/* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
+const { rmDir } = require('./lib/test-fs');
 const mainSrc = readMain({ raw: true });
 
 /* 数据文件健康检查的行为测试（原 test-round13 的 6a / 6b）。
@@ -16,10 +17,6 @@ const mainSrc = readMain({ raw: true });
 /* 读项目内文件（6a 要读 main.js 的 loadStore 实现）。 */
 function read(rel) { return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8'); }
 
-function rmDir(dir) {
-  try { fs.rmSync(dir, { recursive: true, force: true }); }
-  catch (e) { try { cp.execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', dir], { windowsHide: true }); } catch (e2) {} }
-}
 
 /* ------------ 以下为迁移来的用例（断言逐字保留） ------------ */
 

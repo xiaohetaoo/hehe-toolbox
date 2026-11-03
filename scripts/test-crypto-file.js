@@ -2,9 +2,10 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const cp = require('child_process');
 const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+/* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
+const { rmDir } = require('./lib/test-fs');
 const mainSrc = readMain({ raw: true });
 
 /* 文件加密格式的行为测试（原 test-round13 的 1a / 1b / 1c）。
@@ -35,11 +36,6 @@ function extractCryptStream() {
     block + '\nreturn { cryptStream };')(
     fs, fs.promises, path, require('crypto'), () => {}, requireShim,
     require('../lib/temp-names'));
-}
-
-function rmDir(dir) {
-  try { fs.rmSync(dir, { recursive: true, force: true }); }
-  catch (e) { try { cp.execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', dir], { windowsHide: true }); } catch (e2) {} }
 }
 
 t('1a crypto：加密 0~16 字节的文件，全部能原样解回来', async () => {

@@ -13,6 +13,12 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+/* 【主进程侧源码：main.js 加上放 fs:* 域的 ipc/fs-ops.js】
+ * 任务 7 把 fs:read-text … zip:extract 共 28 个通道搬到了 ipc/fs-ops.js。
+ * 下面几条断言的语义是「主进程里有没有这个实现、是不是这个形态」，
+ * 与它住在哪个文件无关 —— 只读 main.js 会让它们永久假红，
+ * 而假红到最后就是整段被忽略。需要「只有 main.js」的地方仍用 read('main.js')。 */
+const readMainPlusFs = () => read('main.js') + String.fromCharCode(10) + read('ipc/fs-ops.js');
 
 /* ---------- P0：snip.html 标注渲染 ----------
  * accentPrimary 曾落在 </script> 之后，被 HTML 解析器当正文：
@@ -193,7 +199,7 @@ t('P3 store 解析失败时跳过孤儿图片清扫', () => {
 
 /* ---------- P3：fs:rename 覆盖保护 ---------- */
 t('P3 fs:rename 默认拒绝覆盖已存在目标', () => {
-  const s = read('main.js');
+  const s = readMainPlusFs();
   const fn = s.match(/handle\('fs:rename'[\s\S]*?\n\}\);/)[0];
   assert.ok(fn.includes('existsSync'), '没有检查目标是否存在');
   assert.ok(fn.includes('overwrite'), '没有显式 overwrite 开关');

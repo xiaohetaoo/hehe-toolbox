@@ -55,6 +55,19 @@ jobs:
       - name: Lint (ESLint)
         run: npm run lint
 
+      # 【类型检查：ESLint 看不见的那一半】
+      # 本项目没有类型系统，但 jsconfig.json 开了 checkJs，用 tsc 对 lib/ 与
+      # ipc/ 做纯推导式检查（noEmit，不改任何产物）。它抓的是 ESLint 结构上
+      # 抓不到的一类问题：函数收一个参数、JSDoc 里声明了某个字段、代码里却
+      # 从没传/没写。首次接入时报出 95 条，其中真问题是：
+      #   · lib/dir-move.js 的 validateMove 读 x.srcExists，JSDoc 里根本没声明；
+      #   · lib/disk-health.js 的 @returns 写着 totals，实际代码里没有这个字段；
+      #   · lib/acl-repair.js 的 diagnose 两条返回路径字段不一致（一条少
+      #     repairPossible，调用方会拿到 undefined）。
+      # 现在基线是 0 错误，所以这一步退出码必须是 0；哪天红了就是新增问题。
+      - name: Type check (jsconfig + checkJs)
+        run: npm run typecheck
+
       # 版本号规则：每段 0–9，满 10 进位（0.0.14 不合规，应写 0.1.4）
       - name: Verify version format
         run: npm run version:check
