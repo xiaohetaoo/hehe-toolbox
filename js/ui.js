@@ -314,6 +314,49 @@
   }
 
   /* ---------- 拖拽区 ---------- */
+
+  /* 【拖入文件夹时必须递归展开】
+   * 用户把「下载」文件夹拖到图片压缩上，期望是「处理里面所有图片」。
+   * 但 dataTransfer.files 对目录只给出**目录本身**的路径，
+   * 原样传给工具的话：fs:stat 拿到 isDir:true，然后按文件去读 → 报错。
+   * 用户看到的是「压缩失败」，而不是「不支持文件夹」——像软件坏了。
+   *
+   * 这里的取舍：
+   *   · 只展开一层还是全递归？→ **全递归**。用户拖目录的意图就是"里面的东西"，
+   *     只展开一层会让「我拖了整个截图文件夹却只处理了顶层」更困惑。
+   *   · 递归深度/数量设上限，避免误拖 C:\ 时把界面卡死。
+   *   · 展开失败（权限不足等）静默跳过该子项，不中断整体。
+   *
+   * @param {string[]} paths 拖入的原始路径
+   * @returns {Promise<{files:string[], dirs:number}>} 展开后的文件列表 + 展开的目录数
+   */
+  const EXPAND_MAX_FILES = 3000;
+  const EXPAND_MAX_DEPTH = 8;
+  async function expandDroppedPaths(paths) {
+    const out = [];
+    let dirs = 0;
+    async function walk(p, depth) {
+      if (out.length >= EXPAND_MAX_FILES) return;
+      let st = null;
+      try { st = await invoke('fs:stat', p); } catch (e) { return; }
+      if (!st || !st.isDir) { out.push(p); return; }
+      if (depth >= EXPAND_MAX_DEPTH) return;
+      dirs++;
+      let items = [];
+      try { items = await invoke('fs:list', p); } catch (e) { return; }
+      for (const it of items || []) {
+        if (out.length >= EXPAND_MAX_FILES) return;
+        if (it && it.isDir) await walk(it.path, depth + 1);
+        else if (it && it.path) out.push(it.path);
+      }
+    }
+    for (const p of paths || []) {
+      // 顺序展开而不是并发：一次拖 20 个目录时并发会把主进程 IO 打满
+      await walk(p, 0);
+    }
+    return { files: out, dirs };
+  }
+
   function dropzone({ text = '点击选择或拖拽文件到此处', sub = '', multiple = true, accept, onFiles, pickProps, directory = false, filters }) {
     const dz = div('dropzone');
     dz.appendChild(div('dz-icon', iconLg('upload')));
@@ -332,13 +375,43 @@
     dz.addEventListener('click', getFiles);
     dz.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover'); });
     dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-    dz.addEventListener('drop', (e) => {
+    dz.addEventListener('drop', async (e) => {
       e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover');
       const files = [...e.dataTransfer.files];
       if (!files.length) return;
       const paths = files.map(f => api.getPathForFile(f)).filter(Boolean);
-      if (paths.length) onFiles(paths);
-      else onFiles([], files);
+      if (!paths.length) { onFiles([], files); return; }
+      /* 拖进来的是目录就递归展开（见 expandDroppedPaths 的说明）。
+       * 展开期间给个视觉反馈：扫几千个文件可能要几秒，
+       * 没有任何提示的话用户会以为拖拽没生效、再拖一次。
+       *
+       * 【不要用「路径里有没有点」来猜是不是目录】
+       * `My Documents`、`2024 照片` 这类目录名没有扩展名，看图似的判断会误判，
+       * 反而把正常文件名（如 `README`）当成目录去 stat。
+       * 统一走 fs:stat 问系统，问一次的成本远低于误判的代价。 */
+      let hasDir = false;
+      for (const p of paths) {
+        try { const st = await invoke('fs:stat', p); if (st && st.isDir) { hasDir = true; break; } } catch (err) {}
+      }
+      const prevText = mainEl.textContent;
+      if (hasDir) {
+        mainEl.textContent = '正在展开文件夹…';
+        dz.style.pointerEvents = 'none';
+      }
+      let expanded;
+      try {
+        expanded = await expandDroppedPaths(paths);
+      } finally {
+        if (hasDir) { mainEl.textContent = prevText; dz.style.pointerEvents = ''; }
+      }
+      if (expanded.dirs > 0 && expanded.files.length) {
+        toast('已从 ' + expanded.dirs + ' 个文件夹展开 ' + expanded.files.length + ' 个文件', 'info', 2000);
+      } else if (expanded.dirs > 0 && !expanded.files.length) {
+        // 拖了个空文件夹：明确说一声，否则"什么都没发生"
+        toast('文件夹里没有可处理的文件', 'warn');
+        return;
+      }
+      onFiles(expanded.files);
     });
     return dz;
   }
@@ -868,5 +941,5 @@
   window.h = h; // 全局 DOM 构建函数，供所有工具直接使用
   // 全局兜底：工具文件即使遗漏解构也能直接使用这些助手
   Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId, guard });
-  window.ui = { h, div, icon, iconLg, makeButtonLike, focusable, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild, guard };
+  window.ui = { h, div, icon, iconLg, makeButtonLike, focusable, expandDroppedPaths, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild, guard };
 })();

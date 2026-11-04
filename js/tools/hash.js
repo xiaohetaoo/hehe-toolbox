@@ -11,7 +11,7 @@
   const T = (zh, vars) => TT('hash', zh, vars);
 
   register({
-    id: 'hash-tool', name: '哈希校验', module: 'file', icon: 'hash',
+    id: 'hash-tool', name: '哈希校验', module: 'file', icon: 'hash', i18n: true,
     desc: 'MD5 / SHA1 / SHA256 / SHA512，支持文件拖拽与文本计算',
     keywords: ['hash', 'md5', 'sha256', '校验', '哈希'],
     render(page) {

@@ -75,6 +75,7 @@
 
       'tool.favorite': '收藏',
       'tool.favorited': '已收藏',
+      'tool.bodyNotTranslated': '此工具的正文暂仅支持中文，界面外壳已切换为英文',
       'tool.notFound': '工具不存在',
       'tool.renderFail': '工具加载失败',
       'tool.loadFail': '页面加载失败',
@@ -288,6 +289,7 @@
 
       'tool.favorite': 'Favorite',
       'tool.favorited': 'Favorited',
+      'tool.bodyNotTranslated': 'This tool’s content is available in Chinese only; the app shell has switched to English',
       'tool.notFound': 'Tool not found',
       'tool.renderFail': 'Failed to load tool',
       'tool.loadFail': 'Failed to load page',

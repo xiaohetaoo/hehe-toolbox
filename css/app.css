@@ -556,6 +556,18 @@ body {
 .tool-header h2 { font-size: 16px; font-weight: 500; }
 .tool-header .th-desc { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .tool-header .th-star { margin-left: auto; }
+/* 英文模式下的「正文未翻译」提示。
+   用信息色（不是警告色）：这是已知的、预期的边界，不是出错。
+   放在工具标题下方、正文上方的位置——用户读到的顺序是
+   「这是什么工具 → 正文为什么是中文 → 正文」。 */
+.tool-i18n-note {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-2);
+  background: var(--primary-light);
+  border-left: 3px solid var(--primary);
+  border-radius: 6px;
+  padding: 8px 12px; margin-bottom: 12px;
+}
 
 /* 按钮 */
 .btn {

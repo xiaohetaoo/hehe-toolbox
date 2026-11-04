@@ -205,6 +205,27 @@
   /* ============ 布局 ============ */
   let sidebarEl, contentEl, tabbarEl, breadcrumbEl, searchInput, searchDrop, searchWrapEl, statusText, cpuEl, memEl, maxBtn, themeIconEl;
 
+  /* 【数字框：聚焦时也不该被滚轮改值】
+   * Chromium 对 <input type=number> 的默认行为是：鼠标悬停/聚焦时滚轮会加减 step。
+   * 本项目的数字框全是「长度 / 数量 / 质量 / 帧率」这类参数，
+   * 用户滚动页面时滚轮恰好划过某个输入框，值就被悄悄改了 ——
+   * 而这类错误极难察觉：界面上只是数字变了，没有任何提示，
+   * 等到点「开始压缩」才发现质量从 80 变成了 79。
+   *
+   * 处理方式：在 wheel 事件上判断——**只有真正聚焦时才放行**。
+   * 不干脆全部禁掉：用户确实可能用滚轮微调（比如逐格调帧率），
+   * 聚焦状态是他主动选择进入的，此时滚轮是明确意图。
+   * 未聚焦时阻止默认行为，这样划过不会改值，也不会连带滚动页面。
+   * passive:false 是必需的——passive 监听器里 preventDefault 无效。 */
+  function installNumberWheelGuard() {
+    document.addEventListener('wheel', (e) => {
+      const el = e.target;
+      if (!el || el.tagName !== 'INPUT' || el.type !== 'number') return;
+      if (document.activeElement === el) return; // 已聚焦：用户明确在操作它
+      e.preventDefault();
+    }, { passive: false });
+  }
+
   function buildShell() {
     /* 侧边栏 */
     sidebarEl = div('sidebar');
@@ -794,6 +815,20 @@
     const starBtn = btn(starred ? T('tool.favorited') : T('tool.favorite'), 'btn-secondary btn-sm th-star', () => toggleFavorite(toolId), 'star');
     head.appendChild(starBtn);
     page.appendChild(head);
+    /* 【英文模式下的「正文未翻译」提示】
+     * 界面外壳（导航/首页/设置）是双语的，但 40 个工具文件里只有 3 个接了 TT()。
+     * 英文用户切到 English 后点进任何一个工具，看到的是整片中文 ——
+     * 第一反应是「功能坏了」，而不是「还没翻译完」。
+     *
+     * 设置页里其实写了这条说明（settings.languageDesc），但用户是在**工具页**
+     * 困惑的，说明藏在设置里等于没说。所以在工具页顶部显式提示一次。
+     *
+     * 判据用 tool.i18n 标记而不是写死 id 名单：
+     * 名单会随翻译进度变化，写死必然过期（过期表现为「明明翻译了却还提示」）。
+     * 接了 i18n 的工具在 register 时打 i18n:true，这里据此判断。 */
+    if (lang === 'en' && !t.i18n) {
+      page.appendChild(div('tool-i18n-note', T('tool.bodyNotTranslated')));
+    }
     // 高危工具未启用时的处理。
     // 【不能整页锁死】local-notes / clipboard-history 只在「删除」时需要 file-delete，
     // 记笔记、看剪贴板历史本身是无害的读操作。原来这里一律换成说明卡，
@@ -813,7 +848,103 @@
     } catch (e) {
       console.error('工具渲染失败', toolId, e);
       page.appendChild(window.ui.placeholder('alert', T('tool.renderFail'), e.message));
+      return;
     }
+    // 渲染成功后恢复上次用过的参数（见 rememberToolParams 的说明）
+    rememberToolParams(toolId, page);
+  }
+
+  /* 【工具参数记忆】
+   * 痛点：每次打开「图片压缩」，质量都是 80、最大宽度都是「不限」；
+   * 打开「音视频转换」，格式又回到默认。用户每次都得重设一遍。
+   *
+   * 做法：渲染完成后扫描页内的输入控件，给每个控件算一个**稳定键**，
+   * 值变化时写进 store；下次渲染时回填。
+   *
+   * 【为什么用「结构位置 + 特征」算键，而不是要求每个工具声明 id】
+   * 40 个工具文件、几百个输入框，逐个加 id 既容易漏也不可维护。
+   * 但**不能用纯序号**（input[0]、input[1]）：工具改一版顺序，
+   * 用户的记忆值就会串到别的控件上（比如把「质量」的值填进「帧率」）。
+   * 折中：用「同类型控件里的序号 + type + placeholder 前若干字符」拼键 —— 
+   * 顺序变了、placeholder 也变了才失效，这比纯序号稳得多。
+   *
+   * 【只记「用户主动改过」的值】
+   * 如果渲染后立刻把默认值全存一遍，那么"用户没动过"和"用户特意设成默认值"
+   * 就分不开了，而且会把 store 撑大。所以只在 change/input 事件里写入。
+   *
+   * 【哪些控件不记】
+   * 文件框、搜索框、密码框不记：它们要么是一次性输入，要么记录会有隐私问题。
+   * 搜索框（type=search）尤其不该记 —— 每次进页面都带着上次的搜索词很奇怪。
+   */
+  const PARAM_SKIP_TYPES = new Set(['file', 'password', 'search', 'hidden']);
+  const PARAM_SKIP_PLACEHOLDER = /搜索|search|输入文本|粘贴|请输入内容|要处理|关键词/i;
+
+  function paramKeyFor(el, indexMap) {
+    const tag = el.tagName.toLowerCase();
+    const type = tag === 'input' ? (el.type || 'text') : tag;
+    const slot = indexMap.get(tag + ':' + type) || 0;
+    // placeholder 取前 12 字：既是特征，又不会因为文案微调就整条失效
+    const hint = String(el.getAttribute('placeholder') || '').slice(0, 12);
+    return type + '#' + slot + '#' + hint;
+  }
+
+  function rememberToolParams(toolId, page) {
+    if (!isDesktop) return;
+    const controls = [...page.querySelectorAll('input, select, textarea')]
+      .filter((el) => !PARAM_SKIP_TYPES.has(el.type) && el.type !== 'checkbox' && el.type !== 'radio');
+    if (!controls.length) return;
+
+    // 只记"有 placeholder 或不是搜索性质"的控件，避免把临时输入框也写进 store
+    const indexMap = new Map();
+    const picked = [];
+    for (const el of controls) {
+      const ph = el.getAttribute('placeholder') || '';
+      if (PARAM_SKIP_PLACEHOLDER.test(ph)) continue;
+      const tag = el.tagName.toLowerCase();
+      const type = tag === 'input' ? (el.type || 'text') : tag;
+      const k = tag + ':' + type;
+      indexMap.set(k, (indexMap.get(k) || 0) + 1);
+      picked.push({ el, key: paramKeyFor(el, indexMap) });
+    }
+    if (!picked.length) return;
+
+    const storeKey = 'toolParams.' + toolId;
+    // 先回填（异步），回填期间不监听，免得把回填当作用户输入再存一次
+    invoke('store:get', storeKey, {}).then((saved) => {
+      if (!saved || typeof saved !== 'object') return;
+      for (const { el, key } of picked) {
+        if (!(key in saved)) continue;
+        // 页面可能已被切走
+        if (!el.isConnected) continue;
+        el.value = saved[key];
+        // 有些工具靠 input 事件联动（例如滑块旁的数值标签），回填后补发一次
+        try { el.dispatchEvent(new Event('input', { bubbles: false })); } catch (e) {}
+      }
+    }).catch(() => {});
+
+    // 再监听变化
+    let saveTimer = null;
+    const flush = () => {
+      const data = {};
+      for (const { el, key } of picked) {
+        if (!el.isConnected) continue;
+        data[key] = el.value;
+      }
+      invoke('store:set', storeKey, data).catch(() => {});
+    };
+    const onChange = () => {
+      // 防抖：滑块拖动时 input 事件很密集，每帧写一次 store 会卡
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(flush, 600);
+    };
+    for (const { el } of picked) {
+      el.addEventListener('change', onChange);
+      el.addEventListener('input', onChange);
+    }
+    // 页面切走时把未落盘的改动刷一次
+    window.App.onCleanup(() => {
+      if (saveTimer) { clearTimeout(saveTimer); flush(); }
+    });
   }
   /* 高危工具未启用时的占位卡。
    *
@@ -1523,6 +1654,7 @@
     applyLang(readLangSync());
     buildShell();
     applyTheme();
+    installNumberWheelGuard();
     await loadUserData();
     await loadDangerousState();
     render();

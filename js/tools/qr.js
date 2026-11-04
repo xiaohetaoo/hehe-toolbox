@@ -14,7 +14,7 @@
   const T = (zh, vars) => TT('qr', zh, vars);
 
   register({
-    id: 'qr-generate', name: '二维码生成', module: MOD, icon: 'qr',
+    id: 'qr-generate', name: '二维码生成', module: MOD, icon: 'qr', i18n: true,
     desc: '文本/链接/名片生成二维码，支持保存 PNG',
     keywords: ['二维码', 'qr', '生成'],
     render(page) {
@@ -56,7 +56,7 @@
   });
 
   register({
-    id: 'qr-scan', name: '二维码识别', module: MOD, icon: 'qr',
+    id: 'qr-scan', name: '二维码识别', module: MOD, icon: 'qr', i18n: true,
     desc: '从本地图片 / 粘贴截图识别二维码内容',
     keywords: ['二维码', '识别', '解码', 'qr'],
     render(page) {
