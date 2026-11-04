@@ -94,12 +94,40 @@ function detectSkipped(text) {
 function runAll() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const cmds = [];
+  /* 【按分组展开，不能对每条命令都问一次全量清单】
+   * test:unit 与 test:ui 都调用 run-tests.js，若每条都取 --list（两组都列），
+   * 同一批脚本会被统计两次 —— 基线数字直接翻倍，而它看着"更高了"更安全，
+   * 实际上守卫从此对新增测试完全失效（分母虚高，少跑一整个分组也发现不了）。
+   * 所以按 key 传对应的分组参数。 */
   for (const key of ['test:unit', 'test:ui']) {
+    const groupFlag = key === 'test:ui' ? ' --ui' : ' --unit';
     for (const part of String(pkg.scripts[key] || '').split('&&')) {
       const s = part.trim();
-      if (s) cmds.push(s);
+      if (s) cmds.push({ cmd: s, groupFlag: groupFlag });
     }
   }
+  /* 【run-tests.js 会把一批脚本藏在内部】
+   * 它按内容自动分组（见 scripts/run-tests.js），package.json 里只留一条命令，
+   * 所以从 scripts 里展开不到具体文件。这里问它要一份清单。
+   * 不硬编码：清单会随新增测试变，写死必然过期 —— 过期表现为
+   * 「新加的测试不算进断言基线」，也就是守卫对它失效。 */
+  const expanded = [];
+  for (const item of cmds) {
+    const cmd = item.cmd;
+    if (/scripts[\/]run-tests\.js/.test(cmd)) {
+      try {
+        const listOut = cp.execSync('node scripts/run-tests.js --list' + item.groupFlag, { cwd: ROOT, encoding: 'utf8' });
+        for (const line of listOut.split(String.fromCharCode(10))) {
+          const m = line.trim().match(/^(test-[\w-]+\.js)$/);
+          if (m) expanded.push('node scripts/' + m[1]);
+        }
+        continue;
+      } catch (e) { /* 拿不到就退回原命令，至少不会完全没跑 */ }
+    }
+    expanded.push(cmd);
+  }
+  cmds.length = 0;
+  cmds.push(...expanded);
   const chunks = [];
   let failed = 0;
   for (const cmd of cmds) {

@@ -526,6 +526,23 @@ t('P2 path-guard 测试已接入 npm test', () => {
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
       const m = piece.match(/^npm\s+run\s+([^\s]+)$/);
       if (m) { collect(m[1], depth + 1); continue; }
+      /* 【run-tests.js 是"收集器"，它跑的脚本不在 package.json 里】
+       * 字符串只能看到 `node scripts/run-tests.js`，看不到它会跑哪些文件。
+       * 所以遇到它时改用 --list 问一次真实的收集结果 ——
+       * 不硬编码清单：清单会随新增测试变，写死必然过期。 */
+      if (/scripts[\/]run-tests\.js/.test(piece)) {
+        try {
+          const { execFileSync } = require('child_process');
+          const out = execFileSync(process.execPath,
+            [require('path').join(__dirname, 'run-tests.js'), '--list'],
+            { encoding: 'utf8', timeout: 30000 });
+          // --list 输出里每行是 '  test-xxx.js'；用 charCode 取换行，避免转义踩坑
+          for (const line of out.split(String.fromCharCode(10))) {
+            const fm = line.trim().match(/^(test-[\w-]+[.]js)$/);
+            if (fm) seen.add('scripts/' + fm[1]);
+          }
+        } catch (e) { /* 拿不到就按原样记录，断言会给明确失败信息 */ }
+      }
       seen.add(piece);
     }
   };
@@ -984,6 +1001,7 @@ t('2a app.js：dlId 与 unsub 都在 try 之外声明', () => {
   /* 【不能用 indexOf('try {')】前面那句 `if (updUnsub) { try { updUnsub(); } ... }` 里
    * 也有一个内联的 try，会被先命中，导致 beforeTry 只取到函数头一小段。
    * 找**行首**的主 try：前面只有空白。 */
+  // 锁的是：必须匹配行首的 try（内联 try 会被误命中，导致取错片段）。
   const mMain = fnBody.match(new RegExp('\\n[ \\t]*try[ \\t]*\\{'));
   assert.ok(mMain, 'checkUpdate 里找不到主 try');
   const tryAt = mMain.index;

@@ -28,6 +28,7 @@ scripts/test-click-sweep.js | A=1 | B=0 | e2e-fixture
 scripts/test-crash-log.js | A=1 | B=0 | exact:那 1 处是 readFile() 助手，读的是测试自己在 %TEMP% 里刚写的 crash.log（运行时日志正文，不是项目源码，没有剥注释的语义）；另有 3 处直接调用已改成走这个助手；对 main.js 的 4 条接线断言走 readMain()，已写「锁的是」
 scripts/test-keyboard-a11y.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本的断言全部是真实渲染后的 DOM/样式探测，没有源码匹配断言
 scripts/test-improvements-a.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本全部是真实渲染后的事件/DOM 断言，没有源码匹配断言
+scripts/run-tests.js | A=1 | B=0 | exact:这是测试运行器本身，必须读测试脚本的原始文本才能判断它是否依赖 Electron（分组依据）。它不做任何"断言实现形态"的事，因此不存在需要剥注释的问题；上面的 electronNeeded 三条匹配已写「锁的是」
 scripts/test-clip-history.js | A=1 | B=0 | exact:迁移自 round15 的 2 / 16a / 16b。倒计时分支与裁剪上限只能看源码形态（真跑要等 25 分钟倒计时 + 真实剪贴板事件）；16b 的「淘汰图片必须回收文件」有行为断言。
 scripts/test-critical-dirs.js | A=1 | B=0 | legacy-source-assertion
 scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
