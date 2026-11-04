@@ -192,6 +192,23 @@
    * 键盘上下选的那一项会在手指底下换掉。
    */
   const norm = (s) => String(s == null ? '' : s).toLowerCase();
+  /* 拼音首字母（lib/pinyin.js，由 index.html 挂到 window.Pinyin）。
+   * 拿不到时降级成"永不全等"的空实现 —— 搜索仍可正常工作，
+   * 只是不支持拼音，不会因为模块缺失而整个搜索崩掉。 */
+  const PY = (typeof window !== 'undefined' && window.Pinyin) || null;
+  const pyKey = (s) => (PY ? PY.toInitialKey(s) : '');
+
+  /* 【拼音键要缓存】
+   * search() 每次输入都会遍历 100 个工具，每个工具算一次
+   * toInitialKey 就是 100 次 × N 个汉字的 collator 比较。
+   * 而这个键只与工具自身有关（不会变），所以算一次存起来。 */
+  const pyCache = new Map();
+  function pyOfTool(t) {
+    if (pyCache.has(t.id)) return pyCache.get(t.id);
+    const key = pyKey(t.name);
+    pyCache.set(t.id, key);
+    return key;
+  }
   function search(q) {
     const raw = norm(q).trim();
     if (!raw) return [];
@@ -216,6 +233,13 @@
         else if (kws.includes(tk)) s = 40;
         else if (modName.includes(tk)) s = 30;  // 「办公」「网络」这类按模块找
         else if (desc.includes(tk)) s = 20;
+        /* 拼音首字母（打 yssc 找「压缩」）。
+         * 【为什么排在最后】它是**补充通道**，不是主通道：
+         * 中文用户多数时候直接打汉字，英文/数字关键词也是精确的。
+         * 把拼音放前面会让"打 tp 命中图片压缩"压过真正的精确匹配。
+         * 而且纯字母输入本来就可能撞上英文关键词，放在末位可以
+         * 保证"有更好匹配时优先用更好的"。 */
+        else if (tk.length >= 2 && /^[a-z]+$/.test(tk) && pyOfTool(t).includes(tk)) s = 15;
         if (!s) { ok = false; break; }
         total += s;
       }

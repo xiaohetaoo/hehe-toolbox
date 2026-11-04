@@ -34,6 +34,11 @@
        「按拍摄时间批量重命名」需要同一套解析，复制一份必然分叉，
        所以抽成 lib 并在此引入。必须排在 js/tools/*.js 之前。 -->
   <script src="lib/exif.js"></script>
+  <!-- lib/pinyin.js：搜索的拼音首字母支持（打 yssc 找到「压缩」）。
+       UMD 同上，挂到 window.Pinyin。零依赖 —— 用 Intl.Collator('zh-CN')
+       的拼音排序做区间判定，不背拼音数据表。
+       必须排在 js/registry.js 之前：它在定义时就会读 window.Pinyin。 -->
+  <script src="lib/pinyin.js"></script>
   <!-- IPC 通道名常量表：工具文件在定义时就会引用 window.Channels，
        所以必须排在 ui.js / registry.js / 各 tools/*.js 之前 -->
   <script src="js/channels.js"></script>
