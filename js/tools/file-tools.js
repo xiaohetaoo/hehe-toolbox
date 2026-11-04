@@ -1,5 +1,6 @@
 /* 模块：文件处理 —— 批量重命名 / 批量改后缀 / 加密解密 / 分割合并 / 重复文件 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, copyText, confirmBox, alertBox, filePicker, renderTable, fmtBytes, progressEl } = window.ui;
   const { invoke } = window.api;
@@ -30,8 +31,8 @@
 
   /* ---------- 批量重命名 ---------- */
   register({
-    id: 'batch-rename', name: '批量重命名', module: MOD, icon: 'pencil',
-    desc: '前缀/后缀、序号、查找替换、正则替换、大小写，先预览后执行',
+    id: 'batch-rename', name: '批量重命名', nameEn: 'Batch Rename', module: MOD, icon: 'pencil',
+    desc: '前缀/后缀、序号、查找替换、正则替换、大小写，先预览后执行', descEn: 'Rename many files with prefixes, numbering or EXIF shot time, with a live preview',
     keywords: ['重命名', '批量', 'rename', '正则'],
     render(page) {
       let files = [];
@@ -50,7 +51,7 @@
         const d = dirInput.value.trim();
         if (!d) return;
         try {
-          const list = await invoke('fs:list', d);
+          const list = await invoke(Channels.CHANNELS.FS.LIST, d);
           const found = list.filter(x => !x.isDir).map(x => x.path);
           selfLoad = true;
           try {
@@ -63,7 +64,7 @@
         } catch (e) { toast(e.message, 'error'); }
       });
       const pickDirBtn = btn('选择目录…', 'btn-sm btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) { dirInput.value = d[0]; loadDirBtn.click(); }
       });
 
@@ -126,7 +127,7 @@
         for (const p of todo) {
           let t = null;
           try {
-            const b64 = await invoke('fs:read-file-b64', p, 65536);
+            const b64 = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, p, 65536);
             if (b64) {
               const bin = atob(b64);
               const bytes = new Uint8Array(bin.length);
@@ -136,7 +137,7 @@
           } catch (e) { t = null; }
           if (!t) {
             // 退路：用文件修改时间。不这么做的话用户看到文件名纹丝不动
-            try { const st = await invoke('fs:stat', p); if (st && st.mtime) t = new Date(st.mtime); } catch (e) {}
+            try { const st = await invoke(Channels.CHANNELS.FS.STAT, p); if (st && st.mtime) t = new Date(st.mtime); } catch (e) {}
           }
           exifTimeCache.set(p, t);
         }
@@ -190,12 +191,12 @@
         const body = rows.map((r) => r.map(esc).join(',')).join(String.fromCharCode(13, 10));
         const csv = String.fromCharCode(0xFEFF) + body + String.fromCharCode(13, 10);
         try {
-          const out = await invoke('dialog:save', {
+          const out = await invoke(Channels.CHANNELS.DIALOG.SAVE, {
             defaultPath: 'rename-preview.csv',
             filters: [{ name: 'CSV', extensions: ['csv'] }]
           });
           if (!out) return;
-          await invoke('fs:write-text', out, csv);
+          await invoke(Channels.CHANNELS.FS.WRITE_TEXT, out, csv);
           toast('已导出：' + out, 'success');
         } catch (e) { toast('导出失败：' + e.message, 'error'); }
       }
@@ -239,7 +240,7 @@
           const target = newName(files[i], i);
           prog.set((i + 1) / files.length * 100);
           try {
-            if (files[i] !== target) await invoke('fs:rename', files[i], target);
+            if (files[i] !== target) await invoke(Channels.CHANNELS.FS.RENAME, files[i], target);
             ok++;
           } catch (e) { failures.push({ from: files[i], to: target, err: e.message }); }
         }
@@ -280,13 +281,13 @@
 
   /* ---------- 批量改后缀 ---------- */
   register({
-    id: 'batch-ext', name: '批量改后缀', module: MOD, icon: 'file',
-    desc: '批量修改指定目录下文件的扩展名，支持仅匹配特定后缀',
+    id: 'batch-ext', name: '批量改后缀', nameEn: 'Batch Rename Extension', module: MOD, icon: 'file',
+    desc: '批量修改指定目录下文件的扩展名，支持仅匹配特定后缀', descEn: 'Change the extension of a whole folder of files at once',
     keywords: ['后缀', '扩展名', '批量'],
     render(page) {
       const dirInput = h('input', { class: 'input', placeholder: '目录路径', style: { flex: '1' } });
       const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) { dirInput.value = d[0]; }
       });
       const fromIn = h('input', { class: 'input input-sm', placeholder: '原后缀，如 txt（留空=全部）', style: { width: '200px' } });
@@ -305,7 +306,7 @@
         }
         const from = fromIn.value.trim().replace(/^\./, '').toLowerCase();
         async function walk(d) {
-          const list = await invoke('fs:list', d);
+          const list = await invoke(Channels.CHANNELS.FS.LIST, d);
           for (const item of list) {
             if (item.isDir) { if (recursive.checked) await walk(item.path); continue; }
             // 用 lastIndexOf 判断是否真有扩展名（"a.b.txt" 的扩展名是 txt；"README" 没有扩展名）
@@ -337,7 +338,7 @@
         let ok = 0;
         const failures = [];
         for (const p of plan) {
-          try { await invoke('fs:rename', p.path, p.newPath); ok++; }
+          try { await invoke(Channels.CHANNELS.FS.RENAME, p.path, p.newPath); ok++; }
           catch (e) { failures.push({ from: p.path, to: p.newPath, err: e.message }); }
         }
         // 失败明细必须列出来：只报「失败 1」用户不知道是哪个文件、为什么失败，
@@ -360,8 +361,8 @@
 
   /* ---------- 文件加密解密 ---------- */
   register({
-    id: 'file-crypt', name: '文件加密解密', module: MOD, icon: 'lock',
-    desc: 'AES-256-CBC 本地加密，密码经 scrypt 派生，离线安全',
+    id: 'file-crypt', name: '文件加密解密', nameEn: 'Encrypt / Decrypt', module: MOD, icon: 'lock',
+    desc: 'AES-256-CBC 本地加密，密码经 scrypt 派生，离线安全', descEn: 'Encrypt files with a password using AES, and decrypt them back',
     keywords: ['加密', '解密', 'aes', '密码'],
     render(page) {
       let mode = 'encrypt';
@@ -379,13 +380,15 @@
         if (!filePath) return toast('请先选择文件', 'warn');
         if (!pwdIn.value) return toast('请输入密码', 'warn');
         const outDefault = mode === 'encrypt' ? filePath + '.hehe' : filePath.replace(/\.hehe$/, '') + '.dec';
-        const out = await invoke('dialog:save', { defaultPath: outDefault });
+        const out = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: outDefault });
         if (!out) return;
         prog.show();
         const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'crypt' && d.id === filePath) prog.set(d.done / d.total * 100); });
         try {
-          const fn = mode === 'encrypt' ? 'fs:encrypt-file' : 'fs:decrypt-file';
-          const r = await invoke(fn, filePath, out, pwdIn.value);
+          /* 通道名不再以字符串形式过一遍变量：那样等于让通道名在渲染层
+           * 多存在一份副本，改常量表时这里不会跟着变。 */
+          const ch = mode === 'encrypt' ? Channels.CHANNELS.FS.ENCRYPT_FILE : Channels.CHANNELS.FS.DECRYPT_FILE;
+          const r = await invoke(ch, filePath, out, pwdIn.value);
           status.innerHTML = `<span class="status-ok">✓ 完成</span> 输出：${escapeHtml(r.outPath)}（${fmtBytes(r.size)}）`;
           toast(mode === 'encrypt' ? '加密完成' : '解密完成', 'success');
         } catch (e) {
@@ -418,8 +421,8 @@
 
   /* ---------- 文件分割与合并 ---------- */
   register({
-    id: 'file-split', name: '文件分割合并', module: MOD, icon: 'scissors',
-    desc: '大文件按大小拆分为分片，支持清单合并还原',
+    id: 'file-split', name: '文件分割合并', nameEn: 'Split & Merge', module: MOD, icon: 'scissors',
+    desc: '大文件按大小拆分为分片，支持清单合并还原', descEn: 'Split large files into parts and merge them back exactly',
     keywords: ['分割', '合并', '分片', '拆分'],
     render(page) {
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
@@ -458,7 +461,7 @@
             spProg.show(); spStatus.textContent = '';
             const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'split' && d.id === spFile) spProg.set(d.done / d.total * 100); });
             try {
-              const r = await invoke('fs:split-file', spFile, parseInt(sizeIn.value) || 10, outDir);
+              const r = await invoke(Channels.CHANNELS.FS.SPLIT_FILE, spFile, parseInt(sizeIn.value) || 10, outDir);
               spStatus.innerHTML = `<span class="status-ok">✓ 分割完成</span>：${r.parts} 个分片，输出目录 ${escapeHtml(r.outDir)}`;
               toast('分割完成', 'success');
             } catch (e) { spStatus.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; }
@@ -493,7 +496,7 @@
             mgProg.set(d.total ? d.done / d.total * 100 : 0);
           });
           try {
-            const r = await invoke('fs:merge-parts', mgFile);
+            const r = await invoke(Channels.CHANNELS.FS.MERGE_PARTS, mgFile);
             mgStatus.innerHTML = `<span class="status-ok">✓ 合并完成</span>：${escapeHtml(r.outPath)}（${fmtBytes(r.size)}，${r.parts} 片）`;
             toast('合并完成', 'success');
           } catch (e) { mgStatus.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; }
@@ -506,13 +509,13 @@
 
   /* ---------- 重复文件查找 ---------- */
   register({
-    id: 'dedupe', name: '重复文件查找', module: MOD, icon: 'copy',
-    desc: '按内容 MD5 / 名称 / 大小扫描重复文件，支持批量删除',
+    id: 'dedupe', name: '重复文件查找', nameEn: 'Duplicate Finder', module: MOD, icon: 'copy',
+    desc: '按内容 MD5 / 名称 / 大小扫描重复文件，支持批量删除', descEn: 'Find duplicate files by hash and remove the extra copies safely',
     keywords: ['重复', '查重', 'dedupe', 'md5'],
     render(page) {
       const dirInput = h('input', { class: 'input', placeholder: '要扫描的目录', style: { flex: '1' } });
       const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) { dirInput.value = d[0]; }
       });
       const modeSel = h('select', { class: 'select input-sm' },
@@ -528,7 +531,7 @@
         resultBox.innerHTML = ''; status.textContent = '扫描中…';
         const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'dedupe') status.textContent = `扫描中… 已检查 ${d.files || 0} 个文件`; });
         try {
-          const r = await invoke('fs:dedupe', dir, { mode: modeSel.value });
+          const r = await invoke(Channels.CHANNELS.FS.DEDUPE, dir, { mode: modeSel.value });
           groups = r.groups;
           status.innerHTML = groups.length
             ? `发现 <b>${groups.length}</b> 组重复文件，可释放 <b>${fmtBytes(r.totalWasted)}</b>`
@@ -577,7 +580,7 @@
             checks.push(cb);
             card.appendChild(div('form-row', cb,
               h('span', { class: 'mono', style: { flex: '1', fontSize: '12px', userSelect: 'text', wordBreak: 'break-all' } }, f),
-              btn('打开位置', 'btn-sm btn-text', () => invoke('fs:show-item', f))));
+              btn('打开位置', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, f))));
           });
           card.appendChild(div('form-row', btn('删除勾选文件', 'btn-sm btn-danger', async () => {
             const selected = g.files.filter((_, i) => checks[i].checked);
@@ -588,7 +591,7 @@
               : '';
             if (!(await confirmBox({ title: '删除重复文件', message: `将永久删除 ${selected.length} 个文件（不进回收站），确定？${extra}`, danger: true, okText: '删除' }))) return;
             let ok = 0, failN = 0;
-            for (const f of selected) { try { await invoke('fs:delete', f); ok++; } catch (e) { failN++; toast(e.message, 'error'); } }
+            for (const f of selected) { try { await invoke(Channels.CHANNELS.FS.DELETE, f); ok++; } catch (e) { failN++; toast(e.message, 'error'); } }
             toast(failN ? `已删除 ${ok} 个，失败 ${failN} 个` : `已删除 ${ok} 个`, failN ? 'warn' : 'success');
             scanBtn.click();
           })));
@@ -599,7 +602,7 @@
         const del = g.files.filter((_, i) => i !== keepIdx);
         if (!(await confirmBox({ title: '删除重复文件', message: `保留第一个，永久删除其余 ${del.length} 个文件，确定？`, danger: true, okText: '删除' }))) return;
         let ok = 0, failN = 0;
-        for (const f of del) { try { await invoke('fs:delete', f); ok++; } catch (e) { failN++; toast(e.message, 'error'); } }
+        for (const f of del) { try { await invoke(Channels.CHANNELS.FS.DELETE, f); ok++; } catch (e) { failN++; toast(e.message, 'error'); } }
         toast(failN ? `已删除 ${ok} 个，失败 ${failN} 个` : `已删除 ${ok} 个`, failN ? 'warn' : 'success');
         scanBtn.click();
       }
@@ -613,8 +616,8 @@
 
   /* ---------- 压缩解压（ZIP） ---------- */
   register({
-    id: 'zip-tool', name: '压缩解压', module: MOD, icon: 'box',
-    desc: 'ZIP 压缩与解压（不支持密码与分卷；需要密码请用「7z 压缩包」工具）',
+    id: 'zip-tool', name: '压缩解压', nameEn: 'Zip Tool', module: MOD, icon: 'box',
+    desc: 'ZIP 压缩与解压（不支持密码与分卷；需要密码请用「7z 压缩包」工具）', descEn: 'Create and extract zip archives with a preview',
     keywords: ['压缩', '解压', 'zip'],
     render(page) {
       const zipPicker = filePicker({
@@ -632,11 +635,11 @@
           if (!out) {
             const first = cPaths[0];
             const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/')) : first.slice(0, first.lastIndexOf('\\'));
-            out = await invoke('fs:unique-path', dir + '/archive.zip');
+            out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, dir + '/archive.zip');
           } else {
-            out = await invoke('fs:unique-path', out.endsWith('.zip') ? out : out + '.zip');
+            out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, out.endsWith('.zip') ? out : out + '.zip');
           }
-          const r = await invoke('zip:compress', cPaths, out);
+          const r = await invoke(Channels.CHANNELS.ZIP.COMPRESS, cPaths, out);
           toast('压缩完成：' + fmtBytes(r.size), 'success');
         } catch (e) { toast(e.message, 'error'); }
       });
@@ -651,7 +654,7 @@
           const zip = items[0].path;
           const dir = zip.replace(/\.zip$/i, '') + '-extracted';
           try {
-            await invoke('zip:extract', zip, dir);
+            await invoke(Channels.CHANNELS.ZIP.EXTRACT, zip, dir);
             toast('解压完成：' + dir, 'success');
           } catch (e) { toast(e.message, 'error'); }
         }
@@ -664,8 +667,8 @@
 
   /* ---------- 全局文件搜索（Everything 式） ---------- */
   register({
-    id: 'global-search', name: '全局文件搜索', module: MOD, icon: 'search',
-    desc: 'Everything 式全盘秒搜：NTFS 索引（管理员）/ es.exe / 快速扫描 三引擎',
+    id: 'global-search', name: '全局文件搜索', nameEn: 'Global Search', module: MOD, icon: 'search',
+    desc: 'Everything 式全盘秒搜：NTFS 索引（管理员）/ es.exe / 快速扫描 三引擎', descEn: 'Search files across the whole disk instantly, Everything style',
     keywords: ['everything', '搜索', '文件', '全盘', '查找', '秒搜'],
     render(page) {
       const envLine = div('field-hint', '检测环境中…');
@@ -681,8 +684,8 @@
       const quickBtn = btn('快速扫描（无需管理员）', 'btn-secondary btn-sm', startQuick, 'folder');
       let env = null, builtInfo = {}, searchTimer = 0, quickJob = null, quickUnsub = null, seq = 0;
       async function refreshEnv() {
-        env = await invoke('search:env').catch(() => null);
-        builtInfo = (await invoke('search:index-status').catch(() => ({}))) || {};
+        env = await invoke(Channels.CHANNELS.SEARCH.ENV).catch(() => null);
+        builtInfo = (await invoke(Channels.CHANNELS.SEARCH.INDEX_STATUS).catch(() => ({}))) || {};
         envLine.innerHTML = '';
         if (!env) { envLine.appendChild(div('field-err', '环境检测失败')); return; }
         envLine.appendChild(h('span', { class: 'tag ' + (env.admin ? 'tag-green' : 'tag-orange') }, env.admin ? '管理员权限 ✓' : '无管理员权限'));
@@ -703,7 +706,7 @@
           volRow.appendChild(btn(label, 'btn-sm ' + (info ? 'btn-secondary' : 'btn-primary'), () => buildIndex(v.drive)));
         }
         if (Object.keys(builtInfo).length) volRow.appendChild(btn('清空索引', 'btn-sm btn-text', async () => {
-          try { await invoke('search:free'); builtInfo = {}; await refreshEnv(); toast('已释放索引内存', 'success'); } catch (e) { toast(e.message, 'error'); }
+          try { await invoke(Channels.CHANNELS.SEARCH.FREE); builtInfo = {}; await refreshEnv(); toast('已释放索引内存', 'success'); } catch (e) { toast(e.message, 'error'); }
         }));
       }
       let building = false; // 防止并发双建索引互相干扰
@@ -713,7 +716,7 @@
         engTag.textContent = '构建索引中…'; engTag.className = 'tag tag-orange';
         statsLine.textContent = '正在读取 NTFS 索引…';
         try {
-          const r = await invoke('search:build', drive);
+          const r = await invoke(Channels.CHANNELS.SEARCH.BUILD, drive);
           toast(`索引完成：${r.count.toLocaleString()} 项`, 'success');
         } catch (e) { statsLine.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
         building = false;
@@ -724,7 +727,7 @@
       function schedule() { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 200); }
       function stopQuick() {
         clearTimeout(searchTimer);
-        if (quickJob) { invoke('job:kill', quickJob).catch(() => {}); quickJob = null; }
+        if (quickJob) { invoke(Channels.CHANNELS.JOB.KILL, quickJob).catch(() => {}); quickJob = null; }
         if (quickUnsub) { quickUnsub(); quickUnsub = null; }
       }
       async function doSearch() {
@@ -743,8 +746,8 @@
         engTag.textContent = engine === 'es' ? '引擎：Everything(es.exe)' : '引擎：NTFS 索引';
         engTag.className = 'tag tag-blue';
         try {
-          const r = engine === 'es' ? await invoke('search:es', { q, limit: +limitSel.value })
-            : await invoke('search:query', { q, limit: +limitSel.value, stat: true });
+          const r = engine === 'es' ? await invoke(Channels.CHANNELS.SEARCH.ES, { q, limit: +limitSel.value })
+            : await invoke(Channels.CHANNELS.SEARCH.QUERY, { q, limit: +limitSel.value, stat: true });
           if (mySeq !== seq) return;
           renderRows(r.rows, false);
           statsLine.textContent = `${r.rows.length} 条 · ${r.ms}ms`;
@@ -761,8 +764,8 @@
         { title: '大小', w: '90px', render: (td, r) => td.append(r.dir ? '目录' : (r.size != null ? fmtBytes(r.size) : '-')) },
         { title: '完整路径', render: (td, r) => td.appendChild(h('span', { class: 'field-hint', style: { wordBreak: 'break-all', fontSize: '11px' } }, r.path)) },
         { title: '操作', w: '180px', render: (td, r) => {
-          td.appendChild(btn('打开', 'btn-sm btn-text', () => invoke('fs:open-path', r.path).catch(e2 => toast(e2.message, 'error'))));
-          td.appendChild(btn('位置', 'btn-sm btn-text', () => invoke('fs:show-item', r.path)));
+          td.appendChild(btn('打开', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.OPEN_PATH, r.path).catch(e2 => toast(e2.message, 'error'))));
+          td.appendChild(btn('位置', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, r.path)));
           td.appendChild(btn('复制路径', 'btn-sm btn-text', () => copyText(r.path)));
         } }
       ];
@@ -810,9 +813,9 @@
             }
           } catch (e) {}
         });
-        invoke('search:quick', { root, q, limit: +limitSel.value }).then((r) => {
+        invoke(Channels.CHANNELS.SEARCH.QUICK, { root, q, limit: +limitSel.value }).then((r) => {
           quickJob = r.id;
-          if (pageDead && quickJob) invoke('job:kill', quickJob).catch(() => {});
+          if (pageDead && quickJob) invoke(Channels.CHANNELS.JOB.KILL, quickJob).catch(() => {});
         }).catch((e) => { toast(e.message, 'error'); engTag.textContent = '就绪'; engTag.className = 'tag tag-gray'; });
       }
       inBox.addEventListener('input', schedule);
@@ -831,14 +834,14 @@
 
   /* ---------- 文件内容搜索 ---------- */
   register({
-    id: 'content-search', name: '文件内容搜索', module: MOD, icon: 'search',
-    desc: '在目录里按文本/正则搜文件内容，逐行匹配实时流出（自动跳过二进制）',
+    id: 'content-search', name: '文件内容搜索', nameEn: 'Content Search', module: MOD, icon: 'search',
+    desc: '在目录里按文本/正则搜文件内容，逐行匹配实时流出（自动跳过二进制）', descEn: 'Search file contents recursively with pattern matching',
     keywords: ['内容', '搜索', 'grep', '正则', '文本'],
     render(page) {
       let root = '';
       const rootLabel = h('span', { class: 'field-hint' }, '未选择');
       const pickBtn = btn('选择目录…', 'btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) { root = d[0]; rootLabel.textContent = root; }
       });
       const inBox = h('input', { class: 'input', placeholder: '要搜索的内容…', style: { flex: '1' } });
@@ -847,14 +850,14 @@
       const extIn = h('input', { class: 'input input-sm', placeholder: '扩展名过滤，如 js,txt,md（留空全部）', style: { width: '230px' } });
       const status = h('span', { class: 'field-hint' }, '');
       const startBtn = btn('搜索', 'btn-primary', start, 'search');
-      const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); }, 'square');
+      const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); }, 'square');
       stopBtn.disabled = true;
       const listBox = div('');
       let jobId = null, unsub = null, pageDead = false;
       window.App.onCleanup(() => {
         pageDead = true;
         if (unsub) try { unsub(); } catch (e) {}
-        if (jobId) invoke('job:kill', jobId).catch(() => {});
+        if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       });
       // 持久单表流式追加
       let resTbody = null;
@@ -904,13 +907,13 @@
             }
           } catch (e) {}
         });
-        /* 【补兜底】原来是裸 `await invoke('content:search', ...)`：
+        /* 【补兜底】原来是裸 `await invoke(Channels.CHANNELS.CONTENT.SEARCH, ...)`：
          * 失败时抛在这里，而 startBtn.disabled = true 已在前面生效，
          * 「搜索」按钮永久变灰；同时上面刚注册的 job:stream 监听器也没人取消
          * （unsub 只在成功路径里被调用），造成监听器泄漏。 */
         let r;
         try {
-          r = await invoke('content:search', { root, q, useRegex: regexChk.checked, ci: ciChk.checked, exts: extIn.value.trim(), limit: 1000 });
+          r = await invoke(Channels.CHANNELS.CONTENT.SEARCH, { root, q, useRegex: regexChk.checked, ci: ciChk.checked, exts: extIn.value.trim(), limit: 1000 });
         } catch (e) {
           try { if (unsub) { unsub(); unsub = null; } } catch (e2) {}
           startBtn.disabled = false; stopBtn.disabled = true;
@@ -920,7 +923,7 @@
           return;
         }
         jobId = r.id;
-        if (pageDead && jobId) invoke('job:kill', jobId).catch(() => {});
+        if (pageDead && jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       }
       inBox.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
       page.appendChild(div('card', div('card-title', '搜索范围'),
@@ -935,14 +938,14 @@
 
   /* ---------- 7z 压缩包 ---------- */
   register({
-    id: 'archive-7z', name: '7z 压缩包', module: MOD, icon: 'box',
-    desc: '7z 格式压缩/解压，支持密码加密、分卷；检测到系统 7-Zip 时支持更多格式',
+    id: 'archive-7z', name: '7z 压缩包', nameEn: '7-Zip Archive', module: MOD, icon: 'box',
+    desc: '7z 格式压缩/解压，支持密码加密、分卷；检测到系统 7-Zip 时支持更多格式', descEn: 'Create and extract 7z / zip / tar archives, with password support',
     keywords: ['7z', '压缩', '解压', '密码', '分卷', 'rar'],
     render(page) {
       const engineLine = div('field-hint', '检测引擎…');
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let engines = null;
-      invoke('seven:status').then((s) => {
+      invoke(Channels.CHANNELS.SEVEN.STATUS).then((s) => {
         engines = s;
         engineLine.innerHTML = '';
         engineLine.appendChild(h('span', { class: 'tag ' + (s.za ? 'tag-green' : 'tag-red') }, s.za ? '内置 7za ✓（7z/zip）' : '内置 7za 缺失'));
@@ -965,9 +968,9 @@
           if (!out) {
             const first = cPaths[0];
             const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/')) : first.slice(0, first.lastIndexOf('\\'));
-            out = await invoke('fs:unique-path', dir + '/archive.7z');
-          } else out = await invoke('fs:unique-path', out.endsWith('.7z') ? out : out + '.7z');
-          const r = await invoke('seven:compress', { files: cPaths, out, password: pwdIn.value || '', volumeMB: volIn.value ? +volIn.value : 0 });
+            out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, dir + '/archive.7z');
+          } else out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, out.endsWith('.7z') ? out : out + '.7z');
+          const r = await invoke(Channels.CHANNELS.SEVEN.COMPRESS, { files: cPaths, out, password: pwdIn.value || '', volumeMB: volIn.value ? +volIn.value : 0 });
           toast('压缩完成：' + fmtBytes(r.size), 'success');
         } catch (e) { toast(e.message, 'error'); }
       }, 'box');
@@ -985,7 +988,7 @@
         if (!exPath.p) return toast('请选择压缩包', 'warn');
         try {
           const outDir = exPath.p.replace(/\.\w+$/, '') + '_extracted';
-          const r = await invoke('seven:extract', { archive: exPath.p, outDir, password: exPwd.value || '' });
+          const r = await invoke(Channels.CHANNELS.SEVEN.EXTRACT, { archive: exPath.p, outDir, password: exPwd.value || '' });
           toast('已解压到：' + r.outDir, 'success');
         } catch (e) { toast(e.message, 'error'); }
       }, 'folder');
@@ -1015,7 +1018,7 @@
         pvBox.innerHTML = '';
         pvBox.appendChild(window.ui.loadingBlock('读取压缩包…'));
         try {
-          const r = await invoke('seven:list', { archive: pvPath.p, password: pvPwd.value || '' });
+          const r = await invoke(Channels.CHANNELS.SEVEN.LIST, { archive: pvPath.p, password: pvPwd.value || '' });
           pvBox.innerHTML = '';
           const rows = r.entries.slice(0, 300);
           pvBox.appendChild(div('field-hint', `共 ${r.total} 项${r.total > 300 ? '，显示前 300' : ''}`));

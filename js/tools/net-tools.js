@@ -1,5 +1,6 @@
 /* 模块：网络运维 —— 网络信息 / Ping / 路由追踪 / 端口 / Hosts / 测速 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, copyText, renderTable, fmtBytes } = window.ui;
   const { invoke, on, isDesktop } = window.api;
@@ -36,19 +37,19 @@
 
   /* ---------- 网络信息查询 ---------- */
   register({
-    id: 'net-info', name: '网络信息查询', module: MOD, icon: 'globe',
-    desc: '内网 IP、网关、DNS、MAC、DHCP 与公网 IP 查询',
+    id: 'net-info', name: '网络信息查询', nameEn: 'Network Info', module: MOD, icon: 'globe',
+    desc: '内网 IP、网关、DNS、MAC、DHCP 与公网 IP 查询', descEn: 'List adapters, IPs, gateways and public IP',
     keywords: ['ip', '网络', 'dns', 'mac', '网关'],
     render(page) {
       const result = div('');
       result.appendChild(window.ui.loadingBlock('读取网络配置…'));
       const pubBtn = btn('查询公网 IP（联网）', 'btn-secondary btn-sm', async () => {
         pubEl.textContent = '查询中…';
-        try { const r = await invoke('net:public-ip'); pubEl.textContent = r.ip; }
+        try { const r = await invoke(Channels.CHANNELS.NET.PUBLIC_IP); pubEl.textContent = r.ip; }
         catch (e) { pubEl.textContent = '查询失败：' + e.message; }
       });
       const pubEl = h('span', { class: 'mono', style: { userSelect: 'text' } }, '-');
-      invoke('net:interfaces').then(r => {
+      invoke(Channels.CHANNELS.NET.INTERFACES).then(r => {
         result.innerHTML = '';
         const card = div('card', div('card-title', '本机网络配置'));
         card.appendChild(window.ui.kvGrid([['主机名', r.hostname]]));
@@ -74,8 +75,8 @@
 
   /* ---------- Ping 测试 ---------- */
   register({
-    id: 'ping-test', name: 'Ping 测试', module: MOD, icon: 'activity',
-    desc: '连续 Ping、丢包率统计、延迟实时曲线',
+    id: 'ping-test', name: 'Ping 测试', nameEn: 'Ping', module: MOD, icon: 'activity',
+    desc: '连续 Ping、丢包率统计、延迟实时曲线', descEn: 'Ping a host continuously and watch latency and loss',
     keywords: ['ping', '延迟', '丢包'],
     render(page) {
       const hostIn = h('input', { class: 'input mono', value: 'www.baidu.com', style: { flex: '1' } });
@@ -86,7 +87,7 @@
       window.App.onCleanup(() => {
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
-        if (jobId) invoke('job:kill', jobId).catch(() => {});
+        if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       });
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let latencies = [], sent = 0, recv = 0, running = false;
@@ -112,11 +113,11 @@
         if (!host) return;
         // ping -t 永不自行退出：重复点「开始」必须先杀掉上一个，
         // 否则残留进程一直跑，而 stop() 只认最新的 jobId，旧进程再也取消不掉。
-        if (jobId) { try { await invoke('job:kill', jobId); } catch (e) {} jobId = null; }
+        if (jobId) { try { await invoke(Channels.CHANNELS.JOB.KILL, jobId); } catch (e) {} jobId = null; }
         running = true; sent = 0; recv = 0; latencies = [];
         term.innerHTML = ''; startBtn.disabled = true; stopBtn.disabled = false;
         try {
-          jobId = await invoke('exec:stream', { command: 'ping', args: ['-t', host] });
+          jobId = await invoke(Channels.CHANNELS.EXEC.STREAM, { command: 'ping', args: ['-t', host] });
         } catch (e) {
           // 原来没兜底：exec 失败时按钮永久 disabled、状态停在「进行中」，只能切页恢复
           running = false; startBtn.disabled = false; stopBtn.disabled = true;
@@ -164,7 +165,7 @@
         unsubExit = on('job:exit', (d) => { if (d.id === jobId) { running = false; startBtn.disabled = false; stopBtn.disabled = true; } });
       }
       async function stop() {
-        if (jobId) { try { await invoke('job:kill', jobId); } catch (e) {} }
+        if (jobId) { try { await invoke(Channels.CHANNELS.JOB.KILL, jobId); } catch (e) {} }
         running = false;
         startBtn.disabled = false; stopBtn.disabled = true;
       }
@@ -179,8 +180,8 @@
 
   /* ---------- 路由追踪 ---------- */
   register({
-    id: 'tracert', name: '路由追踪', module: MOD, icon: 'branch',
-    desc: 'Traceroute 路径追踪，展示每跳延迟',
+    id: 'tracert', name: '路由追踪', nameEn: 'Traceroute', module: MOD, icon: 'branch',
+    desc: 'Traceroute 路径追踪，展示每跳延迟', descEn: 'Trace the network path to a host hop by hop',
     keywords: ['tracert', 'traceroute', '路由'],
     render(page) {
       const hostIn = h('input', { class: 'input mono', value: 'www.baidu.com', style: { flex: '1' } });
@@ -190,7 +191,7 @@
       window.App.onCleanup(() => {
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
-        if (jobId) invoke('job:kill', jobId).catch(() => {});
+        if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       });
       const startBtn = btn('开始追踪', 'btn-primary', async () => {
         if (!isDesktop) return toast('桌面端可用', 'warn');
@@ -198,11 +199,11 @@
         if (!host) return;
         term.innerHTML = ''; startBtn.disabled = true;
         const args = noDns.checked ? ['-d', '-h', '30', host] : ['-h', '30', host];
-        /* 【补兜底】原来是裸 `jobId = await invoke('exec:stream', ...)`：
+        /* 【补兜底】原来是裸 `jobId = await invoke(Channels.CHANNELS.EXEC.STREAM, ...)`：
          * 启动失败时抛在 await 处，而 `startBtn.disabled = true` 已经在上一行生效，
          * 结果「开始追踪」按钮永久变灰，只能切页面才恢复。 */
         try {
-          jobId = await invoke('exec:stream', { command: 'tracert', args });
+          jobId = await invoke(Channels.CHANNELS.EXEC.STREAM, { command: 'tracert', args });
         } catch (e) {
           startBtn.disabled = false;
           try {
@@ -235,8 +236,8 @@
 
   /* ---------- 端口占用查询 ---------- */
   register({
-    id: 'port-occupy', name: '端口占用查询', module: MOD, icon: 'plug',
-    desc: '查询本机端口占用的进程，一键结束释放端口',
+    id: 'port-occupy', name: '端口占用查询', nameEn: 'Port Occupied', module: MOD, icon: 'plug',
+    desc: '查询本机端口占用的进程，一键结束释放端口', descEn: 'Find which process is holding a port and free it',
     keywords: ['端口', '占用', 'netstat', '杀进程'],
     render(page) {
       const portIn = h('input', { class: 'input mono input-sm', placeholder: '端口号（留空显示全部监听）', style: { width: '220px' } });
@@ -245,7 +246,7 @@
         try {
         result.innerHTML = '';
         result.appendChild(window.ui.loadingBlock('查询 netstat…'));
-        const r = await invoke('exec:run', { cmd: 'netstat -ano -p tcp', shellType: 'cmd', timeoutMs: 15000 });
+        const r = await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: 'netstat -ano -p tcp', shellType: 'cmd', timeoutMs: 15000 });
         const rows = [];
         for (const line of r.stdout.split(/\r?\n/)) {
           const m = line.match(/^\s*(TCP|UDP)\s+(\S+)\s+(\S+)\s+(\S*)\s+(\d+)\s*$/);
@@ -259,7 +260,7 @@
         result.innerHTML = '';
         if (!rows.length) { result.appendChild(div('empty-tip', '没有匹配的端口占用')); return; }
         // map pid to name
-        const procs = await invoke('proc:list').catch(() => []);
+        const procs = await invoke(Channels.CHANNELS.PROC.LIST).catch(() => []);
         const nameMap = new Map(procs.map(p => [p.pid, p.name]));
         const table = renderTable({
           columns: [
@@ -273,10 +274,10 @@
             { key: 'name', title: '进程', render: r => nameMap.get(r.pid) || '-' },
             /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             { key: 'act', title: '操作', width: '170px', render: (r, td) => {
-                const b1 = btn('任务管理器', 'btn-sm btn-text', () => invoke('exec:stream', { command: 'taskmgr.exe' }).catch(() => toast('启动失败', 'error')));
+                const b1 = btn('任务管理器', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.EXEC.STREAM, { command: 'taskmgr.exe' }).catch(() => toast('启动失败', 'error')));
                 const b2 = btn('结束进程', 'btn-sm btn-danger-plain', async () => {
                   if (!(await window.ui.confirmBox({ title: '结束进程', message: `结束 PID ${r.pid}（${nameMap.get(r.pid) || '未知'}）？这可能导致数据丢失。`, danger: true, okText: '结束' }))) return;
-                  try { await invoke('proc:kill', r.pid); toast('已结束', 'success'); query(); }
+                  try { await invoke(Channels.CHANNELS.PROC.KILL, r.pid); toast('已结束', 'success'); query(); }
                   catch (e) { toast(e.message, 'error'); }
                 });
                 td.appendChild(b1); td.appendChild(b2);
@@ -299,8 +300,8 @@
 
   /* ---------- 端口连通性测试 ---------- */
   register({
-    id: 'port-test', name: '端口连通测试', module: MOD, icon: 'plug',
-    desc: '测试远程主机指定端口是否开放',
+    id: 'port-test', name: '端口连通测试', nameEn: 'Port Test', module: MOD, icon: 'plug',
+    desc: '测试远程主机指定端口是否开放', descEn: 'Check whether a specific port is reachable',
     keywords: ['端口', 'telnet', '连通'],
     render(page) {
       const hostIn = h('input', { class: 'input mono', value: '127.0.0.1', style: { width: '200px' } });
@@ -311,7 +312,7 @@
         result.textContent = '测试中…';
         result.style.color = 'var(--text-3)';
         try {
-          const r = await invoke('net:tcp-test', hostIn.value.trim(), parseInt(portIn.value), 5000);
+          const r = await invoke(Channels.CHANNELS.NET.TCP_TEST, hostIn.value.trim(), parseInt(portIn.value), 5000);
           result.style.color = r.open ? 'var(--success)' : 'var(--danger)';
           result.textContent = r.open ? `✓ 端口开放（连接耗时 ${r.ms}ms）` : '✗ 端口不通或被拒绝';
         } catch (e) { result.textContent = '✗ ' + e.message; result.style.color = 'var(--danger)'; }
@@ -324,8 +325,8 @@
 
   /* ---------- 本机端口扫描 ---------- */
   register({
-    id: 'port-scan', name: '本机端口扫描', module: MOD, icon: 'target',
-    desc: '扫描本机/指定主机开放端口与常见服务',
+    id: 'port-scan', name: '本机端口扫描', nameEn: 'Port Scan', module: MOD, icon: 'target',
+    desc: '扫描本机/指定主机开放端口与常见服务', descEn: 'Scan common ports on a host to see what is open',
     keywords: ['扫描', '端口', 'scan'],
     render(page) {
       const hostIn = h('input', { class: 'input mono', value: '127.0.0.1', style: { width: '180px' } });
@@ -362,7 +363,7 @@
         if (ports.length > 65535) return toast('端口数过多', 'warn');
         status.textContent = `扫描中（${ports.length} 个端口）…`;
         try {
-          const r = await invoke('net:scan', hostIn.value.trim(), ports, { concurrency: 400, timeout: 600 });
+          const r = await invoke(Channels.CHANNELS.NET.SCAN, hostIn.value.trim(), ports, { concurrency: 400, timeout: 600 });
           status.textContent = `完成：开放 ${r.open.length} 个`;
           result.innerHTML = '';
           if (!r.open.length) { result.appendChild(div('empty-tip', '未发现开放端口')); return; }
@@ -384,8 +385,8 @@
 
   /* ---------- Hosts 编辑 ---------- */
   register({
-    id: 'hosts-edit', name: 'Hosts 编辑', module: MOD, icon: 'file-text',
-    desc: '快速编辑系统 Hosts，支持备份还原（写入需管理员权限）',
+    id: 'hosts-edit', name: 'Hosts 编辑', nameEn: 'Hosts Editor', module: MOD, icon: 'file-text',
+    desc: '快速编辑系统 Hosts，支持备份还原（写入需管理员权限）', descEn: 'Edit the hosts file with backup and one-click restore',
     keywords: ['hosts', '域名', '解析'],
     render(page) {
       const ta = h('textarea', { class: 'pane-ta mono', style: { minHeight: '320px', fontSize: '12.5px' } });
@@ -393,14 +394,14 @@
       const status = h('div', { class: 'field-hint' }, '');
       async function load() {
         try {
-          const r = await invoke('hosts:read');
+          const r = await invoke(Channels.CHANNELS.HOSTS.READ);
           ta.value = r.content;
           pathEl.textContent = r.path;
         } catch (e) { toast(e.message, 'error'); }
       }
       const saveBtn = btn('保存并刷新 DNS', 'btn-primary', async () => {
         try {
-          await invoke('hosts:write', ta.value);
+          await invoke(Channels.CHANNELS.HOSTS.WRITE, ta.value);
           status.innerHTML = '<span class="status-ok">✓ 已保存并刷新 DNS 缓存</span>';
           toast('Hosts 已保存', 'success');
         } catch (e) {
@@ -409,16 +410,16 @@
         }
       }, 'save');
       const bakBtn = btn('备份当前', 'btn-sm btn-secondary', async () => {
-        try { const r = await invoke('hosts:backup'); toast('已备份：' + r.name, 'success'); } catch (e) { toast(e.message, 'error'); }
+        try { const r = await invoke(Channels.CHANNELS.HOSTS.BACKUP); toast('已备份：' + r.name, 'success'); } catch (e) { toast(e.message, 'error'); }
       });
       const restoreBtn = btn('从备份还原…', 'btn-sm btn-secondary', async () => {
         try {
-          const list = await invoke('hosts:backups');
+          const list = await invoke(Channels.CHANNELS.HOSTS.BACKUPS);
           if (!list.length) return toast('暂无备份', 'warn');
-          const p = await invoke('dialog:open', { defaultPath: list[0], properties: ['openFile'] });
+          const p = await invoke(Channels.CHANNELS.DIALOG.OPEN, { defaultPath: list[0], properties: ['openFile'] });
           if (!p || !p[0]) return;
           if (!(await window.ui.confirmBox({ title: '还原 Hosts', message: '将用备份覆盖当前 hosts 文件，确定？' }))) return;
-          await invoke('hosts:restore', p[0]); toast('已还原', 'success'); load();
+          await invoke(Channels.CHANNELS.HOSTS.RESTORE, p[0]); toast('已还原', 'success'); load();
         } catch (e) { toast(e.message, 'error'); }
       });
       page.appendChild(div('card', div('card-title', 'Hosts 文件', pathEl),
@@ -430,8 +431,8 @@
 
   /* ---------- 网速测试 ---------- */
   register({
-    id: 'speedtest', name: '网速测试', module: MOD, icon: 'wifi',
-    desc: '下载/上传带宽测速（Cloudflare 节点，主动触发联网）',
+    id: 'speedtest', name: '网速测试', nameEn: 'Speed Test', module: MOD, icon: 'wifi',
+    desc: '下载/上传带宽测速（Cloudflare 节点，主动触发联网）', descEn: 'Measure download and upload speed',
     keywords: ['网速', '带宽', '测速'],
     render(page) {
       const canvas = h('canvas', { style: { width: '100%', height: '180px' } });
@@ -479,7 +480,7 @@
           } catch (e) {}
         });
         try {
-          const r = await invoke('net:speedtest', { direction: dir, seconds: 10 });
+          const r = await invoke(Channels.CHANNELS.NET.SPEEDTEST, { direction: dir, seconds: 10 });
           const mbps = r.mbps;
           if (dir === 'down') downEl.textContent = mbps.toFixed(1);
           else upEl.textContent = mbps.toFixed(1);
@@ -500,8 +501,8 @@
 
   /* ---------- WiFi 密码查看 ---------- */
   register({
-    id: 'wifi-password', name: 'WiFi 密码查看', module: MOD, icon: 'wifi',
-    desc: '列出本机已保存的 WiFi 并查看其连接密码',
+    id: 'wifi-password', name: 'WiFi 密码查看', nameEn: 'Wi-Fi Passwords', module: MOD, icon: 'wifi',
+    desc: '列出本机已保存的 WiFi 并查看其连接密码', descEn: 'List saved Wi-Fi profiles and their keys',
     keywords: ['wifi', '密码', '无线', 'wlan'],
     render(page) {
       const listBox = div('');
@@ -511,7 +512,7 @@
         listBox.innerHTML = '';
         listBox.appendChild(window.ui.loadingBlock('读取已保存的 WiFi…'));
         try {
-          const r = await invoke('wifi:profiles');
+          const r = await invoke(Channels.CHANNELS.WIFI.PROFILES);
           listBox.innerHTML = '';
           status.textContent = `${r.names.length} 个配置文件`;
           for (const name of r.names) {
@@ -522,7 +523,7 @@
               const keyEl = row.querySelector('.wifi-key');
               keyEl.textContent = '查询中…';
               try {
-                const k = await invoke('wifi:key', name);
+                const k = await invoke(Channels.CHANNELS.WIFI.KEY, name);
                 keyEl.textContent = k.key ? k.key : '（开放网络无密码）';
                 // 反复点「查看密码」会重复追加「复制」按钮，一行里堆出好几个
                 if (k.key && !row.querySelector('.wifi-copy')) {
@@ -546,33 +547,33 @@
 
   /* ---------- 文件下载器 ---------- */
   register({
-    id: 'downloader', name: '文件下载', module: MOD, icon: 'download',
-    desc: '下载直链文件：断点续传、自动重试、实时进度',
+    id: 'downloader', name: '文件下载', nameEn: 'Downloader', module: MOD, icon: 'download',
+    desc: '下载直链文件：断点续传、自动重试、实时进度', descEn: 'Download files with resume support and a progress bar',
     keywords: ['下载', 'download', '直链', 'url'],
     render(page) {
       const urlIn = h('input', { class: 'input mono', placeholder: 'https://… 直链地址', style: { flex: '1' } });
       const fileIn = h('input', { class: 'input input-sm', placeholder: '保存路径（留空 = 数据目录/文件名）', style: { flex: '1' } });
       const pickBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
-        const p = await invoke('dialog:save', {});
+        const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, {});
         if (p) fileIn.value = p;
       });
       const prog = progressEl(); prog.hide();
       const status = h('span', { class: 'field-hint' }, '');
       const startBtn = btn('开始下载', 'btn-primary', start, 'download');
-      const stopBtn = btn('取消', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); }, 'square');
+      const stopBtn = btn('取消', 'btn-danger-plain', () => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); }, 'square');
       stopBtn.disabled = true;
       let jobId = null, unsub = null, pageDead = false;
       window.App.onCleanup(() => {
         pageDead = true;
         if (unsub) try { unsub(); } catch (e) {}
-        if (jobId) invoke('job:kill', jobId).catch(() => {});
+        if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       });
       async function start() {
         const url = urlIn.value.trim();
         if (!/^https?:\/\//.test(url)) return toast('请输入 http(s) 直链', 'warn');
         let out = fileIn.value.trim();
         if (!out) {
-          const info = await invoke('app:get-info').catch(() => null);
+          const info = await invoke(Channels.CHANNELS.APP.GET_INFO).catch(() => null);
           out = (info && info.userData ? info.userData : 'C:/Users/Public/Downloads') + '/' + safeNameFromUrl(url);
         }
         prog.show(); status.textContent = '连接中…';
@@ -601,9 +602,9 @@
             }
           } catch (e) {}
         });
-        const r = await invoke('net:download', { url, out });
+        const r = await invoke(Channels.CHANNELS.NET.DOWNLOAD, { url, out });
         jobId = r.id;
-        if (pageDead && jobId) invoke('job:kill', jobId).catch(() => {});
+        if (pageDead && jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       }
       page.appendChild(div('card', div('card-title', '下载'),
         div('form-row', urlIn),

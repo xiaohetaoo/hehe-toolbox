@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— av-convert（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'av-convert', name: '音视频格式转换', module: MOD, icon: 'film',
-    desc: '批量转换格式、压缩、提取音频、转 GIF，参数可调',
+    id: 'av-convert', name: '音视频格式转换', nameEn: 'Media Convert', module: MOD, icon: 'film',
+    desc: '批量转换格式、压缩、提取音频、转 GIF，参数可调', descEn: 'Convert audio and video between formats, choose codec, bitrate and resolution',
     keywords: ['转换', 'ffmpeg', '压缩', '音频', 'gif'],
     render(page) {
       // 文件清单/删除/进度行统一由 filePicker 负责（见下方 picker）
@@ -25,7 +26,7 @@ register({
       const gifWIn = h('input', { type: 'number', class: 'input input-sm', value: '480', style: { width: '64px' } });
       const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空=源文件目录）', style: { flex: '1' } });
       const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) outDirIn.value = d[0];
       });
       const status = h('div', { class: 'field-hint' }, '');
@@ -49,14 +50,14 @@ register({
         }
       });
       const startBtn = btn('开始转换', 'btn-primary', run, 'send');
-      const cancelBtn = btn('取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); }, 'square');
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); }, 'square');
       cancelBtn.disabled = true;
       // 目标格式变了只刷新行上的「→ XXX」标签，不重建列表（重建会丢掉进度状态）
       fmtSel.addEventListener('change', () => picker.list.refresh());
       async function run() {
         if (!picker.count) return toast('请先选择文件', 'warn');
         if (running) return;
-        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) {
           toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
           window.App.openTool('ffmpeg-setup');
@@ -91,7 +92,7 @@ register({
         });
         if (window.App && App.onCleanup) App.onCleanup(unsub);
         try {
-          const r = await invoke('ffmpeg:convert', {
+          const r = await invoke(Channels.CHANNELS.FFMPEG.CONVERT, {
             items: picker.paths, outDir,
             opts: {
               format: fmtSel.value, vcodec: vcodecSel.value, crf: parseInt(crfIn.value) || 23,

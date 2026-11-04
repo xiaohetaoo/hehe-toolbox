@@ -1,5 +1,6 @@
 'use strict';
 const { t, done } = require('./lib/harness');
+const { handlerIndex, invokeIndex } = require('./lib/seg-from-handler');
 /* 静态服务器的行为测试（原 test-round15 的 5a / 5b）。
  *
  * 锁的是：页面切走再切回来时，按钮还停在"已停止"，而服务其实还在跑 ——
@@ -20,8 +21,8 @@ t('5a 主进程有只读的 server:status', () => {
   /* 锁的是：「5a 主进程有只读的 server:status」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/handle\('server:status'/.test(code), '没有 server:status 通道');
-  const i = code.indexOf("handle('server:status'");
+  assert.ok(handlerIndex(code, 'server:status') > 0, '没有 server:status 通道');
+  const i = handlerIndex(code, 'server:status');
   const seg = code.slice(i, i + 400);
   /* 锁的是：「5a 主进程有只读的 server:status」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
@@ -39,8 +40,8 @@ t('5b 页面初始化会查一次状态并回填按钮', () => {
   /* 锁的是：「5b 页面初始化会查一次状态并回填按钮」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/invoke\('server:status'\)/.test(code), '页面没有查询服务状态（切页回来会是死局）');
-  const i = code.indexOf("invoke('server:status')");
+  const i = invokeIndex(code, 'server:status');
+  assert.ok(i > 0, '页面没有查询服务状态（切页回来会是死局）');
   const seg = code.slice(i, i + 700);
   /* 锁的是：「5b 页面初始化会查一次状态并回填按钮」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），

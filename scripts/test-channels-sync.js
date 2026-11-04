@@ -84,7 +84,7 @@ t('6c 表里的每个通道都真的在主进程里注册了', () => {
   const LITERAL = /handle\('([^']+)'/g;
   for (const m of mainSrc.matchAll(LITERAL)) registered.add(m[1]);
   /* 2) 常量注册：<别名>.<组>.<键>（后面跟逗号，不能把逗号写进正则的 ')'） */
-  const CONST = /handle\((?:dirMoveCh|CH)\.([A-Z_]+)\.([A-Z_]+)\s*,/g;
+  const CONST = /handle\((?:dirMoveCh|CH)\.([A-Z0-9_]+)\.([A-Z0-9_]+)\s*,/g;
   for (const m of mainSrc.matchAll(CONST)) {
     const key = m[1] + '.' + m[2];
     if (lib[key]) registered.add(lib[key]);
@@ -143,7 +143,7 @@ function registeredChannels() {
   const lib = libChannels().flatten();
   const set = new Set();
   for (const m of mainSrc.matchAll(/handle\('([^']+)'/g)) set.add(m[1]);
-  for (const m of mainSrc.matchAll(/handle\((?:dirMoveCh|CH)\.([A-Z_]+)\.([A-Z_]+)\s*,/g)) {
+  for (const m of mainSrc.matchAll(/handle\((?:dirMoveCh|CH)\.([A-Z0-9_]+)\.([A-Z0-9_]+)\s*,/g)) {
     const key = m[1] + '.' + m[2];
     if (lib[key]) set.add(lib[key]);
   }

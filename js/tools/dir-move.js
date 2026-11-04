@@ -8,10 +8,10 @@
 
   register({
     id: 'dir-move',
-    name: '目录搬家',
+    name: '目录搬家', nameEn: 'Move Folder',
     module: MOD,
     icon: 'folder',
-    desc: '把大目录搬到别的盘，并在原位置建目录联接 —— 路径不变，空间腾出来',
+    desc: '把大目录搬到别的盘，并在原位置建目录联接 —— 路径不变，空间腾出来', descEn: 'Move a large folder across drives safely, with pre-checks and resume',
     keywords: ['搬家', '迁移', '移动目录', 'junction', '联接', '腾空间', '符号链接', 'move'],
     render(page) {
       const state = {
@@ -64,14 +64,14 @@
 
       const srcBrowse = btn('浏览…', 'btn-sm btn-secondary', async () => {
         try {
-          const r = await invoke('dialog:open', { properties: ['openDirectory'] });
+          const r = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
           /* 程序改 value 不会触发 input 事件，必须显式作废校验结论 */
           if (r && r[0]) { srcInput.value = r[0]; autoFillDst(); invalidate(); }
         } catch (e) { toast(e.message, 'error'); }
       });
       const dstBrowse = btn('浏览…', 'btn-sm btn-secondary', async () => {
         try {
-          const r = await invoke('dialog:open', { properties: ['openDirectory'] });
+          const r = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
           if (r && r[0]) { dstInput.value = r[0]; invalidate(); }
         } catch (e) { toast(e.message, 'error'); }
       });

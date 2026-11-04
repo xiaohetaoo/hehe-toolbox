@@ -1,5 +1,6 @@
 'use strict';
 const { t, done, readMain } = require('./lib/harness');
+const { handlerIndex } = require('./lib/seg-from-handler');
 const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const mainSrc = readMain({ raw: true });
@@ -18,15 +19,7 @@ const assert = require('assert');
  * 这里先用 lib/channels.js 的同一份表把通道名反查成常量表达式，再两种都试。
  */
 function body(src, channel) {
-  let start = src.indexOf("handle('" + channel + "'");
-  if (start < 0) {
-    let expr = null;
-    try {
-      const table = require('../lib/channels').flatten();
-      for (const k of Object.keys(table)) if (table[k] === channel) { expr = 'dirMoveCh.' + k; break; }
-    } catch (e) { /* 表不可用时保持字面量行为 */ }
-    if (expr) start = src.indexOf('handle(' + expr + ',');
-  }
+  const start = handlerIndex(src, channel);
   assert.ok(start > 0, '找不到 handler: ' + channel);
   return src.slice(start, src.indexOf('\n});', start));
 }
@@ -231,9 +224,9 @@ t('P2 hosts 备份名精确到毫秒且带随机后缀', () => {
 
 t('8a fs:rename 补了 checkOverwritable 闸门', () => {
   const code = stripComments(mainSrc);
-  const i = code.indexOf("handle('fs:rename'");
+  const i = handlerIndex(code, 'fs:rename');
   assert.ok(i > 0, '找不到 fs:rename');
-  const seg = code.slice(i, code.indexOf("handle('fs:delete'"));
+  const seg = code.slice(i, handlerIndex(code, 'fs:delete'));
   assert.ok(/checkOverwritable/.test(seg), 'fs:rename 没有覆盖闸门（可以把文件搬进 Startup 或覆盖任意目标）');
   /* 大小写改名分支必须保留 */
   assert.ok(/toLowerCase\(\) === rt\.toLowerCase\(\)/.test(seg), '纯大小写改名被误删了');

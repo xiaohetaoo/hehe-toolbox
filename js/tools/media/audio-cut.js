@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— audio-cut（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker, fmtBytes } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'audio-cut', name: '音频剪辑', module: MOD, icon: 'scissors',
-    desc: '截取音频片段、淡入淡出、音量增益（ffmpeg）',
+    id: 'audio-cut', name: '音频剪辑', nameEn: 'Audio Trim', module: MOD, icon: 'scissors',
+    desc: '截取音频片段、淡入淡出、音量增益（ffmpeg）', descEn: 'Cut audio segments, fade in / out, and adjust gain (ffmpeg)',
     keywords: ['音频', '剪辑', '截取', '淡入', '淡出', '音量'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
@@ -29,7 +30,7 @@ register({
         if (running) return; // 防重入
         running = true;
         if (!picker.count) { running = false; return toast('请先选择音频', 'warn'); }
-        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { running = false; toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
         const src = picker.paths[0];
         const dur = Math.max(0, +toIn.value || 0);
@@ -38,10 +39,10 @@ register({
         if (fmt === 'keep') { const e = src.split('.').pop().toLowerCase(); fmt = ['mp3', 'm4a', 'wav', 'flac'].includes(e) ? e : 'mp3'; }
         // 固定 _cut 名会让「反复调参数试听剪辑」每次都覆盖上一次的成果
         // （ffmpeg 带 -y 直接改写）。用 fs:unique-path 生成不重名的目标。
-        const out = await invoke('fs:unique-path', src.replace(/\.\w+$/, '_cut.' + fmt));
+        const out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, src.replace(/\.\w+$/, '_cut.' + fmt));
         goBtn.disabled = true; status.textContent = '处理中…';
         try {
-          const r = await invoke('ffmpeg:audio-cut', {
+          const r = await invoke(Channels.CHANNELS.FFMPEG.AUDIO_CUT, {
             input: src, out, ss: ssIn.value.trim(), dur, fadeIn: fi, fadeOut: fo, gain, format: fmt
           });
           status.textContent = `✓ 已输出：${out}（${fmtBytes(r.size)}）`;

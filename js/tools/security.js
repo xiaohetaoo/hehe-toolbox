@@ -1,5 +1,6 @@
 /* 模块：安全与密码 —— 密码生成 / 强度检测 / 剪贴板历史 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, renderTable, fmtDate, switchEl } = window.ui;
@@ -7,8 +8,8 @@
   const MOD = 'security';
 
   register({
-    id: 'password-gen', name: '密码生成器', module: MOD, icon: 'key',
-    desc: '自定义长度与字符集的高强度随机密码',
+    id: 'password-gen', name: '密码生成器', nameEn: 'Password Generator', module: MOD, icon: 'key',
+    desc: '自定义长度与字符集的高强度随机密码', descEn: 'Generate strong random passwords with custom length and character sets',
     keywords: ['密码', '随机', 'password'],
     render(page) {
       const lenIn = h('input', { type: 'number', class: 'input input-sm', value: '16', min: '4', max: '128', style: { width: '80px' } });
@@ -89,8 +90,8 @@
   });
 
   register({
-    id: 'password-strength', name: '密码强度检测', module: MOD, icon: 'shield',
-    desc: '评估密码强度等级（熵值估算），给出优化建议',
+    id: 'password-strength', name: '密码强度检测', nameEn: 'Password Strength', module: MOD, icon: 'shield',
+    desc: '评估密码强度等级（熵值估算），给出优化建议', descEn: 'Estimate password strength and see what to improve',
     keywords: ['强度', '检测', '熵'],
     render(page) {
       const pwdIn = h('input', { type: 'text', class: 'input', placeholder: '输入要检测的密码（仅本地计算，不上传）', style: { flex: '1', fontSize: '16px' } });
@@ -157,8 +158,8 @@
   });
 
   register({
-    id: 'clipboard-history', name: '剪贴板历史', module: MOD, icon: 'clipboard',
-    desc: '自动记录文本/图片剪贴板历史，支持检索与一键复用',
+    id: 'clipboard-history', name: '剪贴板历史', nameEn: 'Clipboard History', module: MOD, icon: 'clipboard',
+    desc: '自动记录文本/图片剪贴板历史，支持检索与一键复用', descEn: 'Keep a searchable history of copied text and images, filter by type',
     keywords: ['剪贴板', '历史', 'clipboard', '粘贴'],
     render(page) {
       const list = div('');
@@ -192,7 +193,7 @@
       async function dropImages(entries) {
         const files = (entries || []).filter(x => x && x.type === 'image' && x.file).map(x => x.file);
         if (!files.length) return;
-        try { await invoke('clip:remove-images', files); } catch (e) {}
+        try { await invoke(Channels.CHANNELS.CLIP.REMOVE_IMAGES, files); } catch (e) {}
       }
       /* 按统一上限裁剪：**任何**被淘汰的条目（文本或图片）都先走 dropImages，
        * 再截断。这样「文本把图片挤出列表」时对应的 png 也会被回收。 */
@@ -205,7 +206,7 @@
         return list.slice(0, cap);
       }
       async function load() {
-        history = await invoke('store:get', 'clipHistory', []);
+        history = await invoke(Channels.CHANNELS.STORE.GET, 'clipHistory', []);
         render();
       }
       // 单条文本上限：200 条 × 每条约 100MB 的复制内容能把 hehe-data.json 撑到 GB 级，
@@ -225,7 +226,7 @@
       async function poll() {
         if (!watching) return;
         try {
-          const text = await invoke('clip:read-text');
+          const text = await invoke(Channels.CHANNELS.CLIP.READ_TEXT);
           if (text && text !== lastClip) {
             lastClip = text;
             const okText = admitText(text);
@@ -234,18 +235,18 @@
             /* 必须走 trimHistory：它会回收被挤出上限的图片文件。
              * 直接 slice(0, 200) 会让图片条目"消失但文件还在"。 */
             history = await trimHistory(history);
-            await invoke('store:set', 'clipHistory', history);
+            await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', history);
             render();
           } else if (!text) {
-            const img = await invoke('clip:read-image');
+            const img = await invoke(Channels.CHANNELS.CLIP.READ_IMAGE);
             if (img && img !== lastClip) {
               lastClip = img;
               // 图片落盘为文件，避免 dataURL 撑爆 store JSON
               let entry = { type: 'image', content: img, time: Date.now() };
-              try { const r = await invoke('clip:save-image', img); entry = { type: 'image', file: r.path, time: Date.now() }; } catch (e) {}
+              try { const r = await invoke(Channels.CHANNELS.CLIP.SAVE_IMAGE, img); entry = { type: 'image', file: r.path, time: Date.now() }; } catch (e) {}
               history.unshift(entry);
               history = await trimHistory(history);
-              await invoke('store:set', 'clipHistory', history);
+              await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', history);
               render();
             }
           }
@@ -280,17 +281,17 @@
           const btns = h('span', { style: { marginLeft: 'auto' } });
           btns.appendChild(btn(item.pinned ? '取消置顶' : '置顶', 'btn-sm btn-text', async () => {
             item.pinned = !item.pinned;
-            await invoke('store:set', 'clipHistory', history);
+            await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', history);
             render();
           }));
           const contentRef = item.content || null; // 图片：优先已有 dataURL，否则异步读文件
           btns.appendChild(btn(item.type === 'text' ? '复制' : '复制图片', 'btn-sm btn-text', async () => {
             try {
-              if (item.type === 'text') await invoke('clip:write-text', item.content);
+              if (item.type === 'text') await invoke(Channels.CHANNELS.CLIP.WRITE_TEXT, item.content);
               else {
                 let du = contentRef;
-                if (!du && item.file) { const r = await invoke('fs:read-file-b64', item.file); du = 'data:image/png;base64,' + r.b64; }
-                if (du) await invoke('clip:write-image', du);
+                if (!du && item.file) { const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, item.file); du = 'data:image/png;base64,' + r.b64; }
+                if (du) await invoke(Channels.CHANNELS.CLIP.WRITE_IMAGE, du);
               }
               toast('已复制', 'success', 1000);
             } catch (e) { toast(e.message, 'error'); }
@@ -299,7 +300,7 @@
             const idx = history.indexOf(item);
             if (idx >= 0) history.splice(idx, 1);
             await dropImages([item]);
-            await invoke('store:set', 'clipHistory', history);
+            await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', history);
             render();
           }));
           head.appendChild(btns);
@@ -307,19 +308,23 @@
           if (item.type === 'text') {
             const pre = h('div', { class: 'mono', style: { fontSize: '12px', color: 'var(--text-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '100px', overflow: 'hidden', userSelect: 'text' } },
               item.content.length > 500 ? item.content.slice(0, 500) + '…' : item.content);
-            pre.addEventListener('dblclick', async () => { await invoke('clip:write-text', item.content); toast('已复制', 'success', 1000); });
+            pre.addEventListener('dblclick', async () => { await invoke(Channels.CHANNELS.CLIP.WRITE_TEXT, item.content); toast('已复制', 'success', 1000); });
             card.appendChild(pre);
           } else {
             const imgEl = h('img', { src: contentRef || '', style: { maxWidth: '100%', maxHeight: '160px', borderRadius: '6px', cursor: 'pointer' } });
+            /* 点图片 = 把这张图重新写回剪贴板，这是图片条目**唯一**的操作入口。
+             * 不接键盘的话，纯键盘用户能看见历史图片却一张都复用不了。 */
             imgEl.addEventListener('click', async () => {
               try {
                 let du = contentRef;
-                if (!du && item.file) { const r = await invoke('fs:read-file-b64', item.file); du = 'data:image/png;base64,' + r.b64; }
-                if (du) { await invoke('clip:write-image', du); toast('已复制', 'success', 1000); }
+                if (!du && item.file) { const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, item.file); du = 'data:image/png;base64,' + r.b64; }
+                if (du) { await invoke(Channels.CHANNELS.CLIP.WRITE_IMAGE, du); toast('已复制', 'success', 1000); }
               } catch (e) {}
             });
+            if (window.ui.makeButtonLike) window.ui.makeButtonLike(imgEl, '复制这张历史图片');
+            if (window.ui.focusable) window.ui.focusable(imgEl);
             card.appendChild(imgEl);
-            if (!contentRef && item.file) invoke('fs:read-file-b64', item.file).then((r) => { imgEl.src = 'data:image/png;base64,' + r.b64; }).catch(() => { card.appendChild(div('field-hint', '（图片文件已清理）')); });
+            if (!contentRef && item.file) invoke(Channels.CHANNELS.FS.READ_FILE_B64, item.file).then((r) => { imgEl.src = 'data:image/png;base64,' + r.b64; }).catch(() => { card.appendChild(div('field-hint', '（图片文件已清理）')); });
           }
           list.appendChild(card);
         }
@@ -329,7 +334,7 @@
         if (!(await window.ui.confirmBox({ title: '清空剪贴板历史', message: '确定清空全部剪贴板历史？图片文件也会一并删除。', danger: true, okText: '清空' }))) return;
         const old = history.slice();
         history = [];
-        await invoke('store:set', 'clipHistory', []);
+        await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', []);
         await dropImages(old);
         render();
       });

@@ -1,5 +1,6 @@
 /* 模块：多媒体处理 —— img-stitch（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker } = window.ui;
   const { invoke } = window.api;
@@ -7,8 +8,8 @@
   const { isImgPath, IMG_FILTER, loadImg } = window.MediaShared;
 
 register({
-    id: 'img-stitch', name: '长截图拼接', module: MOD, icon: 'merge',
-    desc: '多张截图纵向/横向拼接为一张长图',
+    id: 'img-stitch', name: '长截图拼接', nameEn: 'Stitch Screenshots', module: MOD, icon: 'merge',
+    desc: '多张截图纵向/横向拼接为一张长图', descEn: 'Combine several screenshots into one long image, vertically or horizontally',
     keywords: ['拼接', '长图', '截图'],
     render(page) {
       const thumbs = new Map(); // path -> 缩略图 dataURL，供列表行显示
@@ -121,9 +122,9 @@ register({
         const outDefault = (loaded[0].path.replace(/[\\/][^\\/]+$/, '')) + (isV ? '/stitch-v.png' : '/stitch-h.png');
         const saveBtn = btn('保存 PNG', 'btn-primary btn-sm', async () => {
           try {
-            const p = await invoke('dialog:save', { defaultPath: outDefault });
+            const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: outDefault });
             if (!p) return;
-            await invoke('fs:write-file-b64', p, b64);
+            await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, p, b64);
             toast('已保存：' + p, 'success');
           } catch (e) { toast(e.message || String(e), 'error'); }
         }, 'save');

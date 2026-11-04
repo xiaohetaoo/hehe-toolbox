@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+const { handlerIndex } = require('./lib/seg-from-handler');
 /* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
 const { rmDir } = require('./lib/test-fs');
 const mainSrc = readMain({ raw: true });
@@ -24,7 +25,7 @@ const mainSrc = readMain({ raw: true });
  * （副本会与实现分叉，那样测试就假绿了）。 */
 function extractCryptStream() {
   const i = mainSrc.indexOf('const ENC_MAGIC');
-  const j = mainSrc.indexOf("handle('fs:encrypt-file'");
+  const j = handlerIndex(mainSrc, 'fs:encrypt-file');
   assert.ok(i > 0 && j > i, '找不到 cryptStream 代码块');
   const block = mainSrc.slice(i, j);
   const requireShim = (m) => (m === 'stream' ? require('stream') : require(m));

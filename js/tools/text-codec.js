@@ -9,8 +9,8 @@
   function bytesToUtf8(bytes) { return new TextDecoder().decode(bytes); }
 
   register({
-    id: 'base64', name: 'Base64 编解码', module: MOD, icon: 'box',
-    desc: 'Base64 与文本实时互转，支持中文与文件安全字符集',
+    id: 'base64', name: 'Base64 编解码', nameEn: 'Base64 Codec', module: MOD, icon: 'box',
+    desc: 'Base64 与文本实时互转，支持中文与文件安全字符集', descEn: 'Convert between Base64 and text in real time, safe for Chinese and file characters',
     keywords: ['base64', '编码', '解码', 'encode'],
     render(page) {
       const box = convertLayout({
@@ -65,8 +65,8 @@
   });
 
   register({
-    id: 'url-codec', name: 'URL 编解码', module: MOD, icon: 'link',
-    desc: 'URL 百分号编码与解码，支持 encodeURIComponent / 全量编码',
+    id: 'url-codec', name: 'URL 编解码', nameEn: 'URL Codec', module: MOD, icon: 'link',
+    desc: 'URL 百分号编码与解码，支持 encodeURIComponent / 全量编码', descEn: 'Encode and decode URLs and query strings',
     keywords: ['url', 'encode', 'decode', 'uri', '百分号'],
     render(page) {
       let full = false;
@@ -106,8 +106,8 @@
   });
 
   register({
-    id: 'unicode-convert', name: 'Unicode 转换', module: MOD, icon: 'languages',
-    desc: '文本与 \\uXXXX 转义序列互转，支持中文转 Unicode',
+    id: 'unicode-convert', name: 'Unicode 转换', nameEn: 'Unicode Convert', module: MOD, icon: 'languages',
+    desc: '文本与 \\uXXXX 转义序列互转，支持中文转 Unicode', descEn: 'Convert between Unicode escapes, HTML entities and plain text',
     keywords: ['unicode', 'uXXXX', '转义', 'escape'],
     render(page) {
       /* 星形平面字符（emoji 等，码点 > 0xFFFF）必须拆成高低代理对两个 \uXXXX，
@@ -156,8 +156,8 @@
   });
 
   register({
-    id: 'html-entity', name: 'HTML 实体转义', module: MOD, icon: 'code',
-    desc: 'HTML 特殊字符转义与还原，防止 XSS',
+    id: 'html-entity', name: 'HTML 实体转义', nameEn: 'HTML Entities', module: MOD, icon: 'code',
+    desc: 'HTML 特殊字符转义与还原，防止 XSS', descEn: 'Escape and unescape HTML entities',
     keywords: ['html', 'escape', '转义', '实体', 'xss'],
     render(page) {
       const box = convertLayout({
@@ -190,8 +190,8 @@
   });
 
   register({
-    id: 'hex-ascii', name: 'Hex / ASCII 互转', module: MOD, icon: 'hash',
-    desc: '文本与十六进制字节互转，支持自定义分隔符',
+    id: 'hex-ascii', name: 'Hex / ASCII 互转', nameEn: 'Hex ↔ ASCII', module: MOD, icon: 'hash',
+    desc: '文本与十六进制字节互转，支持自定义分隔符', descEn: 'Convert between hexadecimal and ASCII text',
     keywords: ['hex', 'ascii', '十六进制', '字节'],
     render(page) {
       let sep = ' ';

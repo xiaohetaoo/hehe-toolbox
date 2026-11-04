@@ -11,6 +11,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { invokeIndex } = require('./lib/seg-from-handler');
 
 let pass = 0, fail = 0;
 const chk = (c, m) => { console.log((c ? 'PASS  ' : 'FAIL  ') + m); if (!c) fail++; else pass++; };
@@ -145,7 +146,8 @@ chk(/classList\.remove\s*\(\s*'busy'\s*\)/.test(uiDef), 'unlockUi 里移除 busy
 
 /* 5c. 两条退出路径都要真的调它：finally 与 fs:mkdir 失败分支 */
 chk(/finally\s*\{[\s\S]*?unlockUi\s*\(\s*\)/.test(runCode), 'finally 里调用了 unlockUi（正常路径与异常路径都解锁）');
-chk(/fs:mkdir[\s\S]{0,400}?unlockUi\s*\(\s*\)/.test(runCode), 'fs:mkdir 失败分支里也调用了 unlockUi（早退路径同样解锁）');
+const mkAt = invokeIndex(runCode, 'fs:mkdir');
+chk(mkAt > 0 && /unlockUi\s*\(\s*\)/.test(runCode.slice(mkAt, mkAt + 400)), 'fs:mkdir 失败分支里也调用了 unlockUi（早退路径同样解锁）');
 
 /* 5d. 反面断言：不许在 unlockUi 之外再散落一份「只解一半」的复位
  *     （原来那条早退只复位了 running/startBtn/cancelBtn，漏了 setLocked） */

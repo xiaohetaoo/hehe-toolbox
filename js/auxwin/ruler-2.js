@@ -50,7 +50,7 @@
       if (moveRaf || !pendingMove || !window.hehe) return;
       moveRaf = requestAnimationFrame(() => {
         moveRaf = 0;
-        if (pendingMove && window.hehe) hehe.invoke('win:ruler:move', pendingMove[0], pendingMove[1]).catch(() => {});
+        if (pendingMove && window.hehe) hehe.invoke(window.Channels.CHANNELS.WIN.RULER_MOVE, pendingMove[0], pendingMove[1]).catch(() => {});
       });
     }
     window.addEventListener('mousedown', (e) => {
@@ -77,14 +77,14 @@
     window.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
 
     function closeRuler() {
-      try { if (window.hehe) hehe.invoke('win:ruler:close').catch(() => {}); } catch (e) {}
+      try { if (window.hehe) hehe.invoke(window.Channels.CHANNELS.WIN.RULER_CLOSE).catch(() => {}); } catch (e) {}
       try { window.close(); } catch (e) {}
     }
     document.getElementById('close').addEventListener('click', closeRuler);
     document.getElementById('bar').addEventListener('dblclick', closeRuler);
     document.getElementById('toggle').addEventListener('click', async () => {
       try {
-        if (window.hehe) { await hehe.invoke('win:ruler', dir === 'h' ? 'v' : 'h'); return; }
+        if (window.hehe) { await hehe.invoke(window.Channels.CHANNELS.WIN.RULER, dir === 'h' ? 'v' : 'h'); return; }
       } catch (e) {}
       closeRuler();
     });

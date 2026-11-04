@@ -6,8 +6,8 @@
 
   /* ---------- 进制转换（支持大数 BigInt） ---------- */
   register({
-    id: 'radix', name: '进制转换', module: 'text', icon: 'calculator',
-    desc: '2/8/10/16 进制互转，支持任意大数（BigInt）',
+    id: 'radix', name: '进制转换', nameEn: 'Radix Convert', module: 'text', icon: 'calculator',
+    desc: '2/8/10/16 进制互转，支持任意大数（BigInt）', descEn: 'Convert between base 2 / 8 / 10 / 16, with BigInt for large numbers',
     keywords: ['进制', '二进制', '十六进制', 'bin', 'hex'],
     render(page) {
       const input = h('input', { class: 'input', placeholder: '输入数值（支持负数与小数点前的整数）', style: { flex: '1' } });
@@ -51,8 +51,8 @@
 
   /* ---------- 时间戳工具 ---------- */
   register({
-    id: 'timestamp', name: '时间戳工具', module: 'text', icon: 'clock',
-    desc: '时间戳与日期双向转换，支持秒/毫秒、UTC/本地时区',
+    id: 'timestamp', name: '时间戳工具', nameEn: 'Timestamp', module: 'text', icon: 'clock',
+    desc: '时间戳与日期双向转换，支持秒/毫秒、UTC/本地时区', descEn: 'Convert between timestamps and dates, seconds or milliseconds, UTC or local',
     keywords: ['时间戳', 'timestamp', '日期', 'unix'],
     render(page) {
       let unit = 's'; // s | ms
@@ -123,8 +123,8 @@
 
   /* ---------- 单位换算 ---------- */
   register({
-    id: 'unit-convert', name: '单位换算', module: 'dev', icon: 'move-h',
-    desc: '长度、重量、面积、体积、存储、时间、速度、温度换算',
+    id: 'unit-convert', name: '单位换算', nameEn: 'Unit Convert', module: 'dev', icon: 'move-h',
+    desc: '长度、重量、面积、体积、存储、时间、速度、温度换算', descEn: 'Convert length, weight, area, volume, storage, time and temperature',
     keywords: ['单位', '换算', '长度', '重量', '存储'],
     render(page) {
       const CATS = {
@@ -193,8 +193,8 @@
 
   /* ---------- 科学计算器 ---------- */
   register({
-    id: 'calculator', name: '科学计算器', module: 'dev', icon: 'calculator',
-    desc: '表达式计算，支持函数、常量与历史记录',
+    id: 'calculator', name: '科学计算器', nameEn: 'Calculator', module: 'dev', icon: 'calculator',
+    desc: '表达式计算，支持函数、常量与历史记录', descEn: 'Evaluate expressions with functions, constants and history',
     keywords: ['计算器', '科学计算', '表达式', 'calc'],
     render(page) {
       const input = h('input', { class: 'input mono', placeholder: '输入表达式，如 sin(pi/4)+2^10*1.5', style: { flex: '1', fontSize: '15px' } });

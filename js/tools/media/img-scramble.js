@@ -14,6 +14,7 @@
  * 这条说明必须显眼，否则用户会误以为这是安全功能 —— 那是危险的产品设计。
  */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker, progressEl } = window.ui;
   const { invoke } = window.api;
@@ -90,8 +91,8 @@
   }
 
   register({
-    id: 'img-scramble', name: '图片混淆', module: MOD, icon: 'crop',
-    desc: '用密钥把图片像素打乱/还原，防止随手查看（注意：视觉混淆不是加密）',
+    id: 'img-scramble', name: '图片混淆', nameEn: 'Image Scramble', module: MOD, icon: 'crop',
+    desc: '用密钥把图片像素打乱/还原，防止随手查看（注意：视觉混淆不是加密）', descEn: 'Shuffle pixels with a key to keep casual eyes away (visual only, not encryption)',
     keywords: ['混淆', '还原', '打乱', '图片', 'scramble', '遮挡'],
     render(page) {
       const picker = filePicker({
@@ -138,8 +139,8 @@
         const dot = rawName.lastIndexOf('.');
         const stem = dot > 0 ? rawName.slice(0, dot) : rawName;
         const outName = stem + (inverse ? '_restored' : '_scrambled') + '.png';
-        const outPath = await invoke('fs:unique-path', outDir.replace(/[\\/]$/, '') + '/' + outName);
-        await invoke('fs:write-file-b64', outPath, dataUrl.split(',')[1]);
+        const outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, outDir.replace(/[\\/]$/, '') + '/' + outName);
+        await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, dataUrl.split(',')[1]);
         return dataUrl;
       }
 
@@ -149,7 +150,7 @@
         const key = keyIn.value;
         if (!key) return toast('请填写密钥', 'warn');
         const inverse = modeSel.value === 'restore';
-        const outDir = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const outDir = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (!outDir || !outDir[0]) return;
         prog.show();
         let ok = 0;

@@ -24,6 +24,21 @@
     return (en && m.nameEn) ? m.nameEn : m.name;
   }
   /* 模块描述同理：英文界面下优先 descEn，缺失时回退中文（不至于空白）。 */
+  /* 工具名 / 工具的副标题也走同一套。
+   * 【为什么工具也要】模块层早就双语了，但 102 个工具自身的 name/desc
+   * 一直是纯中文 —— 英文界面下首页卡片、搜索结果、标签页标题全是中文，
+   * 这比「正文没翻译」更致命：用户还没点进去就已经看不懂这是什么工具了。
+   * 与模块保持同一约定：nameEn/descEn 缺失时回退中文，不出现空白。 */
+  function toolName(t) {
+    if (!t) return '';
+    const en = window.i18n && window.i18n.lang === 'en';
+    return (en && t.nameEn) ? t.nameEn : t.name;
+  }
+  function toolDesc(t) {
+    if (!t) return '';
+    const en = window.i18n && window.i18n.lang === 'en';
+    return (en && t.descEn) ? t.descEn : (t.desc || '');
+  }
   function modDesc(m) {
     if (!m) return '';
     const en = window.i18n && window.i18n.lang === 'en';
@@ -215,10 +230,15 @@
     const tokens = raw.split(/\s+/).filter(Boolean);
     const scored = [];
     for (const t of tools) {
-      const name = norm(t.name);
+      /* 【中英文都要命中】v0.4.2 给每个工具补了 nameEn / descEn，
+       * 英文界面下用户看到的是英文名，用英文搜却不命中会很荒谬。
+       * 反过来中文界面照旧用中文键，所以中文输入不受影响。
+       * 两种语言的名字/描述一起参与评分，不区分当前界面语言 ——
+       * 中文用户输 'video' 找到「视频压制」也有好处。 */
+      const name = norm(t.name + ' ' + (t.nameEn || ''));
       const kwList = (t.keywords || []).map(norm);
       const kws = kwList.join(' ');
-      const desc = norm(t.desc);
+      const desc = norm((t.desc || '') + ' ' + (t.descEn || ''));
       const modDef = MODULES.find(m => m.id === t.module);
       /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
       const modName = norm(modDef ? modDef.name : '');
@@ -252,5 +272,5 @@
       .map(s => s.tool);
   }
 
-  window.Registry = { MODULES, register, byModule, get, all: tools, search, ORDER, modName, modDesc };
+  window.Registry = { MODULES, register, byModule, get, all: tools, search, ORDER, modName, modDesc, toolName, toolDesc };
 })();

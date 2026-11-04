@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— video-frames（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'video-frames', name: '视频截帧', module: MOD, icon: 'crop',
-    desc: '从视频抽取单帧图片，或按间隔批量导出帧序列（ffmpeg）',
+    id: 'video-frames', name: '视频截帧', nameEn: 'Video Frames', module: MOD, icon: 'crop',
+    desc: '从视频抽取单帧图片，或按间隔批量导出帧序列（ffmpeg）', descEn: 'Extract a single frame or a frame sequence from a video (ffmpeg)',
     keywords: ['截帧', '视频', '帧', '截图', 'frames'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
@@ -32,19 +33,19 @@ register({
         if (running) return; // 防重入：双击会起两个 ffmpeg 抢同一输出
         running = true;
         if (!picker.count) { running = false; return toast('请先选择视频', 'warn'); }
-        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { running = false; toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
         const src = picker.paths[0];
         /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
         const base = src.split(/[\\/]/).pop().replace(/\.\w+$/, '');
         const outDir = src.replace(/[\\/][^\\/]+$/, '') + '/hehe-frames';
-        try { await invoke('fs:mkdir', outDir); } catch (e) {}
-        const r = await invoke('dialog:open', { properties: ['openDirectory'] }).catch(() => null);
+        try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) {}
+        const r = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] }).catch(() => null);
         const finalDir = (r && r[0]) ? r[0] : outDir;
         goBtn.disabled = true; outLabel.textContent = '处理中…';
         try {
           /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-          const r = await invoke('ffmpeg:frames', {
+          const r = await invoke(Channels.CHANNELS.FFMPEG.FRAMES, {
             input: src, outDir: finalDir, mode: modeSel.value,
             ss: timeIn.value.trim(), every: Math.max(1, +everyIn.value || 1),
             count: Math.min(500, +countIn.value || 20), width: wIn.value || null

@@ -1,5 +1,6 @@
 /* UI 组件与工具函数库 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { invoke, on, isDesktop } = window.api;
 
@@ -241,7 +242,7 @@
   /* ---------- 剪贴板 ---------- */
   async function copyText(text) {
     try {
-      if (isDesktop) await invoke('clip:write-text', text);
+      if (isDesktop) await invoke(Channels.CHANNELS.CLIP.WRITE_TEXT, text);
       else await navigator.clipboard.writeText(text);
       toast('已复制', 'success', 1200);
       return true;
@@ -338,12 +339,12 @@
     async function walk(p, depth) {
       if (out.length >= EXPAND_MAX_FILES) return;
       let st = null;
-      try { st = await invoke('fs:stat', p); } catch (e) { return; }
+      try { st = await invoke(Channels.CHANNELS.FS.STAT, p); } catch (e) { return; }
       if (!st || !st.isDir) { out.push(p); return; }
       if (depth >= EXPAND_MAX_DEPTH) return;
       dirs++;
       let items = [];
-      try { items = await invoke('fs:list', p); } catch (e) { return; }
+      try { items = await invoke(Channels.CHANNELS.FS.LIST, p); } catch (e) { return; }
       for (const it of items || []) {
         if (out.length >= EXPAND_MAX_FILES) return;
         if (it && it.isDir) await walk(it.path, depth + 1);
@@ -374,7 +375,7 @@
     const getFiles = async () => {
       try {
         const props = pickProps || (directory ? ['openDirectory'] : (multiple ? ['openFile', 'multiSelections'] : ['openFile']));
-        const paths = await invoke('dialog:open', filters ? { properties: props, filters } : { properties: props });
+        const paths = await invoke(Channels.CHANNELS.DIALOG.OPEN, filters ? { properties: props, filters } : { properties: props });
         if (paths && paths.length) onFiles(paths);
       } catch (e) { toast(e.message, 'error'); }
     };
@@ -431,7 +432,7 @@
        * 统一走 fs:stat 问系统，问一次的成本远低于误判的代价。 */
       let hasDir = false;
       for (const p of paths) {
-        try { const st = await invoke('fs:stat', p); if (st && st.isDir) { hasDir = true; break; } } catch (err) {}
+        try { const st = await invoke(Channels.CHANNELS.FS.STAT, p); if (st && st.isDir) { hasDir = true; break; } } catch (err) {}
       }
       if (hasDir) {
         mainEl.textContent = '正在展开文件夹…';
@@ -531,7 +532,7 @@
     }
 
     /* 体积查询改成「先登记、后批量」：
-     * 原来每个非虚拟条目都单独 invoke('fs:stat')，500 个文件就是 500 次 IPC 往返，
+     * 原来每个非虚拟条目都单独 invoke(Channels.CHANNELS.FS.STAT)，500 个文件就是 500 次 IPC 往返，
      * 主进程排队处理，列表体积要等很久才逐个冒出来。
      * 现在 fillSize 只把 (item, sizeEl) 记进待查队列，等这一帧的行都建好后
      * 由 flushSizes() 按 50 个一批发 fs:stat-multi，一次拿回整批大小。 */
@@ -557,7 +558,7 @@
         const slice = queue.slice(off, off + SIZE_BATCH);
         const paths = slice.map((q) => q.item.path);
         let stats;
-        try { stats = await invoke('fs:stat-multi', paths); }
+        try { stats = await invoke(Channels.CHANNELS.FS.STAT_MULTI, paths); }
         catch (e) { stats = null; }
         slice.forEach((q, k) => {
           const st = stats && stats[k];

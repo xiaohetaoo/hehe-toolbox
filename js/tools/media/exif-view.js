@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— exif-view（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'exif-view', name: 'EXIF 信息查看', module: MOD, icon: 'eye',
-    desc: '查看 JPEG 拍摄参数（时间/设备/GPS），支持一键清除',
+    id: 'exif-view', name: 'EXIF 信息查看', nameEn: 'EXIF Viewer', module: MOD, icon: 'eye',
+    desc: '查看 JPEG 拍摄参数（时间/设备/GPS），支持一键清除', descEn: 'Inspect JPEG shooting parameters (time, device, GPS) and strip them',
     keywords: ['exif', '照片', '信息', '隐私'],
     render(page) {
       const result = div('');
@@ -24,7 +25,7 @@ register({
       async function analyze(path) {
         result.innerHTML = '';
         try {
-          const r = await invoke('fs:read-file-b64', path);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path);
           const buf = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
           const exif = window.ExifLib.parseExif(buf);
           if (!exif || !Object.keys(exif).length) { result.appendChild(div('empty-tip', '未找到 EXIF 信息（可能已被清除或不是照片）')); return; }
@@ -34,9 +35,9 @@ register({
           result.appendChild(card);
           const cleanBtn = btn('清除 EXIF 并保存副本', 'btn-danger-plain', async () => {
             // 输出必须唯一：固定 -noexif.jpg 会让第二次点击静默覆盖前一次的结果
-            const out = await invoke('fs:unique-path', path.replace(/\.jpe?g$/i, '') + '-noexif.jpg');
+            const out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, path.replace(/\.jpe?g$/i, '') + '-noexif.jpg');
             try {
-              await invoke('fs:write-file-b64', out, stripExif(buf));
+              await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, out, stripExif(buf));
               toast('已保存无 EXIF 副本：' + out, 'success');
             } catch (e) { toast('保存失败：' + e.message, 'error'); }
           }, 'refresh');

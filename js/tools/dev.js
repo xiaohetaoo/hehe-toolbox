@@ -1,5 +1,6 @@
 /* 模块：开发调试 —— 取色 / 坐标 / 随机生成 / HTTP / 本地服务器 / Markdown / 文档对比 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, fmtBytes, renderTable } = window.ui;
@@ -8,8 +9,8 @@
 
   /* ---------- 颜色转换器 ---------- */
   register({
-    id: 'color-convert', name: '颜色转换器', module: MOD, icon: 'droplet',
-    desc: 'HEX / RGB / HSL / HSV 互转与预览，配套取色器使用',
+    id: 'color-convert', name: '颜色转换器', nameEn: 'Color Converter', module: MOD, icon: 'droplet',
+    desc: 'HEX / RGB / HSL / HSV 互转与预览，配套取色器使用', descEn: 'Convert and preview HEX / RGB / HSL / HSV, pairs with the color picker',
     keywords: ['颜色', 'hex', 'rgb', 'hsl', 'hsv'],
     render(page) {
       const preview = h('div', { style: { width: '100%', height: '80px', borderRadius: '8px', border: '1px solid var(--border)' } });
@@ -96,8 +97,8 @@
 
   /* ---------- 屏幕取色器 ---------- */
   register({
-    id: 'color-picker', name: '屏幕取色器', module: MOD, icon: 'target',
-    desc: '截取屏幕后放大取色，支持 HEX/RGB 复制',
+    id: 'color-picker', name: '屏幕取色器', nameEn: 'Screen Color Picker', module: MOD, icon: 'target',
+    desc: '截取屏幕后放大取色，支持 HEX/RGB 复制', descEn: 'Capture the screen, zoom in and copy the HEX / RGB value',
     keywords: ['取色', '拾色', '截屏', '颜色'],
     render(page) {
       const preview = h('div', { style: { width: '120px', height: '120px', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--page-bg)' } });
@@ -138,7 +139,7 @@
       async function pick() {
         if (!isDesktop) return toast('桌面端可用（需要屏幕捕获）', 'warn');
         try {
-          const cap = await invoke('screen:capture');
+          const cap = await invoke(Channels.CHANNELS.SCREEN.CAPTURE);
           const img = h('img', { src: cap.dataUrl, style: { position: 'fixed', left: '-9999px', top: '-9999px' } });
           document.body.appendChild(img);
           await new Promise(r => { img.onload = r; setTimeout(r, 800); });
@@ -217,8 +218,8 @@
 
   /* ---------- 屏幕坐标拾取 ---------- */
   register({
-    id: 'coords-picker', name: '屏幕坐标拾取', module: MOD, icon: 'crosshair',
-    desc: '实时获取鼠标屏幕坐标（DIP 与物理像素）',
+    id: 'coords-picker', name: '屏幕坐标拾取', nameEn: 'Screen Coordinates', module: MOD, icon: 'crosshair',
+    desc: '实时获取鼠标屏幕坐标（DIP 与物理像素）', descEn: 'Read the live mouse position in DIPs and physical pixels',
     keywords: ['坐标', '鼠标', '屏幕'],
     render(page) {
       const xEl = h('div', { class: 'stat-num' }, '--');
@@ -232,7 +233,7 @@
           if (!isDesktop) { sw.set(false); return toast('桌面端可用', 'warn'); }
           timer = setInterval(async () => {
             try {
-              const r = await invoke('screen:cursor');
+              const r = await invoke(Channels.CHANNELS.SCREEN.CURSOR);
               xEl.textContent = r.x; yEl.textContent = r.y;
               pxEl.textContent = Math.round((r.x - r.display.bounds.x) * r.display.scaleFactor);
               pyEl.textContent = Math.round((r.y - r.display.bounds.y) * r.display.scaleFactor);
@@ -253,8 +254,8 @@
 
   /* ---------- 随机生成器 ---------- */
   register({
-    id: 'random-gen', name: '随机生成器', module: MOD, icon: 'dice',
-    desc: 'UUID、随机数字、随机字符串、手机号测试数据',
+    id: 'random-gen', name: '随机生成器', nameEn: 'Random Generator', module: MOD, icon: 'dice',
+    desc: 'UUID、随机数字、随机字符串、手机号测试数据', descEn: 'Generate random numbers, strings and UUIDs',
     keywords: ['随机', 'uuid', '测试数据'],
     render(page) {
       const out = div('');
@@ -329,8 +330,8 @@
 
   /* ---------- 简易 HTTP 客户端 ---------- */
   register({
-    id: 'http-client', name: 'HTTP 客户端', module: MOD, icon: 'send',
-    desc: 'GET/POST/PUT/DELETE 请求，自定义 Header 与请求体',
+    id: 'http-client', name: 'HTTP 客户端', nameEn: 'HTTP Client', module: MOD, icon: 'send',
+    desc: 'GET/POST/PUT/DELETE 请求，自定义 Header 与请求体', descEn: 'Send HTTP requests and inspect status, headers and body',
     keywords: ['http', '请求', 'api', 'post', 'get'],
     render(page) {
       const methodSel = h('select', { class: 'select' }, ...['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'].map(m => h('option', { value: m }, m)));
@@ -347,7 +348,7 @@
         try { if (headersTa.value.trim()) headers = JSON.parse(headersTa.value); } catch (e) { return toast('Header JSON 无效', 'error'); }
         const method = methodSel.value;
         try {
-          const r = await invoke('net:http', { method, url, headers, body: bodyTa.value, timeoutMs: 30000 });
+          const r = await invoke(Channels.CHANNELS.NET.HTTP, { method, url, headers, body: bodyTa.value, timeoutMs: 30000 });
           respStatus.innerHTML = `<span class="${r.status < 400 ? 'status-ok' : 'status-err'}">${r.status} ${escapeHtml(r.statusText)}</span> · ${r.ms}ms · ${fmtBytes(r.bytes)}`;
           let text = r.body;
           try { text = JSON.stringify(JSON.parse(r.body), null, 2); } catch (e) {}
@@ -367,13 +368,13 @@
 
   /* ---------- 本地静态服务器 ---------- */
   register({
-    id: 'static-server', name: '本地静态服务器', module: MOD, icon: 'server',
-    desc: '一键将目录变为 HTTP 服务，用于前端页面预览',
+    id: 'static-server', name: '本地静态服务器', nameEn: 'Static Server', module: MOD, icon: 'server',
+    desc: '一键将目录变为 HTTP 服务，用于前端页面预览', descEn: 'Serve a folder over HTTP for quick local testing',
     keywords: ['服务器', '静态', 'http', 'localhost'],
     render(page) {
       const dirIn = h('input', { class: 'input', placeholder: '要服务的目录', style: { flex: '1' } });
       const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) dirIn.value = d[0];
       });
       const portIn = h('input', { class: 'input input-sm', type: 'number', value: '8128', style: { width: '100px' } });
@@ -392,7 +393,7 @@
         if (r && r.url) {
           statusEl.innerHTML = `<span class="status-ok">● 运行中</span> <a href="#" id="srv-link" style="color:var(--primary)">${escapeHtml(r.url)}</a>`;
           const link = statusEl.querySelector('#srv-link');
-          if (link) link.addEventListener('click', (e) => { e.preventDefault(); invoke('shell:open-url', r.url); });
+          if (link) link.addEventListener('click', (e) => { e.preventDefault(); invoke(Channels.CHANNELS.SHELL.OPEN_URL, r.url); });
         } else {
           statusEl.innerHTML = `<span class="status-ok">● 运行中</span>`;
         }
@@ -405,12 +406,12 @@
       async function start() {
         if (!dirIn.value.trim()) return toast('请选择目录', 'warn');
         try {
-          const r = await invoke('server:start', dirIn.value.trim(), parseInt(portIn.value) || 8128);
+          const r = await invoke(Channels.CHANNELS.SERVER.START, dirIn.value.trim(), parseInt(portIn.value) || 8128);
           paintRunning(r);
         } catch (e) { toast(e.message, 'error'); }
       }
       async function stop() {
-        try { await invoke('server:stop'); } catch (e) {}
+        try { await invoke(Channels.CHANNELS.SERVER.STOP); } catch (e) {}
         paintStopped();
       }
       const logUnsub = window.api.on('server:log', (d) => {
@@ -425,7 +426,7 @@
        *   启动 → 切页 → 切回来 → 界面显示「未启动」，点启动报
        *   「已有服务在运行」，而停止按钮是禁用的 → 死局（只能重启程序）。
        * 查到在跑就回填地址与按钮状态，并把目录/端口也填回输入框。 */
-      invoke('server:status').then((st) => {
+      invoke(Channels.CHANNELS.SERVER.STATUS).then((st) => {
         if (!st || !st.running) return;
         paintRunning(st);
         if (st.root) dirIn.value = st.root;
@@ -440,8 +441,8 @@
 
   /* ---------- Markdown 预览 ---------- */
   register({
-    id: 'markdown-preview', name: 'Markdown 预览', module: 'office', icon: 'book',
-    desc: 'Markdown 实时渲染预览，支持导出 HTML',
+    id: 'markdown-preview', name: 'Markdown 预览', nameEn: 'Markdown Preview', module: 'office', icon: 'book',
+    desc: 'Markdown 实时渲染预览，支持导出 HTML', descEn: 'Render Markdown with a live preview pane',
     keywords: ['markdown', 'md', '预览'],
     render(page) {
       const ta = h('textarea', { class: 'pane-ta', placeholder: '在这里输入 Markdown，右侧实时预览…', style: { minHeight: '380px' } });
@@ -470,15 +471,15 @@
         // 导出的 HTML 无 CSP 保护，必须净化防止存储型 XSS
         const safe = window.DOMPurify ? DOMPurify.sanitize(view.innerHTML) : view.innerHTML;
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Markdown</title></head><body style="max-width:800px;margin:40px auto;font-family:'Microsoft YaHei',sans-serif;line-height:1.7">${safe}</body></html>`;
-        const p = await invoke('dialog:save', { defaultPath: 'document.html' });
+        const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'document.html' });
         if (!p) return;
-        await invoke('fs:write-text', p, html);
+        await invoke(Channels.CHANNELS.FS.WRITE_TEXT, p, html);
         toast('已导出：' + p, 'success');
       }
       async function openFile() {
-        const p = await invoke('dialog:open', { properties: ['openFile'], filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'txt'] }] });
+        const p = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openFile'], filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'txt'] }] });
         if (!p || !p[0]) return;
-        const r = await invoke('fs:read-text', p[0]);
+        const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p[0]);
         ta.value = r.content;
         renderMd();
       }
@@ -495,8 +496,8 @@
 
   /* ---------- 文档对比 ---------- */
   register({
-    id: 'diff-tool', name: '文档对比', module: 'office', icon: 'git-compare',
-    desc: '两个文本/代码文件逐行差异对比，高亮增删',
+    id: 'diff-tool', name: '文档对比', nameEn: 'Document Diff', module: 'office', icon: 'git-compare',
+    desc: '两个文本/代码文件逐行差异对比，高亮增删', descEn: 'Compare two texts or documents line by line',
     keywords: ['对比', 'diff', '差异'],
     render(page) {
       const ta1 = h('textarea', { class: 'pane-ta mono', placeholder: '原始文本（或打开文件）…', style: { minHeight: '140px' } });
@@ -504,9 +505,9 @@
       const result = div('');
       function openTo(ta) {
         return async () => {
-          const p = await invoke('dialog:open', { properties: ['openFile'] });
+          const p = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openFile'] });
           if (!p || !p[0]) return;
-          const r = await invoke('fs:read-text', p[0]);
+          const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p[0]);
           ta.value = r.content;
         };
       }

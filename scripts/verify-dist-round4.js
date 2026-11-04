@@ -89,7 +89,10 @@ chk(!!nsisName && /^[\x20-\x7E]+$/.test(nsisName), 'nsis.artifactName 为 ASCII�
 function collectHandles(src) {
   const out = [];
   for (const m of src.matchAll(/^[ \t]*handle\('([^']+)'/gm)) out.push(m[1]);
-  for (const m of src.matchAll(/^[ \t]*handle\((?:dirMoveCh|CH)\.[A-Z_]+\.[A-Z_]+\s*,/gm)) out.push(m[0].trim());
+  /* 【键名可能含数字】READ_FILE_B64 / L2S / S2L 这类键用 [A-Z_]+ 匹配不到，
+   * 会把「已迁移」误算成 0 —— 表现为「IPC 通道数掉了」，其实一个没少。
+   * 与 scripts/test-channels-sync.js、test-ipc-channels.js 的写法保持一致。 */
+  for (const m of src.matchAll(/^[ \t]*handle\((?:dirMoveCh|CH)\.[A-Z0-9_]+\.\s*[A-Z0-9_]+\s*,/gm)) out.push(m[0].trim());
   return out;
 }
 const handles = collectHandles(main).concat(collectHandles(mediaSrc)).concat(collectHandles(fsOpsSrc));

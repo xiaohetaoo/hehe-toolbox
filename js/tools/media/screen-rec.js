@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— screen-rec（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, fmtBytes } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'screen-rec', name: '屏幕录制', module: MOD, icon: 'film',
-    desc: '录制全屏或框选区域为 MP4，可选麦克风与摄像头画中画、暂停恢复、直出 GIF',
+    id: 'screen-rec', name: '屏幕录制', nameEn: 'Screen Record', module: MOD, icon: 'film',
+    desc: '录制全屏或框选区域为 MP4，可选麦克风与摄像头画中画、暂停恢复、直出 GIF', descEn: 'Record the screen or a region, optionally with microphone and camera overlay',
     keywords: ['录制', '录屏', '屏幕', 'video', 'capture', '区域', '摄像头', '画中画', 'camera', 'webcam'],
     render(page) {
       const fpsSel = h('select', { class: 'select input-sm' },
@@ -104,8 +105,8 @@ register({
       const gifChk = h('input', { type: 'checkbox', class: 'checkbox' });
       const status = h('div', { class: 'field-hint' }, '支持区域录制、麦克风、摄像头画中画、暂停恢复；停止后自动封装');
       const startBtn = btn('开始录制', 'btn-primary', start, 'activity');
-      const pauseBtn = btn('暂停', 'btn-secondary', () => ctl('rec:pause'), 'timer');
-      const resumeBtn = btn('继续', 'btn-secondary', () => ctl('rec:resume'), 'play');
+      const pauseBtn = btn('暂停', 'btn-secondary', () => ctl(true), 'timer');
+      const resumeBtn = btn('继续', 'btn-secondary', () => ctl(false), 'play');
       const stopBtn = btn('停止并保存', 'btn-danger-plain', stop, 'stop');
       pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
@@ -126,14 +127,14 @@ register({
       // 记住上次的录制设置（麦克风/摄像头/位置/大小/帧率/GIF）
       function saveRecPrefs() {
         try {
-          invoke('store:set', 'settings.recPrefs', {
+          invoke(Channels.CHANNELS.STORE.SET, 'settings.recPrefs', {
             fps: fpsSel.value, audio: audioSel.value, camera: camSel.value,
             camPos: camPosSel.value, camScale: camSizeSel.value, gif: gifChk.checked
           }).catch(() => {});
         } catch (e) {}
       }
-      invoke('rec:audio-devices').then((r) => {
-        const prefsP = invoke('store:get', 'settings.recPrefs', null).catch(() => null);
+      invoke(Channels.CHANNELS.REC.AUDIO_DEVICES).then((r) => {
+        const prefsP = invoke(Channels.CHANNELS.STORE.GET, 'settings.recPrefs', null).catch(() => null);
         for (const d of (r.devices || [])) audioSel.appendChild(h('option', { value: d }, d));
         // 兼容旧返回：新版本才有 video 字段
         for (const d of (r.video || [])) camSel.appendChild(h('option', { value: d }, d));
@@ -150,7 +151,7 @@ register({
         }).catch(() => {});
       }).catch(() => {});
       /* 【清理注册必须在这次 IPC 之外】
-       * 原来这行写在 invoke('rec:audio-devices').then(...) 的**内部** ——
+       * 原来这行写在 invoke(Channels.CHANNELS.REC.AUDIO_DEVICES).then(...) 的**内部** ——
        * 设备枚举一旦 reject（ffmpeg 不可用、驱动查询失败、主进程抛错），
        * 就一路 catch(() => {}) 吞掉，onCleanup 根本没注册。
        * 后果：用户进过录制页、触发过摄像头预览，然后离开页面 ——
@@ -165,7 +166,7 @@ register({
       gifChk.addEventListener('change', saveRecPrefs);
       async function pickRegion() {
         try {
-          await invoke('snip:start', 'region');
+          await invoke(Channels.CHANNELS.SNIP.START, 'region');
           status.textContent = '请在屏幕上框选录制区域…';
           const rect = await new Promise((resolve) => {
             const t = setTimeout(() => { unsub(); resolve(null); }, 120000);
@@ -177,9 +178,9 @@ register({
         } catch (e) { toast(e.message, 'error'); }
       }
       async function start() {
-        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
-        const p = await invoke('dialog:save', { defaultPath: '录屏-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
+        const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: '录屏-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
         if (!p) return;
         try {
           // 摄像头是独占设备：录制前必须先释放预览流，否则 ffmpeg 打不开设备
@@ -187,7 +188,7 @@ register({
           /* overwrite: true —— 这个路径来自上面的 dialog:save，用户若选了已存在的
            * 文件，Windows 原生保存框已经弹过「要替换它吗？」并拿到了「是」。
            * 不传这个标志就会在 rec:start 里被二次否决，想覆盖旧录像只能手动改名。 */
-          await invoke('rec:start', { outPath: p, fps: +fpsSel.value, rect: region, audio: audioSel.value || null,
+          await invoke(Channels.CHANNELS.REC.START, { outPath: p, fps: +fpsSel.value, rect: region, audio: audioSel.value || null,
             overwrite: true,
             camera: camSel.value || null, camPos: camPosSel.value, camScale: +camSizeSel.value });
           recording = true; paused = false;
@@ -196,10 +197,13 @@ register({
           camPreviewHint.textContent = '录制中（预览已让给录制）';
         } catch (e) { toast(e.message, 'error'); if (camSel.value) startPreview(camSel.value); }
       }
-      async function ctl(ch) {
+      /* 参数是布尔而不是通道名：原来把两个通道名当普通字符串传进来、
+       * 函数里再比一次，等于让通道名以「数据」的形式在渲染层多存在一份，
+       * 迁移成常量后只会更难对齐。 */
+      async function ctl(doPause) {
         try {
-          if (ch === 'rec:pause') { await invoke('rec:pause'); paused = true; pauseBtn.disabled = true; resumeBtn.disabled = false; status.textContent = '已暂停（分段保存，停止时自动拼接）'; }
-          else { await invoke('rec:resume'); paused = false; pauseBtn.disabled = false; resumeBtn.disabled = true; status.textContent = '继续录制中…'; }
+          if (doPause) { await invoke(Channels.CHANNELS.REC.PAUSE); paused = true; pauseBtn.disabled = true; resumeBtn.disabled = false; status.textContent = '已暂停（分段保存，停止时自动拼接）'; }
+          else { await invoke(Channels.CHANNELS.REC.RESUME); paused = false; pauseBtn.disabled = false; resumeBtn.disabled = true; status.textContent = '继续录制中…'; }
         } catch (e) { toast(e.message, 'error'); }
       }
       async function stop() {
@@ -207,7 +211,7 @@ register({
         pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
         status.textContent = '正在封装' + (gifChk.checked ? '（并生成 GIF）' : '') + '…';
         try {
-          const r = await invoke('rec:stop', gifChk.checked);
+          const r = await invoke(Channels.CHANNELS.REC.STOP, gifChk.checked);
           recording = false; startBtn.disabled = false;
           status.textContent = `✓ 已保存：${r.outPath}（${fmtBytes(r.size || 0)}）` + (r.gif ? ` · GIF：${r.gif}` : '');
           toast('录制完成：' + fmtBytes(r.size || 0), 'success');
@@ -221,7 +225,7 @@ register({
         // 录制结束把摄像头交还给预览
         if (camSel.value) startPreview(camSel.value);
       }
-      window.App.onCleanup(() => { if (recording) invoke('rec:stop', false).catch(() => {}); });
+      window.App.onCleanup(() => { if (recording) invoke(Channels.CHANNELS.REC.STOP, false).catch(() => {}); });
       page.appendChild(div('card', div('card-title', '录制'),
         div('form-row', h('span', { class: 'form-label' }, '帧率'), fpsSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '区域'), regionBtn, clearRegionBtn, regionLabel),

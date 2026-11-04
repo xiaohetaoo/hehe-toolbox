@@ -1,3 +1,4 @@
+const { invokeIndex } = require('./lib/seg-from-handler');
 /* 启动窗时序守卫：主窗必须先 show()，启动窗随后才销毁。
  *
  * 【为什么单独立一个测试】
@@ -151,7 +152,7 @@ chk(domStart > 0, '能找到 DOMContentLoaded 处理器');
 if (domStart > 0) {
   const dom = appSrcText.slice(domStart);
   const buildIdx = dom.indexOf('buildShell()');
-  const storeIdx = dom.indexOf("invoke('store:get', 'settings.lang'");
+  const storeIdx = invokeIndex(dom, 'store:get', 'settings.lang');
   chk(buildIdx > 0 && storeIdx > 0, '能找到 buildShell() 与 store:get 调用');
   chk(!(buildIdx > 0 && storeIdx > 0) || buildIdx < storeIdx,
     'buildShell 在 store:get 之后 —— 首帧仍会闪中文');

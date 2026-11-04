@@ -1,5 +1,6 @@
 /* 模块：快捷启动 —— 快捷启动栏 / 命令收藏 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, confirmBox, promptBox, renderTable, fmtDate, nextId } = window.ui;
@@ -33,13 +34,13 @@
   }
 
   register({
-    id: 'quick-launch', name: '快捷启动栏', module: MOD, icon: 'zap',
-    desc: '自定义添加软件、文件夹、网址，一键打开',
+    id: 'quick-launch', name: '快捷启动栏', nameEn: 'Quick Launch', module: MOD, icon: 'zap',
+    desc: '自定义添加软件、文件夹、网址，一键打开', descEn: 'A pinned bar of apps and commands, one click away',
     keywords: ['启动', '快捷方式', '软件', '网址'],
     render(page) {
       const list = div('');
       async function load() {
-        const items = await invoke('store:get', 'quicklaunch', []);
+        const items = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
         list.innerHTML = '';
         if (!items.length) { list.appendChild(div('empty-tip', '还没有快捷项，点「添加」创建一个')); return; }
         const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' } });
@@ -56,7 +57,7 @@
           ops.appendChild(btn('打开', 'btn-sm btn-primary', () => open(it)));
           ops.appendChild(btn('删除', 'btn-sm btn-text', async () => {
             if (!(await confirmBox({ title: '删除快捷项', message: `删除「${it.name}」？` }))) return;
-            const cur = await invoke('store:get', 'quicklaunch', []);
+            const cur = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
             // 旧数据没有 id 字段，只能按 name+target+type 定位；
             // 直接 findIndex(x => x.id === it.id) 会在 undefined === undefined 时命中第一条，导致删错项。
             const idx = cur.findIndex(x => it.id
@@ -64,7 +65,7 @@
               : (x.name === it.name && x.target === it.target && x.type === it.type));
             if (idx < 0) { load(); return; } // 索引可能因并发删除过期，避免误删
             cur.splice(idx, 1);
-            await invoke('store:set', 'quicklaunch', cur);
+            await invoke(Channels.CHANNELS.STORE.SET, 'quicklaunch', cur);
             load();
           }));
           card.appendChild(ops);
@@ -79,8 +80,8 @@
       }
       async function open(it) {
         try {
-          if (it.type === 'url') await invoke('shell:open-url', it.target);
-          else await invoke('fs:open-path', it.target);
+          if (it.type === 'url') await invoke(Channels.CHANNELS.SHELL.OPEN_URL, it.target);
+          else await invoke(Channels.CHANNELS.FS.OPEN_PATH, it.target);
           toast('已打开：' + it.name, 'success', 1200);
         } catch (e) { toast(e.message, 'error'); }
       }
@@ -105,15 +106,15 @@
             // 提前校验协议，避免存进去之后点击「打开」才报错
             if (target && !/^https?:\/\//i.test(target)) { toast('网址需以 http:// 或 https:// 开头', 'error'); return; }
           } else {
-            const p = await invoke('dialog:open', { properties: type === 'dir' ? ['openDirectory'] : ['openFile'] });
+            const p = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: type === 'dir' ? ['openDirectory'] : ['openFile'] });
             target = p && p[0];
           }
           if (!target) return;
           const name = await promptBox({ title: '命名', label: '显示名称：', value: String(target).split(/[\\/]/).pop().replace(/\\.\\w+$/, '') || '快捷项' });
           if (!name) return;
-          const items = await invoke('store:get', 'quicklaunch', []);
+          const items = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
           items.push({ id: nextId('ql'), name, target, type });
-          await invoke('store:set', 'quicklaunch', items);
+          await invoke(Channels.CHANNELS.STORE.SET, 'quicklaunch', items);
           toast('已添加', 'success');
           load();
         } catch (e) {
@@ -129,8 +130,8 @@
   });
 
   register({
-    id: 'command-collection', name: '命令收藏', module: MOD, icon: 'terminal',
-    desc: '保存常用 CMD / PowerShell 命令，一键执行并查看输出',
+    id: 'command-collection', name: '命令收藏', nameEn: 'Saved Commands', module: MOD, icon: 'terminal',
+    desc: '保存常用 CMD / PowerShell 命令，一键执行并查看输出', descEn: 'Keep frequently used commands in one place and run them from the launcher',
     keywords: ['命令', 'cmd', 'powershell', 'shell'],
     render(page) {
       const list = div('');
@@ -140,10 +141,10 @@
       window.App.onCleanup(() => {
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
-        if (current) invoke('job:kill', current).catch(() => {});
+        if (current) invoke(Channels.CHANNELS.JOB.KILL, current).catch(() => {});
       });
       async function load() {
-        const items = await invoke('store:get', 'commands', []);
+        const items = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
         list.innerHTML = '';
         if (!items.length) { list.appendChild(div('empty-tip', '还没有收藏命令')); return; }
         const table = renderTable({
@@ -155,12 +156,12 @@
                 td.appendChild(btn('执行', 'btn-sm btn-primary', () => run(r), 'play'));
                 td.appendChild(btn('删除', 'btn-sm btn-text', async () => {
                   /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-                  const items = await invoke('store:get', 'commands', []);
+                  const items = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
                   const idx = items.findIndex(x => x.id === r.id);
                   // findIndex 未命中时返回 -1，splice(-1,1) 会误删最后一条，必须先挡住
                   if (idx < 0) { load(); return; }
                   items.splice(idx, 1);
-                  await invoke('store:set', 'commands', items);
+                  await invoke(Channels.CHANNELS.STORE.SET, 'commands', items);
                   load();
                 }));
               } }
@@ -173,7 +174,7 @@
         if (!isDesktop) return toast('桌面端可用', 'warn');
         out.innerHTML = `<div class="t-dim">$ ${escapeHtml(r.cmd)}</div>`;
         try {
-          const job = await invoke('exec:stream', { command: r.shell === 'ps' ? 'powershell.exe' : 'cmd.exe', args: r.shell === 'ps' ? ['-NoProfile', '-Command', r.cmd] : ['/c', r.cmd] });
+          const job = await invoke(Channels.CHANNELS.EXEC.STREAM, { command: r.shell === 'ps' ? 'powershell.exe' : 'cmd.exe', args: r.shell === 'ps' ? ['-NoProfile', '-Command', r.cmd] : ['/c', r.cmd] });
           current = job;
           if (unsubStream) unsubStream();
           if (unsubExit) unsubExit();
@@ -196,9 +197,9 @@
           if (!cmd) return;
           const shell = await pickOne('选择执行环境', [['cmd', 'CMD'], ['ps', 'PowerShell']]);
           if (!shell) return;   // 用户关掉了弹窗
-          const items = await invoke('store:get', 'commands', []);
+          const items = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
           items.push({ id: nextId('cmd'), name, cmd, shell });
-          await invoke('store:set', 'commands', items);
+          await invoke(Channels.CHANNELS.STORE.SET, 'commands', items);
           toast('已收藏', 'success');
           load();
         } catch (e) {

@@ -7,6 +7,7 @@
  * 仍未迁移的工具保持纯中文，边界在设置页与 README 里写明了。
  */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, copyText, filePicker } = window.ui;
   const { invoke } = window.api;
@@ -14,8 +15,8 @@
   const T = (zh, vars) => TT('qr', zh, vars);
 
   register({
-    id: 'qr-generate', name: '二维码生成', module: MOD, icon: 'qr', i18n: true,
-    desc: '文本/链接/名片生成二维码，支持保存 PNG',
+    id: 'qr-generate', name: '二维码生成', nameEn: 'QR Generate', module: MOD, icon: 'qr', i18n: true,
+    desc: '文本/链接/名片生成二维码，支持保存 PNG', descEn: 'Generate QR codes from text, URLs and Wi-Fi info, then save as PNG',
     keywords: ['二维码', 'qr', '生成'],
     render(page) {
       const ta = h('textarea', { class: 'pane-ta', placeholder: T('输入文本、网址、WiFi 信息等…'), style: { minHeight: '100px' } });
@@ -28,7 +29,7 @@
         if (!ta.value.trim()) { imgBox.innerHTML = '<span class="field-hint">' + T('输入内容后自动生成') + '</span>'; return; }
         const t = ++genSeq;
         try {
-          const r = await invoke('qr:generate', ta.value, { size: parseInt(sizeSel.value), level: levelSel.value });
+          const r = await invoke(Channels.CHANNELS.QR.GENERATE, ta.value, { size: parseInt(sizeSel.value), level: levelSel.value });
           if (t !== genSeq) return; // 旧请求不覆盖新结果
           lastB64 = r.b64;
           imgBox.innerHTML = '';
@@ -38,9 +39,9 @@
       const saveBtn = btn(T('保存 PNG'), 'btn-secondary btn-sm', async () => {
         if (!lastB64) return toast(T('请先生成二维码'), 'warn');
         try {
-          const p = await invoke('dialog:save', { defaultPath: 'qrcode.png', filters: [{ name: 'PNG', extensions: ['png'] }] });
+          const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'qrcode.png', filters: [{ name: 'PNG', extensions: ['png'] }] });
           if (!p) return;
-          await invoke('fs:write-file-b64', p, lastB64);
+          await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, p, lastB64);
           toast(T('已保存：{p}', { p }), 'success');
         } catch (e) { toast(e.message || String(e), 'error'); }
       });
@@ -56,8 +57,8 @@
   });
 
   register({
-    id: 'qr-scan', name: '二维码识别', module: MOD, icon: 'qr', i18n: true,
-    desc: '从本地图片 / 粘贴截图识别二维码内容',
+    id: 'qr-scan', name: '二维码识别', nameEn: 'QR Scan', module: MOD, icon: 'qr', i18n: true,
+    desc: '从本地图片 / 粘贴截图识别二维码内容', descEn: 'Decode QR codes from images or the clipboard',
     keywords: ['二维码', '识别', '解码', 'qr'],
     render(page) {
       const preview = h('div', { style: { minHeight: '120px', display: 'flex', justifyContent: 'center' } });
@@ -85,7 +86,7 @@
           const url = URL.createObjectURL(blob);
           img = h('img', { src: url });
         } else {
-          const r = await invoke('fs:read-file-b64', path);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path);
           img = h('img', { src: 'data:image/png;base64,' + r.b64 });
         }
         preview.appendChild(img);
@@ -108,7 +109,7 @@
       });
       const pasteBtn = btn(T('从剪贴板识别'), 'btn-secondary', async () => {
         try {
-          const imgData = await invoke('clip:read-image');
+          const imgData = await invoke(Channels.CHANNELS.CLIP.READ_IMAGE);
           if (!imgData) return toast(T('剪贴板中没有图片'), 'warn');
           preview.innerHTML = '';
           const img = h('img', { src: imgData, style: { maxWidth: '100%' } });
@@ -123,7 +124,7 @@
       page.appendChild(div('card', div('card-title', T('选择图片')), pasteBtn, picker.el, preview));
       page.appendChild(div('card', div('card-title', T('识别结果')),
         result, div('form-row', btn(T('复制'), 'btn-sm btn-secondary', () => result.value && copyText(result.value)),
-          btn(T('打开链接'), 'btn-sm btn-secondary', () => { if (/^https?:\/\//.test(result.value)) invoke('shell:open-url', result.value); }))));
+          btn(T('打开链接'), 'btn-sm btn-secondary', () => { if (/^https?:\/\//.test(result.value)) invoke(Channels.CHANNELS.SHELL.OPEN_URL, result.value); }))));
     }
   });
 })();

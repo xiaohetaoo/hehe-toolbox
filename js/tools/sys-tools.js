@@ -1,5 +1,6 @@
 /* 模块：系统与硬件 —— 硬件信息 / 监控 / 进程 / 自启 / 磁盘 / 垃圾 / 空目录 / 快捷操作 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, icon, toast, copyText, confirmBox, renderTable, fmtBytes, fmtNum, fmtDate, progressEl } = window.ui;
@@ -8,8 +9,8 @@
 
   /* ---------- 硬件信息总览 ---------- */
   register({
-    id: 'hw-info', name: '硬件信息总览', module: MOD, icon: 'cpu',
-    desc: 'CPU、内存、硬盘、显卡、主板、网卡与电池信息',
+    id: 'hw-info', name: '硬件信息总览', nameEn: 'Hardware Info', module: MOD, icon: 'cpu',
+    desc: 'CPU、内存、硬盘、显卡、主板、网卡与电池信息', descEn: 'Overview of CPU, memory, GPU, disks and the operating system',
     keywords: ['硬件', 'cpu', '显卡', '主板'],
     render(page) {
       const body = div('');
@@ -20,7 +21,7 @@
         body.innerHTML = '';
         body.appendChild(window.ui.loadingBlock('读取硬件信息（首次约需 2-3 秒）…'));
         try {
-          const info = await invoke('sys:hw-info', !!force);
+          const info = await invoke(Channels.CHANNELS.SYS.HW_INFO, !!force);
           if (t !== loadSeq) return;
           body.innerHTML = '';
           body.appendChild(sectionCard('处理器 CPU', [
@@ -53,7 +54,7 @@
               ['状态', info.battery.BatteryStatus === 2 ? '接通电源' : '使用电池']
             ];
             try {
-              const bat = await invoke('sys:battery-detail');
+              const bat = await invoke(Channels.CHANNELS.SYS.BATTERY_DETAIL);
               if (t !== loadSeq) return;
               if (bat && bat.designCap) {
                 batRows.push(['设计容量', bat.designCap + ' mWh']);
@@ -114,8 +115,8 @@
 
   /* ---------- 实时状态监控 ---------- */
   register({
-    id: 'monitor', name: '实时状态监控', module: MOD, icon: 'activity',
-    desc: 'CPU / 内存实时曲线与磁盘用量，阈值变色提醒',
+    id: 'monitor', name: '实时状态监控', nameEn: 'Live Monitor', module: MOD, icon: 'activity',
+    desc: 'CPU / 内存实时曲线与磁盘用量，阈值变色提醒', descEn: 'Real-time CPU, memory, disk and network charts',
     keywords: ['监控', 'cpu', '内存', '曲线'],
     render(page) {
       const cpuCanvas = h('canvas', { style: { width: '100%', height: '180px' } });
@@ -137,7 +138,7 @@
         cpuChart.draw(cpuHist, {});
         memChart.draw(memHist, {});
       });
-      invoke('sys:hw-info').then(info => {
+      invoke(Channels.CHANNELS.SYS.HW_INFO).then(info => {
         diskBox.innerHTML = '';
         for (const p of info.partitions.filter(x => x.type === 3 && x.size > 0)) {
           const usedPct = (1 - p.free / p.size) * 100;
@@ -156,8 +157,8 @@
 
   /* ---------- 进程管理 ---------- */
   register({
-    id: 'process-manager', name: '进程管理', module: MOD, icon: 'list',
-    desc: '进程列表搜索、按资源排序、查看路径、一键结束',
+    id: 'process-manager', name: '进程管理', nameEn: 'Process Manager', module: MOD, icon: 'list',
+    desc: '进程列表搜索、按资源排序、查看路径、一键结束', descEn: 'List processes with CPU and memory, and end the ones you choose',
     keywords: ['进程', 'task', '结束进程'],
     render(page) {
       const searchIn = h('input', { class: 'input input-sm', placeholder: '搜索进程名…', style: { flex: '1' } });
@@ -167,7 +168,7 @@
       async function refresh() {
         status.textContent = '加载中…';
         try {
-          procs = await invoke('proc:list');
+          procs = await invoke(Channels.CHANNELS.PROC.LIST);
           status.textContent = `共 ${procs.length} 个进程`;
           draw();
         } catch (e) { status.textContent = '✗ ' + e.message; }
@@ -186,7 +187,7 @@
             { key: 'act', title: '操作', width: '200px', render: (r, td) => {
                 td.appendChild(btn('详情', 'btn-sm btn-text', async () => {
                   try {
-                    const d = await invoke('proc:detail', r.pid);
+                    const d = await invoke(Channels.CHANNELS.PROC.DETAIL, r.pid);
                     window.ui.modal({
                       title: `进程详情：${r.name} (${r.pid})`,
                       body: (b) => b.appendChild(window.ui.kvGrid([
@@ -200,7 +201,7 @@
                 }));
                 td.appendChild(btn('结束', 'btn-sm btn-danger-plain', async () => {
                   if (!(await confirmBox({ title: '结束进程', message: `确定结束进程 ${r.name}（PID ${r.pid}）？未保存的数据可能丢失。`, danger: true, okText: '结束' }))) return;
-                  try { await invoke('proc:kill', r.pid); toast('已结束', 'success'); setTimeout(refresh, 500); }
+                  try { await invoke(Channels.CHANNELS.PROC.KILL, r.pid); toast('已结束', 'success'); setTimeout(refresh, 500); }
                   catch (e) { toast(e.message, 'error'); }
                 }));
               } }
@@ -227,8 +228,8 @@
 
   /* ---------- 开机自启管理 ---------- */
   register({
-    id: 'autostart', name: '开机自启管理', module: MOD, icon: 'power',
-    desc: '查看注册表自启项，支持禁用 / 启用 / 删除',
+    id: 'autostart', name: '开机自启管理', nameEn: 'Startup Apps', module: MOD, icon: 'power',
+    desc: '查看注册表自启项，支持禁用 / 启用 / 删除', descEn: 'Manage programs that launch with Windows; enable or disable entries safely',
     keywords: ['自启', '启动项', '开机'],
     render(page) {
       const box = div('');
@@ -237,8 +238,8 @@
         box.innerHTML = '';
         status.textContent = '读取注册表…';
         try {
-          const items = await invoke('autostart:list');
-          const disabled = await invoke('autostart:disabled-list');
+          const items = await invoke(Channels.CHANNELS.AUTOSTART.LIST);
+          const disabled = await invoke(Channels.CHANNELS.AUTOSTART.DISABLED_LIST);
           status.textContent = `${items.length} 个自启项，${disabled.length} 个已禁用`;
           if (!items.length) { box.appendChild(div('empty-tip', '没有开机自启项')); return; }
           const table = renderTable({
@@ -255,12 +256,12 @@
                       message: `禁用「${r.name}」的开机自启？\n\n该自启项会被移到本应用的备份区，之后可在下方「已禁用」列表里恢复启用。`,
                       okText: '禁用'
                     }))) return;
-                    try { await invoke('autostart:delete', r, false); toast('已禁用（可恢复）', 'success'); load(); }
+                    try { await invoke(Channels.CHANNELS.AUTOSTART.DELETE, r, false); toast('已禁用（可恢复）', 'success'); load(); }
                     catch (e) { toast(e.message, 'error'); }
                   }));
                   td.appendChild(btn('永久删除', 'btn-sm btn-danger-plain', async () => {
                     if (!(await confirmBox({ title: '永久删除自启项', message: `删除「${r.name}」的自启注册表项？此操作不可恢复。`, danger: true, okText: '删除' }))) return;
-                    try { await invoke('autostart:delete', r, true); toast('已删除', 'success'); load(); }
+                    try { await invoke(Channels.CHANNELS.AUTOSTART.DELETE, r, true); toast('已删除', 'success'); load(); }
                     catch (e) { toast(e.message, 'error'); }
                   }));
                 } }
@@ -275,7 +276,7 @@
             for (const d of disabled) {
               dCard.appendChild(div('form-row', h('span', { style: { flex: '1' } }, d.name), h('span', { class: 'field-hint' }, d.label),
                 btn('恢复启用', 'btn-sm btn-text', async () => {
-                  try { await invoke('autostart:enable', d); toast('已启用', 'success'); load(); }
+                  try { await invoke(Channels.CHANNELS.AUTOSTART.ENABLE, d); toast('已启用', 'success'); load(); }
                   catch (e) { toast(e.message, 'error'); }
                 })));
             }
@@ -291,13 +292,13 @@
 
   /* ---------- 磁盘空间分析 ---------- */
   register({
-    id: 'disk-analyze', name: '磁盘空间分析', module: MOD, icon: 'harddrive',
-    desc: '扫描目录，找出大文件与大文件夹占比',
+    id: 'disk-analyze', name: '磁盘空间分析', nameEn: 'Disk Usage', module: MOD, icon: 'harddrive',
+    desc: '扫描目录，找出大文件与大文件夹占比', descEn: 'See which folders eat the most space in a directory tree',
     keywords: ['磁盘', '空间', '大文件', '分析'],
     render(page) {
       const dirIn = h('input', { class: 'input', placeholder: '要分析的目录或分区（如 D:\\）', style: { flex: '1' } });
       const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) dirIn.value = d[0];
       });
       const status = h('span', { class: 'field-hint' }, '');
@@ -309,7 +310,7 @@
         result.innerHTML = ''; prog.show(); scanBtn.disabled = true;
         const unsub = on('job:progress', (d) => { if (d.kind === 'scan') status.textContent = `已扫描 ${fmtNum(d.files)} 个文件，${fmtBytes(d.size)}`; });
         try {
-          const r = await invoke('fs:scan-tree', dir, {});
+          const r = await invoke(Channels.CHANNELS.FS.SCAN_TREE, dir, {});
           status.textContent = `完成：${fmtNum(r.files)} 个文件 / ${fmtNum(r.dirCount)} 个文件夹 / 总计 ${fmtBytes(r.totalSize)}`;
           result.innerHTML = '';
           const c1 = div('card', div('card-title', `最大文件 TOP ${r.topFiles.length}`));
@@ -318,7 +319,7 @@
             c1.appendChild(div('form-row',
               h('div', { class: 'progress', style: { flex: '1', height: '10px' } }, h('div', { class: 'progress-fill', style: { width: (f.size / maxF * 100) + '%' } })),
               h('span', { class: 'mono', style: { width: '70px', fontSize: '12px', textAlign: 'right' } }, fmtBytes(f.size)),
-              btn('查看', 'btn-sm btn-text', () => invoke('fs:show-item', f.path))));
+              btn('查看', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, f.path))));
             c1.appendChild(div('mono', { style: { fontSize: '11.5px', color: 'var(--text-3)', marginTop: '-6px', marginBottom: '6px', wordBreak: 'break-all' } }, f.path));
           }
           const c2 = div('card', div('card-title', '最大文件夹'));
@@ -343,8 +344,8 @@
 
   /* ---------- 垃圾清理 ---------- */
   register({
-    id: 'junk-clean', name: '垃圾清理', module: MOD, icon: 'trash',
-    desc: '扫描临时文件与缓存，勾选后一键清理（含回收站）',
+    id: 'junk-clean', name: '垃圾清理', nameEn: 'Junk Cleanup', module: MOD, icon: 'trash',
+    desc: '扫描临时文件与缓存，勾选后一键清理（含回收站）', descEn: 'Scan and clean temporary files, only touching files this app created',
     keywords: ['垃圾', '清理', '缓存', '临时文件'],
     render(page) {
       const box = div('');
@@ -354,7 +355,7 @@
         if (!isDesktop) return toast('桌面端可用', 'warn');
         box.innerHTML = ''; status.textContent = '扫描中…'; scanBtn.disabled = true;
         try {
-          items = await invoke('fs:scan-junk');
+          items = await invoke(Channels.CHANNELS.FS.SCAN_JUNK);
           status.textContent = items.length ? `发现 ${items.length} 类可清理项` : '很干净，没有发现可清理项 ✓';
           draw();
         } catch (e) { status.textContent = '✗ ' + e.message; }
@@ -377,7 +378,7 @@
         if (!(await confirmBox({ title: '清理垃圾文件', message: `将永久删除 ${selected.length} 类共约 ${fmtBytes(total)} 的文件（不进回收站），确定继续？`, danger: true, okText: '清理' }))) return;
         try {
           const targets = selected.flatMap(i => i.targets);
-          const r = await invoke('fs:clean-junk', targets, true);
+          const r = await invoke(Channels.CHANNELS.FS.CLEAN_JUNK, targets, true);
           /* 有失败时不能报成功：用户会以为都清掉了。
            * （主进程现在会拒绝「不在本次扫描结果内」的路径，这类拒绝也必须可见。） */
           const nErr = (r.errors || []).length;
@@ -388,7 +389,7 @@
       }, 'refresh');
       const rbBtn = btn('清空回收站', 'btn-danger-plain', async () => {
         if (!(await confirmBox({ title: '清空回收站', message: '确定清空系统回收站？此操作不可恢复。', danger: true, okText: '清空' }))) return;
-        try { await invoke('sys:recycle-empty'); toast('回收站已清空', 'success'); }
+        try { await invoke(Channels.CHANNELS.SYS.RECYCLE_EMPTY); toast('回收站已清空', 'success'); }
         catch (e) { toast(e.message, 'error'); }
       });
       page.appendChild(div('card', div('card-title', '扫描与清理'),
@@ -399,13 +400,13 @@
 
   /* ---------- 空目录批量清理 ---------- */
   register({
-    id: 'empty-dir-clean', name: '空目录清理', module: MOD, icon: 'folder',
-    desc: '递归扫描并删除指定路径下的所有空文件夹',
+    id: 'empty-dir-clean', name: '空目录清理', nameEn: 'Empty Folder Cleanup', module: MOD, icon: 'folder',
+    desc: '递归扫描并删除指定路径下的所有空文件夹', descEn: 'Scan and delete empty directories in bulk',
     keywords: ['空目录', '空文件夹', '清理'],
     render(page) {
       const dirIn = h('input', { class: 'input', placeholder: '要扫描的目录', style: { flex: '1' } });
       const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) dirIn.value = d[0];
       });
       const status = h('span', { class: 'field-hint' }, '');
@@ -416,7 +417,7 @@
         if (!dir) return toast('请选择目录', 'warn');
         box.innerHTML = ''; status.textContent = '扫描中…';
         try {
-          const r = await invoke('fs:scan-empty-dirs', dir);
+          const r = await invoke(Channels.CHANNELS.FS.SCAN_EMPTY_DIRS, dir);
           dirs = r.dirs.filter(d => d.path !== dir);
           status.textContent = dirs.length ? `发现 ${dirs.length} 个空目录` : '没有空目录 ✓';
           draw();
@@ -450,7 +451,7 @@
            *   3) 界面仍然 toast「已删除 0 个空目录」，而且是 success（绿色）样式，
            *      而 r.errors 从头到尾没人读。
            * 结果：点「删除全部空目录」一个都删不掉，用户却以为成功了。 */
-          const r = await invoke('fs:delete-empty', dirs.map((d) => (typeof d === 'string' ? d : d && d.path)));
+          const r = await invoke(Channels.CHANNELS.FS.DELETE_EMPTY, dirs.map((d) => (typeof d === 'string' ? d : d && d.path)));
           /* 【成功/失败要分开说，不能一律绿色】
            * 有失败时用 warn，并把前 3 条原因列出来 —— 否则用户只看到
            * 「已删除 3 个」，不知道另外几个为什么没删掉。 */
@@ -475,8 +476,8 @@
 
   /* ---------- 系统快捷操作 ---------- */
   register({
-    id: 'quick-ops', name: '系统快捷操作', module: MOD, icon: 'zap',
-    desc: '锁屏、休眠、重启、关机、清空回收站与剪贴板',
+    id: 'quick-ops', name: '系统快捷操作', nameEn: 'Quick Actions', module: MOD, icon: 'zap',
+    desc: '锁屏、休眠、重启、关机、清空回收站与剪贴板', descEn: 'Common system actions such as sleep, lock and empty the recycle bin',
     keywords: ['锁屏', '关机', '重启', '休眠'],
     render(page) {
       const actions = [
@@ -490,7 +491,7 @@
       for (const [label, msg, action, danger, iconName] of actions) {
         const b = btn(label, danger ? 'btn-danger-plain' : 'btn-secondary', async () => {
           if (!(await confirmBox({ title: label, message: msg, danger, okText: '确认执行' }))) return;
-          try { await invoke('sys:power', action); toast('已执行', 'success'); }
+          try { await invoke(Channels.CHANNELS.SYS.POWER, action); toast('已执行', 'success'); }
           catch (e) { toast(e.message, 'error'); }
         }, iconName);
         b.style.height = '52px';
@@ -501,18 +502,18 @@
         div('form-row',
           btn('清空回收站', 'btn-danger-plain', async () => {
             if (!(await confirmBox({ title: '清空回收站', message: '确定清空回收站？不可恢复。', danger: true, okText: '清空' }))) return;
-            try { await invoke('sys:recycle-empty'); toast('已清空', 'success'); } catch (e) { toast(e.message, 'error'); }
+            try { await invoke(Channels.CHANNELS.SYS.RECYCLE_EMPTY); toast('已清空', 'success'); } catch (e) { toast(e.message, 'error'); }
           }, 'trash'),
           btn('清空剪贴板', 'btn-secondary', async () => {
-            try { await invoke('clip:write-text', ''); toast('剪贴板已清空', 'success'); } catch (e) { toast(e.message, 'error'); }
+            try { await invoke(Channels.CHANNELS.CLIP.WRITE_TEXT, ''); toast('剪贴板已清空', 'success'); } catch (e) { toast(e.message, 'error'); }
           }, 'clipboard'))));
     }
   });
 
   /* ---------- 右键菜单管理 ---------- */
   register({
-    id: 'ctxmenu-manage', name: '右键菜单管理', module: MOD, icon: 'list',
-    desc: '管理文件/文件夹右键菜单项，禁用冗余项（可随时恢复）',
+    id: 'ctxmenu-manage', name: '右键菜单管理', nameEn: 'Context Menu', module: MOD, icon: 'list',
+    desc: '管理文件/文件夹右键菜单项，禁用冗余项（可随时恢复）', descEn: 'Add or remove this app in the Explorer right-click menu',
     keywords: ['右键', '菜单', 'context', '清理'],
     render(page) {
       const box = div('');
@@ -523,7 +524,7 @@
         box.innerHTML = '';
         status.textContent = '读取注册表…';
         try {
-          const groups = await invoke('ctxmenu:list');
+          const groups = await invoke(Channels.CHANNELS.CTXMENU.LIST);
           const total = groups.reduce((s, g) => s + g.items.length, 0);
           const disabledN = groups.reduce((s, g) => s + g.items.filter(i => i.disabled).length, 0);
           status.textContent = `共 ${total} 项，${disabledN} 项已禁用`;
@@ -541,11 +542,11 @@
                 { key: 'act', title: '操作', width: '90px', render: (r, td) => {
                     td.appendChild(r.disabled
                       ? btn('启用', 'btn-sm btn-text', async () => {
-                          try { await invoke('ctxmenu:toggle', r, false); toast('已启用', 'success'); load(); }
+                          try { await invoke(Channels.CHANNELS.CTXMENU.TOGGLE, r, false); toast('已启用', 'success'); load(); }
                           catch (e) { toast(/access|拒绝/i.test(e.message) ? '需要管理员权限，请以管理员身份运行工具箱' : e.message, 'error'); }
                         })
                       : btn('禁用', 'btn-sm btn-text', async () => {
-                          try { await invoke('ctxmenu:toggle', r, true); toast('已禁用（可恢复）', 'success'); load(); }
+                          try { await invoke(Channels.CHANNELS.CTXMENU.TOGGLE, r, true); toast('已禁用（可恢复）', 'success'); load(); }
                           catch (e) { toast(/access|拒绝/i.test(e.message) ? '需要管理员权限，请以管理员身份运行工具箱' : e.message, 'error'); }
                         }));
                   } }
@@ -564,19 +565,19 @@
 
   /* ---------- Win11 经典右键菜单 ---------- */
   register({
-    id: 'win-classic-menu', name: '经典右键菜单', module: MOD, icon: 'list',
-    desc: '一键切换 Win11 右键菜单为 Win10 经典样式（可随时还原）',
+    id: 'win-classic-menu', name: '经典右键菜单', nameEn: 'Classic Context Menu', module: MOD, icon: 'list',
+    desc: '一键切换 Win11 右键菜单为 Win10 经典样式（可随时还原）', descEn: 'Restore the Windows 10 style right-click menu on Windows 11',
     keywords: ['右键', '菜单', '经典', 'win11', 'contextmenu'],
     render(page) {
       const statusLine = h('div', { class: 'field-hint' }, '检测当前状态…');
       async function refresh() {
-        try { const s = await invoke('ctxmenu:classic-status'); statusLine.textContent = s.on ? '当前：经典菜单（Win10 样式）' : '当前：Win11 新版菜单'; }
+        try { const s = await invoke(Channels.CHANNELS.CTXMENU.CLASSIC_STATUS); statusLine.textContent = s.on ? '当前：经典菜单（Win10 样式）' : '当前：Win11 新版菜单'; }
         catch (e) { statusLine.textContent = '状态检测失败'; }
       }
       // 以主进程回写的真实注册表状态为准：不再无条件弹「已切换」，
       // 写失败或被系统拒绝时如实报错，避免又一次假阳性。
       /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-      const apply = (on) => invoke('ctxmenu:classic', on, false).then((r) => {
+      const apply = (on) => invoke(Channels.CHANNELS.CTXMENU.CLASSIC, on, false).then((r) => {
         const nowOn = !!(r && r.on);
         if (nowOn === !!on) toast(on ? '已切换为经典菜单' : '已恢复 Win11 菜单', 'success');
         else toast(on ? '切换失败：注册表未写入，请检查权限' : '恢复失败：注册表项未能清除，请检查权限', 'error');
@@ -590,7 +591,7 @@
             // 成功/失败必须是互斥的：原来 catch 里弹了错误后又无条件弹「已切换并重启」，
             // 用户会同时看到红色"需要管理员权限"和绿色"已切换"，无法判断到底改没改。
             try {
-              const r = await invoke('ctxmenu:classic', true, true);
+              const r = await invoke(Channels.CHANNELS.CTXMENU.CLASSIC, true, true);
               if (r && r.on) toast('已切换并重启资源管理器', 'success');
               else toast('切换失败：注册表未写入，请检查权限', 'error');
             } catch (e) {
@@ -609,8 +610,8 @@
 
   /* ---------- 窗口管理 ---------- */
   register({
-    id: 'window-manager', name: '窗口管理', module: MOD, icon: 'grid',
-    desc: '列出当前所有窗口：置顶/取消置顶、调节透明度、置底',
+    id: 'window-manager', name: '窗口管理', nameEn: 'Window Manager', module: MOD, icon: 'grid',
+    desc: '列出当前所有窗口：置顶/取消置顶、调节透明度、置底', descEn: 'List windows and control topmost, opacity and stacking',
     keywords: ['窗口', '置顶', '透明', '管理', 'topmost'],
     render(page) {
       const listBox = div('');
@@ -620,7 +621,7 @@
         listBox.innerHTML = '';
         listBox.appendChild(window.ui.loadingBlock('枚举窗口…'));
         try {
-          const rows = await invoke('winmgr:list');
+          const rows = await invoke(Channels.CHANNELS.WINMGR.LIST);
           listBox.innerHTML = '';
           status.textContent = `${rows.length} 个窗口`;
           for (const w of rows) {
@@ -629,7 +630,7 @@
               h('span', { class: 'mono', style: { width: '110px', fontSize: '11px' } }, w.proc),
               h('span', { style: { flex: '1', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: w.title }, w.title));
             row.appendChild(btn(w.topmost ? '取消置顶' : '置顶', 'btn-sm btn-text', async () => {
-              try { await invoke('winmgr:topmost', w.hwnd, !w.topmost); toast('已' + (w.topmost ? '取消置顶' : '置顶'), 'success'); load(); }
+              try { await invoke(Channels.CHANNELS.WINMGR.TOPMOST, w.hwnd, !w.topmost); toast('已' + (w.topmost ? '取消置顶' : '置顶'), 'success'); load(); }
               catch (e) { toast(e.message, 'error'); }
             }));
             const opSel = h('select', { class: 'select', style: { width: '76px', fontSize: '12px' } },
@@ -638,12 +639,12 @@
               h('option', { value: '150' }, '60%'), h('option', { value: '100' }, '40%'));
             opSel.addEventListener('change', async () => {
               if (!opSel.value) return;
-              try { await invoke('winmgr:opacity', w.hwnd, +opSel.value); toast('透明度已调整', 'success', 1000); }
+              try { await invoke(Channels.CHANNELS.WINMGR.OPACITY, w.hwnd, +opSel.value); toast('透明度已调整', 'success', 1000); }
               catch (e) { toast(e.message, 'error'); }
             });
             row.appendChild(opSel);
             row.appendChild(btn('置底', 'btn-sm btn-text', async () => {
-              try { await invoke('winmgr:bottom', w.hwnd); toast('已置底', 'success', 1000); }
+              try { await invoke(Channels.CHANNELS.WINMGR.BOTTOM, w.hwnd); toast('已置底', 'success', 1000); }
               catch (e) { toast(e.message, 'error'); }
             }));
             listBox.appendChild(row);
@@ -662,8 +663,8 @@
 
   /* ---------- 服务与电源计划 ---------- */
   register({
-    id: 'services-power', name: '服务与电源', module: MOD, icon: 'server',
-    desc: '查看并启停 Windows 服务（启停需管理员权限），切换电源计划',
+    id: 'services-power', name: '服务与电源', nameEn: 'Services & Power', module: MOD, icon: 'server',
+    desc: '查看并启停 Windows 服务（启停需管理员权限），切换电源计划', descEn: 'Manage Windows services and switch power plans',
     keywords: ['服务', 'service', '电源', '计划', 'powercfg'],
     render(page) {
       const svcBox = div('');
@@ -674,7 +675,7 @@
         svcBox.innerHTML = '';
         svcBox.appendChild(window.ui.loadingBlock('读取服务列表…'));
         try {
-          allSvc = await invoke('svc:list');
+          allSvc = await invoke(Channels.CHANNELS.SVC.LIST);
           svcStatus.textContent = `${allSvc.length} 个服务`;
           renderSvc();
         } catch (e) { svcBox.innerHTML = ''; svcBox.appendChild(div('field-err', '✗ ' + e.message)); }
@@ -706,7 +707,7 @@
             danger: true, okText: '停止服务'
           }))) return;
         }
-        try { await invoke('svc:action', s.Name, action); toast(`已${action === 'start' ? '启动' : '停止'}：${s.DisplayName || s.Name}`, 'success'); loadSvc(); }
+        try { await invoke(Channels.CHANNELS.SVC.ACTION, s.Name, action); toast(`已${action === 'start' ? '启动' : '停止'}：${s.DisplayName || s.Name}`, 'success'); loadSvc(); }
         catch (e) { toast(e.message.includes('1060') || e.message.includes('访问') || /5$|拒绝/.test(e.message) ? '需要管理员权限：请以管理员身份运行核核工具箱' : e.message, 'error'); }
       }
       svcFilter.addEventListener('input', window.ui.debounce(renderSvc, 150));
@@ -715,7 +716,7 @@
         powerBox.innerHTML = '';
         powerBox.appendChild(window.ui.loadingBlock('读取电源计划…'));
         try {
-          const plans = await invoke('power:list');
+          const plans = await invoke(Channels.CHANNELS.POWER.LIST);
           powerBox.innerHTML = '';
           for (const p of plans) {
             const row = div('form-row',
@@ -729,7 +730,7 @@
                 message: `确定切换到「${p.name}」？\n\n切换会立即改变系统功耗策略，正在进行的编译、渲染等任务可能明显变慢。`,
                 okText: '切换'
               }))) return;
-              try { await invoke('power:set', p.guid); toast('已切换：' + p.name, 'success'); loadPower(); }
+              try { await invoke(Channels.CHANNELS.POWER.SET, p.guid); toast('已切换：' + p.name, 'success'); loadPower(); }
               catch (e) { toast(e.message, 'error'); }
             }));
             powerBox.appendChild(row);
@@ -746,8 +747,8 @@
 
   /* ---------- 定时任务 ---------- */
   register({
-    id: 'scheduler', name: '定时任务', module: MOD, icon: 'timer',
-    desc: '定时关机/重启/睡眠/锁屏/提醒，倒计时精确到秒，可取消',
+    id: 'scheduler', name: '定时任务', nameEn: 'Scheduled Tasks', module: MOD, icon: 'timer',
+    desc: '定时关机/重启/睡眠/锁屏/提醒，倒计时精确到秒，可取消', descEn: 'Run a command or notification on a schedule',
     keywords: ['定时', '关机', '重启', '睡眠', '锁屏', '提醒', '倒计时'],
     render(page) {
       const modeSel = h('select', { class: 'select input-sm' },
@@ -796,7 +797,7 @@
         if (m === 'shutdown' || m === 'restart') {
           if (!(await confirmBox({ title: '定时' + confirmMsg, message: `${mins} 分钟后执行「${confirmMsg}」，确定？（期间可在此取消）`, okText: '确定' }))) return;
           try {
-            await invoke('exec:run', { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd' });
+            await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd' });
           } catch (e) {
             /* 被高危门禁拦住时只弹一句 toast 是不够的 —— 用户根本不知道
              * 「系统电源操作」这个开关在哪，只会以为是坏了。
@@ -820,14 +821,14 @@
           if (!(await confirmBox({ title: '定时' + confirmMsg, message: `${mins} 分钟后执行「${confirmMsg}」？`, okText: '确定' }))) return;
           arm(confirmMsg, mins * 60, async () => {
             const cmd = m === 'sleep' ? 'rundll32.exe powrprof.dll,SetSuspendState 0,1,0' : 'rundll32.exe user32.dll,LockWorkStation';
-            invoke('exec:run', { cmd, shellType: 'cmd' }).catch(() => {});
+            invoke(Channels.CHANNELS.EXEC.RUN, { cmd, shellType: 'cmd' }).catch(() => {});
           });
           status.textContent = `将在 ${mins} 分钟后${confirmMsg}`;
         }
       }
       async function cancel() {
         if (timer) { clearInterval(timer); timer = null; }
-        try { await invoke('exec:run', { cmd: 'shutdown /a', shellType: 'cmd' }); } catch (e) {} // 取消系统的关机计划（如有）
+        try { await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: 'shutdown /a', shellType: 'cmd' }); } catch (e) {} // 取消系统的关机计划（如有）
         countdown.textContent = '已取消'; countdown.className = 'tag tag-gray';
         status.textContent = '已取消定时任务（含系统关机计划）';
       }
@@ -847,7 +848,7 @@
       const rMsg = h('input', { class: 'input input-sm', placeholder: '提醒时显示的文字（选择「提醒」时必填）', style: { flex: '1' } });
       const rList = div('');
       async function loadRecurring() {
-        const list = await invoke('sched:list').catch(() => []);
+        const list = await invoke(Channels.CHANNELS.SCHED.LIST).catch(() => []);
         rList.innerHTML = '';
         if (!list.length) { rList.appendChild(div('empty-tip', '暂无周期任务')); return; }
         for (const s of list) {
@@ -857,7 +858,7 @@
           rList.appendChild(div('form-row',
             h('span', { class: 'tag ' + (s.type === 'clean' ? 'tag-green' : 'tag-blue'), style: { width: '48px', justifyContent: 'center' } }, s.type === 'clean' ? '清理' : '提醒'),
             h('span', { style: { flex: '1', fontSize: '12px' } }, desc),
-            btn('删除', 'btn-sm btn-text', async () => { await invoke('sched:remove', s.id); loadRecurring(); })));
+            btn('删除', 'btn-sm btn-text', async () => { await invoke(Channels.CHANNELS.SCHED.REMOVE, s.id); loadRecurring(); })));
         }
       }
       const rAddBtn = btn('添加周期任务', 'btn-primary', async () => {
@@ -866,7 +867,7 @@
         if (t === 'daily') { s.hhmm = rTime.value || '09:00'; s.message = rMsg.value.trim(); if (!s.message) return toast('请输入提醒内容', 'warn'); }
         else if (t === 'loop') { s.everyMin = Math.max(1, +rEvery.value || 60); s.message = rMsg.value.trim() || '循环提醒'; }
         else { s.hhmm = rTime.value || '03:00'; s.message = ''; }
-        try { await invoke('sched:add', s); toast('已添加（重启应用后依然生效）', 'success'); rMsg.value = ''; loadRecurring(); }
+        try { await invoke(Channels.CHANNELS.SCHED.ADD, s); toast('已添加（重启应用后依然生效）', 'success'); rMsg.value = ''; loadRecurring(); }
         catch (e) { toast(e.message, 'error'); }
       });
       /* 「时间」和「间隔」各有「标签 + 控件」两段，必须一起隐藏。

@@ -1,6 +1,7 @@
 'use strict';
 const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+const { handlerIndex } = require('./lib/seg-from-handler');
 const { scanBrace } = require('../lib/src-scan');
 const mainSrc = readMain({ raw: true });
 
@@ -78,7 +79,7 @@ t('11a runCmd：默认「非零不抛」，打开 throwOnNonZero 后必须抛', 
 });
 
 t('11b office:status 必须用 throwOnNonZero，否则恒返回 office:true', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('office:status'"), mainSrc.indexOf("handle('office:convert'"));
+  const seg = mainSrc.slice(handlerIndex(mainSrc, 'office:status'), handlerIndex(mainSrc, 'office:convert'));
   assert.ok(/throwOnNonZero:\s*true/.test(seg),
     'office:status 没打开 throwOnNonZero —— PowerShell 里 catch{exit 1} 完全不起作用，没装 Office 也报「可用」');
 });

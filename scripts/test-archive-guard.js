@@ -1,7 +1,7 @@
 'use strict';
 const { t, done, readMain } = require('./lib/harness');
 /* segFromHandler 统一到 scripts/lib/seg-from-handler.js —— 见那里的文件头说明。 */
-const { segFromHandler } = require('./lib/seg-from-handler');
+const { segFromHandler, handlerIndex } = require('./lib/seg-from-handler');
 /* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
 const { rmDir } = require('./lib/test-fs');
 /* lib/archive-guard.js 的单元测试：恶意条目必须被拒，正常条目必须放行。
@@ -26,8 +26,8 @@ function expectCode(fn, code) {
 
 
 function extractZipCompress() {
-  const i = mainSrc.indexOf("handle('zip:compress'");
-  const j = mainSrc.indexOf("handle('zip:extract'");
+  const i = handlerIndex(mainSrc, 'zip:compress');
+  const j = handlerIndex(mainSrc, 'zip:extract');
   assert.ok(i > 0 && j > i, '找不到 zip:compress');
   const open = mainSrc.indexOf('{', i);
   /* 从 handler 的 `{` 到 `});` 之间：按括号配对找结束，避免正则跨块。 */

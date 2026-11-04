@@ -1,5 +1,6 @@
 /* 模块：文本与编码 —— 乱码修复 / 编码识别 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, copyText, renderTable, filePicker, guard } = window.ui;
   const { invoke } = window.api;
@@ -7,10 +8,10 @@
 
   register({
     id: 'mojibake-fix',
-    name: '乱码修复',
+    name: '乱码修复', nameEn: 'Fix Mojibake',
     module: MOD,
     icon: 'languages',
-    desc: '粘贴乱码自动猜编码并给出可读结果，也能直接分析整个文件的真实编码',
+    desc: '粘贴乱码自动猜编码并给出可读结果，也能直接分析整个文件的真实编码', descEn: 'Detect garbled text and recover the original encoding',
     keywords: ['乱码', '编码', '锟斤拷', 'gbk', 'gb18030', 'big5', 'utf8', 'mojibake', 'charset'],
     render(page) {
       const state = { result: null, file: null };
@@ -70,8 +71,8 @@
         resultBox.innerHTML = '<div class="card"><div class="field-hint">分析中…</div></div>';
         try {
           const r = useFile
-            ? await invoke('text:detect-encoding', state.file, { isFile: true })
-            : await invoke('text:detect-encoding', text, {});
+            ? await invoke(Channels.CHANNELS.TEXT.DETECT_ENCODING, state.file, { isFile: true })
+            : await invoke(Channels.CHANNELS.TEXT.DETECT_ENCODING, text, {});
           state.result = r;
           render();
         } catch (e) {
@@ -139,7 +140,7 @@
           acts.appendChild(encSel);
           acts.appendChild(btn('检查能否无损转码', 'btn-sm btn-secondary', async () => {
             try {
-              const info = await invoke('text:can-reencode', best.text, encSel.value);
+              const info = await invoke(Channels.CHANNELS.TEXT.CAN_REENCODE, best.text, encSel.value);
               toast(info.note, info.lossy ? 'warn' : 'info', 3000);
             } catch (e) { toast(e.message, 'error'); }
           }));

@@ -1,5 +1,6 @@
 /* 模块：办公文档 —— PDF 处理 / 图片转PDF / PDF转图片 / 翻译 / 占位 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, filePicker, fmtBytes } = window.ui;
@@ -8,8 +9,8 @@
 
   /* ---------- PDF 基础处理 ---------- */
   register({
-    id: 'pdf-tools', name: 'PDF 合并拆分', module: MOD, icon: 'file-text',
-    desc: 'PDF 合并、拆分、提取页面、旋转页面（pdf-lib 本地处理）',
+    id: 'pdf-tools', name: 'PDF 合并拆分', nameEn: 'PDF Merge & Split', module: MOD, icon: 'file-text',
+    desc: 'PDF 合并、拆分、提取页面、旋转页面（pdf-lib 本地处理）', descEn: 'Merge, split and reorder PDF pages',
     keywords: ['pdf', '合并', '拆分', '旋转'],
     render(page) {
       /* 合并顺序 = 列表顺序，所以列表要能上下调序；删除/清空也归 picker */
@@ -36,15 +37,15 @@
           const { PDFDocument } = window.PDFLib;
           const out = await PDFDocument.create();
           for (const f of picker.paths) {
-            const r = await invoke('fs:read-file-b64', f);
+            const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, f);
             const src = await PDFDocument.load(r.b64, { ignoreEncryption: true });
             const pages = await out.copyPages(src, src.getPageIndices());
             pages.forEach(pg => out.addPage(pg));
           }
           const bytes = await out.save();
-          const outPath = await invoke('dialog:save', { defaultPath: 'merged.pdf' });
+          const outPath = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'merged.pdf' });
           if (!outPath) return;
-          await invoke('fs:write-file-b64', outPath, arrayB64(bytes));
+          await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
           toast('合并完成：' + outPath, 'success');
         } catch (e) { toast('合并失败：' + e.message, 'error'); }
       }, 'link');
@@ -54,7 +55,7 @@
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
-          const r = await invoke('fs:read-file-b64', picker.paths[0]);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, picker.paths[0]);
           const src = await PDFDocument.load(r.b64, { ignoreEncryption: true });
           const total = src.getPageCount();
           const parsed = parseRanges(pageIn.value, total);
@@ -64,9 +65,9 @@
           const pages = await out.copyPages(src, parsed.pages);
           pages.forEach(pg => out.addPage(pg));
           const bytes = await out.save();
-          const outPath = await invoke('dialog:save', { defaultPath: 'extracted.pdf' });
+          const outPath = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'extracted.pdf' });
           if (!outPath) return;
-          await invoke('fs:write-file-b64', outPath, arrayB64(bytes));
+          await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
           toast(`已提取 ${parsed.pages.length} 页`, 'success');
         } catch (e) { toast('提取失败：' + e.message, 'error'); }
       }, 'file-text');
@@ -76,7 +77,7 @@
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
-          const r = await invoke('fs:read-file-b64', picker.paths[0]);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, picker.paths[0]);
           const src = await PDFDocument.load(r.b64, { ignoreEncryption: true });
           const n = src.getPageCount();
           const per = Math.max(1, parseInt(splitEvery.value) || 1);
@@ -84,15 +85,15 @@
           // 把上一次的 part-001.pdf 静默覆盖，甚至把两个不同文档的分页混进同一目录。
           const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
           const dir = picker.paths[0].replace(/\.pdf$/i, '') + '-split-' + stamp;
-          await invoke('fs:mkdir', dir);
+          await invoke(Channels.CHANNELS.FS.MKDIR, dir);
           for (let i = 0; i < n; i += per) {
             const out = await PDFDocument.create();
             const idx = Array.from({ length: Math.min(per, n - i) }, (_, k) => i + k);
             const pages = await out.copyPages(src, idx);
             pages.forEach(pg => out.addPage(pg));
             const bytes = await out.save();
-            const partPath = await invoke('fs:unique-path', `${dir}/part-${String(i + 1).padStart(3, '0')}.pdf`);
-            await invoke('fs:write-file-b64', partPath, arrayB64(bytes));
+            const partPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, `${dir}/part-${String(i + 1).padStart(3, '0')}.pdf`);
+            await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, partPath, arrayB64(bytes));
           }
           toast(`已拆分为 ${Math.ceil(n / per)} 个文件：${dir}`, 'success');
         } catch (e) { toast('拆分失败：' + e.message, 'error'); }
@@ -103,14 +104,14 @@
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument, degrees } = window.PDFLib;
-          const r = await invoke('fs:read-file-b64', picker.paths[0]);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, picker.paths[0]);
           const doc = await PDFDocument.load(r.b64, { ignoreEncryption: true });
           const angle = parseInt(rotSel.value);
           doc.getPages().forEach(pg => pg.setRotation(degrees((pg.getRotation().angle + angle) % 360)));
           const bytes = await doc.save();
-          const outPath = await invoke('dialog:save', { defaultPath: picker.paths[0].replace(/\.pdf$/i, '') + '-rotated.pdf' });
+          const outPath = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: picker.paths[0].replace(/\.pdf$/i, '') + '-rotated.pdf' });
           if (!outPath) return;
-          await invoke('fs:write-file-b64', outPath, arrayB64(bytes));
+          await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
           toast('旋转完成', 'success');
         } catch (e) { toast('旋转失败：' + e.message, 'error'); }
       }, 'refresh');
@@ -157,8 +158,8 @@
 
   /* ---------- 图片转 PDF ---------- */
   register({
-    id: 'img2pdf', name: '图片转 PDF', module: MOD, icon: 'image',
-    desc: '多张图片合并为一个 PDF 文档',
+    id: 'img2pdf', name: '图片转 PDF', nameEn: 'Images to PDF', module: MOD, icon: 'image',
+    desc: '多张图片合并为一个 PDF 文档', descEn: 'Turn a set of images into a single PDF',
     keywords: ['图片', 'pdf', '转换'],
     render(page) {
       /* 图片顺序 = PDF 页序，列表支持上下调序 */
@@ -184,7 +185,7 @@
           const doc = await PDFDocument.create();
           for (const f of picker.paths) {
             const ext = f.split('.').pop().toLowerCase();
-            const r = await invoke('fs:read-file-b64', f);
+            const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, f);
             const bytes = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
             const img = ext === 'png' ? await doc.embedPng(bytes) : await doc.embedJpg(bytes);
             /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
@@ -192,11 +193,11 @@
             page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
           }
           const out = await doc.save();
-          const outPath = await invoke('dialog:save', { defaultPath: 'images.pdf' });
+          const outPath = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'images.pdf' });
           if (!outPath) return;
           let bin = ''; const chunk = 0x8000;
           for (let i = 0; i < out.length; i += chunk) bin += String.fromCharCode(...out.subarray(i, i + chunk));
-          await invoke('fs:write-file-b64', outPath, btoa(bin));
+          await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, btoa(bin));
           toast('已生成：' + outPath, 'success');
         } catch (e) { toast('转换失败：' + e.message, 'error'); }
       }, 'file-text');
@@ -206,8 +207,8 @@
 
   /* ---------- PDF 转图片 ---------- */
   register({
-    id: 'pdf2img', name: 'PDF 转图片', module: MOD, icon: 'image',
-    desc: '将 PDF 页面渲染为 PNG 图片（pdf.js 本地渲染）',
+    id: 'pdf2img', name: 'PDF 转图片', nameEn: 'PDF to Images', module: MOD, icon: 'image',
+    desc: '将 PDF 页面渲染为 PNG 图片（pdf.js 本地渲染）', descEn: 'Render PDF pages into images',
     keywords: ['pdf', '图片', '转换', '渲染'],
     render(page) {
       let pdfPath = null;
@@ -232,14 +233,14 @@
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
         status.textContent = '渲染中…';
         try {
-          const r = await invoke('fs:read-file-b64', pdfPath);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pdfPath);
           const bytes = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
           const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
           // 输出目录带时间戳：固定目录名 + 固定 page-NNN.png 会让第二次渲染
           // 静默覆盖上一次的结果，不同 PDF 的输出还会混进同一目录。
           const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
           const outDir = pdfPath.replace(/\.pdf$/i, '') + '-images-' + stamp;
-          await invoke('fs:mkdir', outDir);
+          await invoke(Channels.CHANNELS.FS.MKDIR, outDir);
           const scale = parseFloat(scaleIn.value) || 2;
           for (let i = 1; i <= pdf.numPages; i++) {
             /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
@@ -249,8 +250,8 @@
             canvas.width = viewport.width; canvas.height = viewport.height;
             await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
             const b64 = canvas.toDataURL('image/png').split(',')[1];
-            const pagePath = await invoke('fs:unique-path', `${outDir}/page-${String(i).padStart(3, '0')}.png`);
-            await invoke('fs:write-file-b64', pagePath, b64);
+            const pagePath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, `${outDir}/page-${String(i).padStart(3, '0')}.png`);
+            await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, pagePath, b64);
             status.textContent = `渲染中… ${i}/${pdf.numPages}`;
           }
           status.innerHTML = `<span class="status-ok">✓ 完成</span> 共 ${pdf.numPages} 页，输出目录 ${escapeHtml(outDir)}`;
@@ -266,8 +267,8 @@
 
   /* ---------- 文档预览 ---------- */
   register({
-    id: 'doc-preview', name: '文档预览', module: MOD, icon: 'book',
-    desc: 'PDF / TXT / Markdown 直接预览；Office 文档经 LibreOffice 转 PDF 后预览',
+    id: 'doc-preview', name: '文档预览', nameEn: 'Document Preview', module: MOD, icon: 'book',
+    desc: 'PDF / TXT / Markdown 直接预览；Office 文档经 LibreOffice 转 PDF 后预览', descEn: 'Preview Office, PDF and text files without opening them externally',
     keywords: ['预览', 'preview', 'pdf', 'word', 'excel', '查看'],
     render(page) {
       let filePath = '';
@@ -287,15 +288,15 @@
           if (ext === 'pdf') return await renderPdf(filePath);
           if (ext === 'txt' || ext === 'md' || ext === 'markdown') return await renderText(filePath, ext !== 'txt');
           if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf'].includes(ext)) {
-            const st = await invoke('office:status');
+            const st = await invoke(Channels.CHANNELS.OFFICE.STATUS);
             if (!st.soffice) {
               status.textContent = 'Office 文档预览需要 LibreOffice（PDF/TXT/MD 可直接预览）';
               toast('未检测到 LibreOffice，无法预览 Office 文档', 'warn');
               return;
             }
             status.textContent = '经 LibreOffice 转换中…（首次较慢）';
-            const tmpDir = (await invoke('app:get-info')).userData + '/preview-tmp';
-            const r = await invoke('office:convert', { files: [filePath], target: 'pdf', outDir: tmpDir });
+            const tmpDir = (await invoke(Channels.CHANNELS.APP.GET_INFO)).userData + '/preview-tmp';
+            const r = await invoke(Channels.CHANNELS.OFFICE.CONVERT, { files: [filePath], target: 'pdf', outDir: tmpDir });
             const res = r.results && r.results[0];
             if (!res || !res.ok) throw new Error('转换失败：' + ((res && res.err) || '未知'));
             status.textContent = '转换完成，渲染中…';
@@ -307,7 +308,7 @@
       async function renderPdf(p) {
         if (!window.pdfjsLib) return toast('pdf.js 未加载', 'error');
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
-        const r = await invoke('fs:read-file-b64', p);
+        const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, p);
         const bytes = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
         const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
         const pages = Math.min(pdf.numPages, 20);
@@ -324,7 +325,7 @@
         status.textContent = `✓ 共 ${pdf.numPages} 页${pdf.numPages > pages ? `（预览前 ${pages} 页）` : ''}`;
       }
       async function renderText(p, isMd) {
-        const r = await invoke('fs:read-text', p);
+        const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p);
         if (isMd && window.marked) {
           const box = div('md-view');
           box.innerHTML = window.DOMPurify ? DOMPurify.sanitize(window.marked.parse(r.content)) : window.marked.parse(r.content);
@@ -344,8 +345,8 @@
 
   /* ---------- 翻译工具 ---------- */
   register({
-    id: 'translate', name: '翻译工具', module: MOD, icon: 'languages',
-    desc: '整段互译（MyMemory 在线引擎，主动触发联网）',
+    id: 'translate', name: '翻译工具', nameEn: 'Translate', module: MOD, icon: 'languages',
+    desc: '整段互译（MyMemory 在线引擎，主动触发联网）', descEn: 'Translate text between languages',
     keywords: ['翻译', 'translate', '中英'],
     render(page) {
       const langs = [['zh', '中文'], ['en', '英语'], ['ja', '日语'], ['ko', '韩语'], ['fr', '法语'], ['de', '德语'], ['ru', '俄语'], ['es', '西班牙语']];
@@ -384,8 +385,8 @@
 
   /* ---------- Word/Excel/PPT ↔ PDF（LibreOffice / Office COM 双引擎） ---------- */
   register({
-    id: 'pdf-office-convert', name: 'Word/Excel ↔ PDF', module: MOD, icon: 'file-text',
-    desc: 'Office 文档与 PDF 互转（LibreOffice 优先，未装则用 Microsoft Office）',
+    id: 'pdf-office-convert', name: 'Word/Excel ↔ PDF', nameEn: 'PDF ↔ Office', module: MOD, icon: 'file-text',
+    desc: 'Office 文档与 PDF 互转（LibreOffice 优先，未装则用 Microsoft Office）', descEn: 'Convert between Word / Excel and PDF',
     keywords: ['word', 'excel', 'pdf', '转换', 'office'],
     render(page) {
       const OFFICE_RE = /(doc|docx|rtf|txt|xls|xlsx|csv|ppt|pptx|pdf)$/i;
@@ -399,13 +400,13 @@
         h('option', { value: 'docx' }, '转换为 DOCX（PDF→Word，需 Microsoft Word）'));
       const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空=源文件目录）', style: { flex: '1' } });
       const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) outDirIn.value = d[0];
       });
       const engineEl = h('div', { class: 'field-hint' }, '');
       const listBox = div('');
       const status = h('div', { class: 'field-hint' }, '');
-      invoke('office:status').then(r => {
+      invoke(Channels.CHANNELS.OFFICE.STATUS).then(r => {
         if (r.soffice) engineEl.innerHTML = '✓ 检测到 LibreOffice 引擎';
         else if (r.office) engineEl.innerHTML = '✓ 检测到 Microsoft Office 引擎（COM）';
         else engineEl.innerHTML = '<span class="status-warn">⚠ 未检测到 LibreOffice 或 Microsoft Office，请先安装其中之一</span>';
@@ -421,14 +422,14 @@
         listBox.innerHTML = '';
         const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');
         try {
-          const r = await invoke('office:convert', { files: picker.paths, target: targetSel.value, outDir });
+          const r = await invoke(Channels.CHANNELS.OFFICE.CONVERT, { files: picker.paths, target: targetSel.value, outDir });
           status.textContent = `完成（引擎：${r.engine}）：成功 ${r.results.filter(x => x.ok).length} / ${r.results.length}`;
           for (const res of r.results) {
             const row = div('form-row',
               h('span', { class: 'tag ' + (res.ok ? 'tag-green' : 'tag-red') }, res.ok ? '✓ 完成' : '✗ 失败'),
               h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, res.input.split(/[\\/]/).pop()),
               h('span', { class: 'field-err', style: { fontSize: '11px', maxWidth: '260px' } }, res.err || ''),
-              res.ok ? btn('打开', 'btn-sm btn-text', () => invoke('fs:show-item', res.out).catch(() => {})) : '');
+              res.ok ? btn('打开', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, res.out).catch(() => {})) : '');
             listBox.appendChild(row);
           }
           toast('转换完成', r.results.some(x => x.ok) ? 'success' : 'error');

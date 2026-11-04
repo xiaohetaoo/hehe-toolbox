@@ -1,5 +1,6 @@
 /* 模块：系统与硬件 —— 磁盘健康与寿命 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, renderTable, fmtBytes, guard } = window.ui;
@@ -18,10 +19,10 @@
 
   register({
     id: 'disk-health',
-    name: '磁盘健康',
+    name: '磁盘健康', nameEn: 'Disk Health',
     module: MOD,
     icon: 'activity',
-    desc: '查看磁盘的系统健康状态与寿命读数；本机取不到的项会明确标注，不编造数据',
+    desc: '查看磁盘的系统健康状态与寿命读数；本机取不到的项会明确标注，不编造数据', descEn: 'Read SMART status, temperature and health of physical disks',
     keywords: ['磁盘', '健康', 'SMART', '寿命', '温度', '通电', '硬盘', 'SSD', 'smart'],
     render(page) {
       const resultBox = div('');
@@ -51,7 +52,7 @@
       async function doScanOnce() {
         resultBox.innerHTML = '<div class="card"><div class="field-hint">读取中…</div></div>';
         try {
-          const r = await invoke('sys:disk-health', true);
+          const r = await invoke(Channels.CHANNELS.SYS.DISK_HEALTH, true);
           render(r);
         } catch (e) {
           resultBox.innerHTML = '';

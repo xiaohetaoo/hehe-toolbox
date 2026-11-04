@@ -1,4 +1,5 @@
 const { t, done, readMain } = require('./lib/harness');
+const { handlerIndex, invokeIndex } = require('./lib/seg-from-handler');
 /* 主进程源码：迁移来的 parsePsDate 用例要看 fmtBoot 的实现形态。 */
 const mainSrc = readMain({ raw: true });
 const stripComments = require('../lib/src-scan').stripComments;
@@ -20,23 +21,14 @@ const srcScan = require('../lib/src-scan');
 const ROOT = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
-/* 【任务 6 之后有两种写法】通道名换成常量后：
- *   · 渲染层：invoke(Channels.CHANNELS.ACL_LINKS.WHO_LOCKS_DIR, ...)
- *   · 主进程：handle(dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR, ...)
- * 而迁移前是字面量 'file:who-locks-dir'。下面两个辅助两种都认，
+/* 【通道名已全部常量化（v0.4.2）】定位走 scripts/lib/seg-from-handler.js：
+ * 它按通道名反查常量路径，字面量与常量写法都认。
  * 断言只关心「有没有调用/注册这个语义通道」，不关心写成什么形式。 */
-function rendererUses(src, literal, expr) {
-  return src.includes("invoke('" + literal + "'") || src.includes(expr);
+function rendererUses(src, literal) {
+  return invokeIndex(src, literal) > 0;
 }
-function handlerBlock(mainSrc, literal, expr) {
-  /* 任务 5 把这两个域搬到了 ipc/dir-acl-links.js，那里的常量别名是 CH，
-   * 而调用方传进来的是 readMain()（main.js + ipc/ 拼接）。
-   * 所以三种形态都要试：字面量 / dirMoveCh.<键> / CH.<键>。 */
-  let i = mainSrc.indexOf("handle('" + literal + "'");
-  if (i < 0) i = mainSrc.indexOf('handle(' + expr + ',');
-  if (i < 0 && expr.startsWith('dirMoveCh.')) {
-    i = mainSrc.indexOf('handle(CH.' + expr.slice('dirMoveCh.'.length) + ',');
-  }
+function handlerBlock(mainSrc, literal) {
+  const i = handlerIndex(mainSrc, literal);
   if (i < 0) return null;
   const j = mainSrc.indexOf('\n});', i);
   return mainSrc.slice(i, j > i ? j : i + 3000);
@@ -62,7 +54,9 @@ t('file-unlock 不再用不存在的 it.dir 判断', () => {
 t('file-unlock 查询前会 await 确认类型（不靠 undefined 猜）', () => {
   const src = strip(read('js/tools/file-unlock.js'));
   assert.ok(/async function resolveTypes\(/.test(src), '应有查前确认类型的步骤');
-  assert.ok(/await invoke\('fs:stat-multi'/.test(src), '应调用 fs:stat-multi 确认类型');
+  const si = invokeIndex(src, 'fs:stat-multi');
+  assert.ok(si > 0, '应调用 fs:stat-multi 确认类型');
+  assert.ok(/await\s+$/.test(src.slice(0, si)), 'fs:stat-multi 必须 await（不 await 就等于没确认）');
   /* 【断言的是「必须 await」，不是某个具体实参】
    * round-12 把 resolveTypes 改成只作用于**当轮快照**（resolveTypes(snapshot)）：
    * 原实现直接读 state.items，用户在 stat 返回前改选择时，补类型与发任务
@@ -75,18 +69,20 @@ t('file-unlock 查询前会 await 确认类型（不靠 undefined 猜）', () =>
 
 t('file-unlock 的目录通道真的有调用方（不是死分支）', () => {
   const src = strip(read('js/tools/file-unlock.js'));
-  assert.ok(rendererUses(src, 'file:who-locks-dir', 'ACL_LINKS.WHO_LOCKS_DIR'),
+  assert.ok(rendererUses(src, 'file:who-locks-dir'),
     'file:who-locks-dir 必须有调用方，否则删目录只能得到「没有占用」的错误结论');
 });
 
 /* ---------- P2-3：乱码修复文件模式的编码名 ---------- */
 t('文件分支把候选补成 from/to 形状（保留 label/encodings）', () => {
   const main = strip(readMain({ raw: true }));
-  const fn = main.match(/handle\('text:detect-encoding'[\s\S]*?\n\}\);/);
-  assert.ok(fn, '找不到 text:detect-encoding');
-  assert.ok(/from:\s*'原始字节'/.test(fn[0]), '文件模式应给出 from = 原始字节');
-  assert.ok(/to:\s*c\.label/.test(fn[0]), '文件模式应把 label 映射到 to');
-  assert.ok(/c\.encodings/.test(fn[0]), 'label 缺失时退到 encodings（原字段保留）');
+  const at = handlerIndex(main, 'text:detect-encoding');
+  assert.ok(at > 0, '找不到 text:detect-encoding');
+  const end = main.indexOf('\n});', at);
+  const body = main.slice(at, end > at ? end : at + 3000);
+  assert.ok(/from:\s*'原始字节'/.test(body), '文件模式应给出 from = 原始字节');
+  assert.ok(/to:\s*c\.label/.test(body), '文件模式应把 label 映射到 to');
+  assert.ok(/c\.encodings/.test(body), 'label 缺失时退到 encodings（原字段保留）');
 });
 
 t('渲染层优先读 to，退到 label/encodings —— 两种形状都能显示', () => {
@@ -104,9 +100,13 @@ t('渲染层优先读 to，退到 label/encodings —— 两种形状都能显�
 /* ---------- P3-1：目标编码由用户选 ---------- */
 t('「检查能否无损转码」不再把目标编码写死为 utf-8', () => {
   const src = strip(read('js/tools/mojibake-fix.js'));
-  assert.ok(!/can-reencode', best\.text, 'utf-8'\)/.test(src),
+  const ci = invokeIndex(src, 'text:can-reencode');
+  assert.ok(ci > 0, '找不到 text:can-reencode 的调用点');
+  /* 只看这一次调用的实参，不依赖通道写成字面量还是常量 */
+  const call = src.slice(ci, ci + 200);
+  assert.ok(!/best\.text,\s*'utf-8'\)/.test(call),
     '目标编码仍写死 utf-8 —— 只要没有替换字符就必定回「可以转换」');
-  assert.ok(/can-reencode', best\.text, encSel\.value\)/.test(src),
+  assert.ok(/best\.text,\s*encSel\.value\)/.test(call),
     '应把用户选的编码传进去');
 });
 
@@ -143,7 +143,7 @@ t('GBK 不在 Node 原生编码器里 → 结论必须是「需要系统工具�
    * 现在真的跑 main.js 里那段判据：把 text:can-reencode 的 handler 抽出来，
    * 注入桩后调用，断言它对 GBK 给出的 supported 是 false。 */
   const mainSrc = strip(readMain({ raw: true }));
-  const start = mainSrc.indexOf("handle('text:can-reencode'");
+  const start = handlerIndex(mainSrc, 'text:can-reencode');
   assert.ok(start > 0, '找不到 text:can-reencode');
   /* 【用括号配平取箭头函数，不能用 '\n});' 切】
    * handler 结尾是 `\n});` —— 但那个 `)` 属于外层的 handle(…)，不属于函数体。
@@ -181,10 +181,12 @@ t('GBK 不在 Node 原生编码器里 → 结论必须是「需要系统工具�
 
 t('text:can-reencode 的 note 会区分原生支持与需要系统工具', () => {
   const main = strip(readMain({ raw: true }));
-  const fn = main.match(/handle\('text:can-reencode'[\s\S]*?\n\}\);/);
-  assert.ok(fn, '找不到 text:can-reencode');
-  assert.ok(/supported/.test(fn[0]), '应返回 supported 判据');
-  assert.ok(/系统工具|PowerShell/i.test(fn[0]),
+  const at = handlerIndex(main, 'text:can-reencode');
+  assert.ok(at > 0, '找不到 text:can-reencode');
+  const end = main.indexOf('\n});', at);
+  const body = main.slice(at, end > at ? end : at + 3000);
+  assert.ok(/supported/.test(body), '应返回 supported 判据');
+  assert.ok(/系统工具|PowerShell/i.test(body),
     '对非原生编码应明确说需要借助系统工具完成');
 });
 
@@ -195,7 +197,7 @@ t('text:can-reencode 的 note 会区分原生支持与需要系统工具', () =>
  * 只会看到「Restart Manager 查询失败」。 */
 t('file:who-locks-dir 只注册普通文件（目录/链接会让整批查询失败）', () => {
   const main = strip(readMain({ raw: true }));
-  const fn = handlerBlock(main, 'file:who-locks-dir', 'dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR');
+  const fn = handlerBlock(main, 'file:who-locks-dir');
   assert.ok(fn, '找不到 file:who-locks-dir');
   assert.ok(/readdir\(dir, \{ withFileTypes: true \}\)/.test(fn),
     '应用 withFileTypes 拿 Dirent，避免额外 stat 且不跟随链接');
@@ -206,7 +208,7 @@ t('file:who-locks-dir 只注册普通文件（目录/链接会让整批查询失
 
 t('file:who-locks-dir 不再把子目录/链接拼进查询列表', () => {
   const main = strip(readMain({ raw: true }));
-  const fn = handlerBlock(main, 'file:who-locks-dir', 'dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR');
+  const fn = handlerBlock(main, 'file:who-locks-dir');
   assert.ok(!/names\.slice\(0, 200\)|sample\.map/.test(fn),
     '不该再把整批 readdir 结果直接拼成查询列表');
 });
@@ -214,7 +216,7 @@ t('file:who-locks-dir 不再把子目录/链接拼进查询列表', () => {
 t('9a parsePsDate 三种形态', () => {
   const code = stripComments(mainSrc);
   const i = code.indexOf('function parsePsDate');
-  const j = code.indexOf("handle('sys:hw-info'");
+  const j = handlerIndex(code, 'sys:hw-info');
   assert.ok(i > 0 && j > i, '找不到 parsePsDate');
   const f = new Function(code.slice(i, j) + '\nreturn { parsePsDate, normalizeDateFields };')();
   assert.strictEqual(f.parsePsDate('/Date(1793413286500)/'), 1793413286500, 'PS 5.1 的 /Date(ms)/ 必须解析成毫秒');

@@ -42,6 +42,7 @@ const tempNames = require('./lib/temp-names');
 /* 崩溃日志：打包后的 exe 没有控制台，异常只写 console 等于没记。
  * 这个模块负责脱敏、截断、轮转，主进程这边只提供目录与时机。 */
 const crashLog = require('./lib/crash-log');
+const CH = require('./lib/channels').CHANNELS;   // IPC 通道名唯一来源（见文件头说明）
 /* 【任务 5 之后这里少了 5 个 require】rm-lockers / links / dir-move /
  * acl-repair / channels 现在只被 ipc/dir-acl-links.js 使用 —— 那两个域连同
  * handle(dirMoveCh.X.Y, ...) 一起搬过去了，模块自己 require 它们。
@@ -469,13 +470,13 @@ function dangerousDenied(cap) {
   const pack = GATE_TEXT[uiLang] || GATE_TEXT.zh;
   return pack(DANGEROUS_CAPS[cap].name);
 }
-handle('dangerous:list', () => ({
+handle(CH.DANGEROUS.LIST, () => ({
   caps: DANGEROUS_CAP_IDS.map(id => ({
     id, name: DANGEROUS_CAPS[id].name, desc: DANGEROUS_CAPS[id].desc, enabled: dangerousEnabled(id)
   })),
   enabled: DANGEROUS_CAP_IDS.filter(dangerousEnabled)
 }));
-handle('dangerous:set', (e, cap, on) => {
+handle(CH.DANGEROUS.SET, (e, cap, on) => {
   if (!DANGEROUS_CAP_IDS.includes(cap)) throw new Error('未知的高危功能项');
   const list = new Set(Array.isArray(storeGet('settings.dangerousCaps', [])) ? storeGet('settings.dangerousCaps', []) : []);
   if (on) list.add(cap); else list.delete(cap);
@@ -510,7 +511,7 @@ const TOOL_DANGEROUS_CAPS = {
   /* 诊断（acl:diagnose）是只读的，不进这张表；只有真正改权限的 acl:repair 计入 */
   'acl-repair': ['acl-repair']
 };
-handle('dangerous:tool-caps', () => {
+handle(CH.DANGEROUS.TOOL_CAPS, () => {
   const out = {};
   for (const [tool, caps] of Object.entries(TOOL_DANGEROUS_CAPS)) {
     out[tool] = { caps, enabled: caps.some(c => dangerousEnabled(c)) };
@@ -787,7 +788,7 @@ function createTray() {
 
 /* 渲染层切换界面语言时通知主进程，让托盘菜单跟着换。
  * 只重建托盘菜单，不动别的状态。语言值不认识时保守回中文。 */
-handle('app:set-lang', (e, lang) => {
+handle(CH.APP.SET_LANG, (e, lang) => {
   const next = lang === 'en' ? 'en' : 'zh';
   if (next === uiLang && tray) return true; // 没变就不用重建
   uiLang = next;
@@ -855,19 +856,19 @@ setInterval(() => {
 }, 1500);
 
 /* ================= IPC: app / window / store ================= */
-handle('win:minimize', () => { win && win.minimize(); });
-handle('win:maximize', () => { if (!win) return; win.isMaximized() ? win.unmaximize() : win.maximize(); });
-handle('win:close', () => { win && win.close(); });
+handle(CH.WIN.MINIMIZE, () => { win && win.minimize(); });
+handle(CH.WIN.MAXIMIZE, () => { if (!win) return; win.isMaximized() ? win.unmaximize() : win.maximize(); });
+handle(CH.WIN.CLOSE, () => { win && win.close(); });
 /* 让渲染层知道「这次是从默认值起来的」。
  * 不加这条的话，用户只会看到笔记/收藏/剪贴板历史全空了，却不知道
  * 是数据文件损坏、也不知道原文件已被另存到哪 —— 只会以为程序把数据弄丢了。
  * 正常启动时 storeLoadFailed 为 false，界面不受任何影响。 */
-handle('store:health', () => ({
+handle(CH.STORE.HEALTH, () => ({
   ok: !storeLoadFailed,
   corruptCopy: storeCorruptCopy,
   file: storeFile(),
 }));
-handle('app:get-info', () => ({
+handle(CH.APP.GET_INFO, () => ({
   appVersion: app.getVersion(),
   electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome,
   platform: process.platform,
@@ -876,17 +877,17 @@ handle('app:get-info', () => ({
   hostname: os.hostname(),
   username: os.userInfo().username
 }));
-handle('store:get', (e, key, def) => storeGet(key, def));
-handle('store:set', (e, key, val) => storeSet(key, val));
+handle(CH.STORE.GET, (e, key, def) => storeGet(key, def));
+handle(CH.STORE.SET, (e, key, val) => storeSet(key, val));
 /* store:remove 已移除：全项目没有任何调用方（渲染层只删收藏/历史时用的是
  * store:set 置空）。js/api.js 的浏览器模拟分支曾保留它，也一并删掉。 */
-handle('app:set-theme', (e, mode) => { nativeTheme.themeSource = mode; return nativeTheme.shouldUseDarkColors; });
-handle('app:set-autostart', (e, enable) => {
+handle(CH.APP.SET_THEME, (e, mode) => { nativeTheme.themeSource = mode; return nativeTheme.shouldUseDarkColors; });
+handle(CH.APP.SET_AUTOSTART, (e, enable) => {
   if (isWin || isMac) app.setLoginItemSettings({ openAtLogin: !!enable });
   return app.getLoginItemSettings().openAtLogin;
 });
-handle('app:get-autostart', () => (isWin || isMac) ? app.getLoginItemSettings().openAtLogin : false);
-handle('app:set-hotkey', (e, acc) => applyHotkey(acc));
+handle(CH.APP.GET_AUTOSTART, () => (isWin || isMac) ? app.getLoginItemSettings().openAtLogin : false);
+handle(CH.APP.SET_HOTKEY, (e, acc) => applyHotkey(acc));
 
 /* ---- 崩溃日志的界面入口 ----
  * 只读为主，不需要门禁（清空也只删 logs/ 下的 crash*.log，不碰用户数据）。
@@ -895,7 +896,7 @@ handle('app:set-hotkey', (e, acc) => applyHotkey(acc));
  *   read   最近一条日志的尾部（用户点「查看」时按需读，不预热）
  *   reveal 在文件管理器里定位日志目录（用户要发给开发者）
  *   clear  清空已有日志（会话标记是另一套语义，不受影响） */
-handle('app:crash-info', () => {
+handle(CH.APP.CRASH_INFO, () => {
   const logs = crashLog.listLogs(crashLogDir());
   return {
     lastSessionCrashed: lastSessionCrashed,
@@ -905,18 +906,18 @@ handle('app:crash-info', () => {
     latest: logs.length ? { name: logs[0].name, size: logs[0].size, mtime: logs[0].mtime } : null
   };
 });
-handle('app:crash-read', (e, maxBytes) => {
+handle(CH.APP.CRASH_READ, (e, maxBytes) => {
   // 上限夹一下：渲染层传大值也不能让它把几 MB 文本塞进 IPC
   const n = Math.min(64 * 1024, Math.max(1024, Number(maxBytes) || 16 * 1024));
   return crashLog.tail(crashLogDir(), n);
 });
-handle('app:crash-reveal', async () => {
+handle(CH.APP.CRASH_REVEAL, async () => {
   const dir = crashLogDir();
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
   // showItemInFolder 需要文件路径；目录直接 openPath 更稳
   try { await shell.openPath(dir); return true; } catch (e) { return false; }
 });
-handle('app:crash-clear', () => {
+handle(CH.APP.CRASH_CLEAR, () => {
   // 清空日志：删除所有 crash*.log。会话标记不动（那是另一套语义）
   const logs = crashLog.listLogs(crashLogDir());
   let n = 0;
@@ -927,7 +928,7 @@ handle('app:crash-clear', () => {
 });
 
 /* ================= IPC: dialog ================= */
-handle('dialog:open', async (e, opts = {}) => {
+handle(CH.DIALOG.OPEN, async (e, opts = {}) => {
   const r = await dialog.showOpenDialog(win, {
     title: opts.title, defaultPath: opts.defaultPath,
     properties: opts.properties || ['openFile'],
@@ -935,7 +936,7 @@ handle('dialog:open', async (e, opts = {}) => {
   });
   return r.canceled ? null : r.filePaths;
 });
-handle('dialog:save', async (e, opts = {}) => {
+handle(CH.DIALOG.SAVE, async (e, opts = {}) => {
   const r = await dialog.showSaveDialog(win, { title: opts.title, defaultPath: opts.defaultPath, filters: opts.filters });
   return r.canceled ? null : r.filePath;
 });
@@ -951,7 +952,7 @@ handle('dialog:save', async (e, opts = {}) => {
  *   - 一个文件（原始字节，探测最准）
  * 两者都走同一条分析链，返回排序后的候选 + 每条的分数。
  */
-handle('text:detect-encoding', async (e, input, opts = {}) => {
+handle(CH.TEXT.DETECT_ENCODING, async (e, input, opts = {}) => {
   const o = opts || {};
   if (!input) throw new Error('没有要分析的内容');
 
@@ -1013,7 +1014,7 @@ handle('text:detect-encoding', async (e, input, opts = {}) => {
  * （mojibake.encodeTextMany 那条路，乱码修复已经在用），但「另存为该编码」
  * 这个功能尚未提供 —— 所以这里只给**判定**，不假装能转。
  * 判定本身仍是有用的：含 U+FFFD 的文本任何转码都救不回来。 */
-handle('text:can-reencode', async (e, text, enc) => {
+handle(CH.TEXT.CAN_REENCODE, async (e, text, enc) => {
   const target = String(enc || '');
   const lossy = /[\uFFFD]/.test(String(text || ''));
   const supported = ['utf-8', 'utf-16le', 'utf-16be'].indexOf(mojibake.normEnc(target)) !== -1;
@@ -1078,7 +1079,7 @@ function assertPowerAllowed(cmd) {
     throw e;
   }
 }
-handle('exec:run', async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
+handle(CH.EXEC.RUN, async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
   /* 关机/重启/休眠必须先在设置里开启「系统电源操作」。
    * 【必须拿「整条命令」判，不能把 cmd 与 args 分开判】
    * power-gate 的剥离逻辑是按整条命令行做的：`cmd.exe` 自己不是危险词，
@@ -1098,7 +1099,7 @@ handle('exec:run', async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
   }
   return await runCmd(cmd, args || [], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk' });
 });
-handle('exec:stream', (e, { command, args, cwd }) => {
+handle(CH.EXEC.STREAM, (e, { command, args, cwd }) => {
   // 流式通道同样要过电源门禁（理由见 exec:run 上方注释：必须整条判）
   const flatArgs = Array.isArray(args) ? args.map((a) => String(a == null ? '' : a)) : [];
   assertPowerAllowed([String(command == null ? '' : command), ...flatArgs].join(' '));
@@ -1125,7 +1126,7 @@ handle('exec:stream', (e, { command, args, cwd }) => {
   proc.on('error', (err) => { jobs.delete(id); send('job:exit', { id, code: -1, error: fmtErr(err) }); });
   return id;
 });
-handle('job:kill', (e, id) => { const j = jobs.get(id); if (j) j.cancel(); return true; });
+handle(CH.JOB.KILL, (e, id) => { const j = jobs.get(id); if (j) j.cancel(); return true; });
 // 取消最近一次启动的可取消任务（扫描/测速等，renderer 拿不到 job id 时使用）
 /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
 let latestCancelable = null;
@@ -1135,7 +1136,7 @@ let latestCancelable = null;
  * 可以直接读这个变量，不必再开一条无人使用的通道。 */
 
 /* process list with cpu% (PS based) */
-handle('proc:list', async () => {
+handle(CH.PROC.LIST, async () => {
   const r = await ps(`@(Get-Process | ForEach-Object { $p=$_; $path=''; try{$path=$p.Path}catch{}; [pscustomobject]@{id=$p.Id;name=$p.ProcessName;cpu=$p.CPU;ws=[math]::Round($p.WorkingSet64/1KB,0)} }) | ConvertTo-Json -Compress`, 20000);
   let rows;
   try { rows = JSON.parse(r.stdout || '[]'); } catch (err) { throw new Error('进程查询失败：' + (r.stderr || err.message)); }
@@ -1160,7 +1161,7 @@ handle('proc:list', async () => {
   out.sort((a, b) => (b.cpuPct || 0) - (a.cpuPct || 0) || b.memKB - a.memKB);
   return out;
 });
-handle('proc:detail', async (e, pid) => {
+handle(CH.PROC.DETAIL, async (e, pid) => {
   const r = await ps(`Get-CimInstance Win32_Process -Filter "ProcessId=${parseInt(pid, 10)}" | Select-Object ExecutablePath,CommandLine | ConvertTo-Json -Compress`, 15000);
   if (!r.stdout.trim()) return { path: '', cmdline: '' };
   const j = JSON.parse(r.stdout);
@@ -1179,7 +1180,7 @@ const PROTECTED_PROC_NAMES = new Set([
 ]);
 const PROTECTED_PROC_PID_MAX = 1000;   // 低 PID 区几乎全是系统进程，保守拦截
 
-handle('proc:kill', async (e, pid) => {
+handle(CH.PROC.KILL, async (e, pid) => {
   const n = Number(pid);
   if (!Number.isInteger(n) || n <= 0) throw new Error('进程 ID 无效');
   // 不能杀自己：主进程被杀会导致正在进行的录制/下载/写盘中断，
@@ -1224,7 +1225,7 @@ require('./ipc/net-lan')({
   ps,
 });
 /* static server */
-handle('server:start', async (e, root, port) => {
+handle(CH.SERVER.START, async (e, root, port) => {
   if (serverMap.has('s')) throw new Error('已有服务在运行，请先停止');
   let p = port || 8128;
   const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8' };
@@ -1279,7 +1280,7 @@ handle('server:start', async (e, root, port) => {
   serverRoot = root; serverPort = p;
   return { port: p, url: `http://127.0.0.1:${p}` };
 });
-handle('server:stop', () => {
+handle(CH.SERVER.STOP, () => {
   const s = serverMap.get('s');
   if (s) { s.close(); serverMap.delete('s'); }
   serverRoot = null; serverPort = null;
@@ -1298,7 +1299,7 @@ handle('server:stop', () => {
  *
  * 真正的结论是：**跨页面存活的东西必须有地方问它还在不在**。
  * 只有只读、不产生副作用的查询，所以不需要门禁。 */
-handle('server:status', () => {
+handle(CH.SERVER.STATUS, () => {
   const s = serverMap.get('s');
   if (!s) return null;
   return { running: true, root: serverRoot, port: serverPort, url: serverPort ? `http://127.0.0.1:${serverPort}` : null };
@@ -1318,7 +1319,7 @@ handle('server:status', () => {
  * 而不是整段失败、也不是补 0。 */
 let diskHealthCache = null, diskHealthCacheAt = 0;
 
-handle('sys:disk-health', async (e, force) => {
+handle(CH.SYS.DISK_HEALTH, async (e, force) => {
   if (!force && diskHealthCache && Date.now() - diskHealthCacheAt < 300000) return diskHealthCache;
 
   const isAdmin = await isRunningAsAdmin();
@@ -1443,7 +1444,7 @@ function normalizeDateFields(osObj) {
   }
   return out;
 }
-handle('sys:hw-info', async (e, force) => {
+handle(CH.SYS.HW_INFO, async (e, force) => {
   if (!force && hwCache && Date.now() - hwCacheAt < 60000) return hwCache;
   const script = `
 $ErrorActionPreference='SilentlyContinue'
@@ -1495,7 +1496,7 @@ $tmp = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperat
   hwCache = info; hwCacheAt = Date.now();
   return info;
 });
-handle('sys:power', async (e, action) => {
+handle(CH.SYS.POWER, async (e, action) => {
   // 关机/重启/休眠会造成数据丢失或系统状态中断，必须先在高危功能里开启；
   // 锁屏、睡眠只是待机，不丢数据，不纳入门禁。
   if (DANGEROUS_POWER_ACTIONS.includes(action) && !dangerousEnabled('system-power')) {
@@ -1510,7 +1511,7 @@ handle('sys:power', async (e, action) => {
     default: throw new Error('未知操作');
   }
 });
-handle('sys:recycle-empty', async () => {
+handle(CH.SYS.RECYCLE_EMPTY, async () => {
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const r = await ps(`Clear-RecycleBin -Force -ErrorAction Stop`, 20000);
   return true;
@@ -1520,7 +1521,7 @@ const RUN_KEYS = [
   { hive: 'HKCU', key: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', label: '当前用户' },
   { hive: 'HKLM', key: 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', label: '所有用户' }
 ];
-handle('autostart:list', async () => {
+handle(CH.AUTOSTART.LIST, async () => {
   const out = [];
   for (const rk of RUN_KEYS) {
     try {
@@ -1533,7 +1534,7 @@ handle('autostart:list', async () => {
   }
   return out;
 });
-handle('autostart:delete', async (e, item, permanent) => {
+handle(CH.AUTOSTART.DELETE, async (e, item, permanent) => {
   if (permanent) {
     await runCmd('reg', ['delete', item.key, '/v', item.name, '/f'], { timeout: 10000 });
     return true;
@@ -1544,7 +1545,7 @@ handle('autostart:delete', async (e, item, permanent) => {
   await runCmd('reg', ['delete', item.key, '/v', item.name, '/f'], { timeout: 10000 });
   return true;
 });
-handle('autostart:enable', async (e, item) => {
+handle(CH.AUTOSTART.ENABLE, async (e, item) => {
   /* /t 必须带 REG_ 前缀！实测（Windows 11 + Node 24）：
        reg add ... /t REG_SZ   -> 成功
        reg add ... /t SZ       -> "无效语法" 失败
@@ -1557,12 +1558,12 @@ handle('autostart:enable', async (e, item) => {
   storeSet('autostartBackup', bak);
   return true;
 });
-handle('autostart:disabled-list', () => storeGet('autostartBackup', []));
+handle(CH.AUTOSTART.DISABLED_LIST, () => storeGet('autostartBackup', []));
 
 /* hosts */
 const HOSTS_PATH = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts');
-handle('hosts:read', async () => ({ content: await fsp.readFile(HOSTS_PATH, 'utf8'), path: HOSTS_PATH }));
-handle('hosts:write', async (e, content) => {
+handle(CH.HOSTS.READ, async () => ({ content: await fsp.readFile(HOSTS_PATH, 'utf8'), path: HOSTS_PATH }));
+handle(CH.HOSTS.WRITE, async (e, content) => {
   // 直接覆盖系统 hosts 有风险（写入中途失败会留下半截文件，影响全机 DNS）。
   // 先自动备份，再写临时文件后原子替换。
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
@@ -1615,18 +1616,18 @@ handle('hosts:write', async (e, content) => {
   try { await runCmd('ipconfig', ['/flushdns'], { timeout: 10000 }); } catch (err) {}
   return true;
 });
-handle('hosts:backup', async () => {
+handle(CH.HOSTS.BACKUP, async () => {
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
   await fsp.mkdir(dir, { recursive: true });
   const name = `hosts-${new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23)}-${crypto.randomBytes(2).toString('hex')}.bak`;
   await fsp.copyFile(HOSTS_PATH, path.join(dir, name));
   return { name };
 });
-handle('hosts:backups', async () => {
+handle(CH.HOSTS.BACKUPS, async () => {
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
   try { return (await fsp.readdir(dir)).map(n => path.join(dir, n)).reverse(); } catch (err) { return []; }
 });
-handle('hosts:restore', async (e, backupPath) => {
+handle(CH.HOSTS.RESTORE, async (e, backupPath) => {
   // 只允许还原本机制作、且位于 hosts-backup 目录内的备份，
   // 避免误传/构造任意路径把无关文件写进系统 hosts。
   const dir = path.resolve(path.join(app.getPath('userData'), 'hosts-backup'));
@@ -1679,7 +1680,7 @@ function broadcastAccent(id) {
     try { w.webContents.send('aux:accent', id); } catch (e) {}
   }
 }
-handle('app:set-accent', (e, id) => {
+handle(CH.APP.SET_ACCENT, (e, id) => {
   const accent = ACCENT_IDS.indexOf(id) !== -1 ? id : 'polar';
   currentAccent = accent;
   broadcastAccent(accent);
@@ -1690,7 +1691,7 @@ handle('app:set-accent', (e, id) => {
 
 /* screen ruler floating window */
 let rulerWin = null;
-handle('win:ruler', (e, dir) => {
+handle(CH.WIN.RULER, (e, dir) => {
   if (rulerWin && !rulerWin.isDestroyed()) rulerWin.close();
   const horizontal = dir !== 'v';
   rulerWin = new BrowserWindow({
@@ -1706,11 +1707,11 @@ handle('win:ruler', (e, dir) => {
   rulerWin.loadFile('ruler.html', { query: { dir: horizontal ? 'h' : 'v', accent: currentAccent } });
   return true;
 });
-handle('win:ruler:close', () => {
+handle(CH.WIN.RULER_CLOSE, () => {
   if (rulerWin && !rulerWin.isDestroyed()) rulerWin.close();
   return true;
 });
-handle('win:ruler:move', (e, x, y) => {
+handle(CH.WIN.RULER_MOVE, (e, x, y) => {
   if (!rulerWin || rulerWin.isDestroyed()) return false;
   const px = Math.round(Number(x) || 0), py = Math.round(Number(y) || 0);
   const disp = screen.getDisplayNearestPoint({ x: px + 20, y: py + 20 });
@@ -1724,12 +1725,12 @@ handle('win:ruler:move', (e, x, y) => {
 });
 
 /* screen */
-handle('screen:cursor', () => {
+handle(CH.SCREEN.CURSOR, () => {
   const pt = screen.getCursorScreenPoint();
   const d = screen.getDisplayNearestPoint(pt);
   return { x: pt.x, y: pt.y, display: { bounds: d.bounds, scaleFactor: d.scaleFactor } };
 });
-handle('screen:capture', async () => {
+handle(CH.SCREEN.CAPTURE, async () => {
   const pt = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(pt);
   const sources = await desktopCapturer.getSources({
@@ -1746,21 +1747,21 @@ handle('screen:capture', async () => {
 });
 
 /* clipboard */
-handle('clip:write-text', (e, text) => { clipboard.writeText(text); return true; });
-handle('clip:read-text', () => clipboard.readText());
-handle('clip:write-image', (e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
-handle('clip:read-image', () => {
+handle(CH.CLIP.WRITE_TEXT, (e, text) => { clipboard.writeText(text); return true; });
+handle(CH.CLIP.READ_TEXT, () => clipboard.readText());
+handle(CH.CLIP.WRITE_IMAGE, (e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
+handle(CH.CLIP.READ_IMAGE, () => {
   const img = clipboard.readImage();
   if (img.isEmpty()) return null;
   return img.toDataURL();
 });
 
 /* lunar */
-handle('lunar:s2l', (e, y, m, d) => solarlunar.solar2lunar(y, m, d));
-handle('lunar:l2s', (e, y, m, d, leap) => solarlunar.lunar2solar(y, m, d, !!leap));
+handle(CH.LUNAR.S2L, (e, y, m, d) => solarlunar.solar2lunar(y, m, d));
+handle(CH.LUNAR.L2S, (e, y, m, d, leap) => solarlunar.lunar2solar(y, m, d, !!leap));
 
 /* qrcode (main side, lib is CJS) */
-handle('qr:generate', async (e, text, opts = {}) => {
+handle(CH.QR.GENERATE, async (e, text, opts = {}) => {
   const QRCode = require('qrcode');
   const buf = await QRCode.toBuffer(text, {
     type: 'png', width: opts.size || 320, margin: opts.margin != null ? opts.margin : 2,
@@ -1832,7 +1833,7 @@ function findSoffice() {
   } catch (err) {}
   return null;
 }
-handle('office:status', async () => {
+handle(CH.OFFICE.STATUS, async () => {
   const soffice = findSoffice();
   /* 【必须用 throwOnNonZero，否则恒为 true】
    * 原写法靠 PowerShell 里 `catch{exit 1}` 表达「没装 Office」，但 runCmd 默认
@@ -1848,7 +1849,7 @@ handle('office:status', async () => {
   } catch (err) { office = false; }
   return { soffice, office };
 });
-handle('office:convert', async (e, { files, target, outDir }) => {
+handle(CH.OFFICE.CONVERT, async (e, { files, target, outDir }) => {
   const soffice = findSoffice();
   const results = [];
   await fsp.mkdir(outDir, { recursive: true });
@@ -1960,7 +1961,7 @@ const CTX_ROOTS = [
   ['HKCR\\Folder\\shell', '所有对象 · 自定义菜单'],
   ['HKCR\\AllFilesystemObjects\\shellex\\ContextMenuHandlers', '全部对象 · 扩展处理器']
 ];
-handle('ctxmenu:list', async () => {
+handle(CH.CTXMENU.LIST, async () => {
   const groups = [];
   for (const [key, label] of CTX_ROOTS) {
     const items = [];
@@ -1995,7 +1996,7 @@ handle('ctxmenu:list', async () => {
   }
   return groups;
 });
-handle('ctxmenu:toggle', async (e, item, disable) => {
+handle(CH.CTXMENU.TOGGLE, async (e, item, disable) => {
   // keyPath 是「从 reg query 输出里正则解析出来的字符串」，再拼进 reg add/delete。
   // 必须限制在 CTX_ROOTS 这些允许的根之下，否则解析出畸形路径就能写任意注册表位置。
   const FULL_ROOTS = CTX_ROOTS.map(([k]) => k.replace(/^HKCR/i, 'HKEY_CLASSES_ROOT'));
@@ -2016,7 +2017,7 @@ handle('ctxmenu:toggle', async (e, item, disable) => {
 });
 
 /* ================= IPC: 电池健康度 ================= */
-handle('sys:battery-detail', async () => {
+handle(CH.SYS.BATTERY_DETAIL, async () => {
   try {
     const design = await ps(`@(Get-CimInstance -Namespace root\\wmi -ClassName BatteryStaticData | Select-Object DesignedCapacity) | ConvertTo-Json -Compress`, 15000);
     const full = await ps(`@(Get-CimInstance -Namespace root\\wmi -ClassName BatteryFullChargedCapacity | Select-Object FullChargedCapacity) | ConvertTo-Json -Compress`, 15000);
@@ -2064,7 +2065,7 @@ async function findEsExeAsync() {
   } catch (e) {}
   return p;
 }
-handle('search:env', async () => {
+handle(CH.SEARCH.ENV, async () => {
   const admin = await (async () => { try { return (await runCmd('net', ['session'], { timeout: 6000 })).code === 0; } catch (e) { return false; } })();
   const es = await findEsExeAsync();
   const volumes = [];
@@ -2076,13 +2077,13 @@ handle('search:env', async () => {
   } catch (err) {}
   return { admin, es, volumes };
 });
-handle('search:index-status', () => {
+handle(CH.SEARCH.INDEX_STATUS, () => {
   const out = {};
   for (const [drive, idx] of searchIndexes) out[drive] = { count: idx.count, builtAt: idx.builtAt };
   return out;
 });
-handle('search:free', () => { searchIndexes.clear(); return true; });
-handle('search:build', async (e, driveLetter) => {
+handle(CH.SEARCH.FREE, () => { searchIndexes.clear(); return true; });
+handle(CH.SEARCH.BUILD, async (e, driveLetter) => {
   const drive = String(driveLetter || '').toUpperCase();
   if (!/^[A-Z]:$/.test(drive)) throw new Error('无效的盘符');
   const id = 'usn' + (++jobSeq);
@@ -2193,7 +2194,7 @@ Add-Type -TypeDefinition $src
   return { drive, count };
   } finally { jobs.delete(id); }
 });
-handle('search:query', async (e, { q, drive, limit, stat }) => {
+handle(CH.SEARCH.QUERY, async (e, { q, drive, limit, stat }) => {
   const query = String(q || '').trim().toLowerCase();
   if (!query) return { rows: [], total: 0, ms: 0 };
   const t0 = Date.now();
@@ -2219,7 +2220,7 @@ handle('search:query', async (e, { q, drive, limit, stat }) => {
   }
   return { rows, total: rows.length, ms: Date.now() - t0 };
 });
-handle('search:es', async (e, { q, limit }) => {
+handle(CH.SEARCH.ES, async (e, { q, limit }) => {
   const es = await findEsExeAsync();
   if (!es) throw new Error('未找到 es.exe（Everything 命令行工具），请安装 Everything 后重试');
   const query = String(q || '').trim();
@@ -2237,7 +2238,7 @@ handle('search:es', async (e, { q, limit }) => {
   }));
   return { rows, total: rows.length, ms: Date.now() - t0 };
 });
-handle('search:quick', (e, { root, q, limit }) => {
+handle(CH.SEARCH.QUICK, (e, { root, q, limit }) => {
   const query = String(q || '').trim().toLowerCase();
   if (!query) return { id: null };
   const id = 'qs' + (++jobSeq);
@@ -2284,7 +2285,7 @@ handle('search:quick', (e, { root, q, limit }) => {
  */
 
 /* ================= IPC: 文件内容搜索（流式） ================= */
-handle('content:search', (e, { root, q, useRegex, ci, exts, limit }) => {
+handle(CH.CONTENT.SEARCH, (e, { root, q, useRegex, ci, exts, limit }) => {
   const id = 'cs' + (++jobSeq);
   const cancelRef = { canceled: false };
   const kill = () => { cancelRef.canceled = true; };
@@ -2372,19 +2373,19 @@ async function createPinWindow(srcPath) {
 }
 /* win:pin-image 通道已移除：截图「贴图」与「贴剪贴板图片」都直接调
  * createPinWindow()，没有渲染层调用方。函数本身保留，它是这两条路径的实现。 */
-handle('win:pin-move', (e, id, x, y) => {
+handle(CH.WIN.PIN_MOVE, (e, id, x, y) => {
   const bw = pinWinOf(id);
   if (!bw) return false;   // 找不到就如实说没做到，不再假装成功
   bw.setPosition(Math.round(x), Math.round(y));
   return true;
 });
-handle('win:pin-resize', (e, id, w, h) => {
+handle(CH.WIN.PIN_RESIZE, (e, id, w, h) => {
   const bw = pinWinOf(id);
   if (!bw) return false;
   bw.setSize(Math.max(80, Math.round(w)), Math.max(60, Math.round(h)));
   return true;
 });
-handle('win:pin-close', (e, id) => {
+handle(CH.WIN.PIN_CLOSE, (e, id) => {
   const bw = pinWinOf(id);
   if (!bw) return false;
   bw.close();
@@ -2414,7 +2415,7 @@ async function winmgrRun(method) {
   const r = await ps('Add-Type -TypeDefinition @\'\n' + WINMGR_CS + '\n\'@\n' + method, 25000);
   return r.stdout;
 }
-handle('winmgr:list', async () => {
+handle(CH.WINMGR.LIST, async () => {
   const out = await winmgrRun('[HeheWin.Util]::List()');
   const rows = [];
   for (const line of out.split(/\r?\n/)) {
@@ -2423,9 +2424,9 @@ handle('winmgr:list', async () => {
   }
   return rows;
 });
-handle('winmgr:topmost', (e, hwnd, on) => winmgrRun(`[HeheWin.Util]::Topmost(${+hwnd}, ${on ? '$true' : '$false'})`));
-handle('winmgr:bottom', (e, hwnd) => winmgrRun(`[HeheWin.Util]::Bottom(${+hwnd})`));
-handle('winmgr:opacity', (e, hwnd, alpha) => winmgrRun(`[HeheWin.Util]::Opacity(${+hwnd}, ${Math.max(20, Math.min(255, alpha | 0))})`));
+handle(CH.WINMGR.TOPMOST, (e, hwnd, on) => winmgrRun(`[HeheWin.Util]::Topmost(${+hwnd}, ${on ? '$true' : '$false'})`));
+handle(CH.WINMGR.BOTTOM, (e, hwnd) => winmgrRun(`[HeheWin.Util]::Bottom(${+hwnd})`));
+handle(CH.WINMGR.OPACITY, (e, hwnd, alpha) => winmgrRun(`[HeheWin.Util]::Opacity(${+hwnd}, ${Math.max(20, Math.min(255, alpha | 0))})`));
 
 /* ================= IPC: 文件占用解锁（Restart Manager） =================
  * 中文 Windows 上最高频的痛点之一：删不掉、提示被占用，但不知道谁占的。
@@ -2802,8 +2803,8 @@ async function scanDirForGuard(root, relBase = '') {
 
 /* 生成不覆盖的目标路径（定义在文件上部，此处不再重复） */
 
-handle('seven:status', () => ({ za: sevenZa, full: findSevenFull() }));
-handle('seven:compress', async (e, { files, out, password, volumeMB }) => {
+handle(CH.SEVEN.STATUS, () => ({ za: sevenZa, full: findSevenFull() }));
+handle(CH.SEVEN.COMPRESS, async (e, { files, out, password, volumeMB }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
   if (!/\.7z$/i.test(out)) out += '.7z';
@@ -2817,7 +2818,7 @@ handle('seven:compress', async (e, { files, out, password, volumeMB }) => {
   let size = 0; try { size = (await fsp.stat(first)).size; } catch (e) {}
   return { out: first, size };
 });
-handle('seven:extract', async (e, { archive, outDir, password }) => {
+handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
   await fsp.mkdir(outDir, { recursive: true });
@@ -2892,7 +2893,7 @@ handle('seven:extract', async (e, { archive, outDir, password }) => {
 });
 
 /* ================= IPC: WiFi 密码查看 ================= */
-handle('wifi:profiles', async () => {
+handle(CH.WIFI.PROFILES, async () => {
   const r = await runCmd('netsh', ['wlan', 'show', 'profiles'], { timeout: 15000, encoding: 'gbk' });
   const names = [];
   for (const line of r.stdout.split(/\r?\n/)) {
@@ -2902,7 +2903,7 @@ handle('wifi:profiles', async () => {
   if (!names.length) throw new Error('未找到已保存的 WiFi 配置文件（可能没有无线网卡或未连接过 WiFi）');
   return { names };
 });
-handle('wifi:key', async (e, name) => {
+handle(CH.WIFI.KEY, async (e, name) => {
   const r = await runCmd('netsh', ['wlan', 'show', 'profile', 'name=' + name, 'key=clear'], { timeout: 15000, encoding: 'gbk' });
   const out = r.stdout;
   /* 【必须逐行取，不能对整段跑 /...$/】
@@ -2924,14 +2925,14 @@ handle('wifi:key', async (e, name) => {
 });
 
 /* ================= IPC: 文本朗读（System.Speech 本地 TTS） ================= */
-handle('tts:voices', async () => {
+handle(CH.TTS.VOICES, async () => {
   const r = await ps(`Add-Type -AssemblyName System.Speech; $p=New-Object System.Speech.Synthesis.SpeechSynthesizer; @($p.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }) | ConvertTo-Json -Compress`, 25000);
   let arr; try { arr = JSON.parse(r.stdout || '[]'); } catch (e) { arr = []; }
   if (!Array.isArray(arr)) arr = [arr];
   return { voices: arr.filter(Boolean) };
 });
 function ttsEsc(s) { return String(s).replace(/'/g, "''"); }
-handle('tts:speak', (e, { text, voice, rate, volume }) => {
+handle(CH.TTS.SPEAK, (e, { text, voice, rate, volume }) => {
   const id = 'tts' + (++jobSeq);
   const script = `Add-Type -AssemblyName System.Speech; $p=New-Object System.Speech.Synthesis.SpeechSynthesizer;` +
     (voice ? `try{$p.SelectVoice('${ttsEsc(voice)}')}catch{};` : '') +
@@ -2942,7 +2943,7 @@ handle('tts:speak', (e, { text, voice, rate, volume }) => {
   proc.on('exit', () => { jobs.delete(id); send('job:stream', { id, data: JSON.stringify({ done: true }) }); });
   return { id };
 });
-handle('tts:wav', async (e, { text, out, voice, rate }) => {
+handle(CH.TTS.WAV, async (e, { text, out, voice, rate }) => {
   const script = `Add-Type -AssemblyName System.Speech; $p=New-Object System.Speech.Synthesis.SpeechSynthesizer;` +
     (voice ? `try{$p.SelectVoice('${ttsEsc(voice)}')}catch{};` : '') +
     `$p.Rate=[int]${Math.max(-10, Math.min(10, rate || 0))};$p.SetOutputToWaveFile('${ttsEsc(out)}');$p.Speak('${ttsEsc(text)}');$p.Dispose();Write-Output OK`;
@@ -2956,7 +2957,7 @@ handle('tts:wav', async (e, { text, out, voice, rate }) => {
 // ConvertTo-Json 会把枚举序列化成数字，直接传给渲染端会与字符串 'Running' 比对不上，
 // 导致所有服务都显示成「已停止」、「停止」按钮永远不出现。这里统一转成字符串。
 const SVC_STATUS = { 1: 'Stopped', 2: 'StartPending', 3: 'StopPending', 4: 'Running', 5: 'ContinuePending', 6: 'PausePending', 7: 'Paused' };
-handle('svc:list', async () => {
+handle(CH.SVC.LIST, async () => {
   const r = await ps(`@(Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -Compress)`, 30000);
   let arr; try { arr = JSON.parse(r.stdout || '[]'); } catch (e) { arr = []; }
   if (!Array.isArray(arr)) arr = [arr];
@@ -2983,7 +2984,7 @@ const PROTECTED_SVCS = new Set([
   'lsm', 'samss', 'winmgmt', 'themes', 'audiosrv', 'dhcp', 'dnscache',
   'lanmanworkstation', 'nsi'
 ]);
-handle('svc:action', async (e, name, action) => {
+handle(CH.SVC.ACTION, async (e, name, action) => {
   if (!['start', 'stop'].includes(action)) throw new Error('不支持的操作');
   // 启动服务是无害的恢复操作；停止服务会让依赖它的程序异常退出，才需要高危授权
   if (action === 'stop' && !dangerousEnabled('service-stop')) throw new Error(dangerousDenied('service-stop'));
@@ -3013,7 +3014,7 @@ handle('svc:action', async (e, name, action) => {
   }
   return true;
 });
-handle('power:list', async () => {
+handle(CH.POWER.LIST, async () => {
   const r = await runCmd('powercfg', ['/list'], { timeout: 15000, encoding: 'gbk' });
   const plans = [];
   for (const line of r.stdout.split(/\r?\n/)) {
@@ -3022,7 +3023,7 @@ handle('power:list', async () => {
   }
   return plans;
 });
-handle('power:set', async (e, guid) => {
+handle(CH.POWER.SET, async (e, guid) => {
   await runCmd('powercfg', ['/setactive', guid], { timeout: 15000, encoding: 'gbk' });
   return true;
 });
@@ -3144,7 +3145,7 @@ function downloadToFile(url, dest, id, ctrl, label) {
   });
 }
 /* ================= IPC: 通用文件下载（断点续传） ================= */
-handle('net:download', (e, { url, out }) => {
+handle(CH.NET.DOWNLOAD, (e, { url, out }) => {
   /* 【下载前必须查覆盖】downloadToFile 最后是 fsp.rename(tmp, dest)，
    * 而 Windows 上 rename 目标已存在会直接覆盖 —— 用户手输的保存路径
    * 一旦撞上已有文件，那个文件会被静默抹掉，界面上只显示「下载完成」。
@@ -3231,8 +3232,8 @@ async function snipStart(mode) {
   snipWin.show();
   return { ok: true };
 }
-handle('snip:start', (e, mode) => snipStart(mode));
-handle('snip:finish', async (e, { action, dataUrl, rect }) => {
+handle(CH.SNIP.START, (e, mode) => snipStart(mode));
+handle(CH.SNIP.FINISH, async (e, { action, dataUrl, rect }) => {
   const winToClose = snipWin;
   snipWin = null;
   try { if (winToClose && !winToClose.isDestroyed()) winToClose.close(); } catch (err) {}
@@ -3282,7 +3283,7 @@ async function pinClipboardImage() {
   const r = await createPinWindow(file);
   return { ok: true, ...r };
 }
-handle('snip:pin-clipboard', () => pinClipboardImage());
+handle(CH.SNIP.PIN_CLIPBOARD, () => pinClipboardImage());
 
 /* ================= IPC: 检查更新（GitHub Releases；NSIS 安装版走 electron-updater） ================= */
 // ETag 条件请求 + 本地缓存：命中缓存/304 时不消耗匿名限流配额（60 次/时/IP）
@@ -3298,7 +3299,7 @@ function updateCacheSet(patch) {
 // force 节流：设置页连点「检查更新」不应连发请求（防止打满限流配额）
 const UPDATE_FORCE_MIN_GAP = 10 * 1000;
 let lastForceCheckAt = 0;
-handle('update:check', async (e, opts = {}) => {
+handle(CH.UPDATE.CHECK, async (e, opts = {}) => {
   const current = app.getVersion();
   const force = !!(opts && opts.force);
   if (force) {
@@ -3376,7 +3377,7 @@ function psSingleQuote(s) { return "'" + String(s).replace(/'/g, "''") + "'"; }
  * 用一个模块级标志挡住第二次即可 —— 升级本来就不可能并行。 */
 let updateApplying = false;
 let updateApplyingCommitted = false;
-handle('update:apply', async (e, opts = {}) => {
+handle(CH.UPDATE.APPLY, async (e, opts = {}) => {
   if (updateApplying) throw new Error('升级已经在进行中，请稍候（应用即将自动重启）。');
   updateApplying = true;
   try {
@@ -3554,7 +3555,7 @@ async function pruneExeBackups(exePath, keep = 3) {
   return { removed, bytes };
 }
 
-handle('update:cleanup', async () => {
+handle(CH.UPDATE.CLEANUP, async () => {
   const dir = path.join(app.getPath('userData'), 'update');
   const current = app.getVersion();
   const pendingName = updatePendingGet().pendingName || null; // 正在等待安装的那份
@@ -3592,7 +3593,7 @@ handle('update:cleanup', async () => {
   return { removed, bytes, kept, bakRemoved, bakBytes };
 });
 // 记下“已下载、等待安装”的那份包名，供 update:cleanup 豁免
-handle('update:mark-pending', (e, name) => {
+handle(CH.UPDATE.MARK_PENDING, (e, name) => {
   updateCacheSet({ pendingName: name ? String(name) : null });
   return true;
 });
@@ -3699,7 +3700,7 @@ function armAllSchedules() {
   const list = storeGet('settings.schedules', []);
   for (const s of list) armSchedule(s, false);
 }
-handle('sched:list', () => storeGet('settings.schedules', []));
+handle(CH.SCHED.LIST, () => storeGet('settings.schedules', []));
 // 周期任务参数校验：渲染层有过滤不代表 IPC 层安全。
 // everyMin 传 NaN 时 Math.max(60000, NaN) 得 NaN，setInterval(fn, NaN) 退化为约 1ms 一次，
 // 会把主进程变成提醒风暴（还连带不断写 store）。这里统一收口成合法值或直接拒绝。
@@ -3740,7 +3741,7 @@ function nextLocalId(prefix) {
   return prefix + Date.now() + '-' + (++_localIdSeq);
 }
 
-handle('sched:add', (e, s) => {
+handle(CH.SCHED.ADD, (e, s) => {
   const clean = normSchedule(s);
   clean.id = nextLocalId('sc');
   const list = storeGet('settings.schedules', []);
@@ -3749,7 +3750,7 @@ handle('sched:add', (e, s) => {
   armSchedule(clean, false);
   return list;
 });
-handle('sched:remove', (e, id) => {
+handle(CH.SCHED.REMOVE, (e, id) => {
   const t = schedTimers.get(id);
   if (t) { clearTimeout(t.timeout); if (t.interval) clearInterval(t.interval); schedTimers.delete(id); }
   const list = storeGet('settings.schedules', []).filter(x => x.id !== id);
@@ -3758,7 +3759,7 @@ handle('sched:remove', (e, id) => {
 });
 
 /* ================= IPC: 7z 压缩包内容预览 ================= */
-handle('seven:list', async (e, { archive, password }) => {
+handle(CH.SEVEN.LIST, async (e, { archive, password }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
   const args = ['l', '-bd', '-slt'];
@@ -3780,7 +3781,7 @@ handle('seven:list', async (e, { archive, password }) => {
 });
 
 /* ================= IPC: 笔记导出 PDF（离屏渲染 printToPDF） ================= */
-handle('notes:pdf', async (e, { title, html, outPath }) => {
+handle(CH.NOTES.PDF, async (e, { title, html, outPath }) => {
   let outFile = outPath || '';
   if (!outFile) {
     const out = await dialog.showSaveDialog(win || null, { defaultPath: (title || '笔记') + '.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] });
@@ -3803,7 +3804,7 @@ handle('notes:pdf', async (e, { title, html, outPath }) => {
 });
 
 /* ================= IPC: 剪贴板图片转文件（防 store JSON 膨胀） ================= */
-handle('clip:save-image', async (e, dataUrl) => {
+handle(CH.CLIP.SAVE_IMAGE, async (e, dataUrl) => {
   const dir = path.join(app.getPath('userData'), 'clip-img');
   await fsp.mkdir(dir, { recursive: true });
   const name = 'clip-' + Date.now() + '-' + (++clipImgSeq) + '.png';
@@ -3819,7 +3820,7 @@ function isClipImgPath(p) {
     return abs.startsWith(dir + path.sep) && /\.png$/i.test(abs);
   } catch (e) { return false; }
 }
-handle('clip:remove-images', async (e, files) => {
+handle(CH.CLIP.REMOVE_IMAGES, async (e, files) => {
   let removed = 0, failed = 0;
   for (const f of (Array.isArray(files) ? files : [files])) {
     if (!f || !isClipImgPath(f)) { failed++; continue; }
@@ -3844,7 +3845,7 @@ handle('clip:remove-images', async (e, files) => {
 // 把 "系统找不到指定的注册表项" 误读成了 "Invalid key name"。
 const WIN11_CTX_KEY = 'HKEY_CURRENT_USER\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}';
 const WIN11_CTX_HANDLER = WIN11_CTX_KEY + '\\InprocServer32';
-handle('ctxmenu:classic', async (e, on, restart) => {
+handle(CH.CTXMENU.CLASSIC, async (e, on, restart) => {
   if (on) {
     // /ve /d "" /f：建 InprocServer32 并把默认值显式置为空字符串（不置空则可能继承旧值）
     await runCmd('reg', ['add', WIN11_CTX_HANDLER, '/ve', '/t', 'REG_SZ', '/d', '', '/f'], { timeout: 10000 });
@@ -3874,7 +3875,7 @@ async function ctxClassicState() {
     return line.replace(/.*REG_SZ\s*/i, '').trim() === '';
   } catch (e) { return false; }
 }
-handle('ctxmenu:classic-status', async () => ({ on: await ctxClassicState() }));
+handle(CH.CTXMENU.CLASSIC_STATUS, async () => ({ on: await ctxClassicState() }));
 
 /* ============ 目录搬家 + 权限/链接 两个域（任务 5 搬到 ipc/dir-acl-links.js）============
  * dir:move 的实现也在那个模块里（历史原因见该文件头部）。

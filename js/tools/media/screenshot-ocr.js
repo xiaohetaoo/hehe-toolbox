@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— screenshot-ocr（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, copyText, filePicker, progressEl } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'screenshot-ocr', name: '截图 OCR 文字识别', module: MOD, icon: 'eye',
-    desc: '粘贴截图或选择图片，本地识别中英文文字（首次需下载语言包）',
+    id: 'screenshot-ocr', name: '截图 OCR 文字识别', nameEn: 'Screenshot OCR', module: MOD, icon: 'eye',
+    desc: '粘贴截图或选择图片，本地识别中英文文字（首次需下载语言包）', descEn: 'Paste a screenshot or pick an image and read the text locally',
     keywords: ['ocr', '识别', '截图', '文字'],
     render(page) {
       const langSel = h('select', { class: 'select input-sm' },
@@ -71,7 +72,7 @@ register({
       }
       async function handleFile(pathArg, blob) {
         if (blob) return fromBlob(blob);
-        const r = await invoke('fs:read-file-b64', pathArg);
+        const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pathArg);
         const bin = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
         const type = pathArg.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
         await fromBlob(new Blob([bin], { type }), pathArg);
@@ -99,7 +100,7 @@ register({
       });
       const pasteBtn = btn('粘贴截图（Win+Shift+S 后点这里）', 'btn-secondary', async () => {
         try {
-          const imgData = await invoke('clip:read-image');
+          const imgData = await invoke(Channels.CHANNELS.CLIP.READ_IMAGE);
           if (!imgData) return toast('剪贴板中没有图片', 'warn');
           const bin = Uint8Array.from(atob(imgData.split(',')[1]), c => c.charCodeAt(0));
           await fromBlob(new Blob([bin], { type: 'image/png' }), '剪贴板图片');

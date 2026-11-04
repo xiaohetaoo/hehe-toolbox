@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— av-info（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, filePicker, fmtBytes, renderTable } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'av-info', name: '音视频信息查看', module: MOD, icon: 'film',
-    desc: '查看音视频编码、分辨率、码率、时长、声道等详细参数',
+    id: 'av-info', name: '音视频信息查看', nameEn: 'Media Info', module: MOD, icon: 'film',
+    desc: '查看音视频编码、分辨率、码率、时长、声道等详细参数', descEn: 'Inspect codec, resolution, bitrate, duration and channel details of media files',
     keywords: ['音视频', '信息', 'ffprobe', '元数据'],
     render(page) {
       const result = div('');
@@ -16,7 +17,7 @@ register({
         result.innerHTML = '';
         result.appendChild(window.ui.loadingBlock('读取媒体信息…'));
         try {
-          const m = await invoke('ffmpeg:probe', p);
+          const m = await invoke(Channels.CHANNELS.FFMPEG.PROBE, p);
           result.innerHTML = '';
           const fmt = m.format || {};
           const card = div('card');
@@ -68,7 +69,7 @@ register({
         onChange: (items) => { if (items.length) probe(items[0].path); }
       });
       page.appendChild(div('card', picker.el, result));
-      invoke('ffmpeg:status').then(r => { if (!r.ffmpeg) probe(''); }).catch(() => {});
+      invoke(Channels.CHANNELS.FFMPEG.STATUS).then(r => { if (!r.ffmpeg) probe(''); }).catch(() => {});
     }
   })
 })();

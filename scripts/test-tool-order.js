@@ -51,7 +51,14 @@ function readTools() {
   for (const f of files) {
     const s = fs.readFileSync(path.join(dir, f), 'utf8');
     const cm = s.match(/const MOD = '([^']+)'/);
-    const re = /\{\s*\n?\s*id: '([^']+)',\s*name: '([^']+)',\s*module: ([^,]+),/g;
+    /* 【正则要容忍 name 与 module 之间夹着别的键】
+     * v0.4.2 给每个工具加了 nameEn，字面量变成
+     *   id: 'x', name: '中文', nameEn: 'English', module: 'y',
+     * 原来那条 `name: '...',\s*module:` 会因此一条都匹配不到 ——
+     * 结果不是报「ORDER 有错」，而是「注册工具数 0」，看起来像工具全丢了。
+     * 现在允许中间出现任意个 `键: 值,`，但仍要求 id/name/module 三者都在
+     * 同一个字面量里，避免跨工具误匹配。 */
+    const re = /\{\s*\n?\s*id: '([^']+)',\s*name: '([^']+)',(?:\s*[A-Za-z_$][\w$]*:\s*(?:'[^']*'|[A-Za-z_$.]+),)*\s*module: ([^,]+),/g;
     let m;
     while ((m = re.exec(s))) {
       let mod = m[3].trim();

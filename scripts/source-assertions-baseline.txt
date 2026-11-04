@@ -75,8 +75,8 @@ scripts/test-powergate.js | A=2 | B=0 | legacy-source-assertion
 scripts/test-pwd-bias.js | A=1 | B=0 | legacy-source-assertion
 scripts/test-random-inputs.js | A=1 | B=0 | exact:迁移自 round15 的 11a/11b。两个 input 是否是不同元素、rangeA 是否只出现一次，属于 DOM 结构断言，要验行为得起渲染层。
 scripts/test-reentry-guard.js | A=7 | B=23 | legacy-read
-scripts/test-regressions.js | A=1 | B=64 | legacy-source-assertion
-scripts/test-report-fixes.js | A=1 | B=38 | legacy-read
+scripts/test-regressions.js | A=1 | B=59 | legacy-source-assertion
+scripts/test-report-fixes.js | A=1 | B=35 | legacy-read
 scripts/test-runcmd.js | A=0 | B=1 | legacy-source-assertion
 scripts/test-schedule.js | A=0 | B=3 | legacy-source-assertion
 scripts/test-shell-unsub.js | A=0 | B=1 | exact:shellCleanup 的 splice 形态与 9 个事件的 sub 登记，行为面已由本文件前 3 条真实 bus 断言覆盖，这 3 条锁的是源码里确实这么写
@@ -91,7 +91,7 @@ scripts/test-svc-action.js | A=0 | B=3 | legacy-source-assertion
 scripts/test-target-e2e.js | A=1 | B=0 | e2e-fixture
 scripts/test-tool-i18n.js | A=4 | B=4 | legacy-source-assertion
 scripts/test-tool-order.js | A=2 | B=2 | legacy-source-assertion
-scripts/test-tray-i18n.js | A=3 | B=2 | e2e-fixture
+scripts/test-tray-i18n.js | A=3 | B=1 | e2e-fixture
 scripts/test-update-cleanup.js | A=0 | B=2 | legacy-source-assertion
 scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta

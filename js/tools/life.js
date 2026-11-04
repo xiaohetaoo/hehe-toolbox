@@ -1,5 +1,6 @@
 /* 模块：生活辅助 —— 番茄钟 / 日历农历 / 便签待办 / 屏幕标尺 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, confirmBox, promptBox, pad2, fmtDate, makeButtonLike } = window.ui;
@@ -8,8 +9,8 @@
 
   /* ---------- 番茄钟 / 倒计时 ---------- */
   register({
-    id: 'pomodoro', name: '番茄钟 / 倒计时', module: MOD, icon: 'timer',
-    desc: '专注计时、正计时、倒计时，完成自动提醒',
+    id: 'pomodoro', name: '番茄钟 / 倒计时', nameEn: 'Pomodoro', module: MOD, icon: 'timer',
+    desc: '专注计时、正计时、倒计时，完成自动提醒', descEn: 'Pomodoro timer with focus and break cycles',
     keywords: ['番茄钟', '专注', '倒计时', '计时'],
     render(page) {
       let mode = 'pomodoro'; // pomodoro | countdown | stopwatch
@@ -176,8 +177,8 @@
 
   /* ---------- 日历与农历 ---------- */
   register({
-    id: 'calendar-lunar', name: '日历与农历', module: MOD, icon: 'calendar',
-    desc: '公农历互转、月历视图、节日与节气查询',
+    id: 'calendar-lunar', name: '日历与农历', nameEn: 'Calendar & Lunar', module: MOD, icon: 'calendar',
+    desc: '公农历互转、月历视图、节日与节气查询', descEn: 'Solar and lunar date conversion with festivals and the 24 solar terms',
     keywords: ['日历', '农历', '节气', '黄历'],
     render(page) {
       const today = new Date();
@@ -205,7 +206,7 @@
         for (let d = 1; d <= days; d++) {
           let lunarText = '';
           try {
-            const l = await invoke('lunar:s2l', viewYear, viewMonth + 1, d);
+            const l = await invoke(Channels.CHANNELS.LUNAR.S2L, viewYear, viewMonth + 1, d);
             if (t !== drawSeq) return;
             lunarText = l.isTerm ? l.term : (l.lDay === 1 ? l.monthCn : l.dayCn);
           } catch (e) { lunarText = ''; }
@@ -231,7 +232,7 @@
       async function showInfo(y, m, d) {
         const token = ++infoSeq;
         try {
-          const l = await invoke('lunar:s2l', y, m, d);
+          const l = await invoke(Channels.CHANNELS.LUNAR.S2L, y, m, d);
           if (token !== infoSeq) return; // 已切到别的日期，丢弃过期响应
           info.innerHTML = '';
           const card = div('card');
@@ -252,7 +253,7 @@
       const sBtn = btn('公历 → 农历', 'btn-sm btn-primary', async () => {
         try {
           const [y, m, d] = sIn.value.split('-').map(Number);
-          const l = await invoke('lunar:s2l', y, m, d);
+          const l = await invoke(Channels.CHANNELS.LUNAR.S2L, y, m, d);
           sOut.textContent = `${l.yearCn}年 ${l.monthCn}${l.dayCn}（${l.animal}年 · ${l.gzYear}${l.gzMonth}${l.gzDay}）`;
         } catch (e) { toast(e.message || String(e), 'error'); }
       });
@@ -263,7 +264,7 @@
       const lLeap = h('input', { type: 'checkbox', class: 'checkbox' });
       const lBtn = btn('农历 → 公历', 'btn-sm btn-secondary', async () => {
         try {
-          const r = await invoke('lunar:l2s', parseInt(lY.value), parseInt(lM.value), parseInt(lD.value), lLeap.checked);
+          const r = await invoke(Channels.CHANNELS.LUNAR.L2S, parseInt(lY.value), parseInt(lM.value), parseInt(lD.value), lLeap.checked);
           if (r === -1) { lOut.textContent = '无效的农历日期'; return; }
           lOut.textContent = `${r.cYear}-${pad2(r.cMonth)}-${pad2(r.cDay)}`;
         } catch (e) { lOut.textContent = e.message; }
@@ -281,24 +282,24 @@
 
   /* ---------- 便签 / 待办 ---------- */
   register({
-    id: 'notes', name: '便签 / 待办', module: MOD, icon: 'note',
-    desc: '桌面便签与待办清单，本地保存',
+    id: 'notes', name: '便签 / 待办', nameEn: 'Sticky Notes & To-do', module: MOD, icon: 'note',
+    desc: '桌面便签与待办清单，本地保存', descEn: 'Desktop sticky notes and a to-do list, saved locally',
     keywords: ['便签', '待办', 'todo', '清单'],
     render(page) {
       const list = div('');
       const input = h('input', { class: 'input', placeholder: '记录一条待办 / 便签，回车添加…', style: { flex: '1' } });
       async function load() {
-        const items = await invoke('store:get', 'notes', []);
+        const items = await invoke(Channels.CHANNELS.STORE.GET, 'notes', []);
         list.innerHTML = '';
         if (!items.length) { list.appendChild(div('empty-tip', '还没有便签，添加第一条吧')); return; }
         for (const it of [...items].sort((a, b) => (a.done - b.done) || (b.time - a.time))) {
           const cb = h('input', { type: 'checkbox', class: 'checkbox', checked: it.done });
           cb.addEventListener('change', async () => {
             /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-            const items = await invoke('store:get', 'notes', []);
+            const items = await invoke(Channels.CHANNELS.STORE.GET, 'notes', []);
             const t = items.find(x => x.id === it.id);
             if (t) t.done = cb.checked;
-            await invoke('store:set', 'notes', items);
+            await invoke(Channels.CHANNELS.STORE.SET, 'notes', items);
             load();
           });
           const row = div('form-row', cb,
@@ -306,11 +307,11 @@
             h('span', { class: 'field-hint' }, fmtDate(it.time, false)),
             btn('删除', 'btn-sm btn-text', async () => {
               /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-              const items = await invoke('store:get', 'notes', []);
+              const items = await invoke(Channels.CHANNELS.STORE.GET, 'notes', []);
               const idx = items.findIndex(x => x.id === it.id);
               if (idx < 0) { load(); return; } // 重复点击时条目已删，避免 splice(-1) 误删末条
               items.splice(idx, 1);
-              await invoke('store:set', 'notes', items);
+              await invoke(Channels.CHANNELS.STORE.SET, 'notes', items);
               load();
             }));
           list.appendChild(row);
@@ -319,9 +320,9 @@
       async function add() {
         const text = input.value.trim();
         if (!text) return;
-        const items = await invoke('store:get', 'notes', []);
+        const items = await invoke(Channels.CHANNELS.STORE.GET, 'notes', []);
         items.push({ id: 'n' + Date.now(), text, done: false, time: Date.now() });
-        await invoke('store:set', 'notes', items);
+        await invoke(Channels.CHANNELS.STORE.SET, 'notes', items);
         input.value = '';
         load();
       }
@@ -335,8 +336,8 @@
 
   /* ---------- 屏幕标尺 ---------- */
   register({
-    id: 'screen-ruler', name: '屏幕标尺', module: MOD, icon: 'ruler',
-    desc: '像素级透明悬浮标尺，横竖切换，实时读数',
+    id: 'screen-ruler', name: '屏幕标尺', nameEn: 'Screen Ruler', module: MOD, icon: 'ruler',
+    desc: '像素级透明悬浮标尺，横竖切换，实时读数', descEn: 'Measure pixels on screen with a horizontal or vertical ruler',
     keywords: ['标尺', '像素', '测量'],
     render(page) {
       page.appendChild(window.ui.placeholder('ruler', '屏幕标尺', '点击下方按钮将打开一个透明悬浮的像素标尺窗口，支持横向 / 纵向切换，拖动边缘可调整长度，双击关闭。'));
@@ -344,7 +345,7 @@
       const openVBtn = btn('打开纵向标尺', 'btn-secondary btn-lg', () => openRuler('v'), 'ruler');
       async function openRuler(dir) {
         if (!isDesktop) return toast('桌面端可用', 'warn');
-        try { await invoke('win:ruler', dir); } catch (e) { toast(e.message, 'error'); }
+        try { await invoke(Channels.CHANNELS.WIN.RULER, dir); } catch (e) { toast(e.message, 'error'); }
       }
       page.appendChild(div('card', div('form-row', openBtn, ' ', openVBtn)));
     }

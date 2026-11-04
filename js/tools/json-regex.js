@@ -6,8 +6,8 @@
 
   /* ---------- JSON 格式化 ---------- */
   register({
-    id: 'json-format', name: 'JSON 格式化', module: 'dev', icon: 'code',
-    desc: 'JSON 压缩、格式化、校验、树形展开查看',
+    id: 'json-format', name: 'JSON 格式化', nameEn: 'JSON Formatter', module: 'dev', icon: 'code',
+    desc: 'JSON 压缩、格式化、校验、树形展开查看', descEn: 'Format, minify and validate JSON, with a collapsible tree',
     keywords: ['json', '格式化', '校验', '美化'],
     render(page) {
       const ta = h('textarea', { class: 'pane-ta', placeholder: '粘贴 JSON 字符串…', style: { minHeight: '220px' } });
@@ -119,8 +119,8 @@
 
   /* ---------- 正则测试 ---------- */
   register({
-    id: 'regex-test', name: '正则测试', module: 'dev', icon: 'regex',
-    desc: '正则匹配测试、分组提取、批量替换、常用模板',
+    id: 'regex-test', name: '正则测试', nameEn: 'Regex Test', module: 'dev', icon: 'regex',
+    desc: '正则匹配测试、分组提取、批量替换、常用模板', descEn: 'Test regular expressions with highlighting and captured groups',
     keywords: ['正则', 'regex', 'regexp', '匹配', '替换'],
     render(page) {
       const patternIn = h('input', { class: 'input mono', placeholder: '输入正则表达式', value: '', style: { flex: '1' } });

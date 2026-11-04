@@ -1,5 +1,6 @@
 'use strict';
 const { t, done } = require('./lib/harness');
+const { handlerIndex } = require('./lib/seg-from-handler');
 /* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
 const { rmDir } = require('./lib/test-fs');
 /* 分片与流式响应的行为测试（原 test-round15 的 13a / 13b / 14a）。
@@ -21,7 +22,7 @@ const mainSrc = require('./lib/harness').readMain({ raw: true });
 /* 递归删临时目录。Windows 上刚关的句柄要等几百毫秒，一次性 rmSync 会 EPERM。 */
 t('13a split-file 失败时销毁读流并清掉分片', () => {
   const code = stripComments(mainSrc);
-  const i = code.indexOf("handle('fs:split-file'");
+  const i = handlerIndex(code, 'fs:split-file');
   assert.ok(i > 0, '找不到 fs:split-file');
   const seg = code.slice(i, i + 4200);
   /* 锁的是：「13a split-file 失败时销毁读流并清掉分片」这一组回归。
@@ -44,7 +45,7 @@ t('13a split-file 失败时销毁读流并清掉分片', () => {
 
 t('13b 行为：预置同名分片后调用，reject 且不残留', async () => {
   const code = stripComments(mainSrc);
-  const i = code.indexOf("handle('fs:split-file'");
+  const i = handlerIndex(code, 'fs:split-file');
   const open = code.indexOf('{', i);
   let depth = 0, j = open, inS = null;
   while (j < code.length) {
@@ -83,9 +84,9 @@ t('13b 行为：预置同名分片后调用，reject 且不残留', async () => 
 
 t('14a 静态服务用 pipeline（或 res.on(close)) 保证销毁读流', () => {
   const code = stripComments(mainSrc);
-  const i = code.indexOf("handle('server:start'");
+  const i = handlerIndex(code, 'server:start');
   assert.ok(i > 0, '找不到 server:start');
-  const seg = code.slice(i, code.indexOf("handle('server:stop'"));
+  const seg = code.slice(i, handlerIndex(code, 'server:stop'));
   /* 【不能只看"文件里出现过 pipeline("】
    * 兜底的 catch 分支里也有一句 pipeline 相关代码，把主路径退回成裸
    * `stream.pipe(res)` 后，`pipeline(` 这个词仍然存在 → 断言照样绿

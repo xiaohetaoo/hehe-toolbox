@@ -24,11 +24,13 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 
-/* 每个窗口有两个脚本块，都必须留在原位置（合并会破依赖 DOM 的那部分） */
+/* 每个窗口有三个脚本块，都必须留在原位置（合并会破依赖 DOM 的那部分）：
+ * channels.js 是 IPC 通道名常量表（v0.4.2 起辅助窗口也走常量），
+ * 必须排在 DOM 逻辑之前，否则后者取 window.Channels 会拿到 undefined。 */
 const WINDOWS = [
-  { html: 'pin.html', js: ['js/auxwin/pin-1.js', 'js/auxwin/pin-2.js'] },
-  { html: 'ruler.html', js: ['js/auxwin/ruler-1.js', 'js/auxwin/ruler-2.js'] },
-  { html: 'snip.html', js: ['js/auxwin/snip-1.js', 'js/auxwin/snip-2.js'] },
+  { html: 'pin.html', shared: ['js/channels.js'], js: ['js/auxwin/pin-1.js', 'js/auxwin/pin-2.js'] },
+  { html: 'ruler.html', shared: ['js/channels.js'], js: ['js/auxwin/ruler-1.js', 'js/auxwin/ruler-2.js'] },
+  { html: 'snip.html', shared: ['js/channels.js'], js: ['js/auxwin/snip-1.js', 'js/auxwin/snip-2.js'] },
 ];
 
 for (const w of WINDOWS) {
@@ -55,13 +57,28 @@ for (const w of WINDOWS) {
   t(`${w.html}: 引用的外部脚本存在`, () => {
     const refs = [...html.matchAll(/<script\s+src="([^"]+)"/g)].map((m) => m[1]);
     assert.ok(refs.length > 0, '没有引用任何外部脚本');
-    // 每个窗口应引用两个块（配色初始化 + DOM 逻辑），顺序不能合并
-    assert.strictEqual(refs.length, w.js.length, `${w.html} 引用了 ${refs.length} 个脚本，预期 ${w.js.length} 个`);
+    /* 顺序不能合并：channels.js（常量表）→ 配色初始化 → DOM 逻辑 */
+    const expected = [...w.shared, ...w.js];
+    assert.strictEqual(refs.length, expected.length, `${w.html} 引用了 ${refs.length} 个脚本，预期 ${expected.length} 个`);
+    for (const r of expected) {
+      /* 锁的是：v0.4.2 给三个辅助窗口加 channels.js 之后，引用清单仍要完整 ——
+     * 少引一个脚本的后果是打包后白屏或取不到通道常量，而两者都只在运行时才炸。
+     * 不能用行为断言替代：这三个窗口是透明/置顶/无边框，headless 下连尺寸都不准。 */
+    assert.ok(refs.includes(r), `${w.html} 少引用了 ${r}（打包后会白屏或取不到通道常量）`);
+    }
     for (const r of refs) {
       const p = path.join(ROOT, r);
       assert.ok(fs.existsSync(p), '引用的脚本不存在（打包后会白屏）：' + r);
       assert.ok(fs.statSync(p).size > 100, '脚本文件异常小：' + r);
     }
+  });
+
+  /* 常量表必须排在用到它的脚本之前，否则 window.Channels 是 undefined */
+  t(`${w.html}: channels.js 排在 DOM 逻辑之前`, () => {
+    const sharedPos = html.indexOf(w.shared[0]);
+    const logicPos = html.indexOf(w.js[1]);
+    assert.ok(sharedPos > 0, `${w.html} 没有引用 ${w.shared[0]}`);
+    assert.ok(sharedPos < logicPos, `${w.shared[0]} 排在 ${w.js[1]} 之后，后者取 window.Channels 会是 undefined`);
   });
 
   /* 依赖 DOM 的那个块必须排在 body 元素之后（否则 canvas 还不存在就 getContext） */
@@ -83,7 +100,7 @@ for (const w of WINDOWS) {
 t('抽出的外部脚本语法可解析', () => {
   const vm = require('vm');
   for (const w of WINDOWS) {
-    for (const f of w.js) {
+    for (const f of [...w.shared, ...w.js]) {
       const code = fs.readFileSync(path.join(ROOT, f), 'utf8');
       // 只做语法检查，不执行（这些脚本依赖 DOM/window）
       new vm.Script(code, { filename: f });
@@ -94,7 +111,7 @@ t('抽出的外部脚本语法可解析', () => {
 /* 脚本里不能残留 <script> 标签（抽取时的常见错误） */
 t('外部脚本里没有残留 HTML 标签', () => {
   for (const w of WINDOWS) {
-    for (const f of w.js) {
+    for (const f of [...w.shared, ...w.js]) {
       const code = fs.readFileSync(path.join(ROOT, f), 'utf8');
       assert.ok(!/<script|<\/script>/i.test(code), f + ' 里还留着 <script> 标签');
     }

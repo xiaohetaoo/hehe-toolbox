@@ -130,13 +130,24 @@ const media = readTree('js/tools/media') || '';
  * 只能看源码形态 —— 真跑要一张 260 字符以上的深路径素材。 */
 chk(media.includes('function normAbs'), 'media.js 有路径归一化函数');
 
-/* --- 重复注册检查 --- */
+/* --- 重复注册检查 ---
+ * 通道在 v0.4.2 全部换成了 CH.<组>.<键> 常量，所以这里要同时扫字面量与常量，
+ * 否则「重复注册」这项检查会退化成「一次都没扫到」然后永远通过（最糟的假绿）。
+ * 统计时把常量路径还原成真实通道名，才能真的比较是否重复。 */
+const chTable = require('../lib/channels').flatten();
 const re = /handle\('([^']+)'/g;
+const reConst = /handle\((?:dirMoveCh|CH)\.([A-Z0-9_]+)\.([A-Z0-9_]+)\s*,/g;
 const seen = new Map();
 let m;
 while ((m = re.exec(main))) {
   if (!seen.has(m[1])) seen.set(m[1], 0);
   seen.set(m[1], seen.get(m[1]) + 1);
+}
+while ((m = reConst.exec(main))) {
+  const key = m[1] + '.' + m[2];
+  const name = chTable[key] || ('(未登记 ' + key + ')');
+  if (!seen.has(name)) seen.set(name, 0);
+  seen.set(name, seen.get(name) + 1);
 }
 const dups = [...seen.entries()].filter(([, n]) => n > 1);
 chk(dups.length === 0, '没有重复注册的 IPC 通道' + (dups.length ? '（' + dups.map(d => d[0]).join(',') + '）' : ''));

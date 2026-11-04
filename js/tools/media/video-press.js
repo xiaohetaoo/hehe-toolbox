@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— video-press（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker, fmtBytes } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'video-press', name: '视频压制', module: MOD, icon: 'film',
-    desc: 'H.264/H.265 重编码瘦身：预设、CRF、分辨率、音频码率，压完看省了多少',
+    id: 'video-press', name: '视频压制', nameEn: 'Video Compress', module: MOD, icon: 'film',
+    desc: 'H.264/H.265 重编码瘦身：预设、CRF、分辨率、音频码率，压完看省了多少', descEn: 'Shrink video with CRF, resolution and encoder control (ffmpeg)',
     keywords: ['压制', '视频', '压缩', 'h265', 'hevc', '瘦身', '体积'],
     render(page) {
       /* 文件清单/删除由 filePicker 负责；压制进度与节省体积写回列表行 */
@@ -31,7 +32,7 @@ register({
       const stripChk = h('input', { type: 'checkbox', class: 'checkbox' }); stripChk.checked = true;
       const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空 = 源文件目录/hehe-pressed）', style: { flex: '1' } });
       const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) outDirIn.value = d[0];
       });
       const picker = filePicker({
@@ -54,7 +55,7 @@ register({
       let running = false;
       let runJobId = null; // 本页任务的 job id：按 id 精确取消，避免 cancel-latest 取消到别的任务
       const startBtn = btn('开始压制', 'btn-primary', run, 'send');
-      const cancelBtn = btn('取消', 'btn-danger-plain', () => { if (runJobId) invoke('job:kill', runJobId).catch(() => {}); }, 'square');
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); }, 'square');
       cancelBtn.disabled = true;
       function applyPreset() {
         const v = presetSel.value;
@@ -68,7 +69,7 @@ register({
       async function run() {
         if (!picker.count) return toast('请先选择视频', 'warn');
         if (running) return;
-        const st = await invoke('ffmpeg:status').catch(() => ({ ffmpeg: null }));
+        const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) {
           toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
           window.App.openTool('ffmpeg-setup');
@@ -101,7 +102,7 @@ register({
         });
         if (window.App && App.onCleanup) App.onCleanup(unsub);
         try {
-          const r = await invoke('ffmpeg:press', {
+          const r = await invoke(Channels.CHANNELS.FFMPEG.PRESS, {
             items: picker.paths, outDir,
             opts: {
               vcodec: codecSel.value, crf: parseInt(crfIn.value) || 23, preset: speedSel.value,

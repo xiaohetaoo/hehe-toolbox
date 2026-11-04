@@ -16,15 +16,15 @@
 
   function browserFallback(ch, args) {
     switch (ch) {
-      case 'store:get': return lsGet(args[0], args[1]);
-      case 'store:set': lsSet(args[0], args[1]); return true;
+      case window.Channels.CHANNELS.STORE.GET: return lsGet(args[0], args[1]);
+      case window.Channels.CHANNELS.STORE.SET: lsSet(args[0], args[1]); return true;
       /* store:remove / win:is-maximized / server:status 三条模拟分支已删除：
        * 主进程侧对应的通道都确认无调用方并已移除，模拟分支留着只会让
        * 「哪些通道真实存在」这件事出现两份互相矛盾的清单。 */
-      case 'app:get-info':
+      case window.Channels.CHANNELS.APP.GET_INFO:
         return { appVersion: '1.0.0', electron: '-', node: '-', chrome: navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || '-', platform: 'browser', userData: '(浏览器演示模式)', exePath: '-', hostname: 'demo', username: 'demo' };
-      case 'app:get-autostart': return false;
-      case 'app:set-hotkey': return true;
+      case window.Channels.CHANNELS.APP.GET_AUTOSTART: return false;
+      case window.Channels.CHANNELS.APP.SET_HOTKEY: return true;
       default:
         throw new Error('浏览器演示模式不支持该功能，请运行桌面版（npm start）');
     }

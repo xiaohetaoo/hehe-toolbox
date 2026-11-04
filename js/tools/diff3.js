@@ -21,6 +21,7 @@
  * 不适用于"大段插入删除"的重构对比。
  */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, copyText } = window.ui;
   const { invoke } = window.api;
@@ -28,10 +29,10 @@
 
   register({
     id: 'diff3',
-    name: '三栏对比',
+    name: '三栏对比', nameEn: 'Three-way Compare',
     module: MOD,
     icon: 'git-compare',
-    desc: '以基准版本为中心，并排看 A / B 两处改动，冲突行标红',
+    desc: '以基准版本为中心，并排看 A / B 两处改动，冲突行标红', descEn: 'Compare a base version against two changed versions side by side',
     keywords: ['三路', '三栏', '合并', 'merge', 'diff3', '冲突', '对比'],
     render(page) {
       const mk = (ph) => h('textarea', { class: 'pane-ta mono', placeholder: ph, style: { minHeight: '150px' } });
@@ -43,9 +44,9 @@
       function openTo(ta) {
         return async () => {
           try {
-            const p = await invoke('dialog:open', { properties: ['openFile'] });
+            const p = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openFile'] });
             if (!p || !p[0]) return;
-            const r = await invoke('fs:read-text', p[0]);
+            const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p[0]);
             ta.value = r.content;
           } catch (e) { toast('读取失败：' + e.message, 'error'); }
         };

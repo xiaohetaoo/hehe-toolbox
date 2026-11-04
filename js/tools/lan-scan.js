@@ -1,5 +1,6 @@
 /* 模块：网络运维 —— 局域网设备扫描 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, renderTable, copyText, progressEl, guard } = window.ui;
   const { invoke } = window.api;
@@ -7,10 +8,10 @@
 
   register({
     id: 'lan-scan',
-    name: '局域网设备',
+    name: '局域网设备', nameEn: 'LAN Scan',
     module: MOD,
     icon: 'wifi',
-    desc: '扫描本机所在网段，列出网里有哪设备（IP / MAC / 主机名），可复制成表格',
+    desc: '扫描本机所在网段，列出网里有哪设备（IP / MAC / 主机名），可复制成表格', descEn: 'Find devices on the local network with their IP, MAC and vendor',
     keywords: ['局域网', 'LAN', '内网', '扫描', '设备', 'ARP', '网段', '谁在线', 'scan'],
     render(page) {
       const state = { result: null, ip: null };
@@ -79,7 +80,7 @@
 
         try {
           /* 带上用户选定的网卡地址（没选就传空，由主进程按私有网段默认挑） */
-          const r = await invoke('lan:scan', state.ip ? { ip: state.ip } : {});
+          const r = await invoke(Channels.CHANNELS.LAN.SCAN, state.ip ? { ip: state.ip } : {});
           state.result = r;
           render();
           syncIfaceSel(r);

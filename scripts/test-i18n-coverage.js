@@ -1,5 +1,6 @@
 'use strict';
 const { t, done, readMain } = require('./lib/harness');
+const { handlerIndex } = require('./lib/seg-from-handler');
 const mainSrc = readMain({ raw: true });
 /* 英文界面的设置页不能有中文残留（P1-2 的回归测试）。
  *
@@ -374,7 +375,7 @@ t('regexAllowed：除号与正则要能分开', () => {
 
 t('DANGEROUS_CAPS 的名称/描述中英双语，且随语言切换', () => {
   const a = mainSrc.indexOf('const CAP_TEXT = {');
-  const b = mainSrc.indexOf("handle('dangerous:list'");
+  const b = handlerIndex(mainSrc, 'dangerous:list');
   assert.ok(a > 0 && b > a, '找不到 CAP_TEXT 区块');
   const body = mainSrc.slice(a, b);
   const mk = new Function('let uiLang = "zh"; ' + body +

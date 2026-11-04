@@ -1,5 +1,6 @@
 /* 模块：多媒体处理 —— img-compress（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker, fmtBytes, progressEl } = window.ui;
   const { invoke } = window.api;
@@ -7,8 +8,8 @@
   const { isImgPath, IMG_FILTER, loadImg } = window.MediaShared;
 
 register({
-    id: 'img-compress', name: '图片压缩', module: MOD, icon: 'image',
-    desc: '智能压缩 / 指定质量 / 压到目标体积，JPG·WebP·PNG 输出与前后大小对比',
+    id: 'img-compress', name: '图片压缩', nameEn: 'Image Compress', module: MOD, icon: 'image',
+    desc: '智能压缩 / 指定质量 / 压到目标体积，JPG·WebP·PNG 输出与前后大小对比', descEn: 'Shrink images with a quality slider and a size target',
     keywords: ['压缩', '图片', '体积', 'webp', '缩小', '瘦身'],
     render(page) {
       /* 文件清单/删除由 filePicker 负责；压缩进度与前后体积直接写回列表行 */
@@ -26,7 +27,7 @@ register({
         h('option', { value: 'image/png' }, 'PNG'));
       const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空 = 原图目录/hehe-compressed）', style: { flex: '1' } });
       const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) outDirIn.value = d[0];
       });
       const refreshMode = () => {
@@ -141,7 +142,7 @@ register({
         prog.show(); status.textContent = '';
         const paths = picker.paths.slice();
         const outDir = outDirIn.value.trim() || (paths[0].replace(/[\\/][^\\/]+$/, '') + '/hehe-compressed');
-        try { await invoke('fs:mkdir', outDir); } catch (e) {}
+        try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) {}
         let totalBefore = 0, totalAfter = 0, ok = 0, fail = 0;
         for (let i = 0; i < paths.length; i++) {
           prog.set((i + 1) / paths.length * 100);
@@ -154,7 +155,7 @@ register({
           }
           try {
             const img = await loadImg(p);
-            const orig = (await invoke('fs:stat', p)).size;
+            const orig = (await invoke(Channels.CHANNELS.FS.STAT, p)).size;
             let mime;
             if (fmtSel.value === 'smart') mime = hasAlpha(img) ? 'image/webp' : 'image/jpeg';
             else mime = fmtSel.value;
@@ -174,9 +175,9 @@ register({
             const ext = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png';
             // 同名不同扩展（a.png + a.jpg → 都是 a.jpg）时自动加序号，避免互相覆盖
             let outPath = outDir.replace(/[\\/]$/, '') + '/' + name.replace(/\.\w+$/, '') + ext;
-            outPath = await invoke('fs:unique-path', outPath);
-            await invoke('fs:write-file-b64', outPath, du.split(',')[1]);
-            const newSize = (await invoke('fs:stat', outPath)).size;
+            outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, outPath);
+            await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, du.split(',')[1]);
+            const newSize = (await invoke(Channels.CHANNELS.FS.STAT, outPath)).size;
             ok++; totalBefore += orig; totalAfter += newSize;
             const pct = Math.round((1 - newSize / orig) * 100);
             const sizeEl = row && row.querySelector('.comp-size'), tagEl = row && row.querySelector('.tag');

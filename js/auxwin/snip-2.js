@@ -261,7 +261,7 @@
         octx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sel.w, sel.h);
         payload.dataUrl = out.toDataURL('image/png');
       }
-      try { hehe.invoke('snip:finish', payload).catch(() => {}); } catch (e) {}
+      try { hehe.invoke(window.Channels.CHANNELS.SNIP.FINISH, payload).catch(() => {}); } catch (e) {}
       try { window.close(); } catch (e) {}
     }
     window.addEventListener('keydown', (e) => {

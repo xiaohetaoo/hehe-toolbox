@@ -1,5 +1,6 @@
 /* 模块：多媒体处理 —— img-batch（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker, fmtBytes, progressEl } = window.ui;
   const { invoke } = window.api;
@@ -7,8 +8,8 @@
   const { isImgPath, IMG_FILTER, loadImg } = window.MediaShared;
 
 register({
-    id: 'img-batch', name: '图片批量处理', module: MOD, icon: 'image',
-    desc: '批量缩放、旋转、格式转换（JPG/PNG/WebP）、压缩',
+    id: 'img-batch', name: '图片批量处理', nameEn: 'Batch Images', module: MOD, icon: 'image',
+    desc: '批量缩放、旋转、格式转换（JPG/PNG/WebP）、压缩', descEn: 'Process a whole folder of images at once: resize, convert, rename',
     keywords: ['图片', '批量', '缩放', '转换', '压缩'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
@@ -26,7 +27,7 @@ register({
       const qualityIn = h('input', { type: 'number', class: 'input input-sm', value: '85', min: '10', max: '100', style: { width: '80px' } });
       const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空=覆盖式输出到 <原图>.processed）', style: { flex: '1' } });
       const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) outDirIn.value = d[0];
       });
       const prog = progressEl(); prog.hide();
@@ -43,8 +44,8 @@ register({
         if (!outDir) {
           const firstDir = paths[0].replace(/[\\/][^\\/]+$/, '');
           outDir = firstDir + '/hehe-processed';
-          try { await invoke('fs:mkdir', outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
-        } else { try { await invoke('fs:mkdir', outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); } }
+          try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
+        } else { try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); } }
         let ok = 0, fail = 0;
         preview.innerHTML = '';
         try {
@@ -82,11 +83,11 @@ register({
             // （例如 a.png 转 jpg 时会盖掉原本就存在的 a.jpg，
             //  或上一轮的输出 a.jpg 被这一轮冲掉）。
             // fs:unique-path 在目标不存在时原样返回，所以无损。
-            const finalPath = await invoke('fs:unique-path', outPath);
-            await invoke('fs:write-file-b64', finalPath, dataUrl.split(',')[1]);
+            const finalPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, outPath);
+            await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, finalPath, dataUrl.split(',')[1]);
             ok++;
-            const origSize = (await invoke('fs:stat', p)).size;
-            const newSize = (await invoke('fs:stat', finalPath)).size;
+            const origSize = (await invoke(Channels.CHANNELS.FS.STAT, p)).size;
+            const newSize = (await invoke(Channels.CHANNELS.FS.STAT, finalPath)).size;
             preview.appendChild(div('form-row', h('span', { class: 'tag tag-green' }, '✓'), h('span', { style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, name),
               h('span', { class: 'field-hint' }, `${fmtBytes(origSize)} → ${fmtBytes(newSize)}（${newSize <= origSize ? '-' : '+'}${Math.abs((1 - newSize / origSize) * 100).toFixed(0)}%）`)));
           } catch (e) { fail++; preview.appendChild(div('form-row', h('span', { class: 'tag tag-red' }, '✗'), h('span', { style: { fontSize: '12px' } }, p), h('span', { class: 'field-err' }, e.message))); }

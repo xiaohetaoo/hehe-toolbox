@@ -1,13 +1,14 @@
 /* 模块：文本与编码 —— 文本批量处理 / 统计 / 大小写 / 简繁 / CSV */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, copyText, convertLayout, renderTable, fmtNum, makeButtonLike } = window.ui;
   const { invoke } = window.api;
   const MOD = 'text';
 
   register({
-    id: 'text-batch', name: '文本批量处理', module: MOD, icon: 'list',
-    desc: '去空行、去重、排序、反转、增删前后缀、拆分合并一步到位',
+    id: 'text-batch', name: '文本批量处理', nameEn: 'Batch Text', module: MOD, icon: 'list',
+    desc: '去空行、去重、排序、反转、增删前后缀、拆分合并一步到位', descEn: 'Apply find and replace or encoding changes to many text files',
     keywords: ['去重', '排序', '空行', '批处理', '行'],
     render(page) {
       const ta = h('textarea', { class: 'pane-ta', placeholder: '每行一条，粘贴文本列表…', style: { minHeight: '200px' } });
@@ -58,8 +59,8 @@
   });
 
   register({
-    id: 'text-stats', name: '文本统计', module: MOD, icon: 'eye',
-    desc: '字符数、字数、行数、词频统计',
+    id: 'text-stats', name: '文本统计', nameEn: 'Text Stats', module: MOD, icon: 'eye',
+    desc: '字符数、字数、行数、词频统计', descEn: 'Count characters, words, lines and the most frequent terms',
     keywords: ['统计', '字数', '词频', '行数'],
     render(page) {
       const ta = h('textarea', { class: 'pane-ta', placeholder: '粘贴要统计的文本…', style: { minHeight: '180px' } });
@@ -115,8 +116,8 @@
   });
 
   register({
-    id: 'case-convert', name: '大小写转换', module: MOD, icon: 'type',
-    desc: '全大写、全小写、首字母大写、驼峰/下划线互转',
+    id: 'case-convert', name: '大小写转换', nameEn: 'Case Convert', module: MOD, icon: 'type',
+    desc: '全大写、全小写、首字母大写、驼峰/下划线互转', descEn: 'Switch between camelCase, snake_case, kebab-case and more',
     keywords: ['大小写', '驼峰', 'upper', 'camel'],
     render(page) {
       const ta = h('textarea', { class: 'pane-ta', placeholder: '输入文本…', style: { minHeight: '120px' } });
@@ -139,8 +140,8 @@
   });
 
   register({
-    id: 'zh-convert', name: '简繁转换', module: MOD, icon: 'languages',
-    desc: '简体中文与繁体中文互转（OpenCC 本地引擎，离线可用）',
+    id: 'zh-convert', name: '简繁转换', nameEn: 'Chinese Convert', module: MOD, icon: 'languages',
+    desc: '简体中文与繁体中文互转（OpenCC 本地引擎，离线可用）', descEn: 'Convert between Simplified and Traditional Chinese',
     keywords: ['简繁', '繁体', '简体', 'opencc'],
     render(page) {
       const box = convertLayout({
@@ -174,8 +175,8 @@
   });
 
   register({
-    id: 'csv-json', name: 'CSV / JSON 互转', module: MOD, icon: 'table',
-    desc: 'CSV 与 JSON 表格互转，支持自定义分隔符与表头',
+    id: 'csv-json', name: 'CSV / JSON 互转', nameEn: 'CSV ↔ JSON', module: MOD, icon: 'table',
+    desc: 'CSV 与 JSON 表格互转，支持自定义分隔符与表头', descEn: 'Convert between CSV and JSON in both directions',
     keywords: ['csv', 'json', '表格', 'tsv'],
     render(page) {
       let mode = 'csv2json'; // csv2json | json2csv
@@ -251,8 +252,8 @@
 
   /* ---------- 本地笔记 ---------- */
   register({
-    id: 'local-notes', name: '本地笔记', module: MOD, icon: 'note',
-    desc: 'Markdown 笔记本：多笔记管理、实时预览、全文搜索（数据为本地 .md 文件）',
+    id: 'local-notes', name: '本地笔记', nameEn: 'Markdown Notebook', module: MOD, icon: 'note',
+    desc: 'Markdown 笔记本：多笔记管理、实时预览、全文搜索（数据为本地 .md 文件）', descEn: 'A Markdown notebook with multiple notes, live preview and full-text search (stored as local .md files)',
     keywords: ['笔记', 'note', 'markdown', 'md', '备忘'],
     render(page) {
       let notesDir = '', curName = null;
@@ -275,13 +276,13 @@
         sideList.innerHTML = '';
         const q = searchIn.value.trim().toLowerCase();
         let items = [];
-        try { items = await invoke('fs:list', notesDir); } catch (e) {}
+        try { items = await invoke(Channels.CHANNELS.FS.LIST, notesDir); } catch (e) {}
         const notes = items.filter(x => !x.isDir && /\.md$/i.test(x.name));
         const allTags = new Set();
         const notesWithTags = [];
         for (const n of notes) {
           let tags = [], content = null;
-          try { content = (await invoke('fs:read-text', n.path)).content; } catch (e) {}
+          try { content = (await invoke(Channels.CHANNELS.FS.READ_TEXT, n.path)).content; } catch (e) {}
           if (content) { const m = content.match(TAG_MARK); if (m) tags = m[1].split(',').map(x => x.trim()).filter(Boolean); }
           tags.forEach(t => allTags.add(t));
           notesWithTags.push({ n, tags, content });
@@ -310,7 +311,7 @@
       }
       async function openNote(n) {
         try {
-          const r = await invoke('fs:read-text', n.path);
+          const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, n.path);
           curName = n.name;
           titleIn.value = n.name.replace(/\.md$/i, '');
           let body = r.content;
@@ -361,7 +362,7 @@
         const curKey = curName ? String(curName).toLowerCase() : null;
         if (key !== curKey) {
           let exists = false;
-          try { exists = await invoke('fs:exists', notesDir + '/' + name); } catch (e) {}
+          try { exists = await invoke(Channels.CHANNELS.FS.EXISTS, notesDir + '/' + name); } catch (e) {}
           if (exists) {
             const ok = await window.ui.confirmBox({
               title: '笔记已存在',
@@ -373,7 +374,7 @@
         }
 
         try {
-          await invoke('fs:write-text', notesDir + '/' + name, body);
+          await invoke(Channels.CHANNELS.FS.WRITE_TEXT, notesDir + '/' + name, body);
         } catch (e) {
           toast('保存失败：' + e.message, 'error');
           return;
@@ -381,7 +382,7 @@
         // 大小写不敏感比较：Windows 上 "A.md" 与 "a.md" 是同一个文件，
         // 用 !== 判断会误以为换了名字，进而把刚写好的文件当成旧副本删掉。
         if (curName && String(curName).toLowerCase() !== key) {
-          await invoke('fs:delete', notesDir + '/' + curName).catch(() => {}); // 旧副本删不掉也不影响新内容
+          await invoke(Channels.CHANNELS.FS.DELETE, notesDir + '/' + curName).catch(() => {}); // 旧副本删不掉也不影响新内容
         }
         curName = name;
         toast('已保存', 'success', 1200);
@@ -391,7 +392,7 @@
         if (!ta.value.trim()) return toast('当前没有笔记内容', 'warn');
         try {
           const html = window.DOMPurify && window.marked ? DOMPurify.sanitize(window.marked.parse(ta.value)) : '<pre>' + escapeHtml(ta.value) + '</pre>';
-          const r = await invoke('notes:pdf', { title: titleIn.value.trim() || curName || '笔记', html });
+          const r = await invoke(Channels.CHANNELS.NOTES.PDF, { title: titleIn.value.trim() || curName || '笔记', html });
           if (r) toast('已导出：' + r.out, 'success');
         } catch (e) { toast(e.message, 'error'); }
       }
@@ -399,7 +400,7 @@
       async function removeCur() {
         if (!curName) return;
         if (!(await window.ui.confirmBox({ title: '删除笔记', message: '删除「' + curName + '」？', danger: true, okText: '删除' }))) return;
-        await invoke('fs:delete', notesDir + '/' + curName).catch(() => {});
+        await invoke(Channels.CHANNELS.FS.DELETE, notesDir + '/' + curName).catch(() => {});
         curName = null; titleIn.value = ''; ta.value = ''; renderMd();
         refreshList();
       }
@@ -422,9 +423,9 @@
         div('field-hint', '笔记为纯本地 .md 文件（数据目录 notes/），自动保存 30 秒；标签随笔记保存，可点击左侧标签快速过滤')));
       (async () => {
         try {
-          const info = await invoke('app:get-info');
+          const info = await invoke(Channels.CHANNELS.APP.GET_INFO);
           notesDir = info.userData + '/notes';
-          await invoke('fs:mkdir', notesDir).catch(() => {});
+          await invoke(Channels.CHANNELS.FS.MKDIR, notesDir).catch(() => {});
           await refreshList();
         } catch (e) { status.textContent = '初始化失败：' + e.message; }
       })();
@@ -433,8 +434,8 @@
 
   /* ---------- 文本朗读 ---------- */
   register({
-    id: 'tts', name: '文本朗读', module: MOD, icon: 'music',
-    desc: 'Windows 本地语音朗读文本，可选音色/语速/音量，可导出 WAV',
+    id: 'tts', name: '文本朗读', nameEn: 'Text to Speech', module: MOD, icon: 'music',
+    desc: 'Windows 本地语音朗读文本，可选音色/语速/音量，可导出 WAV', descEn: 'Read text aloud and export it as a WAV file',
     keywords: ['朗读', '语音', 'tts', '发声', '配音'],
     render(page) {
       const ta = h('textarea', { class: 'pane-ta', placeholder: '输入要朗读的文本…', style: { minHeight: '140px' } });
@@ -445,15 +446,15 @@
       const volLabel = h('span', { class: 'field-hint' }, '100');
       const status = h('span', { class: 'field-hint' }, '');
       const speakBtn = btn('朗读', 'btn-primary', speak, 'music');
-      const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke('job:kill', jobId).catch(() => {}); }, 'square');
+      const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); }, 'square');
       stopBtn.disabled = true;
       let jobId = null, unsub = null;
       rateIn.addEventListener('input', () => rateLabel.textContent = rateIn.value);
       volIn.addEventListener('input', () => volLabel.textContent = volIn.value);
-      invoke('tts:voices').then((r) => {
+      invoke(Channels.CHANNELS.TTS.VOICES).then((r) => {
         for (const v of r.voices) voiceSel.appendChild(h('option', { value: v }, v));
       }).catch(() => { status.textContent = '语音引擎检测失败'; });
-      window.App.onCleanup(() => { if (jobId) invoke('job:kill', jobId).catch(() => {}); if (unsub) try { unsub(); } catch (e) {} });
+      window.App.onCleanup(() => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); if (unsub) try { unsub(); } catch (e) {} });
       async function speak() {
         const text = ta.value.trim();
         if (!text) return toast('请输入文本', 'warn');
@@ -471,7 +472,7 @@
           } catch (e) {}
         });
         try {
-          const r = await invoke('tts:speak', { text, voice: voiceSel.value, rate: +rateIn.value, volume: +volIn.value });
+          const r = await invoke(Channels.CHANNELS.TTS.SPEAK, { text, voice: voiceSel.value, rate: +rateIn.value, volume: +volIn.value });
           jobId = r.id;
         } catch (e) {
           // 原来这里没有 catch：tts:speak 失败时函数直接抛出，
@@ -490,11 +491,11 @@
           btn('导出 WAV', 'btn-sm btn-secondary', async () => {
             const text = ta.value.trim();
             if (!text) return toast('请输入文本', 'warn');
-            const p = await invoke('dialog:save', { defaultPath: 'speech.wav', filters: [{ name: 'WAV', extensions: ['wav'] }] });
+            const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'speech.wav', filters: [{ name: 'WAV', extensions: ['wav'] }] });
             if (!p) return;
             status.textContent = '导出中…';
             /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-            try { const r = await invoke('tts:wav', { text, out: p, voice: voiceSel.value, rate: +rateIn.value }); status.textContent = '✓ 已导出：' + p; toast('导出完成', 'success'); }
+            try { const r = await invoke(Channels.CHANNELS.TTS.WAV, { text, out: p, voice: voiceSel.value, rate: +rateIn.value }); status.textContent = '✓ 已导出：' + p; toast('导出完成', 'success'); }
             catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
           }, 'save'), status),
         div('field-hint', '使用 Windows 内置语音（设置 → 时间和语言 → 语音 可安装更多音色，如中文 Huihui）')));

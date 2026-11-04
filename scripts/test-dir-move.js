@@ -1,17 +1,18 @@
 'use strict';
 const { t, done, readSrc, readMain } = require('./lib/harness');
+const { handlerIndex } = require('./lib/seg-from-handler');
 const path = require('path');
 const ROOT = path.join(__dirname, '..');
 /* 定位 dir:move-precheck 的注册位置：任务 6 之后通道名换成了常量，
  * 所以两种形态都要认。 */
 function precheckAt(code) {
-  const a = code.indexOf("handle('dir:move-precheck'");
+  const a = handlerIndex(code, 'dir:move-precheck');
   if (a >= 0) return a;
   return code.indexOf('handle(dirMoveCh.DIR_MOVE.PRECHECK,');
 }
 /* 定位 dir:move 的注册位置（与 precheckAt 同一套双形态识别）。 */
 function moveAt(code) {
-  const a = code.indexOf("handle('dir:move'");
+  const a = handlerIndex(code, 'dir:move');
   if (a >= 0) return a;
   return code.indexOf('handle(dirMoveCh.DIR_MOVE.MOVE,');
 }

@@ -1,5 +1,6 @@
 /* 应用外壳：导航、标签页、搜索、首页、状态栏、设置 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { div, icon, iconLg, toast, confirmBox, switchEl, fmtBytes, btn, makeButtonLike } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const R = window.Registry;
@@ -8,6 +9,9 @@
   const T = (k, v) => (window.i18n ? window.i18n.t(k, v) : k);
   const MN = (m) => (R.modName ? R.modName(m) : (m && m.name) || '');
   const MD = (m) => (R.modDesc ? R.modDesc(m) : (m && m.desc) || '');
+  /* 工具名/工具副标题的双语取值。与 MN/MD 同一套约定：英文缺失时回退中文。 */
+  const TN = (t) => (R.toolName ? R.toolName(t) : (t && t.name) || '');
+  const TD = (t) => (R.toolDesc ? R.toolDesc(t) : (t && t.desc) || '');
   let lang = 'zh';
 
   const state = {
@@ -29,11 +33,11 @@
   async function loadDangerousState() {
     if (!isDesktop) return;
     try {
-      const r = await invoke('dangerous:list');
+      const r = await invoke(Channels.CHANNELS.DANGEROUS.LIST);
       dangerousCaps = r.enabled || [];
       dangerousCapInfo = {};
       for (const c of (r.caps || [])) dangerousCapInfo[c.id] = c;
-      toolDanger = await invoke('dangerous:tool-caps');
+      toolDanger = await invoke(Channels.CHANNELS.DANGEROUS.TOOL_CAPS);
     } catch (e) { dangerousCaps = []; dangerousCapInfo = {}; toolDanger = {}; }
   }
   function isDangerTool(toolId) { return !!toolDanger[toolId]; }
@@ -64,22 +68,22 @@
    * 切三次语言就有三份监听，每份都会去 store:get 一次。 */
   let schemeListenerBound = false;
   function applyTheme() {
-    invoke('store:get', 'settings.theme', 'system').then(mode => {
+    invoke(Channels.CHANNELS.STORE.GET, 'settings.theme', 'system').then(mode => {
       setThemeAttr(mode);
     });
-    invoke('store:get', 'settings.accent', 'polar').then(accent => {
+    invoke(Channels.CHANNELS.STORE.GET, 'settings.accent', 'polar').then(accent => {
       setAccent(accent || 'polar');
     });
     if (!schemeListenerBound) {
       schemeListenerBound = true;
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', async () => {
-        const mode = await invoke('store:get', 'settings.theme', 'system');
+        const mode = await invoke(Channels.CHANNELS.STORE.GET, 'settings.theme', 'system');
         if (mode === 'system') setThemeAttr('system');
       });
     }
     // 主进程 nativeTheme 变化时同步（settings.theme-changed 携带 shouldUseDarkColors）
     themeListeners.push(on('settings.theme-changed', (isDark) => {
-      invoke('store:get', 'settings.theme', 'system').then(m => {
+      invoke(Channels.CHANNELS.STORE.GET, 'settings.theme', 'system').then(m => {
         if (m === 'system') setThemeAttr('system');
       });
     }));
@@ -89,7 +93,7 @@
     currentAccent = id;
     document.documentElement.dataset.accent = id;
     // 通知主进程广播给辅助窗口（标尺/贴图/截图标注），让它们同步换色
-    if (isDesktop) invoke('app:set-accent', id).catch(() => {});
+    if (isDesktop) invoke(Channels.CHANNELS.APP.SET_ACCENT, id).catch(() => {});
   }
   function setThemeAttr(mode) {
     let dark = false;
@@ -106,10 +110,10 @@
   async function changeTheme(mode, origin) {
     const apply = async () => {
       try {
-        await invoke('store:set', 'settings.theme', mode);
+        await invoke(Channels.CHANNELS.STORE.SET, 'settings.theme', mode);
         if (isDesktop) {
           try {
-            const isDark = await invoke('app:set-theme', mode);
+            const isDark = await invoke(Channels.CHANNELS.APP.SET_THEME, mode);
             setThemeAttr(typeof isDark === 'boolean' ? (isDark ? 'dark' : 'light') : mode);
           } catch (e) { setThemeAttr(mode); }
         } else {
@@ -136,13 +140,13 @@
 
   /* ============ 收藏 / 最近使用 ============ */
   async function loadUserData() {
-    state.favorites = await invoke('store:get', 'favorites', []);
-    state.recents = await invoke('store:get', 'recents', []);
+    state.favorites = await invoke(Channels.CHANNELS.STORE.GET, 'favorites', []);
+    state.recents = await invoke(Channels.CHANNELS.STORE.GET, 'recents', []);
   }
   async function toggleFavorite(toolId) {
     const i = state.favorites.indexOf(toolId);
     if (i >= 0) state.favorites.splice(i, 1); else state.favorites.unshift(toolId);
-    await invoke('store:set', 'favorites', state.favorites);
+    await invoke(Channels.CHANNELS.STORE.SET, 'favorites', state.favorites);
     toast(i >= 0 ? T('toast.favRemoved') : T('toast.favAdded'), 'success', 1000);
     // 原地更新星标：不重建工具页，避免清空用户未保存的输入/结果
     const starBtn = document.querySelector('.tool-header .th-star');
@@ -156,7 +160,7 @@
   }
   async function pushRecent(toolId) {
     state.recents = [toolId, ...state.recents.filter(x => x !== toolId)].slice(0, 12);
-    await invoke('store:set', 'recents', state.recents);
+    await invoke(Channels.CHANNELS.STORE.SET, 'recents', state.recents);
   }
 
   /* ============ 工具检索 ============
@@ -181,14 +185,14 @@
     // 拆成两栏后说明固定从同一 x 起排，像一张表，扫读快得多。
     const main = div('sr-main');
     main.appendChild(icon(t.icon));
-    main.appendChild(h('span', { class: 'sr-name', html: highlightHit(t.name, q) }));
+    main.appendChild(h('span', { class: 'sr-name', html: highlightHit(TN(t), q) }));
     if (isDangerTool(t.id)) main.appendChild(h('span', { class: 'sr-danger' }, isDangerEnabled(t.id) ? T('badge.danger') : T('badge.disabled')));
     main.appendChild(h('span', { class: 'sr-module' }, mod ? MN(mod) : ''));
     row.appendChild(main);
-    row.appendChild(h('span', { class: 'sr-desc', title: t.desc || '' }, t.desc || ''));
+    row.appendChild(h('span', { class: 'sr-desc', title: TD(t) }, TD(t)));
     /* 结果行是 div + click：Tab 走不到、回车无反应。
      * 读屏名称用「工具名 + 所属模块」，光读个名字没有上下文。 */
-    makeButtonLike(row, t.name + (mod ? '（' + MN(mod) + '）' : ''));
+    makeButtonLike(row, TN(t) + (mod ? '（' + MN(mod) + '）' : ''));
     return row;
   }
   /* Ctrl+K 的去向：在首页就聚焦首页那个大搜索框，在别的页面聚焦标题栏的。
@@ -300,11 +304,11 @@
       await changeTheme(cur === 'dark' ? 'light' : 'dark', { x: e.clientX, y: e.clientY });
     });
     const minBtn = h('button', { class: 'tb-btn', title: T('common.minimize') }, icon('minus', 'icon-lg'));
-    minBtn.addEventListener('click', () => invoke('win:minimize').catch(() => {}));
+    minBtn.addEventListener('click', () => invoke(Channels.CHANNELS.WIN.MINIMIZE).catch(() => {}));
     maxBtn = h('button', { class: 'tb-btn', title: T('common.maximize') }, icon('square', 'icon-lg'));
-    maxBtn.addEventListener('click', () => invoke('win:maximize').catch(() => {}));
+    maxBtn.addEventListener('click', () => invoke(Channels.CHANNELS.WIN.MAXIMIZE).catch(() => {}));
     const closeBtn = h('button', { class: 'tb-btn close', title: T('common.close') }, icon('x', 'icon-lg'));
-    closeBtn.addEventListener('click', () => invoke('win:close').catch(() => {}));
+    closeBtn.addEventListener('click', () => invoke(Channels.CHANNELS.WIN.CLOSE).catch(() => {}));
     tbRight.appendChild(themeBtn); tbRight.appendChild(minBtn); tbRight.appendChild(maxBtn); tbRight.appendChild(closeBtn);
 
     titlebar.appendChild(breadcrumbEl);
@@ -486,7 +490,7 @@
     else if (v.type === 'tool') {
       const t = R.get(v.toolId); const m = t && R.MODULES.find(x => x.id === t.module);
       add(m ? MN(m) : '', '', () => m && showView({ type: 'module', moduleId: m.id }));
-      add(t ? t.name : '', 'bc-current');
+      add(t ? TN(t) : '', 'bc-current');
     }
     else if (v.type === 'fav') add(T('nav.favorites'), 'bc-current');
     else if (v.type === 'settings') add(T('settings.title'), 'bc-current');
@@ -502,19 +506,19 @@
       if (!t) continue;
       const tab = div('tab' + (state.view.type === 'tool' && state.view.toolId === id ? ' active' : ''));
       tab.appendChild(icon(t.icon));
-      tab.appendChild(h('span', null, t.name));
+      tab.appendChild(h('span', null, TN(t)));
       const c = h('span', { class: 'tab-close' }, icon('x'));
       /* 关闭按钮是 span + click，同样进不了 Tab 序列。
        * 它的读屏名称必须带上是**哪个**标签 —— 一屏可能开着五六个标签，
        * 全读成「关闭」的话用户不知道会关掉哪一个。 */
-      makeButtonLike(c, T('tab.closeNamed', { name: t.name }));
+      makeButtonLike(c, T('tab.closeNamed', { name: TN(t) }));
       /* 关闭按钮的键盘处理要在父级之前 stopPropagation：
        * 否则按下回车会同时触发「关闭」和「切换到该标签」两个动作。 */
       c.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });
       c.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); });
       tab.appendChild(c);
       tab.addEventListener('click', () => showView({ type: 'tool', toolId: id }));
-      makeButtonLike(tab, t.name);
+      makeButtonLike(tab, TN(t));
       // 鼠标中键关闭标签页
       tab.addEventListener('mousedown', (e) => {
         if (e.button === 1) { e.preventDefault(); e.stopPropagation(); closeTab(id); }
@@ -583,8 +587,8 @@
     const card = div('tool-card' + (danger ? ' danger' : '') + (danger && !dangerOn ? ' closed' : ''));
     card.appendChild(div('tc-icon', iconLg(t.icon)));
     const info = div('');
-    info.appendChild(div('tc-name', t.name));
-    info.appendChild(div('tc-desc', t.desc || ''));
+    info.appendChild(div('tc-name', TN(t)));
+    info.appendChild(div('tc-desc', TD(t)));
     // 高危标记：已开启显示「高危」，未开启显示「未启用」并加锁，提示需去设置里开启
     if (danger) {
       info.appendChild(div('tc-danger-tag', dangerOn ? '⚠ 高危' : '未启用'));
@@ -592,7 +596,7 @@
     card.appendChild(info);
     /* 工具卡是首页最主要的入口，之前纯 div + click。
      * 读屏名称带上「高危/未启用」状态，否则键盘用户不知道该页需要先去设置开启。 */
-    makeButtonLike(card, t.name + (danger ? (dangerOn ? '（' + T('badge.danger') + '）' : '（' + T('badge.disabled') + '）') : ''));
+    makeButtonLike(card, TN(t) + (danger ? (dangerOn ? '（' + T('badge.danger') + '）' : '（' + T('badge.disabled') + '）') : ''));
     if (danger && !dangerOn) {
       const lock = div('tc-lock', icon('lock'));
       card.appendChild(lock);
@@ -757,8 +761,8 @@
       const card = div('card home-recent');
       card.appendChild(div('card-title', icon('clock'), T('home.recent')));
       card.appendChild(div('recent-row', ...recents.map(t => {
-        const chip = div('recent-chip', icon(t.icon), h('span', null, t.name));
-        makeButtonLike(chip, t.name);
+        const chip = div('recent-chip', icon(t.icon), h('span', null, TN(t)));
+        makeButtonLike(chip, TN(t));
         chip.addEventListener('click', () => openTool(t.id));
         return chip;
       })));
@@ -808,8 +812,8 @@
     const head = div('tool-header');
     head.appendChild(div('th-icon', iconLg(t.icon)));
     const info = div('');
-    info.appendChild(h('h2', null, t.name));
-    info.appendChild(h('div', { class: 'th-desc' }, t.desc || ''));
+    info.appendChild(h('h2', null, TN(t)));
+    info.appendChild(h('div', { class: 'th-desc' }, TD(t)));
     head.appendChild(info);
     const starred = state.favorites.includes(toolId);
     const starBtn = btn(starred ? T('tool.favorited') : T('tool.favorite'), 'btn-secondary btn-sm th-star', () => toggleFavorite(toolId), 'star');
@@ -836,7 +840,7 @@
     // 现在：只有「整个工具的所有能力都是高危」才锁页；否则照常渲染，
     // 交由各操作自己在触发时弹门禁提示（IPC 层本来就有操作级门禁，双层覆盖）。
     if (isDangerTool(toolId) && !isDangerEnabled(toolId) && requiresWholeToolLock(toolId)) {
-      page.appendChild(await dangerLockedCard(toolId, t.name));
+      page.appendChild(await dangerLockedCard(toolId, TN(t)));
       return;
     }
     // 部分高危：渲染功能本体，但在页面顶部放一条提示，说明哪些操作需要开启
@@ -910,7 +914,7 @@
 
     const storeKey = 'toolParams.' + toolId;
     // 先回填（异步），回填期间不监听，免得把回填当作用户输入再存一次
-    invoke('store:get', storeKey, {}).then((saved) => {
+    invoke(Channels.CHANNELS.STORE.GET, storeKey, {}).then((saved) => {
       if (!saved || typeof saved !== 'object') return;
       for (const { el, key } of picked) {
         if (!(key in saved)) continue;
@@ -930,7 +934,7 @@
         if (!el.isConnected) continue;
         data[key] = el.value;
       }
-      invoke('store:set', storeKey, data).catch(() => {});
+      invoke(Channels.CHANNELS.STORE.SET, storeKey, data).catch(() => {});
     };
     const onChange = () => {
       // 防抖：滑块拖动时 input 事件很密集，每帧写一次 store 会卡
@@ -969,7 +973,7 @@
     let caps = (toolDanger[toolId] && toolDanger[toolId].caps) || [];
     if (!caps.length && isDesktop) {
       try {
-        const all = await invoke('dangerous:tool-caps');
+        const all = await invoke(Channels.CHANNELS.DANGEROUS.TOOL_CAPS);
         caps = (all && all[toolId] && all[toolId].caps) || [];
       } catch (e) { caps = []; }
     }
@@ -978,7 +982,7 @@
       /* 需要拿能力的名字与说明（tool-caps 只给 id） */
       let capInfo = {};
       try {
-        const list = await invoke('dangerous:list');
+        const list = await invoke(Channels.CHANNELS.DANGEROUS.LIST);
         for (const c of (list.caps || [])) capInfo[c.id] = c;
       } catch (e) { capInfo = {}; }
 
@@ -1002,7 +1006,7 @@
             if (!ok) { sw.set(false); return; }
           }
           try {
-            await invoke('dangerous:set', capId, v);
+            await invoke(Channels.CHANNELS.DANGEROUS.SET, capId, v);
             toast(v
               ? T('danger.enabled', { name: info.name || capId })
               : T('danger.disabledToast', { name: info.name || capId }),
@@ -1108,12 +1112,12 @@
       h('option', { value: 'zh' }, '简体中文'),
       h('option', { value: 'en' }, 'English'));
     let curLang = 'zh';
-    try { curLang = (await invoke('store:get', 'settings.lang', null)) || (window.i18n ? window.i18n.detect() : 'zh'); }
+    try { curLang = (await invoke(Channels.CHANNELS.STORE.GET, 'settings.lang', null)) || (window.i18n ? window.i18n.detect() : 'zh'); }
     catch (e) { curLang = 'zh'; }
     langSel.value = window.i18n && window.i18n.normalize(curLang) ? curLang : 'zh';
     langSel.addEventListener('change', async () => {
       const v = langSel.value;
-      try { await invoke('store:set', 'settings.lang', v); } catch (e) {}
+      try { await invoke(Channels.CHANNELS.STORE.SET, 'settings.lang', v); } catch (e) {}
       applyLang(v);
       /* toast 必须在 applyLangLabels() **之后**发：
        * 重建会换掉整个 body，先发的那条会挂在已被丢弃的容器上，用户看不到。
@@ -1135,27 +1139,27 @@
 
     const row1 = div('set-row', div('', div('set-label', T('settings.autostart')), div('set-desc', T('settings.autostartDesc'))));
     try {
-      const enabled = await invoke('app:get-autostart');
-      const sw = switchEl(enabled, async (v) => { try { await invoke('app:set-autostart', v); toast(v ? T('settings.autostartOn') : T('settings.autostartOff'), 'success'); } catch (e) { toast(e.message, 'error'); sw.set(!v); } });
+      const enabled = await invoke(Channels.CHANNELS.APP.GET_AUTOSTART);
+      const sw = switchEl(enabled, async (v) => { try { await invoke(Channels.CHANNELS.APP.SET_AUTOSTART, v); toast(v ? T('settings.autostartOn') : T('settings.autostartOff'), 'success'); } catch (e) { toast(e.message, 'error'); sw.set(!v); } });
       row1.appendChild(div('set-control', sw));
     } catch (e) { row1.appendChild(div('set-control', h('span', { class: 'field-hint' }, T('settings.browserNA')))); }
 
     // 后两项的 await 也要各自兜底：任一 IPC 拒绝都会让整个「通用」面板空白，
     // 而且是以 unhandled rejection 形式静默失败。失败时降级成一行提示即可。
     let closeToTray = true;
-    try { closeToTray = await invoke('store:get', 'settings.closeToTray', true); } catch (e) { console.error('读取托盘设置失败', e); }
+    try { closeToTray = await invoke(Channels.CHANNELS.STORE.GET, 'settings.closeToTray', true); } catch (e) { console.error('读取托盘设置失败', e); }
     const row2 = div('set-row', div('', div('set-label', T('settings.tray')), div('set-desc', T('settings.trayDesc'))));
-    row2.appendChild(div('set-control', switchEl(closeToTray, (v) => invoke('store:set', 'settings.closeToTray', v).catch((e) => toast(e.message, 'error')))));
+    row2.appendChild(div('set-control', switchEl(closeToTray, (v) => invoke(Channels.CHANNELS.STORE.SET, 'settings.closeToTray', v).catch((e) => toast(e.message, 'error')))));
 
     const row3 = div('set-row', div('', div('set-label', T('settings.hotkey')), div('set-desc', T('settings.hotkeyDesc'))));
     let hotkey = 'Alt+Shift+H';
-    try { hotkey = await invoke('store:get', 'settings.hotkey', 'Alt+Shift+H'); } catch (e) { console.error('读取热键设置失败', e); }
+    try { hotkey = await invoke(Channels.CHANNELS.STORE.GET, 'settings.hotkey', 'Alt+Shift+H'); } catch (e) { console.error('读取热键设置失败', e); }
     const hkInput = h('input', { class: 'input input-sm', value: hotkey, style: { width: '140px', textAlign: 'center' } });
     const hkBtn = btn(T('settings.apply'), 'btn-sm btn-primary', async () => {
       const v = hkInput.value.trim();
       try {
-        const ok = await invoke('app:set-hotkey', v);
-        if (ok) { await invoke('store:set', 'settings.hotkey', v); toast(T('settings.hotkeyOk'), 'success'); }
+        const ok = await invoke(Channels.CHANNELS.APP.SET_HOTKEY, v);
+        if (ok) { await invoke(Channels.CHANNELS.STORE.SET, 'settings.hotkey', v); toast(T('settings.hotkeyOk'), 'success'); }
         else toast(T('settings.hotkeyFail'), 'error');
       } catch (e) { toast(e.message, 'error'); }
     });
@@ -1241,7 +1245,7 @@
       cards.push({ el: card, mode: m.id });
       grid.appendChild(card);
     }
-    invoke('store:get', 'settings.theme', 'system').then(m => { currentMode = m || 'system'; refreshSelected(); });
+    invoke(Channels.CHANNELS.STORE.GET, 'settings.theme', 'system').then(m => { currentMode = m || 'system'; refreshSelected(); });
     // 主题卡片放在标题下方独立区域
     row.style.display = 'block';
     row.appendChild(grid);
@@ -1268,7 +1272,7 @@
       card.appendChild(div('accent-desc', a.desc));
       card.addEventListener('click', async () => {
         try {
-          await invoke('store:set', 'settings.accent', a.id);
+          await invoke(Channels.CHANNELS.STORE.SET, 'settings.accent', a.id);
         } catch (e) { /* browser mode */ }
         setAccent(a.id);
         refreshAccent();
@@ -1294,7 +1298,7 @@
     body.appendChild(banner);
 
     let info;
-    try { info = await invoke('dangerous:list'); }
+    try { info = await invoke(Channels.CHANNELS.DANGEROUS.LIST); }
     catch (e) {
       body.appendChild(div('field-err', T('danger.readFail', { err: e.message })));
       return;
@@ -1318,7 +1322,7 @@
           if (!ok) { sw.set(false); return; }
         }
         try {
-          await invoke('dangerous:set', c.id, v);
+          await invoke(Channels.CHANNELS.DANGEROUS.SET, c.id, v);
           await refresh(); // 重新读取高危状态并重绘，工具卡片的红/灰随之更新
           toast(v ? T('danger.enabled', { name: c.name }) : T('danger.disabledToast', { name: c.name }), v ? 'warn' : 'success');
         } catch (e) { sw.set(!v); toast(e.message, 'error'); }
@@ -1332,16 +1336,16 @@
   }
   async function drawData(body, token) {
     let userData = T('settings.browserMode');
-    if (isDesktop) { try { userData = (await invoke('app:get-info')).userData; } catch (e) {} }
+    if (isDesktop) { try { userData = (await invoke(Channels.CHANNELS.APP.GET_INFO)).userData; } catch (e) {} }
     if (token !== undefined && token !== drawToken) return;
     body.appendChild(div('set-row', div('', div('set-label', T('data.dir')), div('set-desc', T('data.dirDesc')), div('set-desc mono', userData)), div('set-control', btn(T('data.openDir'), 'btn-sm btn-secondary', async () => {
       if (!isDesktop) return toast(T('settings.browserNA'), 'warn');
-      try { await invoke('fs:open-path', userData); } catch (e) { toast(e.message, 'error'); }
+      try { await invoke(Channels.CHANNELS.FS.OPEN_PATH, userData); } catch (e) { toast(e.message, 'error'); }
     }))));
     body.appendChild(div('set-row', div('', div('set-label', T('data.clear')), div('set-desc', T('data.clearDesc'))), div('set-control', btn(T('data.clearBtn'), 'btn-sm btn-danger-plain', async () => {
       if (!(await confirmBox({ title: T('data.clear'), message: T('data.clearConfirm'), danger: true, okText: T('data.clearBtn') }))) return;
-      await invoke('store:set', 'recents', []);
-      await invoke('store:set', 'clipHistory', []);
+      await invoke(Channels.CHANNELS.STORE.SET, 'recents', []);
+      await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', []);
       state.recents = [];
       toast(T('data.clearOk'), 'success');
       render();
@@ -1363,7 +1367,7 @@
    * 拆开之后这一段的失败只影响它自己的区块，不会让整个「数据」面板空白。 */
   async function drawCrashSection(body, token) {
     let info = null;
-    try { info = await invoke('app:crash-info'); } catch (e) { info = null; }
+    try { info = await invoke(Channels.CHANNELS.APP.CRASH_INFO); } catch (e) { info = null; }
     if (token !== undefined && token !== drawToken) return;
 
     // 读不到（浏览器模式 / 老版本主进程）就整块不显示，不占位、不报错
@@ -1379,7 +1383,7 @@
     const viewBtn = btn(T('crash.view'), 'btn-sm btn-secondary', async () => {
       if (detail.style.display === 'none') {
         try {
-          const r = await invoke('app:crash-read', 32 * 1024);
+          const r = await invoke(Channels.CHANNELS.APP.CRASH_READ, 32 * 1024);
           detail.innerHTML = '';
           if (!r || !r.text) {
             detail.appendChild(div('field-hint', T('crash.empty')));
@@ -1414,13 +1418,13 @@
     const ctl = div('set-control', { style: { display: 'flex', gap: '6px' } });
     if (hasLog) ctl.appendChild(viewBtn);
     ctl.appendChild(btn(T('crash.openDir'), 'btn-sm btn-text', async () => {
-      try { await invoke('app:crash-reveal'); } catch (e) { toast(e.message, 'error'); }
+      try { await invoke(Channels.CHANNELS.APP.CRASH_REVEAL); } catch (e) { toast(e.message, 'error'); }
     }));
     if (hasLog) {
       ctl.appendChild(btn(T('crash.clear'), 'btn-sm btn-text', async () => {
         if (!(await confirmBox({ title: T('crash.clear'), message: T('crash.clearConfirm'), okText: T('crash.clear') }))) return;
         try {
-          const n = await invoke('app:crash-clear');
+          const n = await invoke(Channels.CHANNELS.APP.CRASH_CLEAR);
           toast(T('crash.cleared', { n: n }), 'success');
           render();
         } catch (e) { toast(e.message, 'error'); }
@@ -1438,7 +1442,7 @@
      注意：它仍然是**唯一的版本/更新入口**，别处不要再放检查更新。 */
   async function drawAbout(body, token) {
     let info;
-    try { info = await invoke('app:get-info'); }
+    try { info = await invoke(Channels.CHANNELS.APP.GET_INFO); }
     catch (e) {
       body.appendChild(div('field-hint', T('settings.readInfoFail', { err: (e && e.message || e) })));
       return;
@@ -1482,7 +1486,7 @@
     // 清理「已经应用过」的旧安装包（刚下载、还没装的新包会被主进程按版本号豁免）
     // 同时回收 exe 旁的历史 .bak：每次升级会留两套备份（.bak + .bak.<时间戳>），
     // 时间戳那套以前从不清理，升几次就在用户目录里堆几份 100MB。
-    invoke('update:cleanup').then((r) => {
+    invoke(Channels.CHANNELS.UPDATE.CLEANUP).then((r) => {
       if (r && r.removed) console.log('[update] 清理旧安装包', r.removed, '个', (r.bytes / 1048576).toFixed(1) + 'MB', '保留', r.kept || 0, '个');
       if (r && r.bakRemoved) console.log('[update] 回收历史备份', r.bakRemoved, '个', (r.bakBytes / 1048576).toFixed(1) + 'MB');
     }).catch(() => {});
@@ -1509,7 +1513,7 @@
       let dlId = null;
       let unsub = null;
       try {
-        const r = await invoke('update:check', { force: true });
+        const r = await invoke(Channels.CHANNELS.UPDATE.CHECK, { force: true });
         if (r.throttled) { updLine.textContent = T('update.throttled', { s: r.retryAfter, v: r.latest }); return; }
         if (!r.hasUpdate) { updLine.textContent = T('update.latest', { v: r.current }); return; }
         updLine.textContent = T('update.found', { latest: r.latest, current: r.current });
@@ -1538,17 +1542,17 @@
             updActions.appendChild(btn(T('update.confirmOk'), 'btn-sm btn-primary', async () => {
               if (!(await confirmBox({ title: T('update.confirmTitle'), message: T('update.confirmMsg', { v: r.latest }), okText: T('update.confirmOk') }))) return;
               try {
-                const ap = await invoke('update:apply', { newExe: out, expectSha256: r.assetSha256 || null });
+                const ap = await invoke(Channels.CHANNELS.UPDATE.APPLY, { newExe: out, expectSha256: r.assetSha256 || null });
                 updLine.textContent = T('update.applying');
                 if (ap && ap.rollbackScript) updActions.appendChild(div('field-hint', T('update.rollbackScript', { path: ap.rollbackScript })));
               } catch (e) { updLine.textContent = T('update.applyFail', { err: e.message }); }
             }, 'send'));
-            updActions.appendChild(btn(T('update.openDir'), 'btn-sm btn-secondary', () => invoke('fs:show-item', out).catch(() => {})));
+            updActions.appendChild(btn(T('update.openDir'), 'btn-sm btn-secondary', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, out).catch(() => {})));
           } catch (e) {}
         }
         // 先把这份包登记为“待安装”，update:cleanup 见到它就不会删
-        await invoke('update:mark-pending', r.assetName).catch(() => {});
-        const dl = await invoke('net:download', { url: r.assetUrl, out });
+        await invoke(Channels.CHANNELS.UPDATE.MARK_PENDING, r.assetName).catch(() => {});
+        const dl = await invoke(Channels.CHANNELS.NET.DOWNLOAD, { url: r.assetUrl, out });
         if (!dl || !dl.id) {
           if (unsub) { unsub(); unsub = null; }
           updLine.textContent = T('update.startFail');
@@ -1591,7 +1595,7 @@
     // **重新拉一次**缓存，否则它们还停在旧语言（托盘是英文、能力名还是中文）。
     // 顺序是硬的：先让主进程切好语言，再读它返回的文案。
     if (isDesktop) {
-      invoke('app:set-lang', lang)
+      invoke(Channels.CHANNELS.APP.SET_LANG, lang)
         .catch(() => {})
         .then(() => loadDangerousState())
         .catch(() => {});
@@ -1665,7 +1669,7 @@
      * 只会以为程序把数据弄丢了，然后继续用空数据把原文件覆盖掉。
      * 正常启动时 storeLoadFailed 为 false，这里什么都不做。 */
     try {
-      const health = await invoke('store:health');
+      const health = await invoke(Channels.CHANNELS.STORE.HEALTH);
       if (health && health.ok === false) {
         toast('数据文件损坏，已从默认值启动；原文件已另存为 ' +
           (health.corruptCopy ? health.corruptCopy.split(/[\\/]/).pop() : '同目录备份'), 'error', 12000);
@@ -1674,7 +1678,7 @@
     } catch (e) { /* 老版本主进程没有这条通道，忽略 */ }
 
     let savedLang = null;
-    try { savedLang = await invoke('store:get', 'settings.lang', null); } catch (e) {}
+    try { savedLang = await invoke(Channels.CHANNELS.STORE.GET, 'settings.lang', null); } catch (e) {}
     if (savedLang && savedLang !== lang && (window.i18n ? window.i18n.normalize(savedLang) : savedLang)) {
       applyLang(savedLang);
       applyLangLabels();

@@ -1,5 +1,6 @@
 'use strict';
 const { t, done, readTree, readMain } = require('./lib/harness');
+const { handlerIndex, invokeIndex } = require('./lib/seg-from-handler');
 const mainSrc = readMain({ raw: true });
 /* 第五轮审查：破坏性 bug 的回归测试。
  *
@@ -39,21 +40,7 @@ const readMedia = () => readTree('js/tools/media');
  *
  * 前提是调用方传进来的是 readMain()（main.js + ipc/ 拼接），不是只有 main.js。 */
 function handlerBody(src, channel) {
-  let start = src.indexOf("handle('" + channel + "'");
-  if (start < 0) {
-    let key = null;
-    try {
-      const table = require('../lib/channels').flatten();
-      for (const k of Object.keys(table)) if (table[k] === channel) { key = k; break; }
-    } catch (e) { /* 表不可用时保持字面量行为 */ }
-    if (key) {
-      /* 两种常量别名都试：main.js 用 dirMoveCh，ipc/dir-acl-links.js 用 CH */
-      for (const alias of ['dirMoveCh.', 'CH.']) {
-        const at = src.indexOf('handle(' + alias + key + ',');
-        if (at > 0) { start = at; break; }
-      }
-    }
-  }
+  const start = handlerIndex(src, channel);
   assert.ok(start > 0, '找不到 handler: ' + channel);
   /* 【必须括号配平，不能用 '\n});' 找结尾】
    * 原实现是 `src.indexOf('\n});', start)`。它在 main.js 的单文件时代勉强能用，
@@ -105,7 +92,7 @@ function updateScriptBody(src) {
  * 函数，语法直接报错。 */
 function loadHandlerArrow(channel, deps) {
   const code = stripComments(mainSrc);
-  const i = code.indexOf("handle('" + channel + "'");
+  const i = handlerIndex(code, channel);
   assert.ok(i > 0, '找不到 handler ' + channel);
   /* 找回调的箭头函数起点：handler 名之后的第二个 '(' 参数列表结束处的 '=>' */
   const arrow = code.indexOf('=>', i);
@@ -162,12 +149,15 @@ t('1b 行为：把对象数组传给 fs:delete-empty，deleted 必须是 0 且�
   assert.strictEqual(r.deleted, 0, '对象数组不该删掉任何东西');
   assert.strictEqual(r.errors.length, objs.length,
     '每个非法入参都要各记一条错误（旧实现只有 rmdir 抛出的含糊错误，且 deleted 为 0 却被界面报成功）');
+  /* 锁的是：「对象数组传给 fs:delete-empty」这一组回归 —— 每个非法入参都要各记一条
+   * 说明「路径必须是字符串」的错误。旧实现只留下 rmdir 抛出的含糊错误，
+   * 界面据此把 deleted=0 报成成功（用户以为删干净了）。 */
   assert.ok(r.errors.every((x) => /字符串/.test(x)), '错误里应说明"路径必须是字符串"：' + r.errors.join(' / '));
 });
 
 t('1c 界面：有失败时不许用 success 样式，且要列出原因', () => {
   const code = stripComments(read('js/tools/sys-tools.js'));
-  const i = code.indexOf("invoke('fs:delete-empty'");
+  const i = invokeIndex(code, 'fs:delete-empty');
   assert.ok(i > 0, '找不到 delete-empty 调用');
   const seg = code.slice(i, i + 900);
   /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
@@ -422,16 +412,28 @@ t('P1 图片压缩输出一律取唯一名（既不盖原图也不盖已有输�
   /* 锁的是：「P1 图片压缩输出一律取唯一名（既不盖原图也不盖已有输出）」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/const finalPath = await invoke\('fs:unique-path', outPath\)/.test(s),
-    '压缩输出没有无条件唯一化');
+  const at = invokeIndex(s, 'fs:unique-path', 'outPath');
+  assert.ok(at > 0, '压缩输出没有调用 fs:unique-path');
+  /* 锁的是：「P1 图片压缩输出一律取唯一名」这一组回归。
+   * 只能用源码断言：要验的是实现的形态，真实行为需要真图 + 真目录才能观察到。 */
+  assert.ok(/const finalPath = await\s*$/.test(s.slice(Math.max(0, at - 40), at)),
+    '压缩输出没有无条件唯一化（应先 await 取 finalPath）');
+  /* 锁的是：唯一化的实参必须是 outPath（换成别的路径等于没唯一化）。 */
+  assert.ok(/,\s*outPath\)/.test(s.slice(at, at + 200)), '唯一化的实参应是 outPath');
 });
 t('P1 水印输出一律取唯一名', () => {
   const s = readMedia();
   /* 锁的是：「P1 水印输出一律取唯一名」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/const outPath = await invoke\('fs:unique-path', outDir\.replace/.test(s),
+  const wAt = invokeIndex(s, 'fs:unique-path', 'outDir');
+  assert.ok(wAt > 0, '水印输出没有调用 fs:unique-path');
+  /* 锁的是：「P1 水印输出一律取唯一名」这一组回归。只能用源码断言。 */
+  assert.ok(/const outPath = await\s*$/.test(s.slice(Math.max(0, wAt - 40), wAt)),
     '水印输出没有无条件唯一化');
+  /* 锁的是：唯一化必须作用在 outDir.replace(...) 的结果上。 */
+  assert.ok(/,\s*outDir\.replace/.test(s.slice(wAt, wAt + 200)),
+    '唯一化的实参应是 outDir.replace(...)');
   /* 锁的是：「P1 水印输出一律取唯一名」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
@@ -636,7 +638,10 @@ t('P0 PDF 拆分输出目录带时间戳', () => {
   /* 锁的是：「P0 PDF 拆分输出目录带时间戳」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(s.includes("'fs:unique-path', `${dir}/part-"), '分片没有唯一化');
+  const sp = invokeIndex(s, 'fs:unique-path', 'part-');
+  assert.ok(sp > 0, '分片没有唯一化');
+  /* 锁的是：分片唯一化必须作用在 `${dir}/part-…` 上（换个前缀就绕过了唯一化）。 */
+  assert.ok(/`\$\{dir\}\/part-/.test(s.slice(sp, sp + 200)), '分片唯一化的实参应是 `${dir}/part-…`');
 });
 t('P0 PDF 转图片输出目录带时间戳', () => {
   const s = read('js/tools/office.js');
@@ -647,7 +652,10 @@ t('P0 PDF 转图片输出目录带时间戳', () => {
   /* 锁的是：「P0 PDF 转图片输出目录带时间戳」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(s.includes("'fs:unique-path', `${outDir}/page-"), '页面图片没有唯一化');
+  const pg = invokeIndex(s, 'fs:unique-path', 'page-');
+  assert.ok(pg > 0, '页面图片没有唯一化');
+  /* 锁的是：页面图片唯一化必须作用在 `${outDir}/page-…` 上。 */
+  assert.ok(/`\$\{outDir\}\/page-/.test(s.slice(pg, pg + 200)), '页面图片唯一化的实参应是 `${outDir}/page-…`');
 });
 
 /* P0 writeFileAtomic 不得先删原文件 */
@@ -813,13 +821,17 @@ t('P2 音频剪辑输出名唯一化', () => {
   /* 锁的是：「P2 音频剪辑输出名唯一化」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/fs:unique-path', src\.replace\(\/\\\.\\w\+\$\/, '_cut\./.test(s), '音频剪辑没有唯一化');
+  const ac = invokeIndex(s, 'fs:unique-path', '_cut.');
+  assert.ok(ac > 0, '音频剪辑没有唯一化');
+  /* 锁的是：音频剪辑的唯一化基于 src.replace(/\.\w+$/, '_cut.…')。 */
+  assert.ok(/src\.replace\(\/\\\.\\w\+\$\/, '_cut\./.test(s.slice(ac, ac + 200)),
+    '音频剪辑唯一化应基于 src.replace(/\.\w+$/, \'_cut.…\')');
 });
 
 /* P2-10 notes:pdf 原子写 */
 t('P2 notes:pdf 用原子写', () => {
   const s = read('main.js');
-  const i = s.indexOf("handle('notes:pdf'");
+  const i = handlerIndex(s, 'notes:pdf');
   const seg = s.slice(i, i + 1200);
   /* 锁的是：「P2 notes:pdf 用原子写」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
@@ -867,7 +879,7 @@ t('P2 GIF 转码失败时清理残缺文件', () => {
 t('P2 ffmpeg:audio-cut 拒绝输出等于输入', () => {
   /* 同上：ffmpeg:audio-cut 已搬到 ipc/media-ffmpeg.js。 */
   const s = readMain();
-  const i = s.indexOf("handle('ffmpeg:audio-cut'");
+  const i = handlerIndex(s, 'ffmpeg:audio-cut');
   const seg = s.slice(i, i + 700);
   /* 锁的是：「P2 ffmpeg:audio-cut 拒绝输出等于输入」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
@@ -919,12 +931,15 @@ t('1b 行为：把对象数组传给 fs:delete-empty，deleted 必须是 0 且�
   assert.strictEqual(r.deleted, 0, '对象数组不该删掉任何东西');
   assert.strictEqual(r.errors.length, objs.length,
     '每个非法入参都要各记一条错误（旧实现只有 rmdir 抛出的含糊错误，且 deleted 为 0 却被界面报成功）');
+  /* 锁的是：「对象数组传给 fs:delete-empty」这一组回归 —— 每个非法入参都要各记一条
+   * 说明「路径必须是字符串」的错误。旧实现只留下 rmdir 抛出的含糊错误，
+   * 界面据此把 deleted=0 报成成功（用户以为删干净了）。 */
   assert.ok(r.errors.every((x) => /字符串/.test(x)), '错误里应说明"路径必须是字符串"：' + r.errors.join(' / '));
 });
 
 t('1c 界面：有失败时不许用 success 样式，且要列出原因', () => {
   const code = stripComments(read('js/tools/sys-tools.js'));
-  const i = code.indexOf("invoke('fs:delete-empty'");
+  const i = invokeIndex(code, 'fs:delete-empty');
   assert.ok(i > 0, '找不到 delete-empty 调用');
   const seg = code.slice(i, i + 900);
   /* 锁的是：「1c 界面：有失败时不许用 success 样式，且要列出原因」这一组回归。
@@ -948,7 +963,7 @@ t('1c 界面：有失败时不许用 success 样式，且要列出原因', () =>
 
 t('7a clean-junk 只接受本次扫描命中的路径', () => {
   const code = stripComments(mainSrc);
-  const i = code.indexOf("handle('fs:clean-junk'");
+  const i = handlerIndex(code, 'fs:clean-junk');
   assert.ok(i > 0, '找不到 fs:clean-junk');
   const seg = code.slice(i, i + 2400);
   /* 【不能只查"有没有那句错误文案"】
@@ -977,8 +992,8 @@ t('7a clean-junk 只接受本次扫描命中的路径', () => {
 
 t('7b clean-junk 会缓存扫描结果', () => {
   const code = stripComments(mainSrc);
-  const i = code.indexOf("handle('fs:scan-junk'");
-  const seg = code.slice(i, code.indexOf("handle('fs:clean-junk'"));
+  const i = handlerIndex(code, 'fs:scan-junk');
+  const seg = code.slice(i, handlerIndex(code, 'fs:clean-junk'));
   /* 锁的是：「7b clean-junk 会缓存扫描结果」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */

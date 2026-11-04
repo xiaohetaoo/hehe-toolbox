@@ -1,7 +1,7 @@
 'use strict';
 const { t, done, readMain } = require('./lib/harness');
 /* segFromHandler 统一到 scripts/lib/seg-from-handler.js —— 见那里的文件头说明。 */
-const { segFromHandler } = require('./lib/seg-from-handler');
+const { segFromHandler, handlerIndex } = require('./lib/seg-from-handler');
 /* 【迁移说明】用例来自 test-round8-fixes.js，原先用 fs.readFileSync(main.js)。
  * 任务 6 之后 ffmpeg:/target:/rec: 等域搬到了 ipc/，所以读「主进程全部源码」——
  * 断言的语义一直是"主进程里有这个实现"，与它在哪个文件无关。 */
@@ -128,7 +128,7 @@ t('升级备份有回收逻辑且保留最近几份', () => {
   assert.ok(/\.bak\./.test(body), '没有识别带时间戳的备份');
   assert.ok(/update:cleanup/.test(mainSrc), 'update:cleanup 应存在');
   // 接入点
-  const uc = mainSrc.slice(mainSrc.indexOf("handle('update:cleanup'"));
+  const uc = mainSrc.slice(handlerIndex(mainSrc, 'update:cleanup'));
   assert.ok(/pruneExeBackups/.test(uc.slice(0, 2500)), 'update:cleanup 没有调用 pruneExeBackups');
 });
 

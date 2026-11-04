@@ -8,6 +8,7 @@
  * 这条顺序由 scripts/test-media-split.js 守着。
  */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   'use strict';
   const { invoke } = window.api;
 
@@ -24,7 +25,7 @@
       img.onerror = reject;
       if (blob) img.src = URL.createObjectURL(blob);
       else {
-        try { const r = await invoke('fs:read-file-b64', path); img.src = 'data:image;base64,' + r.b64; }
+        try { const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path); img.src = 'data:image;base64,' + r.b64; }
         catch (e) { reject(e); }
       }
     });
@@ -55,7 +56,7 @@
   }
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：定义了但未使用（删它需同步改测试断言，留给下一轮） */
   function pickPaths(multi = true) {
-    return invoke('dialog:open', { properties: multi ? ['openFile', 'multiSelections'] : ['openFile'], filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] }] });
+    return invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: multi ? ['openFile', 'multiSelections'] : ['openFile'], filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] }] });
   }
 
   /* normAbs / samePath / pickPaths 目前没有调用方（它们挂在 lint baseline 的

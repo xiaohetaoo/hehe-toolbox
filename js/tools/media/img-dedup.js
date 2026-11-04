@@ -1,5 +1,6 @@
 /* 模块：多媒体处理 —— img-dedup（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, progressEl } = window.ui;
   const { invoke } = window.api;
@@ -7,15 +8,15 @@
   const { loadImg } = window.MediaShared;
 
 register({
-    id: 'img-dedup', name: '相似图片查找', module: MOD, icon: 'image',
-    desc: '感知哈希（dHash）找出内容相近的图片：改过尺寸/压缩过的也能找出',
+    id: 'img-dedup', name: '相似图片查找', nameEn: 'Similar Images', module: MOD, icon: 'image',
+    desc: '感知哈希（dHash）找出内容相近的图片：改过尺寸/压缩过的也能找出', descEn: 'Find visually similar images with a perceptual hash (dHash)',
     keywords: ['相似', '图片', '重复', '去重', 'dhash'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
       let dir = '';
       const dirLabel = h('span', { class: 'field-hint' }, '未选择');
       const pickBtn = btn('选择文件夹…', 'btn-secondary', async () => {
-        const d = await invoke('dialog:open', { properties: ['openDirectory'] });
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) { dir = d[0]; dirLabel.textContent = dir; }
       });
       const threshIn = h('input', { type: 'number', class: 'input input-sm', value: '6', min: '0', max: '20', style: { width: '60px' }, title: '汉明距离阈值，越小越严格' });
@@ -28,7 +29,7 @@ register({
         if (!dir) { running = false; return toast('请先选择文件夹', 'warn'); }
         prog.show(); listBox.innerHTML = ''; status.textContent = '读取图片…';
         try {
-          const items = await invoke('fs:list', dir);
+          const items = await invoke(Channels.CHANNELS.FS.LIST, dir);
           const imgs = items.map(x => x.name || x).filter(n => /\.(png|jpe?g|bmp|webp)$/i.test(n));
           if (imgs.length < 2) { toast('图片不足 2 张', 'warn'); return; }
           const hashes = [];
@@ -80,7 +81,7 @@ register({
               /* 相似图片分组里，每张缩略图点一下能在资源管理器里定位。
                * 键盘用户原本完全用不了这个功能（div 进不了 tab 序列）。 */
               if (window.ui.makeButtonLike) window.ui.makeButtonLike(cell, it.name);
-              cell.addEventListener('click', () => invoke('fs:show-item', it.path));
+              cell.addEventListener('click', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, it.path));
               grid.appendChild(cell);
             }
             card.appendChild(grid);

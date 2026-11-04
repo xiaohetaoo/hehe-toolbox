@@ -1,13 +1,14 @@
 /* 模块：多媒体处理 —— ffmpeg-setup（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, progressEl, confirmBox } = window.ui;
   const { invoke, isDesktop } = window.api;
   const MOD = 'media';
 
 register({
-    id: 'ffmpeg-setup', name: 'FFmpeg 环境', module: MOD, icon: 'film',
-    desc: '一键下载/导入 ffmpeg 与 ffprobe，为音视频功能提供引擎',
+    id: 'ffmpeg-setup', name: 'FFmpeg 环境', nameEn: 'FFmpeg Setup', module: MOD, icon: 'film',
+    desc: '一键下载/导入 ffmpeg 与 ffprobe，为音视频功能提供引擎', descEn: 'Download or import ffmpeg and ffprobe to power the media tools',
     keywords: ['ffmpeg', 'ffprobe', '环境', '引擎'],
     render(page) {
       const statusBox = div('');
@@ -17,7 +18,7 @@ register({
         statusBox.innerHTML = '';
         statusBox.appendChild(window.ui.loadingBlock('检测 FFmpeg…'));
         try {
-          const r = await invoke('ffmpeg:status');
+          const r = await invoke(Channels.CHANNELS.FFMPEG.STATUS);
           statusBox.innerHTML = '';
           const card = div('card');
           card.style.border = '1px solid var(--border)';
@@ -27,7 +28,7 @@ register({
             ]));
             card.appendChild(div('form-row', btn('移除内置 FFmpeg', 'btn-sm btn-danger-plain', async () => {
               if (!(await confirmBox({ title: '移除 FFmpeg', message: '将删除内置下载的 ffmpeg/ffprobe，确定？', danger: true, okText: '移除' }))) return;
-              await invoke('ffmpeg:remove');
+              await invoke(Channels.CHANNELS.FFMPEG.REMOVE);
               toast('已移除', 'success');
               refresh();
             }, 'trash')));
@@ -62,7 +63,7 @@ register({
               prog.set(j.pct || 0);
             } catch (e) {}
           });
-          const r = await invoke('ffmpeg:download', srcSel.value);
+          const r = await invoke(Channels.CHANNELS.FFMPEG.DOWNLOAD, srcSel.value);
           toast('FFmpeg 安装完成', 'success');
           status.textContent = '✓ 安装完成：' + (r.ffmpeg || '');
         } catch (e) { status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; toast(e.message, 'error'); }
@@ -70,7 +71,7 @@ register({
       }, 'download');
       const pickBtn = btn('手动导入 ffmpeg.exe', 'btn-secondary', async () => {
         try {
-          const r = await invoke('ffmpeg:pick');
+          const r = await invoke(Channels.CHANNELS.FFMPEG.PICK);
           if (r.picked && r.picked.length) { toast('已导入：' + r.picked.join('、'), 'success'); refresh(); }
         } catch (e) { toast(e.message, 'error'); }
       }, 'folder');

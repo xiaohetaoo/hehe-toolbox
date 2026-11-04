@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+const { handlerIndex } = require('./lib/seg-from-handler');
 const ROOT = path.join(__dirname, '..');
 /* 主进程全部源码：迁移来的 ownerIsMe 用例要对比渲染层与主进程两个判定。 */
 const mainSrc = readMain({ raw: true });
@@ -519,7 +520,7 @@ t('19b acl:repair：把「未知」和「确定不是管理员」分开提示', 
    * （只写字面量的话 indexOf 拿到 -1，slice(-1, …) 会把几乎整段吃进来，
    *  断言退化成"扫全文件"—— 恰好还能过，但切片失去意义。） */
   const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'dir-acl-links.js'), 'utf8');
-  const lit = movedSrc.indexOf("handle('acl:repair'");
+  const lit = handlerIndex(movedSrc, 'acl:repair');
   const from = lit >= 0 ? lit
     : movedSrc.indexOf('handle(dirMoveCh.ACL_LINKS.ACL_REPAIR,');
   assert.ok(from > 0, '找不到 acl:repair 的注册（应在 ipc/dir-acl-links.js 里）');

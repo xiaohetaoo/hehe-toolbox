@@ -12,6 +12,7 @@
  *   - 处理中禁用导入与参数修改
  */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker, fmtBytes, progressEl } = window.ui;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
@@ -31,7 +32,7 @@
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error('图片解码失败'));
       try {
-        const r = await invoke('fs:read-file-b64', path);
+        const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path);
         img.src = 'data:image;base64,' + r.b64;
       } catch (e) { reject(e); }
     });
@@ -39,10 +40,10 @@
 
   register({
     id: 'target-size',
-    name: '目标体积压缩',
+    name: '目标体积压缩', nameEn: 'Target Size Compress',
     module: MOD,
     icon: 'target',
-    desc: '压到指定大小：自动多轮逼近目标体积，图片与音视频通用',
+    desc: '压到指定大小：自动多轮逼近目标体积，图片与音视频通用', descEn: 'Compress images or video down to a target file size',
     keywords: ['目标', '体积', '压缩', '大小', 'mb', '瘦身', '限制'],
     render(page) {
       let files = [];
@@ -104,7 +105,7 @@
       const outDirIn = h('input', { class: 'input mono input-sm', placeholder: '留空则输出到源文件旁的 hehe-target 目录', style: { flex: '1' } });
       const pickOut = btn('选择…', 'btn-sm btn-secondary', async () => {
         try {
-          const r = await invoke('dialog:open', { properties: ['openDirectory'] });
+          const r = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
           if (r && r[0]) outDirIn.value = r[0];
         } catch (e) { toast(e.message, 'error'); }
       });
@@ -114,7 +115,7 @@
       const startBtn = btn('开始压缩', 'btn-primary', run, 'send');
       const cancelBtn = btn('停止', 'btn-danger-plain', () => {
         canceled = true;
-        if (runJobId) invoke('job:kill', runJobId).catch(() => {});
+        if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {});
       }, 'square');
       cancelBtn.disabled = true;
 
@@ -150,23 +151,23 @@
       /* ---- 单张图片的多轮逼近（在渲染层用 canvas 完成） ---- */
       async function compressImage(path, targetBytes, outDir, rowIdx) {
         const img = await loadImg(path);
-        const srcBytes = (await invoke('fs:stat', path)).size;
+        const srcBytes = (await invoke(Channels.CHANNELS.FS.STAT, path)).size;
         const name = path.split(/[\\/]/).pop();
         const base = name.replace(/\.[^.]+$/, '');
         const ext = extOf(name);
         const outExt = (ext === 'png') ? 'png' : 'jpg'; // PNG 保留 alpha，其余转 JPG 更好压
         if (srcBytes <= targetBytes) {
           // 已达标：直接另存，不重编码
-          const r = await invoke('fs:read-file-b64', path);
-          const dst = await invoke('fs:unique-path', outDir + '/' + name);
-          await invoke('fs:write-file-b64', dst, r.b64);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path);
+          const dst = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, outDir + '/' + name);
+          await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, dst, r.b64);
           return { ok: true, out: dst, srcSize: srcBytes, outSize: srcBytes, alreadyFits: true, rounds: 0 };
         }
         const tmpDir = outDir; // 候选也写同目录，最终成功后改名；这里直接按轮次生成不同文件名
         let lastBytes = 0, lastErr = '';
         for (let round = 0; round < 8; round++) {
           if (canceled) return { ok: false, err: '已取消' };
-          const plan = await invoke('target:plan-image', { round });
+          const plan = await invoke(Channels.CHANNELS.TARGET.PLAN_IMAGE, { round });
           const scale = plan.scale || 1;
           const cw = Math.max(1, Math.round(img.naturalWidth * scale));
           const ch = Math.max(1, Math.round(img.naturalHeight * scale));
@@ -180,22 +181,22 @@
           const b64 = String(dataUrl).split(',')[1] || '';
           if (!b64) { lastErr = 'canvas 编码失败'; break; }
           // 先写候选，量体积，再决定去留
-          const cand = await invoke('fs:unique-path', tmpDir + '/' + base + `(ts${round}).${outExt}`);
-          await invoke('fs:write-file-b64', cand, b64);
-          const bytes = (await invoke('fs:stat', cand)).size;
+          const cand = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, tmpDir + '/' + base + `(ts${round}).${outExt}`);
+          await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, cand, b64);
+          const bytes = (await invoke(Channels.CHANNELS.FS.STAT, cand)).size;
           lastBytes = bytes;
-          const verdict = await invoke('target:eval-image', { outBytes: bytes, targetBytes, round });
+          const verdict = await invoke(Channels.CHANNELS.TARGET.EVAL_IMAGE, { outBytes: bytes, targetBytes, round });
           if (verdict.ok) {
             // 达标：改成正式名
-            const dst = await invoke('fs:unique-path', tmpDir + '/' + base + '.' + outExt);
+            const dst = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, tmpDir + '/' + base + '.' + outExt);
             // rename 可能因跨卷/占用失败，此时文件还在候选名上——
             // 必须如实返回实际路径，否则界面给出一个不存在的输出文件
             let finalPath = dst;
-            try { await invoke('fs:rename', cand, dst); }
+            try { await invoke(Channels.CHANNELS.FS.RENAME, cand, dst); }
             catch (e) { finalPath = cand; }
             return { ok: true, out: finalPath, srcSize: srcBytes, outSize: bytes, rounds: round + 1 };
           }
-          try { await invoke('fs:delete', cand); } catch (e) {}
+          try { await invoke(Channels.CHANNELS.FS.DELETE, cand); } catch (e) {}
           setRow(rowIdx, { pct: ((round + 1) / 8) * 99 });
           if (verdict.done) { lastErr = verdict.reason || '未能压到目标体积'; break; }
         }
@@ -234,7 +235,7 @@
         const imgs = files.filter(isImg);
         const avs = files.filter(isAv);
         const outDirBase = outDirIn.value.trim() || (files[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-target');
-        try { await invoke('fs:mkdir', outDirBase); } catch (e) {
+        try { await invoke(Channels.CHANNELS.FS.MKDIR, outDirBase); } catch (e) {
           unlockUi();
           setTimeout(() => prog.hide(), 800);
           return toast('创建输出目录失败：' + (window.api.errText ? window.api.errText(e) : e.message), 'error');
@@ -251,7 +252,7 @@
             setRow(idx, { tagText: '压缩中', tagClass: 'tag-orange' });
             status.textContent = `处理中 ${k + 1}/${imgs.length}（图片）`;
             try {
-              const srcSize = (await invoke('fs:stat', imgs[k])).size;
+              const srcSize = (await invoke(Channels.CHANNELS.FS.STAT, imgs[k])).size;
               const target = targetOf(srcSize);
               const r = await compressImage(imgs[k], target, outDirBase, idx);
               if (r.ok) {
@@ -300,7 +301,7 @@
             if (window.App && App.onCleanup) App.onCleanup(unsub);
             try {
               status.textContent = `处理中（音视频 ${avs.length} 个）…`;
-              const r = await invoke('target:compress-av', {
+              const r = await invoke(Channels.CHANNELS.TARGET.COMPRESS_AV, {
                 items: avs, outDir: outDirBase,
                 targetBytes, mode, ratio
               });
@@ -356,7 +357,7 @@
       // 页面卸载时取消正在跑的任务，避免关闭页面后后台还在压
       if (window.App && App.onCleanup) {
         App.onCleanup(() => {
-          if (runJobId) invoke('job:kill', runJobId).catch(() => {});
+          if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {});
         });
       }
     }

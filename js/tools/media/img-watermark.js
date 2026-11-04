@@ -1,5 +1,6 @@
 /* 模块：多媒体处理 —— img-watermark（任务 9 从 media.js 拆出，逻辑逐字搬移，未改语义） */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   const { div, btn, toast, filePicker, progressEl } = window.ui;
   const { invoke } = window.api;
@@ -7,8 +8,8 @@
   const { isImgPath, IMG_FILTER, loadImg } = window.MediaShared;
 
 register({
-    id: 'img-watermark', name: '图片水印', module: MOD, icon: 'wand',
-    desc: '批量添加文字水印，支持位置、透明度、字号设置',
+    id: 'img-watermark', name: '图片水印', nameEn: 'Image Watermark', module: MOD, icon: 'wand',
+    desc: '批量添加文字水印，支持位置、透明度、字号设置', descEn: 'Add text watermarks in bulk with position, opacity and size control',
     keywords: ['水印', '图片'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
@@ -35,7 +36,7 @@ register({
         const paths = picker.paths.slice();
         const firstDir = paths[0].replace(/[\\/][^\\/]+$/, '');
         const outDir = firstDir + '/hehe-watermark';
-        try { await invoke('fs:mkdir', outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
+        try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
         let ok = 0;
         try {
         for (let i = 0; i < paths.length; i++) {
@@ -77,8 +78,8 @@ register({
             const extPart = hasExt ? rawName.slice(dot + 1) : 'jpg';
             const outName = stem + '_wm.' + extPart;
             // 一律取唯一名：既防覆盖原图，也防覆盖目录里已存在的同名输出
-            const outPath = await invoke('fs:unique-path', outDir.replace(/[\\/]$/, '') + '/' + outName);
-            await invoke('fs:write-file-b64', outPath, dataUrl.split(',')[1]);
+            const outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, outDir.replace(/[\\/]$/, '') + '/' + outName);
+            await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, dataUrl.split(',')[1]);
             ok++;
             if (i === 0) {
               preview.innerHTML = '';

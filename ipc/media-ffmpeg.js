@@ -43,6 +43,7 @@ const { spawn, spawnSync } = require('child_process');
 /* dialog 只在 ffmpeg:pick 里用（选 ffmpeg.exe / ffprobe.exe）。
  * 它是 Electron 主进程 API，必须在主进程侧 require。 */
 const { dialog } = require('electron');
+const CH = require('../lib/channels').CHANNELS;   // IPC 通道名唯一来源
 
 /**
  * @param {object} ctx  见 ipc/ctx.js（win / jobs / isWin / send / nextJobSeq）
@@ -106,7 +107,7 @@ function findFfprobe() {
   } catch (e) {}
   return null;
 }
-handle('ffmpeg:status', async () => {
+handle(CH.FFMPEG.STATUS, async () => {
   const ffmpeg = findFfmpeg(), ffprobe = findFfprobe();
   let version = null;
   if (ffmpeg) {
@@ -114,7 +115,7 @@ handle('ffmpeg:status', async () => {
   }
   return { ffmpeg, ffprobe, binDir: binDir(), version };
 });
-handle('ffmpeg:pick', async (e) => {
+handle(CH.FFMPEG.PICK, async (e) => {
   const picked = await dialog.showOpenDialog(win, {
     title: '选择 ffmpeg.exe（可多选，同时选上 ffprobe.exe）',
     properties: ['openFile', 'multiSelections'],
@@ -165,7 +166,7 @@ const FFMPEG_SOURCES = {
   btbn: { name: 'BtbN GitHub 构建（约 90MB，含 ffprobe）', url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip', type: 'zip' }
 };
 
-handle('ffmpeg:download', async (e, sourceId) => {
+handle(CH.FFMPEG.DOWNLOAD, async (e, sourceId) => {
   const src = FFMPEG_SOURCES[sourceId] || FFMPEG_SOURCES.npmmirror;
   const id = 'dl' + (ctx.nextJobSeq());
   const ctrl = new AbortController();
@@ -216,13 +217,13 @@ handle('ffmpeg:download', async (e, sourceId) => {
     throw err;
   } finally { jobs.delete(id); }
 });
-handle('ffmpeg:remove', async () => {
+handle(CH.FFMPEG.REMOVE, async () => {
   await fsp.rm(binDir(), { recursive: true, force: true });
   storeSet('settings.ffmpegPath', undefined);
   storeSet('settings.ffprobePath', undefined);
   return true;
 });
-handle('ffmpeg:probe', async (e, p) => {
+handle(CH.FFMPEG.PROBE, async (e, p) => {
   const ffprobe = findFfprobe();
   if (!ffprobe) throw new Error('未找到 ffprobe，请先在「FFmpeg 环境」中安装');
   const r = await runCmd(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', p], { timeout: 30000 });
@@ -238,7 +239,7 @@ handle('ffmpeg:probe', async (e, p) => {
  *   - 源文件本来就达标时直接另存并标注「已符合上限」
  *   - 进度最多 99%，提交成功才 100%
  */
-handle('target:compress-av', async (e, { items, outDir, targetBytes, mode, ratio }) => {
+handle(CH.TARGET.COMPRESS_AV, async (e, { items, outDir, targetBytes, mode, ratio }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   const ffprobe = findFfprobe();
@@ -429,15 +430,15 @@ handle('target:compress-av', async (e, { items, outDir, targetBytes, mode, ratio
 /* 图片的目标体积压缩：按质量与尺寸双维度多轮逼近。
  * 与音视频不同，图片编码在渲染进程用 canvas 完成（已有链路），
  * 主进程只负责规划每轮参数与判定体积，实际重编码由渲染层完成。 */
-handle('target:plan-image', (e, { round }) => {
+handle(CH.TARGET.PLAN_IMAGE, (e, { round }) => {
   const q = targetSize.planImageQuality(round);
   return { quality: q.quality, scale: q.scale, round, maxRounds: targetSize.MAX_ROUNDS };
 });
-handle('target:eval-image', (e, { outBytes, targetBytes, round }) => {
+handle(CH.TARGET.EVAL_IMAGE, (e, { outBytes, targetBytes, round }) => {
   return targetSize.evaluateRound({ outBytes, targetBytes, round });
 });
 
-handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
+handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   const id = 'avc' + (ctx.nextJobSeq());
@@ -524,7 +525,7 @@ handle('ffmpeg:convert', async (e, { items, outDir, opts }) => {
 });
 
 /* 视频压制：重编码瘦身（预设/CRF/编码速度/分辨率/音频码率/去元数据） */
-handle('ffmpeg:press', async (e, { items, outDir, opts }) => {
+handle(CH.FFMPEG.PRESS, async (e, { items, outDir, opts }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   const id = 'prs' + (ctx.nextJobSeq());
@@ -596,7 +597,7 @@ handle('ffmpeg:press', async (e, { items, outDir, opts }) => {
 });
 
 /* 视频截帧：单帧或帧序列 */
-handle('ffmpeg:frames', async (e, { input, outDir, mode, ss, every, count, width }) => {
+handle(CH.FFMPEG.FRAMES, async (e, { input, outDir, mode, ss, every, count, width }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   await fsp.mkdir(outDir, { recursive: true });
@@ -639,7 +640,7 @@ handle('ffmpeg:frames', async (e, { input, outDir, mode, ss, every, count, width
 });
 
 /* 音频剪辑：截取 + 淡入淡出 + 增益 */
-handle('ffmpeg:audio-cut', async (e, { input, out, ss, dur, fadeIn, fadeOut, gain, format }) => {
+handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, gain, format }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   // 输出路径不允许等于输入路径（否则会把源文件覆盖成剪辑结果）
@@ -710,7 +711,7 @@ async function listDshowDevices() {
   });
   return parseDshowDevices(r);
 }
-handle('rec:audio-devices', async () => {
+handle(CH.REC.AUDIO_DEVICES, async () => {
   const d = await listDshowDevices();
   return { devices: d.audio, audio: d.audio, video: d.video };
 });
@@ -752,7 +753,7 @@ function recSpawnSeg(segPath) {
   args.push('-movflags', '+faststart', segPath);
   return { proc: spawn(ffmpeg, args, { windowsHide: true }), args };
 }
-handle('rec:start', async (e, { outPath, fps, rect, audio, camera, camPos, camScale, overwrite }) => {
+handle(CH.REC.START, async (e, { outPath, fps, rect, audio, camera, camPos, camScale, overwrite }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   if (recProc && recProc.exitCode === null) throw new Error('已有录制进行中');
@@ -820,13 +821,13 @@ async function recStopSeg() {
   });
   await new Promise(r => setTimeout(r, 300));
 }
-handle('rec:pause', async () => { await recStopSeg(); return { ok: true, paused: true }; });
-handle('rec:resume', async () => {
+handle(CH.REC.PAUSE, async () => { await recStopSeg(); return { ok: true, paused: true }; });
+handle(CH.REC.RESUME, async () => {
   // rec:stop 的 finally 会把 recOpts/recSegDir 置空；只检查 recOpts 会漏掉 recSegDir 已失效的情况
   if (!recOpts || !recSegDir) throw new Error('没有进行中的录制会话');
   return await recStartSeg();
 });
-handle('rec:stop', async (e, makeGif) => {
+handle(CH.REC.STOP, async (e, makeGif) => {
   await recStopSeg();
   if (!recSegs.length) return { ok: true, size: 0, outPath: recOut };
   // 拼接失败时的降级标记：必须如实告诉用户只拿到了第一段，

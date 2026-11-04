@@ -23,10 +23,10 @@
 
   register({
     id: 'link-doctor',
-    name: '链接体检',
+    name: '链接体检', nameEn: 'Link Doctor',
     module: MOD,
     icon: 'link',
-    desc: '扫描目录里的目录联接与符号链接，找出失效的、指向系统目录的、成环的',
+    desc: '扫描目录里的目录联接与符号链接，找出失效的、指向系统目录的、成环的', descEn: 'Check junctions and symbolic links for broken targets and fix them',
     keywords: ['链接', '联接', 'junction', 'symlink', '软链接', '失效', '僵尸', 'link'],
     render(page) {
       const state = { root: '', result: null };
@@ -48,7 +48,7 @@
       const scanBtn = btn('开始体检', 'btn-primary', doScan, 'search');
       const browseBtn = btn('浏览…', 'btn-sm btn-secondary', async () => {
         try {
-          const r = await invoke('dialog:open', { properties: ['openDirectory'] });
+          const r = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
           if (r && r[0]) { dirInput.value = r[0]; doScan(); }
         } catch (e) { toast(e.message, 'error'); }
       });

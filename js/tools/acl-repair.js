@@ -8,10 +8,10 @@
 
   register({
     id: 'acl-repair',
-    name: '权限修复',
+    name: '权限修复', nameEn: 'Permission Repair',
     module: MOD,
     icon: 'shield',
-    desc: '文件删不掉、提示拒绝访问时，查清缺哪条权限，并可取得所有权（需管理员）',
+    desc: '文件删不掉、提示拒绝访问时，查清缺哪条权限，并可取得所有权（需管理员）', descEn: 'When a file cannot be deleted or says access denied, find which permission is missing and optionally take ownership (needs admin)',
     keywords: ['权限', '拒绝访问', '所有权', 'takeown', 'icacls', 'ACL', '删不掉', '访问被拒绝'],
     render(page) {
       /* 【state.repair 存在的理由】

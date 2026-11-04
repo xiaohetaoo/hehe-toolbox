@@ -17,6 +17,7 @@ const os = require('os');
 /* net / dns 在块内部按需 require（原文如此）。
  * 提到顶部反而让块内的 const net = require('net') 变成 no-shadow。 */
 const lanScanLib = require('../lib/lan-scan');
+const CH = require('../lib/channels').CHANNELS;   // IPC 通道名唯一来源
 
 /**
  * @param {{handle: Function, runCmd: Function, jobs: Map,
@@ -37,7 +38,7 @@ module.exports = function register(ctx) {
   } = ctx;
 
 /* ================= IPC: network ================= */
-handle('net:interfaces', async () => {
+handle(CH.NET.INTERFACES, async () => {
   const ifaces = os.networkInterfaces();
   const out = [];
   for (const [name, addrs] of Object.entries(ifaces)) {
@@ -82,7 +83,7 @@ function parseIpconfig(text) {
   if (cur) adapters.push(cur);
   return adapters.filter(a => a.ipv4.length || a.mac);
 }
-handle('net:public-ip', async () => {
+handle(CH.NET.PUBLIC_IP, async () => {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 6000);
   try {
@@ -91,7 +92,7 @@ handle('net:public-ip', async () => {
     return { ip: j.ip };
   } finally { clearTimeout(t); }
 });
-handle('net:tcp-test', (e, host, port, timeoutMs = 4000) => {
+handle(CH.NET.TCP_TEST, (e, host, port, timeoutMs = 4000) => {
   const net = require('net');
   return new Promise((resolve) => {
     const start = Date.now();
@@ -116,7 +117,7 @@ handle('net:tcp-test', (e, host, port, timeoutMs = 4000) => {
  * 【并发】复用 net:scan 的分批并发模型：254 个地址一次全发会打满句柄，
  * 按 20 个一批、每批等完成再下一批。
  */
-handle('lan:scan', async (e, opts = {}) => {
+handle(CH.LAN.SCAN, async (e, opts = {}) => {
   const net = require('net');
   const o = opts || {};
 
@@ -244,7 +245,7 @@ handle('lan:scan', async (e, opts = {}) => {
   };
 });
 
-handle('net:scan', async (e, host, ports, opts = {}) => {
+handle(CH.NET.SCAN, async (e, host, ports, opts = {}) => {
   const net = require('net');
   const concurrency = opts.concurrency || 300, timeout = opts.timeout || 500;
   const id = 'scanp' + (nextJobSeq());
@@ -274,7 +275,7 @@ handle('net:scan', async (e, host, ports, opts = {}) => {
   if (cancelRef.canceled) throw new Error('已取消');
   return { open: open.sort((a, b) => a - b), scanned: ports.length };
 });
-handle('net:http', async (e, opts) => {
+handle(CH.NET.HTTP, async (e, opts) => {
   const { method = 'GET', url, headers = {}, body, timeoutMs = 30000 } = opts;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -289,7 +290,7 @@ handle('net:http', async (e, opts) => {
   } finally { clearTimeout(timer); }
 });
 /* speedtest job */
-handle('net:speedtest', async (e, { direction, url, seconds = 10 }) => {
+handle(CH.NET.SPEEDTEST, async (e, { direction, url, seconds = 10 }) => {
   const id = 'speed' + (nextJobSeq());
   const ctrl = new AbortController();
   jobs.set(id, { cancel: () => ctrl.abort() });

@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const assert = require('assert');
 const { t, done, readMain } = require('./lib/harness');
+const { handlerIndex, invokeIndex } = require('./lib/seg-from-handler');
 /* rmDir 统一到 scripts/lib/test-fs.js —— 见那里的文件头说明。 */
 const { rmDir } = require('./lib/test-fs');
 const mainSrc = readMain({ raw: true });
@@ -65,7 +66,7 @@ t('6b main.js 暴露了 store:health，且渲染层真的会用它提示用户',
   /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/handle\('store:health'/.test(mainSrc), '缺少 store:health 通道');
+  assert.ok(handlerIndex(mainSrc, 'store:health') > 0, '缺少 store:health 通道');
   /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
@@ -76,9 +77,9 @@ t('6b main.js 暴露了 store:health，且渲染层真的会用它提示用户',
   /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  const m = app.match(/store:health[\s\S]{0,900}?\n    \}/);
-  assert.ok(m, '渲染层没有读取 store:health，用户不会知道数据文件坏了');
-  const block = m[0];
+  const hi = invokeIndex(app, 'store:health');
+  assert.ok(hi > 0, '渲染层没有读取 store:health，用户不会知道数据文件坏了');
+  const block = app.slice(hi, hi + 900);
   /* 锁的是：「6b main.js 暴露了 store:health，且渲染层真的会用它提示用户」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */

@@ -21,7 +21,7 @@ const assert = require('assert');
 
 const { t, done, readMain, readTree } = require('./lib/harness');
 /* segFromHandler 统一到 scripts/lib/seg-from-handler.js —— 见那里的文件头说明。 */
-const { segFromHandler } = require('./lib/seg-from-handler');
+const { segFromHandler, handlerIndex, invokeIndex } = require('./lib/seg-from-handler');
 const ROOT = path.join(__dirname, '..');
 const stripComments = require('../lib/src-scan').stripComments;
 
@@ -88,7 +88,7 @@ t('9c target:compress-av 与 office:convert 都不再用裸 fsp.rename 提交结
 /* ==================== 10. WAV / FLAC 不能再把视频流塞进去 ==================== */
 
 t('10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('ffmpeg:convert'"), mainSrc.indexOf("handle('ffmpeg:frames'"));
+  const seg = mainSrc.slice(handlerIndex(mainSrc, 'ffmpeg:convert'), handlerIndex(mainSrc, 'ffmpeg:frames'));
   /* 取值：把 -vn 的判定条件与 isAudioOut 的定义都抓出来比对 */
   /* 锁的是：「10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
@@ -131,7 +131,7 @@ t('10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有�
 /* ==================== 11. runCmd 的 throwOnNonZero ==================== */
 
 t('11c ffmpeg:pick 判 ffmpeg 必须看输出的 "ffmpeg version"，且不覆盖已有可用 ffmpeg', () => {
-  const seg = mainSrc.slice(mainSrc.indexOf("handle('ffmpeg:pick'"), mainSrc.indexOf('const FFMPEG_SOURCES'));
+  const seg = mainSrc.slice(handlerIndex(mainSrc, 'ffmpeg:pick'), mainSrc.indexOf('const FFMPEG_SOURCES'));
   /* 光「出现过 ffmpeg version 这个字符串」不够 —— 注释里也可能有。
    * 要求它真的出现在一个 if/threw 的判断里，也就是「不匹配就不复制」。
    * （反向验证时发现过：只测 /ffmpeg version/ 的话，把校验整段删掉测试仍然是绿的。） */
@@ -256,7 +256,7 @@ t('1b pinWinOf：登记时用数字、查询时用字符串（渲染层的真实
 t('1c 三个贴图 handler 取不到窗口时必须返回 false，不能假装成功', () => {
   const code = stripComments(mainSrc);
   for (const ch of ['win:pin-move', 'win:pin-resize', 'win:pin-close']) {
-    const i = code.indexOf("handle('" + ch + "'");
+    const i = handlerIndex(code, ch);
     assert.ok(i > 0, '找不到 handler ' + ch);
     const seg = code.slice(i, code.indexOf('\n});', i));
     /* 旧写法：const bw = pinWins.get(id); if (bw && ...) ...; return true;
@@ -405,7 +405,7 @@ t('11a 清理回调的注册不在 rec:audio-devices 的 then 里', () => {
   const code = stripComments(readTree('js/tools/media'));
   /* 定位 invoke('rec:audio-devices') 到它配对的 .catch(() => {}) 之间的那段，
    * 断言 onCleanup 不在其中 —— 枚举失败时也要注册清理。 */
-  const i = code.indexOf("invoke('rec:audio-devices')");
+  const i = invokeIndex(code, 'rec:audio-devices');
   assert.ok(i > 0, "找不到 invoke('rec:audio-devices')");
   /* 取这段 then 链的结束：从上往下找第一个 "}).catch(() => {});" */
   const endMark = '}).catch(() => {});';

@@ -1,5 +1,5 @@
 'use strict';
-const { t, done } = require('./lib/harness');
+const { t, done, readSrc } = require('./lib/harness');
 /* IPC 通道审计（P2-5 的回归测试）。
  *
  * 作用：对比「主进程注册的通道」与「渲染层实际调用的通道」，
@@ -59,12 +59,12 @@ function registered() {
      * handle(dirMoveCh.<组>.<键>, ...)。只扫字面量的话这 8 个通道会从
      * "已注册"清单里消失，而渲染层仍在用它们，于是断言误报。
      * 这里用 lib/channels.js 的同一份表把常量还原回通道名。 */
-    for (const m of s.matchAll(/handle\(dirMoveCh\.([A-Z_]+)\.([A-Z_]+)\s*,/g)) {
+    for (const m of s.matchAll(/handle\(dirMoveCh\.([A-Z0-9_]+)\.([A-Z0-9_]+)\s*,/g)) {
       const key = m[1] + '.' + m[2];
       if (chTable[key]) set.add(chTable[key]);
     }
     /* 搬出去的模块把 CHANNELS 做成了本地别名 CH：handle(CH.DIR_MOVE.MOVE, ...) */
-    for (const m of s.matchAll(/handle\(CH\.([A-Z_]+)\.([A-Z_]+)\s*,/g)) {
+    for (const m of s.matchAll(/handle\(CH\.([A-Z0-9_]+)\.([A-Z0-9_]+)\s*,/g)) {
       const key = m[1] + '.' + m[2];
       if (chTable[key]) set.add(chTable[key]);
     }
@@ -239,12 +239,40 @@ t('无覆盖保护的旧写盘通道已移除', () => {
   }
 });
 
-/* ---- 4. 辅助窗口用的通道不能被误删 ---- */
+/* ---- 4. 辅助窗口用的通道不能被误删 ----
+ *
+ * 【为什么不写死通道名】原来这里是一张硬编码清单：
+ *   ['win:pin-close', 'win:ruler:close', 'snip:finish', ...]
+ * v0.4.2 把 win:ruler:close 改名成 win:ruler-close（双冒号不合「域:动作」约定），
+ * 这张清单立刻变红 —— 但真正要守的是「辅助窗口用到的通道都在主进程注册了」，
+ * 不是「通道叫这个名字」。所以改成**从辅助窗口源码里解析**：
+ * 它引用什么，就要求什么注册。通道改名不再影响这条断言，
+ * 而「辅助窗口新引用了某个没注册的通道」依然会被抓住。
+ *
+ * 空转防护：解析结果为空时直接失败 —— 否则正则一失效，
+ * 这条断言就会变成永远通过的空断言（本项目最忌讳的假绿）。 */
 t('三个辅助窗口依赖的通道仍在注册', () => {
-  const must = ['win:pin-close', 'win:pin-move', 'win:pin-resize',
-                'win:ruler:close', 'win:ruler:move', 'snip:finish'];
-  const missing = must.filter((c) => !reg.has(c));
-  assert.deepStrictEqual(missing, [], '被误删：' + missing.join(', '));
+  const chTable = require('../lib/channels').flatten();
+  const dir = path.join(ROOT, 'js', 'auxwin');
+  const need = new Set();
+  /* 用 readSrc（会自动剥注释）而不是裸 readFileSync：
+   * 注释里出现的通道名不该被当成「辅助窗口真的调用了它」。 */
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.js'))) {
+    const s = readSrc(path.relative(ROOT, path.join(dir, f)).split(path.sep).join('/'));
+    /* 常量形式：Channels.CHANNELS.WIN.PIN_CLOSE / window.Channels.CHANNELS.... */
+    for (const m of s.matchAll(/Channels\.CHANNELS\.([A-Z0-9_]+)\.([A-Z0-9_]+)/g)) {
+      const key = m[1] + '.' + m[2];
+      if (chTable[key]) need.add(chTable[key]);
+    }
+    /* 字面量形式（迁移前遗留写法，仍要认） */
+    for (const m of s.matchAll(/['"`]([a-z][a-z0-9-]*:[a-z][a-z0-9-]*)['"`]/g)) {
+      if (chTable[Object.keys(chTable).find((k) => chTable[k] === m[1])]) need.add(m[1]);
+      else if (/^(win|snip|lan):/.test(m[1])) need.add(m[1]);
+    }
+  }
+  assert.ok(need.size >= 5, '只从辅助窗口源码里解析出 ' + need.size + ' 个通道，正则疑似失效（这条断言会空转）');
+  const missing = [...need].filter((c) => !reg.has(c)).sort();
+  assert.deepStrictEqual(missing, [], '辅助窗口用到但主进程没注册：' + missing.join(', '));
 });
 
 /* ---- 5. 通道总数落在合理区间（防止批量误删） ---- */

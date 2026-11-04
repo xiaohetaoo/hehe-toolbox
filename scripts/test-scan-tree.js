@@ -1,5 +1,6 @@
 'use strict';
 const { t, done } = require('./lib/harness');
+const { handlerIndex } = require('./lib/seg-from-handler');
 /* 目录树扫描统计的行为测试（原 test-round15 的 17a / 17b / 17c）。
  *
  * 锁的是：根路径带不带尾随分隔符（`D:\a` vs `D:\a\`）会得到不同的
@@ -19,7 +20,7 @@ t('17a 根路径归一：尾随分隔符不影响统计口径', () => {
   const code = stripComments(mainSrc);
   const i = code.indexOf('function normalizeRootForScan');
   assert.ok(i > 0, '没有抽出 normalizeRootForScan');
-  const j = code.indexOf("handle('fs:scan-empty-dirs'");
+  const j = handlerIndex(code, 'fs:scan-empty-dirs');
   const f = new Function('path', code.slice(i, j) + '\nreturn normalizeRootForScan;')(path);
   const B = String.fromCharCode(92);
   assert.strictEqual(f('D:' + B + 'foo' + B), 'D:' + B + 'foo', '尾随分隔符没有被去掉');
@@ -30,7 +31,7 @@ t('17a 根路径归一：尾随分隔符不影响统计口径', () => {
 
 t('17b 聚合用的是路径比较，不是字符串长度', () => {
   const code = stripComments(mainSrc);
-  const i = code.indexOf("handle('fs:scan-tree'");
+  const i = handlerIndex(code, 'fs:scan-tree');
   const seg = code.slice(i, i + 2400);
   /* 锁的是：「17b 聚合用的是路径比较，不是字符串长度」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
@@ -48,7 +49,7 @@ t('17c 行为：带/不带尾斜杠扫描同一个目录，根统计一致', asy
   /* 直接跑聚合逻辑的真实实现：构造 dirSize 键，验证根目录能累加到值。 */
   const code = stripComments(mainSrc);
   const i = code.indexOf('function normalizeRootForScan');
-  const j = code.indexOf("handle('fs:scan-empty-dirs'");
+  const j = handlerIndex(code, 'fs:scan-empty-dirs');
   const f = new Function('path', code.slice(i, j) + '\nreturn normalizeRootForScan;')(path);
   const B = String.fromCharCode(92);
   const base = path.join(os.tmpdir(), 'r15-scanroot');

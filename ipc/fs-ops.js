@@ -26,6 +26,8 @@
  * main.js 在 register 调用时传进来，见下面的解构。
  */
 
+const CH = require('../lib/channels').CHANNELS;
+
 module.exports = function register(ctx, deps) {
   const {
     handle, send, jobs, fmtErr, setLatestCancelable,
@@ -38,7 +40,7 @@ module.exports = function register(ctx, deps) {
 
 /* ================= IPC: fs ================= */
 const TEXT_LIMIT = 8 * 1024 * 1024, BIN_LIMIT = 64 * 1024 * 1024;
-handle('fs:read-text', async (e, p) => {
+handle(CH.FS.READ_TEXT, async (e, p) => {
   const st = await fsp.stat(p);
   if (st.size > TEXT_LIMIT) throw new Error('文件超过 8MB，请使用文本分批读取或文件处理工具');
   const buf = await fsp.readFile(p);
@@ -113,21 +115,21 @@ async function writeFileAtomic(dest, data, encoding) {
     }
   }
 }
-handle('fs:write-text', async (e, p, content) => { await writeFileAtomic(p, content, 'utf8'); return true; });
-handle('fs:read-file-b64', async (e, p) => {
+handle(CH.FS.WRITE_TEXT, async (e, p, content) => { await writeFileAtomic(p, content, 'utf8'); return true; });
+handle(CH.FS.READ_FILE_B64, async (e, p) => {
   const st = await fsp.stat(p);
   if (st.size > BIN_LIMIT) throw new Error('文件超过 64MB 限制');
   return { b64: (await fsp.readFile(p)).toString('base64'), size: st.size };
 });
-handle('fs:write-file-b64', async (e, p, b64) => { await writeFileAtomic(p, Buffer.from(b64, 'base64')); return true; });
-handle('fs:stat', async (e, p) => { const st = await fsp.stat(p); return { size: st.size, mtime: st.mtimeMs, isDir: st.isDirectory() }; });
+handle(CH.FS.WRITE_FILE_B64, async (e, p, b64) => { await writeFileAtomic(p, Buffer.from(b64, 'base64')); return true; });
+handle(CH.FS.STAT, async (e, p) => { const st = await fsp.stat(p); return { size: st.size, mtime: st.mtimeMs, isDir: st.isDirectory() }; });
 /* 批量取体积/类型：文件列表一次拖入 500 个文件时，逐个 fs:stat 就是 500 次
  * IPC 往返，主进程排队处理，列表体积长时间停在「…」。
  * 这里一次传一批（渲染层按 50 个一批分片），并发受限地 stat，
  * 单个路径失败只让那一项返回 null，不打断整批。
  * 【为什么限并发】500 个路径全开 Promise 会瞬间打满文件句柄；
  * 8 路足够快，也不会挤掉主进程里别的 IO。 */
-handle('fs:stat-multi', async (e, paths) => {
+handle(CH.FS.STAT_MULTI, async (e, paths) => {
   const list = Array.isArray(paths) ? paths : [];
   /* 一次最多 2000 个。
    *
@@ -159,8 +161,8 @@ handle('fs:stat-multi', async (e, paths) => {
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length || 1) }, worker));
   return out;
 });
-handle('fs:exists', async (e, p) => { try { await fsp.access(p); return true; } catch (err) { return false; } });
-handle('fs:list', async (e, p) => {
+handle(CH.FS.EXISTS, async (e, p) => { try { await fsp.access(p); return true; } catch (err) { return false; } });
+handle(CH.FS.LIST, async (e, p) => {
   const names = await fsp.readdir(p, { withFileTypes: true });
   const out = [];
   for (const d of names) {
@@ -173,11 +175,11 @@ handle('fs:list', async (e, p) => {
   out.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name, 'zh'));
   return out;
 });
-handle('fs:mkdir', async (e, p) => { await fsp.mkdir(p, { recursive: true }); return true; });
+handle(CH.FS.MKDIR, async (e, p) => { await fsp.mkdir(p, { recursive: true }); return true; });
 // Unix 的 rename() 目标存在就覆盖，Windows 上 Node 也照这个语义走：
 // 批量改名/改后缀撞上已存在的同名文件时，会把别人的文件悄无声息地抹掉。
 // 这里默认拒绝覆盖（overwrite 需显式传 true），把“静默毁文件”变成可见的错误。
-handle('fs:rename', async (e, from, to, overwrite) => {
+handle(CH.FS.RENAME, async (e, from, to, overwrite) => {
   if (!from || !to) throw new Error('缺少重命名路径');
   const rf = path.resolve(from), rt = path.resolve(to);
   if (rf === rt) return true;
@@ -215,17 +217,17 @@ handle('fs:rename', async (e, from, to, overwrite) => {
 //   - 非递归删除单个文件时，仍然要挡住关键目录里的文件
 // 原实现是 fsp.rm(p, {recursive, force:true}) 裸调用，
 // 配合高危开关「文件删除」一旦开启，构造路径就能删掉 C:\Users 或整个 C 盘。
-handle('fs:delete', async (e, p, recursive) => {
+handle(CH.FS.DELETE, async (e, p, recursive) => {
   const bad = pathGuard.checkDeletable(p, recursive);
   if (bad) throw pathGuard.err(bad.code, bad.reason, '如确需删除该路径，请手动在资源管理器中操作');
   await fsp.rm(p, { recursive: !!recursive, force: true });
   return true;
 });
-handle('fs:open-path', async (e, p) => { const err = await shell.openPath(p); if (err) throw new Error(err); return true; });
-handle('fs:show-item', (e, p) => { shell.showItemInFolder(p); return true; });
+handle(CH.FS.OPEN_PATH, async (e, p) => { const err = await shell.openPath(p); if (err) throw new Error(err); return true; });
+handle(CH.FS.SHOW_ITEM, (e, p) => { shell.showItemInFolder(p); return true; });
 // 只允许 http/https：shell.openExternal 会把任意协议交给系统处理，
 // file:// 能直接打开本地文件，smb:// / ms-msdt: 等还能被系统协议处理器放大成提权或 RCE 链。
-handle('shell:open-url', async (e, url) => {
+handle(CH.SHELL.OPEN_URL, async (e, url) => {
   const s = String(url || '').trim();
   let u;
   try { u = new URL(s); } catch (err) { throw new Error('网址格式不正确'); }
@@ -235,7 +237,7 @@ handle('shell:open-url', async (e, url) => {
 });
 /* 唯一名生成：实现已抽到 lib/fs-ops.js（与 test-round2-fixes 共享同一份，
  * 避免测试复刻逻辑导致「改了主实现、测试照旧全绿」的假绿）。 */
-handle('fs:unique-path', async (e, p) => fsOps.uniquePath(p));
+handle(CH.FS.UNIQUE_PATH, async (e, p) => fsOps.uniquePath(p));
 
 /* recursive walk with cancel + progress */
 async function walkDir(root, opts, onItem) {
@@ -266,7 +268,7 @@ async function walkDir(root, opts, onItem) {
 }
 
 /* disk/tree analysis job */
-handle('fs:scan-tree', async (e, root, opts = {}) => {
+handle(CH.FS.SCAN_TREE, async (e, root, opts = {}) => {
   const id = 'scan' + ctx.nextJobSeq();
   const cancelRef = { canceled: false };
   jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
@@ -333,7 +335,7 @@ function normalizeRootForScan(root) {
 }
 
 /* empty dirs */
-handle('fs:scan-empty-dirs', async (e, root) => {
+handle(CH.FS.SCAN_EMPTY_DIRS, async (e, root) => {
   const id = 'empty' + ctx.nextJobSeq();
   const cancelRef = { canceled: false };
   jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
@@ -358,7 +360,7 @@ handle('fs:scan-empty-dirs', async (e, root) => {
   empty.sort((a, b) => b.depth - a.depth);
   return { dirs: empty };
 });
-handle('fs:delete-empty', async (e, dirs) => {
+handle(CH.FS.DELETE_EMPTY, async (e, dirs) => {
   let deleted = 0; const errors = [];
   /* 【入参必须是字符串数组 —— 这里曾出现过「一个都删不掉还报成功」】
    * 渲染层早期把扫描结果 { path, depth } 对象数组原样发过来，
@@ -433,7 +435,7 @@ function normForJunk(p) {
   try { return path.resolve(p).replace(/\//g, '\\').toLowerCase(); }
   catch (e) { return String(p == null ? '' : p).toLowerCase(); }
 }
-handle('fs:scan-junk', async () => {
+handle(CH.FS.SCAN_JUNK, async () => {
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const cands = [
     // 临时文件：**只扫本应用自己的产物**（hehe- 前缀白名单）。
@@ -491,7 +493,7 @@ handle('fs:scan-junk', async () => {
   junkScanCache = { at: Date.now(), paths: cachePaths };
   return out;
 });
-handle('fs:clean-junk', async (e, targets, keepRoot) => {
+handle(CH.FS.CLEAN_JUNK, async (e, targets, keepRoot) => {
   let cleaned = 0, bytes = 0; const errors = [];
   const tmpRoot = path.resolve(os.tmpdir());
   if (!Array.isArray(targets)) return { cleaned: 0, bytes: 0, errors: ['参数必须是路径数组'] };
@@ -584,11 +586,11 @@ async function hashFileMulti(p, algos) {
     rs.on('error', reject);
   });
 }
-handle('fs:hash-file-multi', async (e, p, algos) => hashFileMulti(p, algos));
+handle(CH.FS.HASH_FILE_MULTI, async (e, p, algos) => hashFileMulti(p, algos));
 
 /* 单算法通道 fs:hash-text 已移除，理由同上：文本页走 -multi 版本。 */
 // 一次算多个算法：文本页每次输入都要出 3 个摘要，逐个 invoke 会有 3 次 IPC 往返
-handle('fs:hash-text-multi', (e, text, algos = ['md5', 'sha1', 'sha256']) => {
+handle(CH.FS.HASH_TEXT_MULTI, (e, text, algos = ['md5', 'sha1', 'sha256']) => {
   const out = {};
   for (const algo of algos) {
     if (!HASH_ALGOS.includes(algo)) continue;
@@ -657,15 +659,15 @@ async function cryptStream(p, outPath, password, decrypt) {
   }
   return { outPath, size: (await fsp.stat(outPath)).size };
 }
-handle('fs:encrypt-file', async (e, p, outPath, password) => {
+handle(CH.FS.ENCRYPT_FILE, async (e, p, outPath, password) => {
   if (!password) throw new Error('请输入密码');
   return await cryptStream(p, outPath, password, false);
 });
-handle('fs:decrypt-file', async (e, p, outPath, password) => {
+handle(CH.FS.DECRYPT_FILE, async (e, p, outPath, password) => {
   return await cryptStream(p, outPath, password, true);
 });
 
-handle('fs:split-file', async (e, p, chunkMB, outDir) => {
+handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
   // 异步 stat：大文件分片期间不能阻塞主进程事件循环（UI 与 sys:stats 都要响应）
   const st = await fsp.stat(p);
   const chunkSize = Math.max(1, chunkMB) * 1024 * 1024;
@@ -762,7 +764,7 @@ handle('fs:split-file', async (e, p, chunkMB, outDir) => {
   await writeFileAtomic(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
   return { parts: finalParts, manifestPath, outDir, chunkSize };
 });
-handle('fs:merge-parts', async (e, pickedPath, outPath) => {
+handle(CH.FS.MERGE_PARTS, async (e, pickedPath, outPath) => {
   let manifestPath;
   if (pickedPath.endsWith('.manifest.hehe.json')) manifestPath = pickedPath;
   else {
@@ -859,7 +861,7 @@ handle('fs:merge-parts', async (e, pickedPath, outPath) => {
   return { outPath: finalOut, size: realSize, parts };
 });
 
-handle('fs:dedupe', async (e, root, opts = {}) => {
+handle(CH.FS.DEDUPE, async (e, root, opts = {}) => {
   const mode = opts.mode || 'content';
   const cancelRef = { canceled: false };
   const id = 'dedupe' + ctx.nextJobSeq();
@@ -951,7 +953,7 @@ handle('fs:dedupe', async (e, root, opts = {}) => {
 });
 
 /* zip */
-handle('zip:compress', async (e, paths, outZip) => {
+handle(CH.ZIP.COMPRESS, async (e, paths, outZip) => {
   // 输出文件不得静默覆盖（outZip 来自渲染层，IPC 本身也要设闸门）
   const bad = pathGuard.checkOverwritable(outZip);
   if (bad) throw pathGuard.err(bad.code, bad.reason);
@@ -994,7 +996,7 @@ handle('zip:compress', async (e, paths, outZip) => {
   zip.writeZip(outZip);
   return { outZip, size: (await fsp.stat(outZip)).size };
 });
-handle('zip:extract', async (e, zipPath, outDir) => {
+handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
   const zip = new AdmZip(zipPath);
   /* 安全预检：先枚举全部条目并做静态判定，通过后才真正写盘。
      原实现直接 extractAllTo(outDir, true)：overwrite=true（静默覆盖同名文件）

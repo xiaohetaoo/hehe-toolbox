@@ -1,5 +1,6 @@
 'use strict';
 const { t, done, readTree, readMain } = require('./lib/harness');
+const { handlerIndex, invokeIndex } = require('./lib/seg-from-handler');
 /* 任务 9 把 media.js 拆成了 js/tools/media/*.js —— 媒体相关的源码断言
  * 一律改读整棵树：断言的语义是「媒体工具里有这个实现」，与文件数无关。 */
 const readMedia = () => readTree('js/tools/media');
@@ -86,15 +87,18 @@ t('P1 状态检测读默认值而非只看父键存在', () => {
 /* ---------- P2-1：update:cleanup 不得删掉待安装的新包 ---------- */
 t('P2 update:cleanup 按版本号豁免，不再一律删光', () => {
   const s = read('main.js');
-  const fn = s.match(/handle\('update:cleanup'[\s\S]*?\n\}\);/)[0];
+  const at = handlerIndex(s, 'update:cleanup');
+  assert.ok(at > 0, '找不到 update:cleanup 的注册');
+  const end = s.indexOf('\n});', at);
+  const fn = s.slice(at, end > at ? end : at + 3000);
   assert.ok(fn.includes('cmpVer'), '没有版本号比较');
   assert.ok(/pendingName/.test(fn), '没有对待安装包的豁免');
   assert.ok(!/^\s*removed\+\+;\s*bytes \+= st\.size;$/m.test(fn) || fn.includes('cmpVer'),
     '仍是无条件删除');
 });
 t('P2 update:cleanup 有 mark-pending 登记通道', () => {
-  assert.ok(read('main.js').includes("handle('update:mark-pending'"), '缺少 mark-pending');
-  assert.ok(read('js/app.js').includes("update:mark-pending"), '前端没有登记待安装包');
+  assert.ok(handlerIndex(read('main.js'), 'update:mark-pending') > 0, '缺少 mark-pending');
+  assert.ok(invokeIndex(read('js/app.js'), 'update:mark-pending') > 0, '前端没有登记待安装包');
 });
 t('P2 关于页下载进度按 job id 过滤', () => {
   const s = read('js/app.js');
@@ -157,9 +161,10 @@ t('P3 rec:stop 降级时如实返回 degraded', () => {
    * 是「handler 搬家了」还是「degraded 逻辑没了」。
    * 现在改为先判空再断言，并把「找不到」写成明确的失败原因。 */
   const s = readMain();
-  const m = s.match(/handle\('rec:stop'[\s\S]*?\n\}\);/);
-  assert.ok(m, '找不到 rec:stop 的注册（它可能又被搬到别的文件了）');
-  const fn = m[0];
+  const at = handlerIndex(s, 'rec:stop');
+  assert.ok(at > 0, '找不到 rec:stop 的注册（它可能又被搬到别的文件了）');
+  const end = s.indexOf('\n});', at);
+  const fn = s.slice(at, end > at ? end : at + 3000);
   assert.ok(fn.includes('degraded'), '没有降级标记');
   assert.ok(/return \{ ok: true[^}]*degraded/.test(fn), '返回值里没有 degraded');
 });
@@ -200,7 +205,10 @@ t('P3 store 解析失败时跳过孤儿图片清扫', () => {
 /* ---------- P3：fs:rename 覆盖保护 ---------- */
 t('P3 fs:rename 默认拒绝覆盖已存在目标', () => {
   const s = readMainPlusFs();
-  const fn = s.match(/handle\('fs:rename'[\s\S]*?\n\}\);/)[0];
+  const at = handlerIndex(s, 'fs:rename');
+  assert.ok(at > 0, '找不到 fs:rename 的注册');
+  const end = s.indexOf('\n});', at);
+  const fn = s.slice(at, end > at ? end : at + 3000);
   assert.ok(fn.includes('existsSync'), '没有检查目标是否存在');
   assert.ok(fn.includes('overwrite'), '没有显式 overwrite 开关');
 });

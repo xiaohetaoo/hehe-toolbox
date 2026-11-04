@@ -206,9 +206,15 @@ if (R.fatal) {
       '分类条全部变英文: ' + JSON.stringify(home.cats && home.cats.slice(0, 3)));
   chk(/Ready/.test(home.status || ''), '状态栏变英文: ' + home.status);
 
-  /* 工具页正文保持中文（设计边界，写死防误改） */
-  chk(by['tool-page'] && /压缩/.test(by['tool-page'].title || ''),
-      '英文模式下工具页标题仍是中文（' + (by['tool-page'] && by['tool-page'].title) + '）');
+  /* 【标题：v0.4.2 起应当变英文】
+   * 这条原来是反的 —— 「英文模式下工具页标题仍是中文」，用来钉住「正文不翻译」
+   * 这个边界。v0.4.2 给 102 个工具都补了 nameEn，标题**应该**是英文了；
+   * 继续断言中文等于要求一个已修好的缺陷保持原样。
+   * 现在断言标题变英文；而「正文仍中文」这条边界由
+   * scripts/test-tool-i18n-e2e.js 的 ZIP 页用例继续守着。 */
+  const title = (by['tool-page'] && by['tool-page'].title) || '';
+  chk(!/[\u4e00-\u9fff]/.test(title),
+      '英文模式下工具页标题应已变英文（实际：' + title + '）');
 
   /* 配色主题名/描述在英文下必须是英文（以前是写死的中文） */
   const CJK = /[\u4e00-\u9fff]/;

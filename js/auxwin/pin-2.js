@@ -12,7 +12,7 @@
     let dragging = false, grabDX = 0, grabDY = 0, pending = null, raf = 0;
     function push() {
       if (raf || !pending || !window.hehe) return;
-      raf = requestAnimationFrame(() => { raf = 0; if (pending && window.hehe) hehe.invoke('win:pin-move', winId, pending[0], pending[1]).catch(() => {}); });
+      raf = requestAnimationFrame(() => { raf = 0; if (pending && window.hehe) hehe.invoke(window.Channels.CHANNELS.WIN.PIN_MOVE, winId, pending[0], pending[1]).catch(() => {}); });
     }
     window.addEventListener('mousedown', (e) => { dragging = true; grabDX = e.screenX - window.screenX; grabDY = e.screenY - window.screenY; });
     window.addEventListener('mousemove', (e) => {
@@ -30,10 +30,10 @@
       const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12;
       const w = Math.max(80, Math.round(window.innerWidth * dir));
       const h = Math.max(60, Math.round(window.innerHeight * dir));
-      if (window.hehe) hehe.invoke('win:pin-resize', winId, w, h).catch(() => {});
+      if (window.hehe) hehe.invoke(window.Channels.CHANNELS.WIN.PIN_RESIZE, winId, w, h).catch(() => {});
     }, { passive: false });
 
-    function closePin() { try { if (window.hehe) hehe.invoke('win:pin-close', winId).catch(() => {}); } catch (e) {} try { window.close(); } catch (e) {} }
+    function closePin() { try { if (window.hehe) hehe.invoke(window.Channels.CHANNELS.WIN.PIN_CLOSE, winId).catch(() => {}); } catch (e) {} try { window.close(); } catch (e) {} }
     window.addEventListener('dblclick', closePin);
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePin(); });
   

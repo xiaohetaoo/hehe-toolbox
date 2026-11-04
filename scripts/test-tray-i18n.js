@@ -1,5 +1,6 @@
 'use strict';
 const { t, done, readMain, readSrc } = require('./lib/harness');
+const { handlerIndex, invokeIndex } = require('./lib/seg-from-handler');
 /* 【迁移说明】用例来自 test-round8-fixes.js，原先用 fs.readFileSync(main.js)。
  * 任务 6 之后 ffmpeg:/target:/rec: 等域搬到了 ipc/，所以读「主进程全部源码」——
  * 断言的语义一直是"主进程里有这个实现"，与它在哪个文件无关。 */
@@ -167,13 +168,14 @@ t('主进程托盘菜单有中英两套文案，不再写死中文', () => {
 });
 
 t('渲染层切语言时会通知主进程更新托盘', () => {
-  assert.ok(/handle\('app:set-lang'/.test(mainSrc), '主进程没有 app:set-lang 通道');
+  assert.ok(handlerIndex(mainSrc, 'app:set-lang') > 0, '主进程没有 app:set-lang 通道');
   const body = (() => {
     const s = appSrc.indexOf('function applyLang(v)');
     const e = appSrc.indexOf('\n  }', s);
     return appSrc.slice(s, e);
   })();
-  assert.ok(/invoke\('app:set-lang',\s*lang\)/.test(body), 'applyLang 没把语言传给主进程');
+  const li = invokeIndex(body, 'app:set-lang', 'lang');
+  assert.ok(li > 0, 'applyLang 没把语言传给主进程');
 });
 
 t('定时任务通知的标题走 i18n', () => {

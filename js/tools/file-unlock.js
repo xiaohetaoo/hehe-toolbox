@@ -8,10 +8,10 @@
 
   register({
     id: 'file-unlock',
-    name: '文件占用解锁',
+    name: '文件占用解锁', nameEn: 'File Unlock',
     module: MOD,
     icon: 'lock',
-    desc: '删不掉、提示被占用时，查出是哪个进程占着它（Windows Restart Manager）',
+    desc: '删不掉、提示被占用时，查出是哪个进程占着它（Windows Restart Manager）', descEn: 'Find which process is locking a file and release it',
     keywords: ['占用', '解锁', '删不掉', '被占用', 'lock', 'unlock', 'handle', '正在使用'],
     render(page) {
       const state = { items: [], lockers: [], notes: [] };
@@ -152,7 +152,7 @@
         });
         if (!ok) return;
         try {
-          await invoke('proc:kill', row.pid);
+          await invoke(Channels.CHANNELS.PROC.KILL, row.pid);
           toast('已结束「' + nm + '」', 'success');
           scan();   // 自动重查，确认是否真的解锁了
         } catch (e) {
@@ -189,7 +189,7 @@
         const unknown = list.filter((it) => typeof it.isDir !== 'boolean');
         if (!unknown.length) return;
         let stats = null;
-        try { stats = await invoke('fs:stat-multi', unknown.map((it) => it.path)); }
+        try { stats = await invoke(Channels.CHANNELS.FS.STAT_MULTI, unknown.map((it) => it.path)); }
         catch (e) { stats = null; }
         unknown.forEach((it, k) => {
           const st = stats && stats[k];

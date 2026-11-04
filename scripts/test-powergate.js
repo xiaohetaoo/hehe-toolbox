@@ -1,3 +1,4 @@
+const { handlerIndex } = require('./lib/seg-from-handler');
 'use strict';
 const path = require('path');
 const assert = require('assert');
@@ -313,8 +314,8 @@ t('6d 未展开的变量 fail-closed，已知变量要能展开', () => {
 /* ==================== 7. clean-junk 来源校验 ==================== */
 
 t('8a 电源门禁：cmd 与 args 必须拼成整条再判（分开判会漏掉 cmd.exe /c shutdown）', () => {
-  const i = mainSrc.indexOf("handle('exec:run'");
-  const j = mainSrc.indexOf("handle('exec:stream'");
+  const i = handlerIndex(mainSrc, 'exec:run');
+  const j = handlerIndex(mainSrc, 'exec:stream');
   assertPowerArgIsWholeCommand(mainSrc.slice(i, j), 'exec:run');
 
   /* 行为验证：证明「分开判」确实会让这些命令通过（否则这条测试守的是空气） */
@@ -328,7 +329,7 @@ t('8a 电源门禁：cmd 与 args 必须拼成整条再判（分开判会漏掉 
 });
 
 t('8b 电源门禁：powershell -Command Stop-Computer 同样要被整条判住', () => {
-  const body = mainSrc.slice(mainSrc.indexOf("handle('exec:stream'"), mainSrc.indexOf("handle('job:kill'"));
+  const body = mainSrc.slice(handlerIndex(mainSrc, 'exec:stream'), handlerIndex(mainSrc, 'job:kill'));
   assertPowerArgIsWholeCommand(body, 'exec:stream');
   assert.strictEqual(PG.isPowerCommand('powershell.exe'), false);
   assert.strictEqual(PG.isPowerCommand('-NoProfile -Command Stop-Computer'), false);

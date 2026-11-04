@@ -4,6 +4,7 @@
  * 用户可见文字走 TT('hash', '中文原文')，英文表在 js/tools/i18n.js。
  * 中文模式下 TT 直接返回字面量、不查表 —— 「中文零行为改动」是结构上保证的。 */
 (function () {
+  const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const { div, btn, toast, copyText, filePicker, fmtBytes, renderTable } = window.ui;
@@ -11,8 +12,8 @@
   const T = (zh, vars) => TT('hash', zh, vars);
 
   register({
-    id: 'hash-tool', name: '哈希校验', module: 'file', icon: 'hash', i18n: true,
-    desc: 'MD5 / SHA1 / SHA256 / SHA512，支持文件拖拽与文本计算',
+    id: 'hash-tool', name: '哈希校验', nameEn: 'Hash Check', module: 'file', icon: 'hash', i18n: true,
+    desc: 'MD5 / SHA1 / SHA256 / SHA512，支持文件拖拽与文本计算', descEn: 'MD5 / SHA1 / SHA256 / SHA512 for files and text, via drag and drop',
     keywords: ['hash', 'md5', 'sha256', '校验', '哈希'],
     render(page) {
       let tab = 'file';
@@ -99,7 +100,7 @@
          * 每次主进程都要完整读一遍盘 —— 校验 1GB 文件要读 4GB。
          * 改用 fs:hash-file-multi 一次流式读取同时算 4 个摘要，IO 降到 1/4。 */
         try {
-          const r = await window.api.invoke('fs:hash-file-multi', p, algos);
+          const r = await window.api.invoke(Channels.CHANNELS.FS.HASH_FILE_MULTI, p, algos);
           const hex = {};
           for (const algo of algos) hex[algo] = r.hex[algo];
           results.set(p, { hex });
@@ -127,7 +128,7 @@
         if (!ta.value) return;
         // 一次 IPC 拿回多个算法，避免 3 次往返
         let res;
-        try { res = await window.api.invoke('fs:hash-text-multi', ta.value, ['md5', 'sha1', 'sha256']); }
+        try { res = await window.api.invoke(Channels.CHANNELS.FS.HASH_TEXT_MULTI, ta.value, ['md5', 'sha1', 'sha256']); }
         catch (e) { return; } // browser mode
         for (const algo of ['md5', 'sha1', 'sha256']) {
           const hex = res && res[algo];
