@@ -1,7 +1,6 @@
 /* 应用外壳：导航、标签页、搜索、首页、状态栏、设置 */
 (function () {
-  /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-  const { div, icon, iconLg, toast, confirmBox, switchEl, fmtBytes, btn } = window.ui;
+  const { div, icon, iconLg, toast, confirmBox, switchEl, fmtBytes, btn, makeButtonLike } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const R = window.Registry;
   /* 取词：外壳文案统一走 i18n，工具正文保持中文。
@@ -187,6 +186,9 @@
     main.appendChild(h('span', { class: 'sr-module' }, mod ? MN(mod) : ''));
     row.appendChild(main);
     row.appendChild(h('span', { class: 'sr-desc', title: t.desc || '' }, t.desc || ''));
+    /* 结果行是 div + click：Tab 走不到、回车无反应。
+     * 读屏名称用「工具名 + 所属模块」，光读个名字没有上下文。 */
+    makeButtonLike(row, t.name + (mod ? '（' + MN(mod) + '）' : ''));
     return row;
   }
   /* Ctrl+K 的去向：在首页就聚焦首页那个大搜索框，在别的页面聚焦标题栏的。
@@ -214,6 +216,7 @@
     const navScroll = div('nav-scroll');
     const navHome = div('nav-item', icon('home', 'icon-lg'), h('span', null, T('nav.home')));
     navHome.dataset.nav = 'home';
+    makeButtonLike(navHome, T('nav.home'));
     navScroll.appendChild(navHome);
     navScroll.appendChild(div('nav-section-title', T('nav.modules')));
     for (const m of R.MODULES) {
@@ -221,6 +224,7 @@
       const item = div('nav-item', icon(m.icon, 'icon-lg'), h('span', null, nm));
       item.dataset.nav = 'module:' + m.id;
       item.title = nm;
+      makeButtonLike(item, nm);
       navScroll.appendChild(item);
     }
     sidebarEl.appendChild(navScroll);
@@ -228,11 +232,14 @@
     const bottom = div('nav-bottom');
     const favItem = div('nav-item', icon('star', 'icon-lg'), h('span', null, T('nav.favorites')));
     favItem.dataset.nav = 'fav';
+    makeButtonLike(favItem, T('nav.favorites'));
     const setCItem = div('nav-item', icon('settings', 'icon-lg'), h('span', null, T('nav.settings')));
     setCItem.dataset.nav = 'settings';
+    makeButtonLike(setCItem, T('nav.settings'));
     // 「关于」不再是侧栏一级入口：它只是版本号、运行环境、检查更新这几行信息，
     // 单开一页占一个导航位不划算，合并进设置的「关于」分区即可。
     const collapseBtn = div('collapse-btn', icon('chev-left'), h('span', null, T('nav.collapse')));
+    makeButtonLike(collapseBtn, T('nav.collapse'));
     collapseBtn.addEventListener('click', () => {
       state.collapsed = !state.collapsed;
       sidebarEl.classList.toggle('collapsed', state.collapsed);
@@ -476,9 +483,17 @@
       tab.appendChild(icon(t.icon));
       tab.appendChild(h('span', null, t.name));
       const c = h('span', { class: 'tab-close' }, icon('x'));
+      /* 关闭按钮是 span + click，同样进不了 Tab 序列。
+       * 它的读屏名称必须带上是**哪个**标签 —— 一屏可能开着五六个标签，
+       * 全读成「关闭」的话用户不知道会关掉哪一个。 */
+      makeButtonLike(c, T('tab.closeNamed', { name: t.name }));
+      /* 关闭按钮的键盘处理要在父级之前 stopPropagation：
+       * 否则按下回车会同时触发「关闭」和「切换到该标签」两个动作。 */
+      c.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });
       c.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); });
       tab.appendChild(c);
       tab.addEventListener('click', () => showView({ type: 'tool', toolId: id }));
+      makeButtonLike(tab, t.name);
       // 鼠标中键关闭标签页
       tab.addEventListener('mousedown', (e) => {
         if (e.button === 1) { e.preventDefault(); e.stopPropagation(); closeTab(id); }
@@ -554,6 +569,9 @@
       info.appendChild(div('tc-danger-tag', dangerOn ? '⚠ 高危' : '未启用'));
     }
     card.appendChild(info);
+    /* 工具卡是首页最主要的入口，之前纯 div + click。
+     * 读屏名称带上「高危/未启用」状态，否则键盘用户不知道该页需要先去设置开启。 */
+    makeButtonLike(card, t.name + (danger ? (dangerOn ? '（' + T('badge.danger') + '）' : '（' + T('badge.disabled') + '）') : ''));
     if (danger && !dangerOn) {
       const lock = div('tc-lock', icon('lock'));
       card.appendChild(lock);
@@ -662,6 +680,7 @@
       current.forEach((t, i) => {
         const row = searchResultRow(t, q);
         row.classList.add('hs-row');
+        makeButtonLike(row);
         row.addEventListener('click', () => openTool(t.id));
         /* 用 mouseenter 而不是 mousemove：mousemove 是像素级触发，
          * 每移动一像素就执行一次 querySelectorAll + scrollIntoView，
@@ -718,6 +737,7 @@
       card.appendChild(div('card-title', icon('clock'), T('home.recent')));
       card.appendChild(div('recent-row', ...recents.map(t => {
         const chip = div('recent-chip', icon(t.icon), h('span', null, t.name));
+        makeButtonLike(chip, t.name);
         chip.addEventListener('click', () => openTool(t.id));
         return chip;
       })));
@@ -731,6 +751,7 @@
     sec.appendChild(div('home-cats', ...R.MODULES.map(m => {
       const count = R.byModule(m.id).length;
       const c = div('home-cat');
+      makeButtonLike(c);
       c.title = MD(m);
       c.appendChild(h('span', { class: 'hc-icon' }, iconLg(m.icon)));
       c.appendChild(h('span', { class: 'hc-name' }, MN(m)));
@@ -937,6 +958,7 @@
     }
     for (const s of sections) {
       const item = div('settings-nav-item', icon(s.icon), ' ' + s.name);
+      makeButtonLike(item, s.name);
       item.dataset.sid = s.id;
       item.addEventListener('click', () => { current = s.id; settingsSection = s.id; drawBody(); });
       nav.appendChild(item);
@@ -1194,6 +1216,88 @@
       render();
     }))));
     body.appendChild(div('set-row', div('', div('set-label', T('data.privacy')), div('set-desc', T('data.privacyDesc')))));
+    await drawCrashSection(body, token);
+  }
+
+  /* ============ 崩溃日志（设置 → 数据 的最后一个分区） ============
+   * 打包后的 exe 没有控制台，出问题时用户手上没有任何可查的东西。
+   * 这里给一个入口：上次是否异常退出 / 有没有日志 / 能不能直接发给我们。
+   *
+   * 【为什么日志正文要点开才读】
+   * 日志可能有几十 KB。设置页一打开就读会把整段文本塞进 IPC 与 DOM，
+   * 而 99% 的情况下用户并不需要看它 —— 只在点「查看」时才按需拉。
+   *
+   * 【为什么单独一个函数而不是塞进 drawData】
+   * drawData 已经有一堆 await，出错时的 token 校验会越来越难跟踪。
+   * 拆开之后这一段的失败只影响它自己的区块，不会让整个「数据」面板空白。 */
+  async function drawCrashSection(body, token) {
+    let info = null;
+    try { info = await invoke('app:crash-info'); } catch (e) { info = null; }
+    if (token !== undefined && token !== drawToken) return;
+
+    // 读不到（浏览器模式 / 老版本主进程）就整块不显示，不占位、不报错
+    if (!info) return;
+
+    const crashed = !!info.lastSessionCrashed;
+    const hasLog = info.count > 0;
+
+    const detail = div('set-row-detail');
+    detail.style.display = 'none';
+    detail.style.marginTop = '8px';
+
+    const viewBtn = btn(T('crash.view'), 'btn-sm btn-secondary', async () => {
+      if (detail.style.display === 'none') {
+        try {
+          const r = await invoke('app:crash-read', 32 * 1024);
+          detail.innerHTML = '';
+          if (!r || !r.text) {
+            detail.appendChild(div('field-hint', T('crash.empty')));
+          } else {
+            if (r.truncated) detail.appendChild(div('field-hint', T('crash.truncated')));
+            // 用 <pre> 而不是 div：日志里的缩进与换行必须原样保留，
+            // 堆栈一旦折行就没法看了。用户选择复制，所以不设 user-select:none。
+            const pre = h('pre', { class: 'crash-log' }, r.text);
+            detail.appendChild(pre);
+          }
+        } catch (e) {
+          detail.innerHTML = '';
+          detail.appendChild(div('field-err', T('crash.readFail', { err: (e && e.message) || String(e) })));
+        }
+        detail.style.display = 'block';
+      } else {
+        detail.style.display = 'none';
+      }
+    });
+    /* data 属性只为可测性：文案随语言变（"查看" / "View"），
+     * 测试按文本找按钮在英文界面下会失效。 */
+    viewBtn.dataset.crashView = '1';
+
+    const row = div('set-row', div('',
+      div('set-label', hasLog || crashed ? T('crash.title') : T('crash.titleEmpty')),
+      div('set-desc', hasLog
+        ? T('crash.descCount', { n: info.count, size: fmtBytes(info.totalBytes) })
+        : T('crash.descNone')),
+      // 上次异常退出是一次性提示：这次启动告诉用户，之后就该消失
+      crashed ? div('set-desc', { style: { color: 'var(--warning)', marginTop: '2px' } }, T('crash.lastAbnormal')) : null
+    ));
+    const ctl = div('set-control', { style: { display: 'flex', gap: '6px' } });
+    if (hasLog) ctl.appendChild(viewBtn);
+    ctl.appendChild(btn(T('crash.openDir'), 'btn-sm btn-text', async () => {
+      try { await invoke('app:crash-reveal'); } catch (e) { toast(e.message, 'error'); }
+    }));
+    if (hasLog) {
+      ctl.appendChild(btn(T('crash.clear'), 'btn-sm btn-text', async () => {
+        if (!(await confirmBox({ title: T('crash.clear'), message: T('crash.clearConfirm'), okText: T('crash.clear') }))) return;
+        try {
+          const n = await invoke('app:crash-clear');
+          toast(T('crash.cleared', { n: n }), 'success');
+          render();
+        } catch (e) { toast(e.message, 'error'); }
+      }));
+    }
+    row.appendChild(ctl);
+    body.appendChild(row);
+    body.appendChild(detail);
   }
 
   /* ============ 关于（设置页的一个分区，不再是独立页面） ============

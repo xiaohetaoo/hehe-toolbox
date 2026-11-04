@@ -27,6 +27,52 @@
     return el;
   }
   const div = (cls, ...ch) => h('div', { class: cls }, ...ch);
+  /* 【把「长得像按钮的 div」变成真的可用键盘操作】
+   *
+   * 界面里大量可点击元素是 div（导航项、工具卡、首页分类、最近使用胶囊），
+   * 它们只挂了 addEventListener('click')。后果很具体：
+   *   · Tab 键走不到它们（div 默认不进 tab 序列）
+   *   · 聚焦不到 → 回车/空格也不会有反应
+   *   · 读屏软件读不出「这是个按钮」
+   * 也就是说，100 个工具页对纯键盘用户是完全不可达的。
+   *
+   * 为什么不用 <button> 重新渲染：这些元素的内部结构（图标 + 多行文字 +
+   * 右上角星标 + 绝对定位的角标）依赖当前 div 的 flex/绝对定位关系，
+   * 换成 button 会继承浏览器默认的 button 样式与基线，需要重写一批 CSS，
+   * 且极易碰坏现有排版。加 role + tabindex 是等效且风险低的做法。
+   *
+   * 【为什么不自己监听 keydown】
+   * 原生 button 对 Enter / Space 的行为差异很细（Space 在 keyup 触发，
+   * 且要防止页面滚动）。与其自己实现两份，不如把事件转成 click 交给
+   * 已有的 handler —— 这样点击与键盘走的是**同一条代码路径**，
+   * 不会出现「鼠标能用、键盘走另一条分支」的分叉。
+   *
+   * @param {HTMLElement} el    目标元素
+   * @param {string} [label]    无障碍名称（读屏读的那句话）；缺省用元素的 title
+   */
+  function makeButtonLike(el, label) {
+    if (!el || el.nodeType !== 1) return el;
+    el.setAttribute('role', 'button');
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
+    const name = label || el.getAttribute('aria-label') || el.getAttribute('title') || (el.textContent || '').trim();
+    if (name) el.setAttribute('aria-label', name);
+    el.addEventListener('keydown', (e) => {
+      // 只处理从自身发出的按键；子元素里的输入框不该被这里拦
+      if (e.target !== el) return;
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        // 阻止 Space 的默认翻页行为，否则按下空格页面会跳一下
+        e.preventDefault();
+        el.click();
+      }
+    });
+    return el;
+  }
+  /* 给一组元素补上可见的焦点环类名（具体样式在 app.css）。
+   * 单独一个函数是为了让「哪些元素支持键盘」这件事在一处可查。 */
+  function focusable(el) {
+    if (el && el.nodeType === 1) el.classList.add('kb-focusable');
+    return el;
+  }
   const icon = (name, cls) => { const t = h('span'); t.innerHTML = window.iconSvg(name, cls); return t.firstChild; };
   const iconLg = (name, cls) => { const t = h('span'); t.innerHTML = window.iconSvgLg(name, cls); return t.firstChild; };
 
@@ -822,5 +868,5 @@
   window.h = h; // 全局 DOM 构建函数，供所有工具直接使用
   // 全局兜底：工具文件即使遗漏解构也能直接使用这些助手
   Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId, guard });
-  window.ui = { h, div, icon, iconLg, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild, guard };
+  window.ui = { h, div, icon, iconLg, makeButtonLike, focusable, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild, guard };
 })();

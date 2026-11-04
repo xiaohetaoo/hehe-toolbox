@@ -258,6 +258,42 @@ body {
   border-radius: 8px; cursor: pointer; color: var(--text-2); font-size: 13.5px;
   position: relative; white-space: nowrap; transition: background 0.15s, color 0.15s;
 }
+/* ============ 键盘焦点环 ============
+   界面里可点击元素大多是 div（导航项、工具卡、首页分类、标签页…），
+   它们通过 js/ui.js 的 makeButtonLike() 补上了 role=button + tabindex，
+   于是 Tab 键能走到、回车/空格能触发（与鼠标走同一条 click 路径）。
+
+   但「能聚焦」不等于「看得出聚焦」。默认的 :focus-visible 描边在
+   圆角卡片上是一圈贴合边框的细线，深色主题下几乎看不见；
+   而那些元素本身已经有 border-color 的 hover 态，再加一圈会打架。
+
+   所以统一用 box-shadow 画内描边：
+   · 不占布局（outline 也是，但 outline 在圆角元素上不跟随圆角）
+   · 用主色 + 半透明，和已有的 focus 输入框同一套观感
+   · :focus-visible 而非 :focus —— 鼠标点击不应留下焦点环，
+     只有键盘操作才显示（这正是该伪类的语义） */
+.kb-focusable:focus-visible,
+.nav-item:focus-visible,
+.tool-card:focus-visible,
+.home-cat:focus-visible,
+.recent-chip:focus-visible,
+.tab:focus-visible,
+.settings-nav-item:focus-visible,
+.search-result:focus-visible,
+.hs-row:focus-visible,
+.collapse-btn:focus-visible,
+.tab-close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--card-bg), 0 0 0 4px color-mix(in srgb, var(--primary) 70%, transparent);
+  border-radius: inherit;
+}
+/* 侧栏折叠态下文字是隐藏的，焦点环要能单独标出图标，
+   所以再补一条：聚焦时把那一段的图标提到正文色。 */
+.nav-item:focus-visible .icon,
+.collapse-btn:focus-visible .icon { color: var(--primary); }
+/* 非键盘用户（纯鼠标）不该看到任何多余的环。上面全部走 :focus-visible，
+   这里不需要额外重置 —— 保留此注释是为了说明「为什么没有 :focus 规则」。 */
+
 .nav-item .icon { color: var(--text-3); transition: color 0.15s; }
 .nav-item span { transition: opacity 0.2s; }
 .nav-item:hover { background: var(--nav-hover); color: var(--text-1); }
@@ -755,6 +791,28 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .set-label { font-size: 14px; color: var(--text-1); }
 .set-desc { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .set-control { margin-left: auto; }
+
+/* 崩溃日志正文。用等宽字体 + 保留原始换行：堆栈靠缩进表达调用层级，
+   换成比例字体后每层缩进宽度不一致，几百行会读成一团。
+   max-height 是必需的 —— 一份日志可能有几十 KB，不夹住会把设置页撑到很长，
+   下面的「隐私承诺」等条目会被推到屏幕外。 */
+.crash-log {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11.5px; line-height: 1.55;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  /* 日志是给人看并复制的，必须可选（全局 body 设了 user-select: none） */
+  user-select: text;
+  cursor: text;
+}
 
 /* 关于分区（原独立「关于」页并入设置后） */
 .about-head { display: flex; align-items: center; gap: 14px; padding-bottom: 16px; margin-bottom: 4px; border-bottom: 1px solid var(--border-light); }

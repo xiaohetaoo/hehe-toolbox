@@ -2,7 +2,7 @@
 (function () {
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-  const { div, btn, toast, confirmBox, promptBox, pad2, fmtDate } = window.ui;
+  const { div, btn, toast, confirmBox, promptBox, pad2, fmtDate, makeButtonLike } = window.ui;
   const { invoke, isDesktop } = window.api;
   const MOD = 'life';
 
@@ -213,6 +213,9 @@
           const td = h('td', { style: { padding: '8px 4px', borderRadius: '6px', cursor: 'pointer', background: isToday ? 'var(--primary)' : 'transparent', color: isToday ? '#fff' : 'var(--text-1)' } },
             h('div', { style: { fontWeight: isToday ? 600 : 400 } }, String(d)),
             h('div', { style: { fontSize: '11px', color: isToday ? 'rgba(255,255,255,0.85)' : 'var(--text-3)' } }, lunarText));
+          /* 日历格子是这一页唯一的交互区，纯鼠标的话键盘用户
+           * 连「看看这个月某天的农历」都做不到。读屏名称带上完整日期。 */
+          makeButtonLike(td, viewYear + '-' + pad2(viewMonth + 1) + '-' + pad2(d) + (lunarText ? ' ' + lunarText : ''));
           td.addEventListener('click', () => showInfo(viewYear, viewMonth + 1, d));
           row.appendChild(td);
           if ((startWeek + d) % 7 === 0) { tbody.appendChild(row); row = h('tr'); }

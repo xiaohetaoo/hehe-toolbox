@@ -37,6 +37,9 @@ const lanScanLib = require('./lib/lan-scan');         // 局域网扫描：ARP �
 /* 临时产物命名的**唯一来源**：生成函数与清理白名单在同一个模块里，
  * 避免"新增一种产物忘了登记白名单"（.hehe-7zx-* 那次残留事故的根因）。 */
 const tempNames = require('./lib/temp-names');
+/* 崩溃日志：打包后的 exe 没有控制台，异常只写 console 等于没记。
+ * 这个模块负责脱敏、截断、轮转，主进程这边只提供目录与时机。 */
+const crashLog = require('./lib/crash-log');
 /* 【任务 5 之后这里少了 5 个 require】rm-lockers / links / dir-move /
  * acl-repair / channels 现在只被 ipc/dir-acl-links.js 使用 —— 那两个域连同
  * handle(dirMoveCh.X.Y, ...) 一起搬过去了，模块自己 require 它们。
@@ -60,6 +63,12 @@ let lastProcSnap = null;
 
 /* ---------------- data store ---------------- */
 const storeFile = () => path.join(app.getPath('userData'), 'hehe-data.json');
+/* 崩溃日志目录。放在 userData 下，与数据文件同一个根 ——
+ * 用户要把它发给开发者时只需要知道一个位置（设置页有「打开日志目录」入口）。 */
+const crashLogDir = () => path.join(app.getPath('userData'), 'logs');
+/* 上次是否异常退出。启动时读一次并清掉标记，之后固定用这个值，
+ * 免得中途再打开设置页时又把它当成"本次异常"。 */
+let lastSessionCrashed = false;
 let storeData = { settings: {}, favorites: [], recents: [], quicklaunch: [], commands: [], clipHistory: [], notes: [], autostartBackup: [] };
 // 记录 store 是否加载成功。损坏的 hehe-data.json 会让 loadStore 静默回退默认值，
 // 此时 clipHistory 是空的——若照常跑清扫，clip-img 里的所有图片都会被当孤儿删光。
@@ -683,6 +692,32 @@ function createWindow() {
     else { const ev = args[0]; level = ev.level; message = ev.message; source = ev.sourceId; line = ev.lineNumber; }
     console.log(`[renderer:${level}]`, message, `(${source}:${line})`);
   });
+  /* 渲染进程崩溃（OOM / 被杀 / asar 被动过）在主进程这边只有一个事件，
+   * 界面上表现为「整片白了」或「窗口没了」。这里必须落盘：
+   * 渲染进程自己的 console 随进程一起消失，之前什么都留不下。
+   *
+   * 崩溃后 Electron 会留下一个"死掉"的 webContents。不去 reload 的话，
+   * 用户看到的就是一张永久白屏的窗口 —— 那正是最让人困惑的状态。
+   * 所以这里记录后主动 reload 一次（只是恢复界面，不重放导致崩溃的操作）。 */
+  win.webContents.on('render-process-gone', (e, details) => {
+    const reason = details && details.reason;
+    const exitCode = details && details.exitCode;
+    recordCrash('render-process-gone', {
+      detail: crashLog.describeGone(reason, exitCode),
+      err: null
+    });
+    // 用户主动退出（isQuitting）时不重载，否则会拖住退出流程
+    if (isQuitting) return;
+    // 'killed' 常常是用户在任务管理器里主动结束子进程，也不该自动复活
+    if (reason === 'killed' || reason === 'clean-exit') return;
+    try {
+      setTimeout(() => {
+        try {
+          if (win && !win.isDestroyed()) win.webContents.reload();
+        } catch (err) {}
+      }, 1200);
+    } catch (err) {}
+  });
   win.once('ready-to-show', () => { bootMark('ready-to-show'); showWindowAfterSplash(); });
   win.webContents.once('dom-ready', () => splashSend('splash:step', { pct: 72, label: '准备界面…' }));
   win.webContents.once('did-finish-load', () => { bootMark('renderer-loaded'); });
@@ -850,6 +885,44 @@ handle('app:set-autostart', (e, enable) => {
 });
 handle('app:get-autostart', () => (isWin || isMac) ? app.getLoginItemSettings().openAtLogin : false);
 handle('app:set-hotkey', (e, acc) => applyHotkey(acc));
+
+/* ---- 崩溃日志的界面入口 ----
+ * 只读为主，不需要门禁（清空也只删 logs/ 下的 crash*.log，不碰用户数据）。
+ * 四个通道：
+ *   info   上次是否异常退出 + 日志文件列表（设置页显示一行摘要）
+ *   read   最近一条日志的尾部（用户点「查看」时按需读，不预热）
+ *   reveal 在文件管理器里定位日志目录（用户要发给开发者）
+ *   clear  清空已有日志（会话标记是另一套语义，不受影响） */
+handle('app:crash-info', () => {
+  const logs = crashLog.listLogs(crashLogDir());
+  return {
+    lastSessionCrashed: lastSessionCrashed,
+    dir: crashLogDir(),
+    count: logs.length,
+    totalBytes: logs.reduce((a, b) => a + b.size, 0),
+    latest: logs.length ? { name: logs[0].name, size: logs[0].size, mtime: logs[0].mtime } : null
+  };
+});
+handle('app:crash-read', (e, maxBytes) => {
+  // 上限夹一下：渲染层传大值也不能让它把几 MB 文本塞进 IPC
+  const n = Math.min(64 * 1024, Math.max(1024, Number(maxBytes) || 16 * 1024));
+  return crashLog.tail(crashLogDir(), n);
+});
+handle('app:crash-reveal', async () => {
+  const dir = crashLogDir();
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  // showItemInFolder 需要文件路径；目录直接 openPath 更稳
+  try { await shell.openPath(dir); return true; } catch (e) { return false; }
+});
+handle('app:crash-clear', () => {
+  // 清空日志：删除所有 crash*.log。会话标记不动（那是另一套语义）
+  const logs = crashLog.listLogs(crashLogDir());
+  let n = 0;
+  for (const l of logs) {
+    try { fs.rmSync(l.path, { force: true }); n++; } catch (e) {}
+  }
+  return n;
+});
 
 /* ================= IPC: dialog ================= */
 handle('dialog:open', async (e, opts = {}) => {
@@ -3704,6 +3777,14 @@ async function updateApplyImpl(opts = {}) {
   spawn('powershell.exe', spawnArgs, { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
   /* 替换脚本已经起来了：此后不再允许第二次 apply（标志也就不必再放开） */
   updateApplyingCommitted = true;
+  /* 【退出前必须手动清会话标记】
+   * 这里用的是 app.exit(0) 而不是 app.quit()：更新替换要尽快让出文件句柄，
+   * 而 app.exit 会**跳过 will-quit 等所有退出钩子**（Electron 文档明确如此）。
+   * 而会话标记正是在 will-quit 里删的 —— 不补这一句的话：
+   *   每次自动更新重启 → 标记残留 → 下次启动误报「上次异常退出」，
+   *   用户会以为程序坏了。这是最容易误报的一条路径，因为更新重启很常见。
+   * （实测：app.exit 不触发 will-quit；app.quit 触发。） */
+  try { crashLog.clearMarker(crashLogDir()); } catch (err) {}
   // 给脚本 ~1 秒启动时间后退出，脚本会等待本进程消失再替换
   setTimeout(() => { try { isQuitting = true; app.exit(0); } catch (err) { app.quit(); } }, 1000);
   return { ok: true, target, newExe, backup, rollbackScript, script };
@@ -4186,6 +4267,34 @@ if (!gotLock) {
   app.on('second-instance', onSecondInstance);
   app.whenReady().then(() => {
     bootMark('app-ready');
+    /* ---- 会话标记：判断上次是不是异常退出 ----
+     * 顺序很关键：**先读旧标记、再写新标记**。
+     * 反过来的话会读到刚写的那份，永远判定"正常"。
+     *
+     * 判断依据是「标记存在」而不是「日志非空」：进程被系统强杀时
+     * 异常处理器来不及执行，日志里是空的，但标记一定还在。
+     * 用户最常报的「它自己关了」正好属于这一类。
+     *
+     * 冒烟测试（HEHE_SMOKE）与多次启动并存时不写标记：
+     * 测试进程是脚本杀死的，会污染下次真实启动的判定。 */
+    if (!process.env.HEHE_SMOKE) {
+      try {
+        const prev = crashLog.readMarker(crashLogDir());
+        lastSessionCrashed = !!prev;
+        if (lastSessionCrashed) {
+          recordCrash('previous-session-abnormal-exit', {
+            detail: '上次会话没有走完正常退出流程（可能是被系统终止、断电或崩溃）。' +
+              '上次启动时间：' + (prev && prev.startedAt ? prev.startedAt : '未知')
+          });
+        }
+        crashLog.writeMarker(crashLogDir(), {
+          startedAt: new Date().toISOString(),
+          pid: process.pid,
+          version: app.getVersion(),
+          electron: process.versions.electron
+        });
+      } catch (e) { /* 标记失败不能挡住启动 */ }
+    }
     loadStore();
     bootMark('store-loaded');
     // themeSource 必须在建窗之前设置：主窗的 backgroundColor 和启动窗的明暗
@@ -4431,7 +4540,81 @@ if (process.env.HEHE_SHOT) {
     }
   });
   app.on('before-quit', () => { isQuitting = true; destroySplash(); });
-  app.on('will-quit', () => { flushStore(); try { globalShortcut.unregisterAll(); } catch (err) {} });
+  /* 走到 will-quit 说明是**正常退出**（用户点关闭 / 托盘退出 / 自动更新重启）。
+   * 此时删掉会话标记，下次启动就不会误报「上次异常退出」。
+   *
+   * 反过来：如果进程是被强杀的，这个回调不会执行，标记留着 —— 正是我们要的信号。
+   * flushStore 放在前面，确保数据先落盘；删标记失败也不影响退出。 */
+  app.on('will-quit', () => {
+    flushStore();
+    try { crashLog.clearMarker(crashLogDir()); } catch (err) {}
+    try { globalShortcut.unregisterAll(); } catch (err) {}
+  });
   app.on('window-all-closed', () => { app.quit(); });
 }
-process.on('uncaughtException', (err) => console.error('uncaught', err));
+
+/* ================= 崩溃日志 =================
+ *
+ * 【原来这里只有一行】
+ *     process.on('uncaughtException', (err) => console.error('uncaught', err));
+ * 打包后的 exe 是**没有控制台**的（`console.error` 写进一个不存在的终端），
+ * 所以主进程出异常时：用户看到「点了没反应」或「窗口自己没了」，
+ * 而现场一个字节都没留下 —— 既没有文件，也没有界面入口，完全无法排查。
+ *
+ * 现在三类事件都落盘到 userData/logs/：
+ *   1) 主进程未捕获异常 / 未处理的 Promise 拒绝
+ *   2) 渲染进程崩溃（OOM、被杀、asar 被动过）
+ *   3) 上次会话异常退出（靠 session.lock 标记，见下）
+ *
+ * 【为什么 uncaughtException 不能直接 app.quit()】
+ * 主进程的异常大多来自**单个 IPC handler**（例如某个工具读文件失败抛了错）。
+ * 立刻退出等于把 99 个正常工具一起关掉，用户会认为整个软件崩了。
+ * 所以这里的策略是「记录 + 保持运行」：写日志、通知界面可查，
+ * 进程继续跑。真正无法恢复的状态（渲染进程没了）由 Electron 自己处理。
+ *
+ * 【marker 的用途】
+ * 进程被系统强杀（OOM killer / 断电 / 任务管理器）时，异常处理器
+ * 根本来不及执行，日志里什么都不会有。而用户最常报的恰恰是「它自己关了」。
+ * 所以启动时写一个标记、正常退出时删掉：
+ * 下次启动发现标记还在 = 上次没走完退出流程 → 界面上提醒一次。 */
+function recordCrash(kind, payload) {
+  try {
+    const entry = crashLog.formatEntry(kind, payload, {
+      tempDir: os.tmpdir(),
+      user: (() => { try { return os.userInfo().username; } catch (e) { return ''; } })()
+    });
+    const ok = crashLog.append(crashLogDir(), entry);
+    // 写盘失败时至少退回 console —— 开发态（npm start）还看得见
+    if (!ok) console.error('[crash-log]', kind, payload && payload.err);
+    return ok;
+  } catch (e) {
+    // 记录日志本身失败绝不能再抛出，否则会形成异常循环
+    console.error('[crash-log] 写入失败', e && e.message);
+    return false;
+  }
+}
+
+process.on('uncaughtException', (err) => {
+  // 先落盘再决定后续：写日志可能失败，但不能因为失败就丢掉原始错误信息
+  const written = recordCrash('uncaughtException', { err: err });
+  console.error('uncaught', err);
+  if (!written) return;
+  /* 尝试让界面知道（窗口可能还没建好，所以兜底判空）。
+   * 只发事件、不弹模态框：多数异常是局部的，弹框比异常本身更烦人。 */
+  try {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send('app:crash-logged', { kind: 'uncaughtException', message: String(err && err.message || err) });
+    }
+  } catch (e) {}
+});
+
+process.on('unhandledRejection', (reason) => {
+  const written = recordCrash('unhandledRejection', { err: reason });
+  console.error('unhandledRejection', reason);
+  if (!written) return;
+  try {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send('app:crash-logged', { kind: 'unhandledRejection', message: String(reason && reason.message || reason) });
+    }
+  } catch (e) {}
+});

@@ -1,7 +1,7 @@
 /* 模块：文本与编码 —— 文本批量处理 / 统计 / 大小写 / 简繁 / CSV */
 (function () {
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, convertLayout, renderTable, fmtNum } = window.ui;
+  const { div, btn, toast, copyText, convertLayout, renderTable, fmtNum, makeButtonLike } = window.ui;
   const { invoke } = window.api;
   const MOD = 'text';
 
@@ -289,6 +289,7 @@
         tagFilter.innerHTML = '';
         const mkTag = (label, val, on) => {
           const el = h('span', { class: 'tag ' + (on ? 'tag-blue' : 'tag-gray'), style: { cursor: 'pointer' } }, label);
+          makeButtonLike(el, label);
           el.addEventListener('click', () => { curTag = val; refreshList(); });
           tagFilter.appendChild(el);
         };
@@ -299,6 +300,9 @@
           if (curTag && !tags.includes(curTag)) continue;
           const it = div('nav-item' + (curName === n.name ? ' active' : ''), { style: { padding: '6px 8px', fontSize: '12px', cursor: 'pointer', borderRadius: '6px', wordBreak: 'break-all' } },
             n.name.replace(/\.md$/i, '') + (tags.length ? ' · ' + tags.map(t => '#' + t).join(' ') : ''));
+          /* 笔记列表是工具内的主要导航入口：纯鼠标的话键盘用户
+           * 根本没法切换笔记（只能看见却打不开）。 */
+          makeButtonLike(it, n.name);
           it.addEventListener('click', () => openNote(n));
           sideList.appendChild(it);
         }
