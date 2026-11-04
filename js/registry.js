@@ -149,7 +149,7 @@
       // 预览：文档 → Markdown
       'doc-preview', 'markdown-preview',
       // 对比与翻译
-      'diff-tool', 'translate'
+      'diff-tool', 'diff3', 'translate'
     ],
     security: [
       // 生成 → 检测，同一件事的两个角度
