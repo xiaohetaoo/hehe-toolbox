@@ -149,6 +149,57 @@
         return buildPreview().catch((e) => { try { toast('预览失败：' + (e && e.message || e), 'error'); } catch (x) {} });
       }
 
+      /* 把预览表导出成 CSV。
+       * 用途：几百个文件的重命名计划，用户想先在 Excel 里核对一遍再执行，
+       * 或者留个"我改过什么"的记录。
+       *
+       * 【必须加 BOM】Excel 读无 BOM 的 UTF-8 CSV 会把中文显示成乱码，
+       * 而中文文件名是这个工具的主要使用场景。﻿ 就是 Excel 认的标记。
+       *
+       * 【必须转义】文件名里可能出现逗号、引号、换行 —— 不按 RFC4180
+       * 加引号会把一行拆成两列，导出的表直接错位。 */
+      /* 把预览表导出成 CSV。
+       * 用途：几百个文件的重命名计划，用户想先在 Excel 里核对一遍再执行。
+       *
+       * 【必须加 BOM】Excel 读无 BOM 的 UTF-8 CSV 会把中文显示成乱码，
+       * 而中文文件名正是这个工具的主要使用场景。
+       *
+       * 【必须转义】文件名里可能出现逗号、引号、换行——不按 RFC4180
+       * 加引号会把一行拆成两列，导出的表直接错位。
+       *
+       * 【为什么不导出大小】预览表本身也没有大小列（重命名只关心名字），
+       * 为了 CSV 一列去额外 stat 几百个文件是白花 IO。
+       * 真要看大小，用户可以用「磁盘空间分析」或资源管理器。 */
+      async function exportCsv() {
+        if (!files.length) return toast('请先添加文件', 'warn');
+        if (useExif.checked) { await ensureExifTimes(); }
+        const esc = (v) => {
+          const t = String(v == null ? '' : v);
+          // 含逗号/引号/换行的字段要整体加引号，内部引号翻倍（RFC4180）
+          const needQuote = t.indexOf(',') >= 0 || t.indexOf('"') >= 0
+            || t.indexOf(String.fromCharCode(10)) >= 0 || t.indexOf(String.fromCharCode(13)) >= 0;
+          return needQuote ? '"' + t.split('"').join('""') + '"' : t;
+        };
+        const rows = [['原文件名', '新文件名', '完整路径']];
+        for (let i = 0; i < files.length; i++) {
+          const p = files[i];
+          const nn = newName(p, i);
+          const base = (x) => x.split(/[\\/]/).pop();
+          rows.push([base(p), base(nn), p]);
+        }
+        const body = rows.map((r) => r.map(esc).join(',')).join(String.fromCharCode(13, 10));
+        const csv = String.fromCharCode(0xFEFF) + body + String.fromCharCode(13, 10);
+        try {
+          const out = await invoke('dialog:save', {
+            defaultPath: 'rename-preview.csv',
+            filters: [{ name: 'CSV', extensions: ['csv'] }]
+          });
+          if (!out) return;
+          await invoke('fs:write-text', out, csv);
+          toast('已导出：' + out, 'success');
+        } catch (e) { toast('导出失败：' + e.message, 'error'); }
+      }
+
       async function buildPreview() {
         previewBox.innerHTML = '';
         if (!files.length) { previewBox.appendChild(div('empty-tip', '请先添加文件')); return; }
@@ -214,8 +265,14 @@
         div('form-row', h('span', { class: 'form-label' }, '序号'), prefixIn, h('span', { class: 'field-hint' }, '+ 序号'), startNum, suffixIn),
         div('form-row', h('span', { class: 'form-label' }, '替换'), findIn, replIn, h('label', { class: 'field-hint' }, useRegex, ' 正则')),
         div('form-row', h('span', { class: 'form-label' }, '时间'), h('label', { class: 'field-hint' }, useExif, ' 按 EXIF 拍摄时间命名（读不到时用文件修改时间）')),
+        /* 捕获组说明：功能本身一直可用（JS 的 String.replace 原生支持 $1），
+         * 但界面上没有任何提示，用户不知道能这么用 —— 等于没有。
+         * 写清替换串里可用的三种写法，比让用户去猜或查文档有用。 */
+        div('form-row', h('span', { class: 'form-label' }), h('span', { class: 'field-hint' },
+          '正则替换支持捕获组：用 $1 $2 引用第 1、2 个括号。例：IMG_(\d+)_(.*) → $2-$1')),
         div('form-row', h('span', { class: 'form-label' }, '其他'), caseSel, extIn),
-        div('form-row', btn('刷新预览', 'btn-secondary btn-sm', safePreview), applyBtn, prog.el)));
+        div('form-row', btn('刷新预览', 'btn-secondary btn-sm', safePreview),
+          btn('导出预览 CSV', 'btn-secondary btn-sm', exportCsv, 'download'), applyBtn, prog.el)));
       page.appendChild(div('card', div('card-title', '预览'), previewBox));
       buildPreview();
     }

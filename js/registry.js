@@ -136,6 +136,8 @@
       'img-batch', 'img-watermark',
       // 拼接、查重、参数查看
       'img-stitch', 'img-dedup', 'exif-view',
+      // 隐私遮挡：混淆与还原放在一起，紧挨着 EXIF（同属「发图前处理」）
+      'img-scramble',
       // 音视频：转换 → 压制 → 截帧 → 音频剪辑 → 参数
       'av-convert', 'video-press', 'video-frames', 'audio-cut', 'av-info',
       // 引擎配置放最后：装一次就不再动

@@ -163,6 +163,20 @@
     render(page) {
       const list = div('');
       const searchIn = h('input', { class: 'input input-sm', placeholder: '搜索历史…', style: { flex: '1' } });
+      /* 类型筛选。搜索框只能按内容找，但用户常常是「我想找上次复制的那张图」
+       * —— 这时内容搜索帮不上忙（图片没有可搜的文本）。
+       * 三个按钮比下拉框更直接：只有三种状态，一眼看到全部选项。 */
+      let typeFilter = 'all'; // all | text | image
+      const typeBtns = {};
+      function makeTypeBtn(key, label) {
+        const b = btn(label, 'btn-sm btn-secondary', () => {
+          typeFilter = key;
+          for (const [k, el] of Object.entries(typeBtns)) el.className = 'btn btn-sm ' + (k === key ? 'btn-primary' : 'btn-secondary');
+          render();
+        });
+        typeBtns[key] = b;
+        return b;
+      }
       const watchSw = switchEl(false, (v) => { watching = v; if (v) poll(); else if (timer) clearTimeout(timer); });
       let watching = false, timer = null, lastClip = '';
       window.App.onCleanup(() => { watching = false; if (timer) { clearTimeout(timer); timer = null; } });
@@ -242,9 +256,18 @@
         const q = searchIn.value.trim().toLowerCase();
         list.innerHTML = '';
         const items = history
+          .filter(x => typeFilter === 'all' || x.type === typeFilter)
           .filter(x => !q || (x.type === 'text' && x.content.toLowerCase().includes(q)) || (x.type === 'image' && '图片 image 截图'.includes(q)))
           .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.time - a.time);
-        if (!items.length) { list.appendChild(div('empty-tip', watching ? '暂无记录，复制点什么试试' : '开启上方开关开始记录剪贴板')); return; }
+        if (!items.length) {
+          // 有筛选条件时不能说"暂无记录"——记录其实有，只是被筛掉了，
+          // 否则用户会以为历史丢了
+          const filtered = typeFilter !== 'all' || q;
+          list.appendChild(div('empty-tip', filtered
+            ? '没有符合当前筛选的记录'
+            : (watching ? '暂无记录，复制点什么试试' : '开启上方开关开始记录剪贴板')));
+          return;
+        }
         /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
         for (const [i, item] of items.entries()) {
           const card = div('card');
@@ -312,7 +335,7 @@
       });
       page.appendChild(div('card', div('card-title', '控制'),
         div('form-row', h('span', { class: 'form-label' }, '自动记录'), watchSw, h('span', { class: 'field-hint' }, '开启后自动捕获复制的文本与图片（仅本机保存）')),
-        div('form-row', searchIn, clearBtn)));
+        div('form-row', searchIn, makeTypeBtn('all', '全部'), makeTypeBtn('text', '文本'), makeTypeBtn('image', '图片'), clearBtn)));
       page.appendChild(list);
       load();
     }

@@ -16,13 +16,22 @@ const stripComments = srcScan.stripComments;
 const MEDIA_DIR = path.join(ROOT, 'js', 'tools', 'media');
 const OLD_FILE = path.join(ROOT, 'js', 'tools', 'media.js');
 
-/* 拆分前 media.js 里注册的 16 个工具 id（逐一核对过原文件） */
+/* 拆分前 media.js 里注册的 16 个工具 id（逐一核对过原文件）。
+ *
+ * 【这个列表是"拆分时的快照"，不是"当前应有的全部"】
+ * 它的用途是防止拆分丢失工具，所以断言写成「这 16 个一个都不能少」，
+ * 而不是「必须恰好等于这 16 个」。后者会在每次新增媒体工具时误报 ——
+ * 而这个测试要守的是"别弄丢"，不是"别新增"。
+ *
+ * v0.4.0 之后新增的：img-scramble（图片混淆，见 ADDED_AFTER_SPLIT）。 */
 const EXPECTED = [
   'img-batch', 'img-watermark', 'img-stitch', 'exif-view',
   'ffmpeg-setup', 'av-info', 'av-convert', 'screenshot-ocr',
   'img-compress', 'video-press', 'snip-tool', 'screen-rec',
   'video-frames', 'batch-ocr', 'audio-cut', 'img-dedup',
 ];
+/* 拆分之后陆续新增的媒体工具。单独一张表，让"丢没丢"与"加了什么"分开看。 */
+const ADDED_AFTER_SPLIT = ['img-scramble'];
 
 function mediaFiles() {
   return fs.readdirSync(MEDIA_DIR).filter((n) => n.endsWith('.js')).sort();
@@ -36,7 +45,7 @@ t('旧的 js/tools/media.js 已删除（否则会有两份注册，工具 id 重
 });
 
 /* ---- 2. 工具一个没少 ---- */
-t('16 个媒体工具 id 一个没少', () => {
+t('拆分时的 16 个媒体工具一个没少（新增不影响）', () => {
   /* 【不要用 `\n  id: '…'` 这种锚点】
    * 仓库里这些文件是 CRLF（git 检出时 LF → CRLF），`\n  id:` 在 `\r\n  id:`
    * 上匹配不到，结果是 ids 为空、这条断言报「集合变了」而工具其实一个没少。
@@ -67,8 +76,22 @@ t('16 个媒体工具 id 一个没少', () => {
     if (idm) ids.push(idm[1]);
   }
   ids.sort();
-  assert.deepStrictEqual(ids, EXPECTED.slice().sort(),
-    '媒体工具集合变了。多了会静默新增页面，少了会让用户找不到功能。\n实际：' + ids.join(', '));
+  /* 判据：EXPECTED 里每一个都必须还在（防丢失）。
+   * 新增工具不算回归 —— 那是功能，不是缺陷。但要在提示里列出来，
+   * 提醒人顺手把 ADDED_AFTER_SPLIT 补上，否则这张表会慢慢过期。
+   *
+   * 【为什么不用 deepStrictEqual(ids, EXPECTED)】
+   * 那样每加一个媒体工具这条就会红，而它本意是防"拆分弄丢工具"。
+   * 混淆两件事的后果：真丢了工具时，人会以为是"又是新增没登记"，
+   * 直接改列表了事 —— 守卫就此失效。 */
+  const missing = EXPECTED.filter((id) => ids.indexOf(id) < 0);
+  assert.deepStrictEqual(missing, [],
+    '这些媒体工具在拆分后丢失了（用户会找不到功能）：' + missing.join(', '));
+  const known = new Set(EXPECTED.concat(ADDED_AFTER_SPLIT));
+  const unknown = ids.filter((id) => !known.has(id));
+  if (unknown.length) {
+    console.log('  提示：发现未登记的新工具 ' + unknown.join(', ') + '（请补进 ADDED_AFTER_SPLIT）');
+  }
 });
 
 /* ---- 3. 每个文件恰好注册一个工具 ---- */
@@ -106,7 +129,7 @@ t('shared.js 导出 MediaShared，且每个用到它的文件都真的解构了'
 });
 
 /* ---- 5. index.html 顺序：shared 必须最先，且 16 个全在 ---- */
-t('index.html：shared.js 在其余媒体文件之前，且 16 个工具文件都在', () => {
+t('index.html：shared.js 在其余媒体文件之前，且每个工具文件都被引入', () => {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const at = html.indexOf('js/tools/media/shared.js');
   assert.ok(at > 0, 'index.html 没有引入媒体 shared.js');
@@ -120,7 +143,13 @@ t('index.html：shared.js 在其余媒体文件之前，且 16 个工具文件�
     laterCount++;
   }
   assert.deepStrictEqual(missing, [], '这些问题会让工具页一打开就报错：\n  ' + missing.join('\n  '));
-  assert.strictEqual(laterCount, 16, '媒体工具文件数应为 16，实际 ' + laterCount);
+  /* 用 >= 而不是 ===：新增媒体工具不该让这条守卫变红 ——
+   * 它要守的是「每个文件都被 index.html 引入了」，不是「恰好 16 个」。
+   * 用 === 的后果是每次新增工具都要改这里，改的人往往直接改数字了事，
+   * 反而弱化了这条检查（原本缺一个文件也能靠"少一个"发现）。 */
+  const wantAtLeast = 16 + ADDED_AFTER_SPLIT.length;
+  assert.ok(laterCount >= wantAtLeast,
+    '媒体工具文件数应至少 ' + wantAtLeast + '，实际 ' + laterCount);
 });
 
 /* ---- 6. 不再有指向旧路径的**真实读取**（测试/CI/脚本都得跟着改） ---- */
