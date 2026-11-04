@@ -65,6 +65,92 @@
       '复制': 'Copy',
       '打开链接': 'Open link',
     },
+    /* EXIF 查看：v0.4.2 从「只有工具名双语」扩到正文。
+     * 键仍是中文原文 —— 中文模式下走一条早退，不查表，所以零行为改动。 */
+    exif: {
+      '拖入 JPEG 照片查看 EXIF': 'Drop a JPEG photo to inspect its EXIF',
+      '还没有选择照片': 'No photo selected yet',
+      '照片': 'Photos',
+      '未找到 EXIF 信息（可能已被清除或不是照片）':
+        'No EXIF data found — it may have been stripped, or this is not a photo',
+      '清除 EXIF 并保存副本': 'Strip EXIF and save a copy',
+      '已保存无 EXIF 副本：{p}': 'Saved EXIF-free copy: {p}',
+      '保存失败：{e}': 'Save failed: {e}',
+    },
+    /* 截图标注：v0.4.2 迁正文。 */
+    snip: {
+      '请在屏幕上拖动框选区域…（Esc 取消）': 'Drag to select a region on screen… (Esc to cancel)',
+      '截图窗口已打开': 'Screenshot window opened',
+      '截图标注': 'Snip & Annotate',
+      '开始截图': 'Start snip',
+      '拖动框选 → 工具条标注（矩形/箭头/画笔/文字/马赛克，可撤销）→ 复制 / 保存 / 贴图 / OCR':
+        'Drag to select → annotate in the toolbar (box / arrow / pen / text / blur, undoable) → copy / save / pin / OCR',
+      '完整链路：截图 → 标注 → 贴图置顶（悬浮参考）→ OCR 识别文字；托盘右键也可直接截图':
+        'Full chain: snip → annotate → pin on top as a floating reference → OCR the text. You can also snip from the tray menu.',
+      '快捷贴图': 'Quick pin',
+      '贴剪贴板图片': 'Pin clipboard image',
+      '已贴图': 'Pinned',
+      '把剪贴板里的图片变成置顶小窗（Snipaste 式）':
+        'Turn the clipboard image into an always-on-top window (Snipaste style)',
+    },
+    /* 文本编解码（base64 / url / unicode / html / hex 五个工具）：v0.4.2 迁正文。 */
+    codec: {
+      '原文': 'Source',
+      'Base64': 'Base64',
+      '解码模式': 'Decode mode',
+      '编码模式': 'Encode mode',
+      'Base64 输入': 'Base64 input',
+      '解码结果': 'Decoded result',
+      'URL 编码': 'URL encoding',
+      ' 全量编码（含 : / ? 等保留字符）': ' Full encoding (including reserved chars like : / ?)',
+      'Unicode 转义': 'Unicode escape',
+      'HTML 转义': 'HTML escape',
+      '还原': 'Unescape',
+      '还原结果': 'Unescaped result',
+      '文本': 'Text',
+      '十六进制': 'Hexadecimal',
+      '空格分隔': 'Space separated',
+      '无分隔': 'No separator',
+      '逗号分隔': 'Comma separated',
+      '\\x 前缀': '\\x prefix',
+    },
+    /* 三栏对比：v0.4.2 迁正文。插值占位与 js/i18n.js 一致用 {名}。 */
+    diff3: {
+      '基准版本（两边共同的原稿）…': 'Base version (the original both sides started from)…',
+      'A 的改法…': "A's changes…",
+      'B 的改法…': "B's changes…",
+      '读取失败：{e}': 'Read failed: {e}',
+      '一致': 'Same',
+      '两边都删了': 'Deleted on both',
+      '仅 A 改': 'A only',
+      '仅 B 改': 'B only',
+      '冲突': 'Conflict',
+      '两边改成一样': 'Both changed the same way',
+      '行数不一致': 'Line count mismatch',
+      '请至少填入基准版本与一份改法': 'Fill in the base version and at least one set of changes',
+      '⚠ {n} 处冲突': '⚠ {n} conflict(s)',
+      '无冲突': 'No conflicts',
+      '仅 A 改 {n} 行': 'A only: {n} line(s)',
+      '仅 B 改 {n} 行': 'B only: {n} line(s)',
+      '两边改成一样 {n} 行': 'Both changed the same way: {n} line(s)',
+      '行数不一致 {n} 行': 'Line count mismatch: {n} line(s)',
+      '三份文本的行数不同。本工具**按行号对齐**，行数不一致的位置已标橙——那种情况下后面的行可能整体错位，建议先让三份文本行数一致再比。':
+        'The three texts have different line counts. This tool aligns **by line number**, and mismatched rows are marked in orange — after that point the rest may be shifted, so it is best to make the line counts match first.',
+      '行号': 'Line',
+      '基准': 'Base',
+      '只显示有差异的行及其前后 2 行（共 {total} 行，显示 {shown} 行）。':
+        'Showing only changed lines with 2 lines of context ({shown} of {total} lines shown).',
+      '复制冲突行': 'Copy conflicting lines',
+      '第 {n} 行：\n  A: {a}\n  基准: {base}\n  B: {b}':
+        'Line {n}:\n  A: {a}\n  Base: {base}\n  B: {b}',
+      '没有冲突行': 'No conflicting lines',
+      '基准版本（两边共同的原稿）': 'Base version (the original both sides started from)',
+      '打开文件': 'Open file',
+      'A 的改法': "A's changes",
+      'B 的改法': "B's changes",
+      '对比结果': 'Result',
+      '开始对比': 'Compare',
+    },
     hash: {
       '文件校验': 'File',
       '文本校验': 'Text',

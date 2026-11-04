@@ -26,19 +26,22 @@
   const { div, btn, toast, copyText } = window.ui;
   const { invoke } = window.api;
   const MOD = 'office';
+  /* 文案取词（与 qr / hash / exif / snip / codec 同一套约定）：中文原文作键，
+   * 中文模式直接返回调用点字面量、不查表，所以中文界面零行为改动。 */
+  const T = (zh, vars) => TT('diff3', zh, vars);
 
   register({
     id: 'diff3',
     name: '三栏对比', nameEn: 'Three-way Compare',
     module: MOD,
-    icon: 'git-compare',
+    icon: 'git-compare', i18n: true,
     desc: '以基准版本为中心，并排看 A / B 两处改动，冲突行标红', descEn: 'Compare a base version against two changed versions side by side',
     keywords: ['三路', '三栏', '合并', 'merge', 'diff3', '冲突', '对比'],
     render(page) {
       const mk = (ph) => h('textarea', { class: 'pane-ta mono', placeholder: ph, style: { minHeight: '150px' } });
-      const taBase = mk('基准版本（两边共同的原稿）…');
-      const taA = mk('A 的改法…');
-      const taB = mk('B 的改法…');
+      const taBase = mk(T('基准版本（两边共同的原稿）…'));
+      const taA = mk(T('A 的改法…'));
+      const taB = mk(T('B 的改法…'));
       const result = div('');
 
       function openTo(ta) {
@@ -48,7 +51,7 @@
             if (!p || !p[0]) return;
             const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p[0]);
             ta.value = r.content;
-          } catch (e) { toast('读取失败：' + e.message, 'error'); }
+          } catch (e) { toast(T('读取失败：{e}', { e: e.message }), 'error'); }
         };
       }
 
@@ -85,20 +88,20 @@
       }
 
       const KIND_STYLE = {
-        same: { bg: 'transparent', label: '一致', cls: 'tag-gray' },
-        'base-only': { bg: 'rgba(245,63,63,0.12)', label: '两边都删了', cls: 'tag-red' },
-        a: { bg: 'rgba(22,93,255,0.12)', label: '仅 A 改', cls: 'tag-blue' },
-        b: { bg: 'rgba(22,93,255,0.12)', label: '仅 B 改', cls: 'tag-blue' },
-        both: { bg: 'rgba(245,63,63,0.18)', label: '冲突', cls: 'tag-red' },
-        'both-same': { bg: 'rgba(0,180,42,0.12)', label: '两边改成一样', cls: 'tag-green' },
-        miss: { bg: 'rgba(255,125,0,0.14)', label: '行数不一致', cls: 'tag-orange' }
+        same: { bg: 'transparent', label: T('一致'), cls: 'tag-gray' },
+        'base-only': { bg: 'rgba(245,63,63,0.12)', label: T('两边都删了'), cls: 'tag-red' },
+        a: { bg: 'rgba(22,93,255,0.12)', label: T('仅 A 改'), cls: 'tag-blue' },
+        b: { bg: 'rgba(22,93,255,0.12)', label: T('仅 B 改'), cls: 'tag-blue' },
+        both: { bg: 'rgba(245,63,63,0.18)', label: T('冲突'), cls: 'tag-red' },
+        'both-same': { bg: 'rgba(0,180,42,0.12)', label: T('两边改成一样'), cls: 'tag-green' },
+        miss: { bg: 'rgba(255,125,0,0.14)', label: T('行数不一致'), cls: 'tag-orange' }
       };
 
       function run() {
         result.innerHTML = '';
         const base = lines(taBase.value), a = lines(taA.value), b = lines(taB.value);
         if (!taBase.value && !taA.value && !taB.value) {
-          return toast('请至少填入基准版本与一份改法', 'warn');
+          return toast(T('请至少填入基准版本与一份改法'), 'warn');
         }
         const rows = compare(base, a, b);
 
@@ -110,17 +113,16 @@
         const mismatch = rows.filter((r) => r.kind === 'miss').length;
 
         const head = div('form-row',
-          conflicts ? h('span', { class: 'tag tag-red' }, `⚠ ${conflicts} 处冲突`) : h('span', { class: 'tag tag-green' }, '无冲突'),
-          onlyA ? h('span', { class: 'tag tag-blue' }, `仅 A 改 ${onlyA} 行`) : null,
-          onlyB ? h('span', { class: 'tag tag-blue' }, `仅 B 改 ${onlyB} 行`) : null,
-          bothSame ? h('span', { class: 'tag tag-green' }, `两边改成一样 ${bothSame} 行`) : null,
-          mismatch ? h('span', { class: 'tag tag-orange' }, `行数不一致 ${mismatch} 行`) : null);
+          conflicts ? h('span', { class: 'tag tag-red' }, T('⚠ {n} 处冲突', { n: conflicts })) : h('span', { class: 'tag tag-green' }, T('无冲突')),
+          onlyA ? h('span', { class: 'tag tag-blue' }, T('仅 A 改 {n} 行', { n: onlyA })) : null,
+          onlyB ? h('span', { class: 'tag tag-blue' }, T('仅 B 改 {n} 行', { n: onlyB })) : null,
+          bothSame ? h('span', { class: 'tag tag-green' }, T('两边改成一样 {n} 行', { n: bothSame })) : null,
+          mismatch ? h('span', { class: 'tag tag-orange' }, T('行数不一致 {n} 行', { n: mismatch })) : null);
         result.appendChild(head);
 
         if (mismatch) {
           result.appendChild(div('field-hint', { style: { marginTop: '4px' } },
-            '三份文本的行数不同。本工具**按行号对齐**，行数不一致的位置已标橙——'
-            + '那种情况下后面的行可能整体错位，建议先让三份文本行数一致再比。'));
+            T('三份文本的行数不同。本工具**按行号对齐**，行数不一致的位置已标橙——那种情况下后面的行可能整体错位，建议先让三份文本行数一致再比。')));
         }
 
         /* 只显示"有差异的行 + 前后各 2 行上下文"，其余折叠。
@@ -138,7 +140,7 @@
         const table = h('div', { style: { marginTop: '10px', fontFamily: 'Consolas, monospace', fontSize: '12.5px' } });
         // 表头
         const head2 = h('div', { style: { display: 'grid', gridTemplateColumns: '44px 1fr 1fr 1fr', gap: '6px', color: 'var(--text-3)', padding: '4px 6px', borderBottom: '1px solid var(--border)' } },
-          h('div', null, '行号'), h('div', null, 'A'), h('div', null, '基准'), h('div', null, 'B'));
+          h('div', null, T('行号')), h('div', null, 'A'), h('div', null, T('基准')), h('div', null, 'B'));
         table.appendChild(head2);
 
         for (const r of shown) {
@@ -163,22 +165,22 @@
 
         if (shown.length < rows.length) {
           result.appendChild(div('field-hint', { style: { marginTop: '8px' } },
-            `只显示有差异的行及其前后 2 行（共 ${rows.length} 行，显示 ${shown.length} 行）。`));
+            T('只显示有差异的行及其前后 2 行（共 {total} 行，显示 {shown} 行）。', { total: rows.length, shown: shown.length })));
         }
 
         result.appendChild(div('form-row', { style: { marginTop: '10px' } },
-          btn('复制冲突行', 'btn-sm btn-secondary', () => {
+          btn(T('复制冲突行'), 'btn-sm btn-secondary', () => {
             const txt = rows.filter((r) => r.kind === 'both')
-              .map((r) => `第 ${r.i + 1} 行：\n  A: ${r.a}\n  基准: ${r.base}\n  B: ${r.b}`).join('\n\n');
-            if (!txt) return toast('没有冲突行', 'info');
+              .map((r) => T('第 {n} 行：\n  A: {a}\n  基准: {base}\n  B: {b}', { n: r.i + 1, a: r.a, base: r.base, b: r.b })).join('\n\n');
+            if (!txt) return toast(T('没有冲突行'), 'info');
             copyText(txt);
           })));
       }
 
-      page.appendChild(div('card', div('card-title', '基准版本（两边共同的原稿）', btn('打开文件', 'btn-sm btn-secondary', openTo(taBase))), taBase));
-      page.appendChild(div('card', div('card-title', 'A 的改法', btn('打开文件', 'btn-sm btn-secondary', openTo(taA))), taA));
-      page.appendChild(div('card', div('card-title', 'B 的改法', btn('打开文件', 'btn-sm btn-secondary', openTo(taB))), taB));
-      page.appendChild(div('card', div('card-title', '对比结果'), div('form-row', btn('开始对比', 'btn-primary', run, 'git-compare')), result));
+      page.appendChild(div('card', div('card-title', T('基准版本（两边共同的原稿）'), btn(T('打开文件'), 'btn-sm btn-secondary', openTo(taBase))), taBase));
+      page.appendChild(div('card', div('card-title', T('A 的改法'), btn(T('打开文件'), 'btn-sm btn-secondary', openTo(taA))), taA));
+      page.appendChild(div('card', div('card-title', T('B 的改法'), btn(T('打开文件'), 'btn-sm btn-secondary', openTo(taB))), taB));
+      page.appendChild(div('card', div('card-title', T('对比结果')), div('form-row', btn(T('开始对比'), 'btn-primary', run, 'git-compare')), result));
     }
   });
 })();

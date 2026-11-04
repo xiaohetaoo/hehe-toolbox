@@ -5,18 +5,22 @@
   const { div, btn, toast, filePicker } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
+  /* 文案取词（与 qr / hash 同一套约定）：以中文原文作键，
+   * 中文模式下 TT 直接返回调用点字面量、不查表，所以中文界面零行为改动。
+   * 英文表在 js/tools/i18n.js 的 exif 域。 */
+  const T = (zh, vars) => TT('exif', zh, vars);
 
 register({
-    id: 'exif-view', name: 'EXIF 信息查看', nameEn: 'EXIF Viewer', module: MOD, icon: 'eye',
+    id: 'exif-view', name: 'EXIF 信息查看', nameEn: 'EXIF Viewer', module: MOD, icon: 'eye', i18n: true,
     desc: '查看 JPEG 拍摄参数（时间/设备/GPS），支持一键清除', descEn: 'Inspect JPEG shooting parameters (time, device, GPS) and strip them',
     keywords: ['exif', '照片', '信息', '隐私'],
     render(page) {
       const result = div('');
       const picker = filePicker({
-        text: '拖入 JPEG 照片查看 EXIF',
+        text: T('拖入 JPEG 照片查看 EXIF'),
         single: true,
-        emptyText: '还没有选择照片',
-        filters: [{ name: '照片', extensions: ['jpg', 'jpeg'] }],
+        emptyText: T('还没有选择照片'),
+        filters: [{ name: T('照片'), extensions: ['jpg', 'jpeg'] }],
         onChange: (items) => {
           if (items.length && !items[0].virtual) analyze(items[0].path);
           else result.innerHTML = '';
@@ -28,18 +32,18 @@ register({
           const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path);
           const buf = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
           const exif = window.ExifLib.parseExif(buf);
-          if (!exif || !Object.keys(exif).length) { result.appendChild(div('empty-tip', '未找到 EXIF 信息（可能已被清除或不是照片）')); return; }
+          if (!exif || !Object.keys(exif).length) { result.appendChild(div('empty-tip', T('未找到 EXIF 信息（可能已被清除或不是照片）'))); return; }
           const card = div('card');
           card.style.border = '1px solid var(--border)';
           card.appendChild(window.ui.kvGrid(Object.entries(exif)));
           result.appendChild(card);
-          const cleanBtn = btn('清除 EXIF 并保存副本', 'btn-danger-plain', async () => {
+          const cleanBtn = btn(T('清除 EXIF 并保存副本'), 'btn-danger-plain', async () => {
             // 输出必须唯一：固定 -noexif.jpg 会让第二次点击静默覆盖前一次的结果
             const out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, path.replace(/\.jpe?g$/i, '') + '-noexif.jpg');
             try {
               await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, out, stripExif(buf));
-              toast('已保存无 EXIF 副本：' + out, 'success');
-            } catch (e) { toast('保存失败：' + e.message, 'error'); }
+              toast(T('已保存无 EXIF 副本：{p}', { p: out }), 'success');
+            } catch (e) { toast(T('保存失败：{e}', { e: e.message }), 'error'); }
           }, 'refresh');
           result.appendChild(div('form-row', cleanBtn));
         } catch (e) { result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }

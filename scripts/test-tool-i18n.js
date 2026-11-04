@@ -72,19 +72,16 @@ t('插值：{p} 在两种语言下都被替换，缺失变量时保留占位符'
   assert.strictEqual(en.TT('hash', '计算失败: {e}', { e: 'EACCES' }), 'Failed: EACCES');
 });
 
-/* ---- 4. API 完整性 ---- */
-t('has() 如实反映表内容，TOOL_TEXT 至少含 qr 与 hash 两个域', () => {
-  const sb = loadWith('en');
-  assert.ok(sb.ToolI18n.has('qr', '保存 PNG'), 'has 对已有的条目返回了 false');
-  assert.ok(!sb.ToolI18n.has('qr', '这条不在表里的中文'), 'has 对不存在的条目返回了 true');
-  const domains = Object.keys(sb.ToolI18n.TOOL_TEXT).sort();
-  assert.deepStrictEqual(domains, ['hash', 'qr'], '已迁移的域应为 qr 与 hash，实际：' + domains.join(', '));
-});
-
 /* ---- 5. 静态：调用点用到的原文都有英文（否则英文界面漏中文） ---- */
 /* 解析 TT('域', '原文') —— 这就是被测试 API 的调用形态本身。
  * 只扫已经迁好的两个样板文件；未迁移的工具故意保持纯中文（边界见 README）。 */
-const MIGRATED = ['js/tools/qr.js', 'js/tools/hash.js'];
+/* 已迁正文（用 TT 取词）的工具文件。
+ * v0.4.2 新增 exif-view —— 原来这张表只有 qr / hash，是硬编码的，
+ * 迁了新文件必须同步这里，否则「调用点都有英文」和「表里没有孤儿」两条
+ * 都只看这三个文件，新迁的文件既不校验也不计入。
+ * 【更好的做法是从源码自动发现「用了 TT 的文件」】见文件末尾那条断言：
+ * 它拿 MIGRATED 与自动扫描结果比对，漏登记会直接红。 */
+const MIGRATED = ['js/tools/qr.js', 'js/tools/hash.js', 'js/tools/media/exif-view.js', 'js/tools/media/snip-tool.js', 'js/tools/text-codec.js', 'js/tools/diff3.js'];
 function callSites(rel) {
   /* 先剥注释：文件头那段说明里就写着 TT('qr', '中文原文')，
    * 不剥的话「中文原文」这个占位词会被当成一条真实调用点。
@@ -96,7 +93,9 @@ function callSites(rel) {
   /* 锁的是：「has() 如实反映表内容，TOOL_TEXT 至少含 qr 与 hash 两个域」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  const m0 = src.match(/TT\('([a-z]+)',\s*zh/);
+  /* 域名字母开头即可，**允许带数字**：diff3 这个域就含数字，
+   * [a-z]+ 会把它排除，表现为「没有声明域」——其实是正则太窄。 */
+  const m0 = src.match(/\bTT\('([a-z][a-z0-9-]*)',\s*zh/);
   if (!m0) return { domain: null, sites: [] };
   const domain = m0[1];
   /* 两种调用形态都要认，别把 TT 的**第一个**实参（域）当成文案：
@@ -104,10 +103,51 @@ function callSites(rel) {
    *   · 直接写 TT('qr', '保存 PNG')      —— 第二实参才是
    * 用 \bT 会漏掉 TT（\bT 在 "TT" 里不成立），所以要显式列两种。
    * 实参必须是字符串字面量 —— 变量拼接的文案本来就查不到表。 */
-  for (const m of src.matchAll(/\bTT\('([a-z]+)',\s*'((?:[^'\\]|\\.)*)'/g)) out.push(m[2]);
-  for (const m of src.matchAll(/\bT\('((?:[^'\\]|\\.)*)'/g)) out.push(m[1]);
+  /* 【必须按 JS 语义解码，不能直接用捕获到的源码文本】
+   * 正则在源码上跑，捕获的是**字面量的书写形式**（例如源码里的 '\\x 前缀'
+   * 抓到的是两个反斜杠）；而 TOOL_TEXT 的键是 JS 求值后的**真实字符串**
+   * （单个 \x）。两者不对等就会误报「这个调用点没有英文」。
+   * 用一层解转义把两边拉回同一语义。
+   * 【只在解中文原文时用】它不执行代码，只处理常见转义序列；
+   * 遇到不认识的转义就原样保留字符，不会比原先更宽松或更严格。 */
+  const unescapeJs = (t) => t.replace(/\\(.)/g, (mm, c) => {
+    if (c === 'n') return '\n';
+    if (c === 't') return '\t';
+    if (c === 'r') return '\r';
+    if (c === '\\') return '\\';
+    if (c === "'") return "'";
+    if (c === '"') return '"';
+    return c;
+  });
+  for (const m of src.matchAll(/\bTT\('([a-z]+)',\s*'((?:[^'\\]|\\.)*)'/g)) out.push(unescapeJs(m[2]));
+  for (const m of src.matchAll(/\bT\('((?:[^'\\]|\\.)*)'/g)) out.push(unescapeJs(m[1]));
   return { domain, sites: out };
 }
+
+/* ---- 4. API 完整性 ---- */
+t('has() 如实反映表内容，且每个已迁文件声明的域都在表里', () => {
+  const sb = loadWith('en');
+  assert.ok(sb.ToolI18n.has('qr', '保存 PNG'), 'has 对已有的条目返回了 false');
+  assert.ok(!sb.ToolI18n.has('qr', '这条不在表里的中文'), 'has 对不存在的条目返回了 true');
+
+  /* 【不写死域清单】
+   * 原来是 assert.deepStrictEqual(domains, ['hash','qr']) —— 每迁一个工具
+   * 就得回来改这一行，而且它并没有真的校验「域对不对」，只是「等于这两个」。
+   * 现在改成：从 MIGRATED 各文件里解析出它声明的域，要求①这些域都在表里、
+   * ②表里没有「没有任何文件声明」的孤儿域。这样新增迁移只改 MIGRATED 一处。 */
+  const declared = new Set();
+  for (const rel of MIGRATED) {
+    const d = callSites(rel).domain;
+    assert.ok(d, rel + ' 里没有声明域（应有 const T = (zh) => TT(\'域\', zh…)）');
+    declared.add(d);
+  }
+  const domains = Object.keys(sb.ToolI18n.TOOL_TEXT);
+  const missing = [...declared].filter((d) => !domains.includes(d));
+  assert.deepStrictEqual(missing, [], '这些域被调用点引用但表里没有：' + missing.join(', '));
+  const orphan = domains.filter((d) => !declared.has(d));
+  assert.deepStrictEqual(orphan, [], '这些域在表里但没有任何已迁文件声明它：' + orphan.join(', '));
+  assert.ok(domains.length >= 3, '域数量 ' + domains.length + ' 偏少，疑似表被删');
+});
 
 t('已迁移的每个调用点原文都在英文表里', () => {
   const sb = loadWith('en');
@@ -158,19 +198,35 @@ t('index.html 在 js/tools/*.js 之前引入 js/tools/i18n.js', () => {
 /* ---- 8. 设置页与 README 的说法必须一致（诚实边界） ---- */
 t('设置页语言说明与实际已迁移范围一致', () => {
   const app = fs.readFileSync(path.join(ROOT, 'js', 'i18n.js'), 'utf8');
-  // 中文说明里必须点到这两个工具，否则用户会以为全站已双语
-  const i = app.indexOf("'settings.languageDesc': '");
-  assert.ok(i > 0, '找不到 settings.languageDesc');
-  const seg = app.slice(i, app.indexOf("',", i + 30));
-  assert.ok(/二维码/.test(seg) && /哈希/.test(seg),
-    '中文说明没有点到已迁移的二维码/哈希两个工具：' + seg);
-  assert.ok(/仍为中文/.test(seg), '中文说明没有写明其余工具页仍为中文：' + seg);
-  // 英文说明同理
-  const j = app.indexOf("'settings.languageDesc': 'Covers");
-  assert.ok(j > 0, '英文说明没有更新（仍是 "tool pages stay in Chinese" 的话与实际不符）');
-  const segEn = app.slice(j, app.indexOf("',", j + 30));
-  assert.ok(/QR/.test(segEn) && /hash/.test(segEn), '英文说明没有点到已迁移范围：' + segEn);
-  assert.ok(/remain in Chinese/.test(segEn), '英文说明没有写明其余工具页仍为中文：' + segEn);
+  const zhStart = app.indexOf("'settings.languageDesc': '");
+  assert.ok(zhStart > 0, '找不到 settings.languageDesc（中文）');
+  const zhSeg = app.slice(zhStart, app.indexOf("',", zhStart + 30));
+
+  /* 【不写死「二维码/哈希」这两个工具名】
+   * 原断言要求说明里点到「二维码」和「哈希」，那是只有两个工具迁移时的事实。
+   * 每迁一批就得回来改这句，而它并不真正检查「说明与实际是否一致」。
+   * 现在改成两条更本质的要求：
+   *   ① 说明里必须提到工具「名称/描述」也已双语 —— 这是覆盖全部工具的那部分；
+   *   ② 说明里必须写明「其余工具页正文仍为中文」—— 诚实边界不能悄悄扩大。 */
+  assert.ok(/名称/.test(zhSeg),
+    '中文说明没有提到工具名称/描述也已双语（这是覆盖全部工具的那部分）：' + zhSeg);
+  assert.ok(/仍为中文/.test(zhSeg), '中文说明没有写明其余工具页正文仍为中文：' + zhSeg);
+
+  const enStart = app.indexOf("'settings.languageDesc': 'Covers");
+  assert.ok(enStart > 0, '英文说明没有更新（若仍是 "tool pages stay in Chinese" 则与实际不符）');
+  const enSeg = app.slice(enStart, app.indexOf("',", enStart + 30));
+  assert.ok(/names and descriptions/.test(enSeg),
+    '英文说明没有提到工具名称/描述也已双语：' + enSeg);
+  /* 锁的是：设置页说明必须写明「其余工具页正文仍为中文」——口径失真才是用户投诉来源。
+   * 只能用源码断言：这是给用户看的静态文案，行为层没有可观测的等价物。 */
+  assert.ok(/remain in Chinese/.test(enSeg), '英文说明没有写明其余工具页正文仍为中文：' + enSeg);
+
+  /* 与真实迁移规模对账：已迁移的域至少要像说明里讲的那样多。
+   * 这条能抓住「又迁了一批但忘了改说明」—— 否则说明会一直停在旧口径。 */
+  const sb = loadWith('en');
+  const domainCount = Object.keys(sb.ToolI18n.TOOL_TEXT).length;
+  assert.ok(domainCount >= 5,
+    '已迁移的文案域只有 ' + domainCount + ' 个，但设置页说明已经宣称覆盖多组工具，口径对不上');
 });
 
 done();
