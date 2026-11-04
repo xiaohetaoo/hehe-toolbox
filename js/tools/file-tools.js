@@ -3,6 +3,13 @@
   const { register } = window.Registry;
   const { div, btn, toast, copyText, confirmBox, alertBox, filePicker, renderTable, fmtBytes, progressEl } = window.ui;
   const { invoke } = window.api;
+  /* EXIF 解析搬到了 lib/exif.js（纯函数，可单测，也被 exif-view 复用）。
+   * 【为什么用 require 而不是 window.xxx】
+   * 渲染层是 contextIsolation + sandbox:false，项目里已有先例
+   * （lib/fail-text.js 由 index.html 用 <script> 引入、挂到 window）。
+   * 但 file-tools.js 里已经有 require 的用法吗？没有 —— 这里改用
+   * index.html 引入 + window.ExifLib，与 fail-text 保持同一种形态。 */
+  const exifLib = window.ExifLib;
   const MOD = 'file';
 
   /* 拼「批量操作失败明细」的文本 —— 实现在 lib/fail-text.js（任务 2）。
@@ -35,7 +42,7 @@
         text: '选择或拖入要重命名的文件（可多选）',
         onChange: (items) => {
           files = items.map((x) => x.path);
-          if (!selfLoad) { dirMode = false; buildPreview(); }
+          if (!selfLoad) { dirMode = false; safePreview(); }
         }
       });
       const dirInput = h('input', { class: 'input input-sm', placeholder: '或输入目录路径（重命名目录内所有文件）', style: { flex: '1' } });
@@ -52,7 +59,7 @@
             files = picker.paths;
             dirMode = true;
           } finally { selfLoad = false; }
-          buildPreview();
+          safePreview();
         } catch (e) { toast(e.message, 'error'); }
       });
       const pickDirBtn = btn('选择目录…', 'btn-sm btn-secondary', async () => {
@@ -66,6 +73,15 @@
       const findIn = h('input', { class: 'input input-sm', placeholder: '查找（支持正则）', style: { width: '140px' } });
       const replIn = h('input', { class: 'input input-sm', placeholder: '替换为', style: { width: '140px' } });
       const useRegex = h('input', { type: 'checkbox', class: 'checkbox' });
+      /* 按 EXIF 拍摄时间重命名。
+       * 用途：手机/相机导出的照片名是 IMG_20241103_143022.jpg 这类无语义名字，
+       * 而真正的拍摄时间在 EXIF 里。整理照片时想改成 2024-11-03_143022.jpg。
+       * EXIF 读不到（截图、被清除过的图、非 JPEG）时退回文件修改时间，
+       * 否则用户会看到一堆文件名原样不变、又不知道为什么。 */
+      const useExif = h('input', { type: 'checkbox', class: 'checkbox' });
+      /* name → Date 的缓存。buildPreview 会被反复调用（每次改输入框都重建预览），
+       * 没有缓存的话每改一个字都要把几百张图全读一遍。 */
+      const exifTimeCache = new Map();
       const caseSel = h('select', { class: 'select input-sm' }, h('option', { value: '' }, '大小写不变'), h('option', { value: 'lower' }, '转小写'), h('option', { value: 'upper' }, '转大写'));
       const extIn = h('input', { class: 'input input-sm', placeholder: '改扩展名（如 .jpg）', style: { width: '140px' } });
       const previewBox = div('');
@@ -79,6 +95,15 @@
         const base = dot > 0 ? name.slice(0, dot) : name;
         const ext = dot > 0 ? name.slice(dot) : '';
         let nb = base;
+        if (useExif.checked) {
+          const t = exifTimeCache.get(path);
+          // 用 EXIF 时间整体替换文件名主干；后面的前缀/序号仍然生效
+          if (t) {
+            const p2 = (n) => String(n).padStart(2, '0');
+            nb = t.getFullYear() + '-' + p2(t.getMonth() + 1) + '-' + p2(t.getDate()) +
+                 '_' + p2(t.getHours()) + p2(t.getMinutes()) + p2(t.getSeconds());
+          }
+        }
         if (findIn.value) {
           try {
             nb = useRegex.checked ? nb.replace(new RegExp(findIn.value, 'g'), replIn.value) : nb.split(findIn.value).join(replIn.value);
@@ -93,9 +118,45 @@
         if (extIn.value) ne = extIn.value.startsWith('.') ? extIn.value : '.' + extIn.value;
         return [...parts, nb + ne].join('/');
       }
-      function buildPreview() {
+      /* 预取 EXIF 时间。只读文件头 64KB —— EXIF 一定在 JPEG 开头，
+       * 整份读进来再解析纯属浪费（一张 5MB 的照片 × 500 张 = 2.5GB IO）。 */
+      async function ensureExifTimes() {
+        if (!useExif.checked) return;
+        const todo = files.filter((p) => !exifTimeCache.has(p));
+        for (const p of todo) {
+          let t = null;
+          try {
+            const b64 = await invoke('fs:read-file-b64', p, 65536);
+            if (b64) {
+              const bin = atob(b64);
+              const bytes = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+              t = exifLib.pickShotTime(exifLib.parseExif(bytes));
+            }
+          } catch (e) { t = null; }
+          if (!t) {
+            // 退路：用文件修改时间。不这么做的话用户看到文件名纹丝不动
+            try { const st = await invoke('fs:stat', p); if (st && st.mtime) t = new Date(st.mtime); } catch (e) {}
+          }
+          exifTimeCache.set(p, t);
+        }
+      }
+
+      /* buildPreview 现在是 async（EXIF 要读文件）。所有调用点都是
+       * fire-and-forget 形态，未 catch 的 rejection 会变成静默失败 ——
+       * 用户点了"刷新预览"什么都没发生，控制台也没有。统一走这个包装。 */
+      function safePreview() {
+        return buildPreview().catch((e) => { try { toast('预览失败：' + (e && e.message || e), 'error'); } catch (x) {} });
+      }
+
+      async function buildPreview() {
         previewBox.innerHTML = '';
         if (!files.length) { previewBox.appendChild(div('empty-tip', '请先添加文件')); return; }
+        if (useExif.checked) {
+          previewBox.appendChild(div('field-hint', { style: { padding: '4px 2px' } }, '正在读取拍摄时间…'));
+          await ensureExifTimes();
+          previewBox.innerHTML = '';
+        }
         const table = renderTable({
           columns: [
             { key: 'old', title: '原文件名', render: r => div('mono', { style: { fontSize: '12px' } }, r.old.split(/[\\/]/).pop()) },
@@ -118,6 +179,7 @@
       }
       const applyBtn = btn('执行重命名', 'btn-primary', async () => {
         if (!files.length) return toast('请先添加文件', 'warn');
+        if (useExif.checked) await ensureExifTimes();
         if (!(await confirmBox({ title: '执行重命名', message: `将对 ${files.length} 个文件执行重命名，确定继续？` }))) return;
         let ok = 0;
         const failures = [];
@@ -143,7 +205,7 @@
         } else {
           toast(`完成：成功 ${ok} 个`, 'success');
         }
-        if (dirMode && dirInput.value) loadDirBtn.click(); else { picker.clear(); files = []; buildPreview(); }
+        if (dirMode && dirInput.value) loadDirBtn.click(); else { picker.clear(); files = []; safePreview(); }
       });
 
       page.appendChild(div('card', div('card-title', '选择文件'), picker.el,
@@ -151,8 +213,9 @@
       page.appendChild(div('card', div('card-title', '重命名规则（可组合）'),
         div('form-row', h('span', { class: 'form-label' }, '序号'), prefixIn, h('span', { class: 'field-hint' }, '+ 序号'), startNum, suffixIn),
         div('form-row', h('span', { class: 'form-label' }, '替换'), findIn, replIn, h('label', { class: 'field-hint' }, useRegex, ' 正则')),
+        div('form-row', h('span', { class: 'form-label' }, '时间'), h('label', { class: 'field-hint' }, useExif, ' 按 EXIF 拍摄时间命名（读不到时用文件修改时间）')),
         div('form-row', h('span', { class: 'form-label' }, '其他'), caseSel, extIn),
-        div('form-row', btn('刷新预览', 'btn-secondary btn-sm', buildPreview), applyBtn, prog.el)));
+        div('form-row', btn('刷新预览', 'btn-secondary btn-sm', safePreview), applyBtn, prog.el)));
       page.appendChild(div('card', div('card-title', '预览'), previewBox));
       buildPreview();
     }

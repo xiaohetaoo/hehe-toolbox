@@ -29,6 +29,11 @@
        避免再写一份副本、也避免「测试测副本」造成的假绿。
        必须排在引用它的 js/tools/file-tools.js 之前。 -->
   <script src="lib/fail-text.js"></script>
+  <!-- lib/exif.js 同样是主进程/渲染层共用（UMD：node 走 module.exports，
+       浏览器挂 window.ExifLib）。EXIF 解析原本内联在 exif-view 工具里，
+       「按拍摄时间批量重命名」需要同一套解析，复制一份必然分叉，
+       所以抽成 lib 并在此引入。必须排在 js/tools/*.js 之前。 -->
+  <script src="lib/exif.js"></script>
   <!-- IPC 通道名常量表：工具文件在定义时就会引用 window.Channels，
        所以必须排在 ui.js / registry.js / 各 tools/*.js 之前 -->
   <script src="js/channels.js"></script>
