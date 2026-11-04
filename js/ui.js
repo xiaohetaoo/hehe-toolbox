@@ -361,10 +361,16 @@
     const dz = div('dropzone');
     dz.appendChild(div('dz-icon', iconLg('upload')));
     const mainEl = div('dz-main', text);
+    /* 拖拽提示会临时改写这行文字，需要能还原。
+     * 用变量记住"当前应有的文案"而不是硬编码回 text：
+     * dz.setMain() 会被 fileList 更新成「继续添加文件（可多选）」，
+     * 拖拽结束后该还原成那个，不是最初的 text。 */
+    let baseMainText = text;
+    const setMainText = (t) => { baseMainText = t; mainEl.textContent = t; };
     dz.appendChild(mainEl);
     if (sub) dz.appendChild(div('dz-sub', sub));
     // 供 picker 在「已有内容」时把提示文案换成「继续添加」
-    dz.setMain = (t) => { mainEl.textContent = t; };
+    dz.setMain = (t) => setMainText(t);
     const getFiles = async () => {
       try {
         const props = pickProps || (directory ? ['openDirectory'] : (multiple ? ['openFile', 'multiSelections'] : ['openFile']));
@@ -373,8 +379,42 @@
       } catch (e) { toast(e.message, 'error'); }
     };
     dz.addEventListener('click', getFiles);
-    dz.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+    /* 【拖入文件夹时要给不一样的反馈】
+     * 原来 dragover 一律加同一个 .dragover 类。但用户拖文件夹时心里想的是
+     * 「这一整个文件夹里的东西」，而拖单个文件是「就这一个」。
+     * 两者的期望不同，界面却长得一样，用户无法确认「我拖对了吗」。
+     *
+     * 判据：dataTransfer.items 里若有 entry.isDirectory 就是目录。
+     * dragover 事件里**不能**调 getAsFile()（会触发一次真实读取），
+     * 但 webkitGetAsEntry() 在 dragover 阶段是安全的、只读元数据。
+     * 注意这仍然只是"意图提示"——真正判定在 drop 时用 fs:stat 复核。 */
+    dz.addEventListener('dragover', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      dz.classList.add('dragover');
+      let hasDir = false;
+      try {
+        const items = e.dataTransfer && e.dataTransfer.items;
+        if (items) {
+          for (const it of items) {
+            const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+            if (entry && entry.isDirectory) { hasDir = true; break; }
+          }
+        }
+      } catch (err) { /* 某些环境拿不到 entry，按普通文件处理 */ }
+      dz.classList.toggle('dragover-dir', hasDir);
+      if (hasDir) {
+        mainEl.textContent = '松开即可导入整个文件夹';
+        dz.classList.add('dragover-hint');
+      }
+    });
+    dz.addEventListener('dragleave', () => {
+      dz.classList.remove('dragover', 'dragover-dir');
+      if (dz.classList.contains('dragover-hint')) {
+        dz.classList.remove('dragover-hint');
+        // 恢复原文案（展开逻辑在 drop 里也会改，这里只需还原）
+        if (mainEl.textContent === '松开即可导入整个文件夹') mainEl.textContent = baseMainText;
+      }
+    });
     dz.addEventListener('drop', async (e) => {
       e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover');
       const files = [...e.dataTransfer.files];
@@ -393,7 +433,6 @@
       for (const p of paths) {
         try { const st = await invoke('fs:stat', p); if (st && st.isDir) { hasDir = true; break; } } catch (err) {}
       }
-      const prevText = mainEl.textContent;
       if (hasDir) {
         mainEl.textContent = '正在展开文件夹…';
         dz.style.pointerEvents = 'none';
@@ -402,7 +441,11 @@
       try {
         expanded = await expandDroppedPaths(paths);
       } finally {
-        if (hasDir) { mainEl.textContent = prevText; dz.style.pointerEvents = ''; }
+        // 还原成"应该显示的文案"，而不是拖拽前那一刻的文字
+        // （拖拽前可能正好停在提示语上）
+        mainEl.textContent = baseMainText;
+        dz.style.pointerEvents = '';
+        dz.classList.remove('dragover-dir', 'dragover-hint');
       }
       if (expanded.dirs > 0 && expanded.files.length) {
         toast('已从 ' + expanded.dirs + ' 个文件夹展开 ' + expanded.files.length + ' 个文件', 'info', 2000);
@@ -783,15 +826,64 @@
   }
 
   /* ---------- 通用小部件 ---------- */
+  /* 进度条。
+   * 【为什么 set() 要自己算时间而不是让调用方传】
+   * 调用方只知道自己处理到第几项（set(37)），不知道总耗时——
+   * 而「还要等多久」必须由进度条自己按速率推算：拿第一次 set 到现在的
+   * 时间差 ÷ 已完成百分比 = 预估总时长。
+   *
+   * 【为什么要等一会儿才显示剩余时间】
+   * 刚开始的几项耗时波动极大（第一张图可能因为解码预热慢 3 倍），
+   * 此时推算出来的"还要 8 分钟"通常离谱，显示它只会误导。
+   * 所以：进度 < 8% 或样本不足 3 个时不显示，宁可不显示也别瞎猜。
+   *
+   * 【保留旧接口】
+   * 原先是 { el, set, hide, show }，40 多处调用只用了 set(pct)。
+   * 这里全部保持兼容，只是多了一个可选的文字节点。 */
   function progressEl() {
     const p = div('progress', div('progress-fill'));
     p.style.width = '160px';
+    const label = h('span', { class: 'progress-eta' }, '');
+    label.style.display = 'none';
+    /* 【把剩余时间塞进 el 自己里面，而不是要求 15 个调用点各改一行】
+     * 那些调用点统一是 `div('form-row', startBtn, prog.el, status)`，
+     * 只放了进度条本身。如果 etaEl 是独立节点，就得逐个改成 prog.el + prog.etaEl，
+     * 15 处改动、漏一处就是"这个工具永远不显示剩余时间"。
+     * 包进 el 内部则所有调用点自动获得这个能力，且不改变 el 的尺寸语义
+     * （外面包一层 inline-flex，宽度仍由 inner 的 160px 决定）。 */
+    const wrap = h('span', { class: 'progress-wrap' }, p, label);
+    let startedAt = 0;
+    let samples = 0;
     return {
-      el: p,
-      set(pct) { p.firstChild.style.width = Math.max(0, Math.min(100, pct)) + '%'; },
-      hide() { p.style.display = 'none'; },
-      show() { p.style.display = ''; }
+      el: wrap,
+      etaEl: label,
+      set(pct) {
+        const v = Math.max(0, Math.min(100, pct));
+        p.firstChild.style.width = v + '%';
+        // 首次调用记为起点；之后按速率推算
+        if (!startedAt) { startedAt = Date.now(); samples = 1; return; }
+        samples++;
+        if (samples < 3 || v < 8 || v >= 100) { label.style.display = 'none'; return; }
+        const elapsed = Date.now() - startedAt;
+        const remainMs = elapsed / (v / 100) - elapsed;
+        if (!isFinite(remainMs) || remainMs <= 0) { label.style.display = 'none'; return; }
+        label.textContent = fmtDuration(remainMs);
+        label.style.display = '';
+      },
+      hide() { wrap.style.display = 'none'; label.style.display = 'none'; },
+      show() { wrap.style.display = ''; p.style.display = ''; }
     };
+  }
+  /* 把毫秒说成人话。刻意只保留一个量级：
+   * 「约 1 分 30 秒」比「1 分 29.7 秒」更好读，也避免数字频繁跳动。 */
+  function fmtDuration(ms) {
+    const s = Math.round(ms / 1000);
+    if (s < 5) return '即将完成';
+    if (s < 60) return '约 ' + s + ' 秒';
+    const m = Math.round(s / 60);
+    if (m < 60) return '约 ' + m + ' 分钟';
+    const hh = Math.floor(m / 60);
+    return '约 ' + hh + ' 小时 ' + (m % 60) + ' 分';
   }
   function loadingBlock(text = '加载中…') { return div('loading-block', h('span', { class: 'spinner' }), text); }
   function fieldRow(label, control, hint) {

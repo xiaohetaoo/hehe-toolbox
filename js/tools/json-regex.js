@@ -75,11 +75,17 @@
           row.appendChild(h('span', { class: `tag ${colors[typeTag]}`, style: { marginLeft: '8px' } }, typeTag === 'object' ? `{${Object.keys(value).length}}` : `[${value.length}]`));
           const children = div('');
           for (const [k, v] of Object.entries(value)) children.appendChild(buildTreeNode(k, v));
+          /* JSON 树全靠点这个小三角折叠/展开。键盘用户连"这个节点下面有什么"
+           * 都看不到，更别说展开。补成可聚焦 + 回车/空格切换。
+           * 读屏名称要带上键名，否则一串"折叠"分不清是哪个节点。 */
+          if (window.ui.makeButtonLike) window.ui.makeButtonLike(arrow, '展开或折叠 ' + key);
           arrow.addEventListener('click', () => {
             const collapsed = children.style.display === 'none';
             children.style.display = collapsed ? '' : 'none';
             arrow.textContent = collapsed ? '▾' : '▸';
+            arrow.setAttribute('aria-expanded', collapsed ? 'true' : 'false');
           });
+          arrow.setAttribute('aria-expanded', 'true');
           node.appendChild(row);
           node.appendChild(children);
         } else {

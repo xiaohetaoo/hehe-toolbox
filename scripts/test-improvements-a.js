@@ -114,6 +114,33 @@ const PROBE = `(async function () {
     chk('A4 值未被滚轮改变', num.value === before, before + ' -> ' + num.value);
   }
 
+  // ---- B6: 进度条剩余时间 ----
+  const prog = window.ui.progressEl();
+  chk('B6 progressEl 返回 el', !!prog.el);
+  chk('B6 el 里含剩余时间节点', !!prog.el.querySelector('.progress-eta'));
+  // 喂几次进度，让速率推算跑起来
+  prog.set(0);
+  await tick(120);
+  prog.set(20);
+  await tick(120);
+  prog.set(50);
+  await tick(60);
+  const eta = prog.el.querySelector('.progress-eta');
+  chk('B6 达到一定进度后显示剩余时间', !!eta && eta.style.display !== 'none',
+    eta ? ('text=' + eta.textContent) : 'no node');
+  chk('B6 剩余时间文案可读', !!eta && /约|即将/.test(eta.textContent), eta ? eta.textContent : '');
+
+  // ---- B2: 拖入文件夹时的样式类存在 ----
+  let hasDirStyle = false;
+  for (const sh of document.styleSheets) {
+    try { if ([...sh.cssRules].some(r => (r.selectorText || '').indexOf('.dragover-dir') >= 0)) { hasDirStyle = true; break; } }
+    catch (e) {}
+  }
+  chk('B2 拖入目录的区分样式已定义', hasDirStyle);
+  // 拖拽区实例上应有 dragover 监听（通过 dropzone 构造后能加类来验证）
+  const dz = window.ui.dropzone({ onFiles: () => {} });
+  chk('B2 dropzone 可构造', !!dz && dz.classList.contains('dropzone'));
+
   // ---- B1: 参数记忆 ----
   const q = document.querySelector('input[type=number]');
   if (q) {

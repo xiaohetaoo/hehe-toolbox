@@ -675,6 +675,11 @@ textarea.input { resize: vertical; line-height: 1.6; }
 }
 .dropzone:hover { background: var(--primary-light); }
 .dropzone.dragover { border-style: solid; border-color: var(--primary); background: var(--primary-light); color: var(--primary); }
+/* 拖入的是「文件夹」时用虚线+更明显的底色区分：
+   用户拖文件夹时想的是"整个文件夹里的东西"，拖单个文件是"就这一个"，
+   两者期望不同，界面必须能看出区别，否则用户不确定自己拖对没有。 */
+.dropzone.dragover-dir { border-width: 3px; border-style: dashed; background: color-mix(in srgb, var(--primary) 18%, var(--card-bg)); }
+.dropzone.dragover-dir .dz-main { color: var(--primary); font-weight: 600; }
 .dropzone .dz-icon { color: var(--primary); margin-bottom: 8px; }
 .dropzone .dz-main { font-size: 14px; color: var(--text-2); }
 .dropzone .dz-sub { font-size: 12px; margin-top: 4px; }
@@ -724,6 +729,10 @@ textarea.input { resize: vertical; line-height: 1.6; }
  * 于是「没有任何进度的行」显示成一条实心蓝条 —— 看起来像已经 100% 完成。
  * 各工具都是靠 style.width 才把它推起来的，所以默认值只能是 0。 */
 .progress .progress-fill { height: 100%; width: 0; background: var(--primary); border-radius: 3px; transition: width 0.2s ease; }
+/* 进度条 + 剩余时间文字：横向排列，文字不换行也不挤压进度条
+   （进度条宽度固定 160px，文字长度变化只影响它自己右侧的空间）。 */
+.progress-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.progress-eta { font-size: 12px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* 开关 */
 .switch { position: relative; width: 40px; height: 20px; background: var(--border); border-radius: 10px; cursor: pointer; transition: background 0.2s; flex: none; }

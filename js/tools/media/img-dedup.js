@@ -77,6 +77,9 @@ register({
             for (const it of g) {
               const cell = div('tc-item', { style: { cursor: 'pointer' } });
               cell.appendChild(div('tc-name', { style: { fontSize: '11px', wordBreak: 'break-all' } }, it.name));
+              /* 相似图片分组里，每张缩略图点一下能在资源管理器里定位。
+               * 键盘用户原本完全用不了这个功能（div 进不了 tab 序列）。 */
+              if (window.ui.makeButtonLike) window.ui.makeButtonLike(cell, it.name);
               cell.addEventListener('click', () => invoke('fs:show-item', it.path));
               grid.appendChild(cell);
             }
