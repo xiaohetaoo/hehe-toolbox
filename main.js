@@ -4118,12 +4118,16 @@ if (process.env.HEHE_SMOKE) {
         // 卡片顺序：模块页渲染出来的顺序必须与 Registry.ORDER 一致。
         // ORDER 是手写的，写成「相邻同类」的意图如果被改坏，界面上看不出来 ——
         // 卡片还是那些卡片，只是顺序乱了。这里逐模块比对渲染顺序与表内顺序。
+        /* 【比较基准必须与渲染取值一致】v0.4.2 起卡片标题走 Registry.toolName()
+         * （英文界面取 nameEn），而这段冒烟原来直接拿 t.name 比 —— 只要界面语言
+         * 不是中文就会全部「顺序不一致」。冒烟跑在默认语言下，所以本地看不出来，
+         * CI 上才暴露。修法：两边都走同一个取值函数。 */
         const orderMismatch = [];
         for (const m of window.Registry.MODULES) {
           window.App.showView({ type: 'module', moduleId: m.id });
           await tick();
           const rendered = [...document.querySelectorAll('.tool-card .tc-name')].map(e => e.textContent.trim());
-          const want = window.Registry.byModule(m.id).map(t => t.name);
+          const want = window.Registry.byModule(m.id).map(t => window.Registry.toolName(t));
           if (rendered.length !== want.length) {
             orderMismatch.push(m.id + ': 卡片数 ' + rendered.length + ' ≠ ' + want.length);
           } else if (rendered.join('|') !== want.join('|')) {
