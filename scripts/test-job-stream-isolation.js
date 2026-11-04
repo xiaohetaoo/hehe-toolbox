@@ -94,7 +94,20 @@ const libSrc = (() => {
   return parts.join('\n');
 })();
 const prefixes = [
-  ...libSrc.matchAll(/const id = '([a-z0-9]+)'\s*\+\s*(?:\(\+\+jobSeq\)|ctx\.nextJobSeq\(\))/g),
+  /* 三种等价写法都要认（拆分后各模块的注入方式不同）：
+   *   ++jobSeq              —— main.js 里的原写法
+   *   ctx.nextJobSeq()      —— 早期拆分模块的写法
+   *   nextJobSeq()          —— 现在注入解构后的写法（ipc/net-lan.js）
+   * 少认一种的后果：那个模块的 job 前缀不被统计，
+   * 「前缀是否都登记过」这条检查对它静默失效。 */
+  /* 【四种等价写法都要认】拆分后各模块的注入方式不同：
+   *   ++jobSeq            —— main.js 原写法
+   *   ctx.nextJobSeq()    —— 早期拆分模块
+   *   (nextJobSeq())      —— 注入解构后，带外层括号（ipc/net-lan.js）
+   *   nextJobSeq()        —— 注入解构后，不带外层括号
+   * 少认一种的后果：那个模块的 job 前缀不被统计，
+   * 「前缀是否都登记过」这条检查对它静默失效 —— 而它看不出来，因为仍然全绿。 */
+    ...libSrc.matchAll(/const id = '([a-z0-9]+)'\s*\+\s*(?:\(\+\+jobSeq\)|ctx\.nextJobSeq\(\)|\(nextJobSeq\(\)\)|nextJobSeq\(\))/g),
 ].map((m) => m[1]);
 chk(prefixes.length >= 10, '主进程侧识别到 ' + prefixes.length + ' 个 job 前缀');
 
