@@ -239,6 +239,19 @@ body {
   display: flex; flex-direction: column;
   transition: width 0.25s ease, min-width 0.25s ease;
   overflow: hidden; z-index: 10;
+  /* 【侧栏与内容区之间的分隔】
+   * 两块区域底色相同（都是 --page-bg），中间原本什么都没有，
+   * 长列表滚动时看不出"导航到哪儿结束、内容从哪儿开始"。
+   *
+   * 用 1px 实线而不是阴影：阴影在深色主题下几乎看不见（深底上的暗影对比度极低），
+   * 而这条线需要两种主题下都清晰。颜色取 --border —— 它已经是
+   * "分隔用的最淡一档"，比卡片的描边再轻，不会喧宾夺主。
+   *
+   * 为什么用 border-right 而不是 ::after 绝对定位：
+   * 这条线要跟着侧栏宽度变化一起走（收起时 224px → 64px），
+   * border 天然跟随盒宽，不需要额外的定位或宽度同步。
+   * box-sizing 已是 border-box（见上方全局规则），所以宽度不会变成 225px。 */
+  border-right: 1px solid var(--border-light);
 }
 .sidebar.collapsed { width: 64px; min-width: 64px; }
 .sidebar .logo {
@@ -321,9 +334,28 @@ body {
   background: transparent; border-bottom: none;
   -webkit-app-region: drag;
 }
-.titlebar .breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-3); white-space: nowrap; }
+.titlebar .breadcrumb { display: flex; align-items: center; gap: 2px; font-size: 13px; color: var(--text-3); white-space: nowrap; }
+/* 【面包屑的可点项必须有可见反馈】
+ * 旧实现只给 home 挂了 inline 的 cursor:pointer，其余层级连光标都不变 ——
+ * 用户看到一行蓝色文字，鼠标移上去毫无反应，自然不会去点。
+ * 现在所有可点层级统一走 .bc-link：手型光标 + hover 底色 + 焦点环。 */
+.titlebar .breadcrumb .bc-node {
+  padding: 2px 6px; border-radius: 5px; transition: background 0.12s, color 0.12s;
+}
+.titlebar .breadcrumb .bc-link { cursor: pointer; }
+.titlebar .breadcrumb .bc-link:hover { background: var(--nav-hover); color: var(--text-1); }
+/* 当前页也参与 hover —— 它现在是可以点的（回到上一级）。
+ * 但底色用 primary 的浅色，与"往回跳"的上一级区分开：
+ * 用户能看出"这一项是当前位置"，同时又不是死的。 */
 .titlebar .breadcrumb .bc-current { color: var(--primary); font-weight: 500; }
-.titlebar .breadcrumb .bc-sep { color: var(--text-3); opacity: 0.6; }
+.titlebar .breadcrumb .bc-current.bc-link:hover {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+.titlebar .breadcrumb .bc-node:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 1px;
+}
+.titlebar .breadcrumb .bc-sep { color: var(--text-3); opacity: 0.6; padding: 0 1px; }
 .titlebar .search-wrap { flex: 1; max-width: 440px; margin: 0 auto; position: relative; -webkit-app-region: no-drag; }
 .titlebar .search-input {
   width: 100%; height: 34px; border-radius: 17px; border: 1px solid transparent;

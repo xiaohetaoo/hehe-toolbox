@@ -477,26 +477,77 @@
     const el = sidebarEl.querySelector(`[data-nav="${sel}"]`);
     if (el) el.classList.add('active');
   }
+  /* 面包屑：每一级都能点回去，包括最后一级（当前页）。
+   *
+   * 【为什么最后一级也要可点】
+   * 用户在这里的典型诉求是「回到上一级」。旧实现把最后一级写成 bc-current
+   * 且不挂 onclick —— 看上去是链接（蓝色）、点下去毫无反应。
+   * 而「当前页」点一下应当是什么？不是"重新打开当前页"（那会让工具页重绘、
+   * 输入全丢），而是**回到上一级**。这也是文件管理器地址栏的默认预期。
+   *
+   * 另外整条面包屑现在有 hover 反馈 + 键盘可达：以前鼠标移上去没有任何变化，
+   * 用户根本不知道哪里能点。 */
   function renderBreadcrumb() {
     breadcrumbEl.innerHTML = '';
-    const home = h('span', { style: { cursor: 'pointer' }, onclick: () => showView({ type: 'home' }) }, T('nav.home'));
-    breadcrumbEl.appendChild(home);
     const v = state.view;
-    const add = (text, cls, onclick) => {
-      breadcrumbEl.appendChild(h('span', { class: 'bc-sep' }, '/'));
-      breadcrumbEl.appendChild(h('span', { class: cls, style: onclick ? { cursor: 'pointer' } : null, onclick }, text));
-    };
-    if (v.type === 'module') { const m = R.MODULES.find(x => x.id === v.moduleId); add(m ? MN(m) : '', 'bc-current'); }
-    else if (v.type === 'tool') {
-      const t = R.get(v.toolId); const m = t && R.MODULES.find(x => x.id === t.module);
-      add(m ? MN(m) : '', '', () => m && showView({ type: 'module', moduleId: m.id }));
-      add(t ? TN(t) : '', 'bc-current');
+
+    /* 先攒出「层级」数组，再统一渲染 —— 这样每一级的点击行为都能由它在
+     * 数组里的位置推出来（末级 → 上一级），不必逐个手写。 */
+    const trail = [];
+    trail.push({ text: T('nav.home'), go: () => showView({ type: 'home' }) });
+
+    if (v.type === 'module') {
+      const m = R.MODULES.find(x => x.id === v.moduleId);
+      trail.push({ text: m ? MN(m) : '', go: m ? () => showView({ type: 'module', moduleId: m.id }) : null });
+    } else if (v.type === 'tool') {
+      const t = R.get(v.toolId);
+      const m = t && R.MODULES.find(x => x.id === t.module);
+      trail.push({ text: m ? MN(m) : '', go: m ? () => showView({ type: 'module', moduleId: m.id }) : null });
+      trail.push({ text: t ? TN(t) : '', go: null });   // 末级：go 由下面统一补成"上一级"
+    } else if (v.type === 'fav') {
+      trail.push({ text: T('nav.favorites'), go: null });
+    } else if (v.type === 'settings') {
+      trail.push({ text: T('settings.title'), go: null });
+    } else if (v.type === 'about') {
+      // 兼容旧路由：'about' 已并入设置
+      trail.push({ text: T('settings.title'), go: () => showView({ type: 'settings' }) });
+      trail.push({ text: T('settings.about'), go: null });
     }
-    else if (v.type === 'fav') add(T('nav.favorites'), 'bc-current');
-    else if (v.type === 'settings') add(T('settings.title'), 'bc-current');
-    // 兼容旧的路由值：'about' 已并入设置，面包屑跟着显示「设置 / 关于」
-    else if (v.type === 'about') { add(T('settings.title'), '', () => showView({ type: 'settings' })); add(T('settings.about'), 'bc-current'); }
-    else if (v.type !== 'home') add('', 'bc-current');
+
+    trail.forEach((node, i) => {
+      const last = i === trail.length - 1;
+      const previous = i > 0 ? trail[i - 1] : null;
+      if (i > 0) breadcrumbEl.appendChild(h('span', { class: 'bc-sep' }, '/'));
+      /* 末级（当前页）的点击目标是**上一级**。
+       * 没有上一级时（首页本身）不可点 —— 点了也不会有任何变化。 */
+      let go = node.go || (last && previous ? previous.go : null);
+      /* 【导航到"当前所在页"不算可点】
+       * 首页这一级自带 go（回首页），于是在首页页面上它也是 bc-link ——
+       * 手型光标、hover 底色、按下去毫无反应。用户会以为坏了。
+       * 判据应当是「点击后视图会不会变」，而不是「有没有挂 handler」。
+       * 这里直接比对：目标是首页且当前就在首页 → 不可点。
+       * 其余层级（模块 / 工具）不会自己指向自己，所以只处理这一个特例，
+       * 而不是写一套通用的"目标是否等于当前"比较 —— 那需要给每个 trail
+       * 项补 route 信息，改动面大而收益为零。 */
+      if (go && i === 0 && v.type === 'home') go = null;
+
+      const el = h('span', {
+        class: 'bc-node' + (last ? ' bc-current' : '') + (go ? ' bc-link' : ''),
+        title: go && last && previous ? T('nav.backTo', { name: previous.text }) : null,
+        onclick: go ? (e) => { e.preventDefault(); go(); } : null
+      }, node.text);
+
+      if (go) {
+        /* 键盘可达：面包屑是导航入口，键盘用户必须能用。
+         * 用 Enter 触发而不是空格 —— 它在这里的角色是链接，不是开关。 */
+        el.setAttribute('role', 'link');
+        el.setAttribute('tabindex', '0');
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); go(); }
+        });
+      }
+      breadcrumbEl.appendChild(el);
+    });
   }
   function renderTabs() {
     tabbarEl.innerHTML = '';

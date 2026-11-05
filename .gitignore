@@ -46,3 +46,4 @@ ci*.html
 reports/
 .git-msg.txt
 .gm.txt
+.m.txt
