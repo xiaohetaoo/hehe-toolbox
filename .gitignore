@@ -45,3 +45,4 @@ ci*.html
 # check-assertion-count.js 的中间产物（完整测试输出，几十 MB）
 reports/
 .git-msg.txt
+.gm.txt

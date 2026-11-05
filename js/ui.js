@@ -307,10 +307,48 @@
   }
 
   /* ---------- 开关 ---------- */
-  function switchEl(checked, onChange) {
+  /* 【开关必须是键盘可达的】
+   * 它是个 div + click 监听，默认：
+   *   · Tab 走不到（div 不进 tab 序列）→ 键盘用户够不着任何开关
+   *   · 读屏软件读不出「这是个开关、现在开着还是关着」
+   * 而设置页所有行为开关（开机自启、关闭到托盘、高危功能那一整屏）都用它。
+   *
+   * 用 role="switch" + aria-checked 而不是 role="button"：
+   * 读屏会念「开关，已开启」，比「按钮」准确。
+   * 空格键切换是 role=switch 的约定行为；Enter 不作为切换键
+   * （那是 button 的约定，混用会让用户按回车意外打开高危功能）。
+   *
+   * @param {boolean} checked 初始状态
+   * @param {(v:boolean)=>void} onChange 切换回调
+   * @param {string} [label] 无障碍名称；缺省时由调用方后续用 aria-label 补
+   */
+  function switchEl(checked, onChange, label) {
     const s = div('switch' + (checked ? ' on' : ''));
-    s.addEventListener('click', () => { s.classList.toggle('on'); onChange && onChange(s.classList.contains('on')); });
-    s.set = (v) => s.classList.toggle('on', !!v);
+    s.setAttribute('role', 'switch');
+    s.setAttribute('tabindex', '0');
+    s.setAttribute('aria-checked', checked ? 'true' : 'false');
+    if (label) s.setAttribute('aria-label', label);
+    const toggle = () => {
+      s.classList.toggle('on');
+      const nowOn = s.classList.contains('on');
+      /* 【aria-checked 必须跟着状态走】否则读屏软件的播报与实际状态
+       * 永远停在初始值，用户会以为开关没响应。 */
+      s.setAttribute('aria-checked', nowOn ? 'true' : 'false');
+      onChange && onChange(nowOn);
+    };
+    s.addEventListener('click', toggle);
+    s.addEventListener('keydown', (e) => {
+      if (e.key === ' ' || e.key === 'Spacebar') {
+        /* 必须 preventDefault：空格默认会滚动页面，
+         * 用户按一下开关、整个设置页往下跳一屏。 */
+        e.preventDefault();
+        toggle();
+      }
+    });
+    s.set = (v) => {
+      s.classList.toggle('on', !!v);
+      s.setAttribute('aria-checked', v ? 'true' : 'false');
+    };
     return s;
   }
 

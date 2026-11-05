@@ -1052,9 +1052,13 @@
         T('danger.lockHint')));
     }
 
-    /* 保留原来的跳转入口：用户可能还想看看其它高危能力的全貌 */
-    card.appendChild(div('form-row', { style: { marginTop: '8px' } },
-      btn(T('settings.notice.goDanger'), 'btn-danger', () => showView({ type: 'settings' }))));
+      card.appendChild(div('form-row', { style: { marginTop: '8px' } },
+        btn(T('settings.notice.goDanger'), 'btn-danger', () => {
+          /* 带着「这个工具缺哪一项」跳过去，而不是只把用户扔到设置页顶部。
+           * 见 openSettings 的说明 —— 那里会滚动到对应的开关并高亮。 */
+          const need = (toolDanger[toolId] && toolDanger[toolId].caps) || [];
+          openSettings('danger', need[0] || null);
+        })));
     return card;
   }
   /* 只有一部分功能需要高危能力的工具：浏览/诊断是安全的，锁整页会让用户
@@ -1083,7 +1087,11 @@
       .join(T('common.listSep'));
     card.appendChild(div('field-hint',
       names ? T('danger.partialNotice', { op: names }) : T('settings.notice.deleteOnlyText')));
-    card.appendChild(div('form-row', btn(T('settings.notice.goDanger'), 'btn-sm btn-secondary', () => showView({ type: 'settings' }))));
+    card.appendChild(div('form-row', btn(T('settings.notice.goDanger'), 'btn-sm btn-secondary', () => {
+      /* 与上游卡同理：带上这个工具缺的能力，跳过去后直接定位到那个开关。
+       * 用户下一步要做的动作只有一个 —— 把那个开关打开。 */
+      openSettings('danger', caps[0] || null);
+    })));
     return card;
   }
 
@@ -1093,6 +1101,20 @@
   // 若 current 只是 renderSettings 的局部变量，重绘时会被重置回「通用」，
   // 用户刚点的开关所在面板直接被换掉（连点多项就得每次重新点回分区）。
   let settingsSection = 'general';
+  /* 待定位的高危能力 id。由 openSettings(section, capId) 写入，
+   * drawDanger 渲染完那一行之后消费并清空。
+   *
+   * 【为什么要跨这么远传递】
+   * openSettings → showView → render → renderSettings → drawDanger 是一条链路，
+   * 但 drawDanger 是 async（要先向主进程要能力清单），"渲染完再滚动"
+   * 只能发生在它自己的末尾。中途还要经历 refresh() 触发的整页重绘
+   * （用户开启开关后 render() 会重跑）。所以这个意图必须活得比一次
+   * 函数调用更久 —— 模块级变量是改动面最小的做法。
+   *
+   * 只在「跳转刚发生」时有效：drawDanger 消费一次就清空，
+   * 之后用户自己切分区、或者开关触发重绘，都不会再跳到那一行。
+   * 否则用户点开开关、页面重绘，视线会被突然拽回同一行 —— 那很烦。 */
+  let focusDangerCap = null;
   function renderSettings(page) {
     page.appendChild(div('tool-header', div('th-icon', iconLg('settings')), div('', h('h2', null, T('settings.title')), h('div', { class: 'th-desc' }, T('settings.subtitle')))));
     const wrap = div('settings-wrap');
@@ -1332,6 +1354,10 @@
 
     for (const c of info.caps) {
       const row = div('set-row danger-row');
+      /* 给行一个可寻址的标记：跳转时要靠它找到"这一项"。
+       * data-cap 用能力 id（file-delete / junk-clean…），与主进程
+       * DANGEROUS_CAPS 的 id 一致，不是显示名 —— 显示名会随语言变。 */
+      row.dataset.cap = c.id;
       const left = div('');
       left.appendChild(div('set-label', c.name));
       left.appendChild(div('set-desc', c.desc));
@@ -1351,9 +1377,29 @@
           await refresh(); // 重新读取高危状态并重绘，工具卡片的红/灰随之更新
           toast(v ? T('danger.enabled', { name: c.name }) : T('danger.disabledToast', { name: c.name }), v ? 'warn' : 'success');
         } catch (e) { sw.set(!v); toast(e.message, 'error'); }
-      });
+      }, c.name);
       row.appendChild(div('set-control', sw));
       body.appendChild(row);
+
+      /* 【定位到调用方指定的那个开关】
+       * 这段必须在 row 已经 append 之后 —— scrollIntoView 对游离节点无效，
+       * 拿不到布局也就没有滚动。 */
+      if (focusDangerCap === c.id) {
+        focusDangerCap = null;   // 只消费一次：之后的重绘不再抢焦点
+        /* 下一帧再滚：此时 body 刚填完，若同帧滚动，浏览器可能还没算好
+         * 布局高度（尤其 danger 分区是异步画的，banner 高度依赖字体）。
+         * prefers-reduced-motion 下仍然滚动（那是位置信息，不是装饰），
+         * 但去掉高亮动画 —— 交给 CSS 的 media query 处理。 */
+        requestAnimationFrame(() => {
+          try { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { row.scrollIntoView(); }
+          row.classList.add('danger-row-focus');
+          /* 高亮闪一下就去掉：留下常驻的边框会让用户以为这一项被选中了。 */
+          setTimeout(() => row.classList.remove('danger-row-focus'), 1600);
+          /* 把焦点也移过去，键盘用户可以立刻按空格开启 ——
+           * 这正是这类"被门禁拦住"场景下用户唯一想做的动作。 */
+          try { const swEl = row.querySelector('.switch'); if (swEl) swEl.focus(); } catch (e) {}
+        });
+      }
     }
 
     const tip = div('field-hint', { style: { marginTop: '14px' } }, T('danger.tip'));
@@ -1662,14 +1708,32 @@
   window.App = {
     openTool, showView, toggleFavorite, setStatus, state, refresh, onCleanup,
     applyLang,
-    /* 跳到设置页的指定分区（如 'danger' 高危功能）。
-     * 供其他工具在「被高危门禁拦住」时给出可点的引导，
-     * 而不只是弹一句 toast 让用户自己去猜开关在哪。 */
-    openSettings(section) {
-      if (typeof section === 'string' && section) settingsSection = section;
-      showView({ type: 'settings' });
-    }
+    openSettings
   };
+  /* 跳到设置页的指定分区（如 'danger' 高危功能），可选定位到一个具体开关。
+   * 供其他工具在「被高危门禁拦住」时给出可点的引导，
+   * 而不只是弹一句 toast 让用户自己去猜开关在哪。
+   *
+   * 【为什么还要定位到具体那一行】
+   * 早先这里只设分区，用户点「前往设置 → 高危功能」之后看到的是一整屏开关
+   * （删除文件 / 清理垃圾 / 取得所有权 / 编辑 hosts / 写注册表…），
+   * 而提示语只说「本工具的『删除文件』需要开启」—— 名字对得上，
+   * 但用户仍要在十几行里逐个读标签去找那一行。
+   * 现在带上能力 id，跳过去之后滚到那一行并闪一下高亮，
+   * 用户落地的位置就是他要操作的地方。
+   *
+   * @param {string} [section] 分区 id（general/appearance/danger/data/about）
+   * @param {string|null} [capId] 高危能力 id（如 'file-delete'）；只在 section 为 danger 时有意义
+   */
+  function openSettings(section, capId) {
+    if (typeof section === 'string' && section) settingsSection = section;
+    /* 【定位请求必须先记在模块级】showView → render → renderSettings 是一条
+     * 同步链路，drawDanger 又要在开关渲染完之后才滚动 —— 中间隔着一次 await
+     * （它要先问主进程要能力清单）。用模块级变量把意图带过去，
+     * 比往整条链路里传参数改动面小得多。 */
+    focusDangerCap = (typeof capId === 'string' && capId) ? capId : null;
+    showView({ type: 'settings' });
+  }
   document.addEventListener('DOMContentLoaded', async () => {
     /* 语言必须在 buildShell 之前定好，否则第一帧是中文、随后整壳重绘成英文，
      * 英文用户每次启动都会看到一次闪。

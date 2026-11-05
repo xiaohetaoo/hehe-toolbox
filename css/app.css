@@ -857,6 +857,34 @@ textarea.input { resize: vertical; line-height: 1.6; }
   background: var(--danger); margin-right: 7px; vertical-align: 1px;
 }
 
+/* 「前往设置 → 高危功能」跳转后，目标那一行闪一下。
+ *
+ * 【为什么需要它】跳过去之后页面已经滚到那一行，但如果只是滚过去、
+ * 什么都不标记，用户仍要自己在十几行里确认「刚跳到的这行是不是我要开的那个」——
+ * 尤其在 1080p 以下、可视区只能容下五六行的时候。
+ *
+ * 用 outline 而不是 border：border 会改变盒模型尺寸，整行会跳一下；
+ * outline 不占布局，且能画在圆角外侧。
+ * 动画只做颜色，不做位移 —— 位移类提示在长列表里容易让人以为"内容变了"。 */
+.danger-row-focus {
+  animation: dangerFocusPulse 1.6s ease-out 1;
+  border-radius: 6px;
+}
+@keyframes dangerFocusPulse {
+  0%   { outline: 2px solid var(--warning); outline-offset: 2px; background: color-mix(in srgb, var(--warning) 14%, transparent); }
+  70%  { outline: 2px solid var(--warning); outline-offset: 2px; background: color-mix(in srgb, var(--warning) 14%, transparent); }
+  100% { outline: 2px solid transparent; outline-offset: 2px; background: transparent; }
+}
+/* 关掉动效时仍要让人看出「是这一行」：给一个静态底色，
+   与上面动画的中间态一致，只是不渐变。 */
+@media (prefers-reduced-motion: reduce) {
+  .danger-row-focus {
+    animation: none;
+    outline: 2px solid var(--warning); outline-offset: 2px;
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+  }
+}
+
 /* 高危工具未启用时的占位卡 */
 .danger-locked { border: 1px dashed var(--danger-line); }
 .danger-locked-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--danger); margin-bottom: 10px; }
