@@ -922,9 +922,22 @@
                 ghost.innerHTML = '';
                 ghost.appendChild(h('img', { src: url, alt: '' }));
               }
+              /* 【先落位，再显示 —— 不能等第一次 rAF】
+               * 浮层的 transform 初始是空的，等于画在 (0,0)。若这里只把它
+               * 显示出来、位置留给下一次 rAF，就会出现一帧「预览从窗口左上角
+               * 窜到指针下面」。本地机器这一帧只有 ~16ms，且刚好被
+               * opacity 0→0.94 的入场遮住，看不出来；CI 没有 GPU、rAF 被拖慢,
+               * 这一帧就变得可见 —— 实测 G4（预览跟着指针）在 CI 上拿到空
+               * transform，本地却一直是绿的。
+               * 所以位置同步写好（不经过 rAF），后续移动仍走 rAF 节流。 */
+              const gx = lastX || e.clientX;
+              const gy = lastY || e.clientY;
+              ghost.style.transform = 'translate3d(' + (gx + 14) + 'px,' + (gy + 14) + 'px,0)';
               ghost.style.display = '';
               ghost.classList.add('show');
-              scheduleGhostPos(lastX || e.clientX, lastY || e.clientY);
+              /* 仍排一次：万一上面算出的坐标已经过期（用户在截图期间又移动过），
+               * 下一帧会校正到最新位置。 */
+              scheduleGhostPos(gx, gy);
             });
           }
         } else {

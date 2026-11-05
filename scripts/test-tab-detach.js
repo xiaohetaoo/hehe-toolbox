@@ -261,13 +261,26 @@ app.whenReady().then(async () => {
         midCls = await w3.webContents.executeJavaScript(
           "document.querySelector('.tabbar .tab').className", true);
         /* 【缩略预览】越过阈值后应当出现 .tab-drag-ghost，里面是一张图，
-         * 且 pointer-events:none（否则预览会挡住指针、拖拽跟着抖）。 */
-        const ghost = JSON.parse(await w3.webContents.executeJavaScript(
-          "(function(){var g=document.querySelector('.tab-drag-ghost');" +
-          "if(!g) return JSON.stringify({exists:false});" +
-          "var cs=getComputedStyle(g);" +
-          "return JSON.stringify({exists:true, visible:cs.display!=='none'," +
-          " hasImg:!!g.querySelector('img'), pe:cs.pointerEvents, transform:g.style.transform});})()", true));
+         * 且 pointer-events:none（否则预览会挡住指针、拖拽跟着抖）。
+         *
+         * 【为什么轮询而不是睡固定 60ms】浮层是在 capturePage 的 promise
+         * 兑现之后才插进来的，而截图耗时跟机器有关（本机预热后 5ms，
+         * CI 上无 GPU 会慢一个量级）。固定等待会在"还没插进来"的时刻采样，
+         * 报出来却是「没有预览」——看起来像功能坏了，实际只是采样早了。
+         * 轮询等到它出现（最多 3 秒）；判据一条没减：出现之后必须是一张图、
+         * 必须 pointer-events:none、必须有 transform。 */
+        let ghost = { exists: false };
+        for (let k = 0; k < 60; k++) {
+          ghost = JSON.parse(await w3.webContents.executeJavaScript(
+            "(function(){var g=document.querySelector('.tab-drag-ghost');" +
+            "if(!g) return JSON.stringify({exists:false});" +
+            "var cs=getComputedStyle(g);" +
+            "if(cs.display==='none') return JSON.stringify({exists:false});" +
+            "return JSON.stringify({exists:true, visible:true," +
+            " hasImg:!!g.querySelector('img'), pe:cs.pointerEvents, transform:g.style.transform});})()", true));
+          if (ghost.exists) break;
+          await new Promise(r => setTimeout(r, 50));
+        }
         ghostInfo = ghost;
         await send('mouseReleased', rect.x, rect.y + 80);
         await new Promise(r => setTimeout(r, 500));
