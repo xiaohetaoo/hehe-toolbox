@@ -30,6 +30,12 @@ const srcScan = require('../lib/src-scan');
 
 const appSrc = readSrc('js/app.js');
 
+/* 从源码读常量值 —— 理由见下面沙箱里那段注释。 */
+function readConst(name, fallback) {
+  const m = new RegExp('const\\s+' + name + '\\s*=\\s*(-?[0-9.]+)').exec(appSrc);
+  return m ? Number(m[1]) : fallback;
+}
+
 t('T1 attachTabDragDelegation 返回退订函数（不再只挂不退）', () => {
   /* 锁的是：函数末尾没有 return，调用方拿不到任何东西，
    * 于是这三个监听只能永远挂着。 */
@@ -149,6 +155,12 @@ function makeSandbox() {
     return {
       __heheTabDrag: false,
       _listeners: listeners,
+      /* 标签栏的几何：36px 高、横向 x=0..600。被测代码用它判断
+       * "指针有没有离开标签栏"（v0.6.5 的拖出判据），桩必须给出真实矩形，
+       * 否则 isOutsideBar 会一直报错或恒真。 */
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 600, bottom: 36, width: 600, height: 36 }),
+      querySelectorAll: () => [],
+      classList: { add() {}, remove() {}, toggle() {} },
       addEventListener(type, fn) {
         if (!listeners.has(type)) listeners.set(type, new Set());
         listeners.get(type).add(fn);
@@ -161,9 +173,11 @@ function makeSandbox() {
   };
 
   const opened = [];                 // 开窗请求（工具 id）
+  /* 重排相关的记录：落点指示条被显示过几次、最后落在哪个 x。 */
+  const markers = { shown: 0, hidden: 0, lastX: null };
   const sandbox = {
     document,
-    div: () => ({ appendChild() {}, classList: { add() {}, remove() {}, toggle() {} }, style: {}, innerHTML: '' }),
+    div: () => ({ appendChild() {}, classList: { add() {}, remove() {}, toggle() {} }, style: {}, innerHTML: '', isConnected: true }),
     h: () => ({ appendChild() {} }),
     icon: () => ({}),
     toast: () => {},
@@ -173,14 +187,50 @@ function makeSandbox() {
     R: { get: (id) => ({ id, name: '工具-' + id, icon: 'x' }) },
     TN: (tt) => (tt && tt.name) || '',
     hideDragGhost: () => {},
-    ensureDragGhost: () => ({ style: {}, classList: { add() {} }, appendChild() {}, innerHTML: '' }),
+    ensureDragGhost: () => ({ style: {}, classList: { add() {} }, appendChild() {}, innerHTML: '', isConnected: true }),
+    /* v0.6.5 新增的重排依赖。桩要能观测"指示条被调用了没有"，
+     * 否则重排分支在这个沙箱里等于没跑过。 */
+    ensureDropMarker: () => {
+      const el = { style: {}, isConnected: true };
+      return el;
+    },
+    hideDropMarker: () => { markers.hidden++; },
+    showDropMarker: (bar, x) => { markers.shown++; markers.lastX = x; },
+    computeDropTarget: (bar, id, clientX) => {
+      /* 简化版：把左右两侧各算一个落点回来，够驱动 reorder 分支 */
+      return { index: clientX > 300 ? 1 : 0, beforeEl: null, x: clientX };
+    },
     captureContentThumb: () => Promise.resolve(null),
-    TAB_DRAG_THRESHOLD: 40,
+    /* 【阈值从源码读，不要在这里写死】
+     * 写死的话，"把源码里的阈值改掉"这类变异传不进沙箱，断言照样绿 ——
+     * 测的就是测试文件自己的数字，不是实现。见 test-tab-drag-reorder.js 里
+     * readConst 的说明（那里踩过一次）。 */
+    TAB_DRAG_THRESHOLD: readConst('TAB_DRAG_THRESHOLD', 40),
+    TAB_REORDER_THRESHOLD: readConst('TAB_REORDER_THRESHOLD', 6),
     dragGhostEl: null,
     opened,
     docListeners,
     barListeners,
     makeBar,
+    markers,
+  };
+  /* 【这两个必须在沙箱对象建好之后再挂】
+   * 它们要读写 sandbox 自己（state.tabs / renderTabsCalls），
+   * 写在对象字面量里的话那个 const 还在 TDZ，运行到箭头函数时才会报
+   * ReferenceError —— 而且只在重排分支触发，普通拖出路径看不见。 */
+  sandbox.state = { tabs: ['a', 'b', 'c'] };
+  sandbox.renderTabsCalls = 0;
+  sandbox.renderTabs = () => { sandbox.renderTabsCalls++; };
+  /* 与 app.js 的 reorderTabs 等价（它是模块级函数，不在被测函数体内）。
+   * targetIndex 是"去掉被拖那一个之后"的下标，splice 直接按它插回即可。 */
+  sandbox.reorderTabs = (movingId, targetIndex) => {
+    const from = sandbox.state.tabs.indexOf(movingId);
+    if (from < 0) return false;
+    const to = Math.max(0, Math.min(targetIndex, sandbox.state.tabs.length - 1));
+    if (from === to) return false;
+    sandbox.state.tabs.splice(from, 1);
+    sandbox.state.tabs.splice(to, 0, movingId);
+    return true;
   };
   return sandbox;
 }
@@ -199,8 +249,12 @@ function compileAttach() {
   return new Function(
     'document', 'div', 'h', 'icon', 'toast', 'requestAnimationFrame',
     'invoke', 'Channels', 'R', 'TN', 'hideDragGhost', 'ensureDragGhost',
-    'captureContentThumb', 'TAB_DRAG_THRESHOLD',
-    'let dragGhostEl = null;\n' + fn + '\nreturn attachTabDragDelegation;');
+    'captureContentThumb', 'TAB_DRAG_THRESHOLD', 'TAB_REORDER_THRESHOLD',
+    /* v0.6.5 重排新增的依赖。不注入会 ReferenceError —— 实测踩过，
+     * 而且它只在重排分支里用到，普通拖出路径不会碰到。 */
+    'ensureDropMarker', 'hideDropMarker', 'showDropMarker', 'computeDropTarget',
+    'reorderTabs', 'state', 'renderTabs',
+    'let dragGhostEl = null;\nlet dropMarkerEl = null;\n' + fn + '\nreturn attachTabDragDelegation;');
 }
 
 /* 统一的接线：把桩按 compileAttach 的形参顺序传进去。 */
@@ -209,7 +263,9 @@ function attachWith(sb, bar) {
   return compile(
     sb.document, sb.div, sb.h, sb.icon, sb.toast, sb.requestAnimationFrame,
     sb.invoke, sb.Channels, sb.R, sb.TN, sb.hideDragGhost, sb.ensureDragGhost,
-    sb.captureContentThumb, sb.TAB_DRAG_THRESHOLD)(bar);
+    sb.captureContentThumb, sb.TAB_DRAG_THRESHOLD, sb.TAB_REORDER_THRESHOLD,
+    sb.ensureDropMarker, sb.hideDropMarker, sb.showDropMarker, sb.computeDropTarget,
+    sb.reorderTabs, sb.state, sb.renderTabs)(bar);
 }
 
 t('T5 行为：挂上之后 document 上有三个监听，调用 unsub 后归零', () => {

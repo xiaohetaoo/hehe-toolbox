@@ -505,6 +505,43 @@ body {
   background: color-mix(in srgb, var(--primary) 8%, transparent);
 }
 
+/* 标签正在被拖动（还没离开标签栏，处于"可能重排"的状态，v0.6.5）。
+ *
+ * 与 .tab-drag-out 刻意区分：
+ *   · 重排中 → 半透明 + 跟随指针，但**没有虚线框**（虚线框的语义是"松手会
+ *     弹成窗口"，而重排松手只是换个位置，两者必须一眼能分开）
+ *   · 拖出   → 半透明 + 虚线框（见上一条）
+ * 用户第一次拖动时不知道这个手势有两种结果，视觉上区分清楚比文字提示有效。
+ */
+.tab-reorder {
+  opacity: 0.6;
+  /* 拖动中的标签要浮在其它标签上面，否则它会被相邻标签盖住一半 */
+  position: relative;
+  z-index: 2;
+}
+
+/* 重排时的落点指示条。
+ *
+ * 【为什么是一条竖线而不是"把邻居推开"】
+ * 推开邻居需要给每个标签做 transform 动画 —— 标签是 flex 子项，
+ * 位置由布局决定，要动画就得先算出每个标签的新 x 坐标再逐个写 transform，
+ * 而拖动过程中这个序列每帧都在变。代价大、还容易抖。
+ * 一条 2px 的竖线插在"松手会落到的位置"上，既准确又不干扰布局：
+ * 它是绝对定位的，压根不参与 flex。
+ */
+.tab-drop-marker {
+  position: absolute;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent);
+  pointer-events: none;
+  z-index: 3;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* 落点指示条本来就没有动画，这里只是明确记录"它不需要降级" */
+}
+
 /* 拖拽时跟着指针走的页面缩略图（v0.6.3）。
  *
  * 【为什么用 position: fixed + transform】

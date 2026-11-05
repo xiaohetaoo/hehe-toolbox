@@ -298,6 +298,127 @@ app.whenReady().then(async () => {
       w3.destroy();
     }
 
+    /* ===== v0.6.5：四个方向都能拖出 + 栏内左右拖能重排 =====
+     *
+     * 这一段用**真实鼠标事件**验证手势本身 —— 桩测试（test-tab-drag-reorder）
+     * 能验判据与状态迁移，但验不了"真鼠标走完命中/捕获链路之后还成立"。
+     * v0.6.2 那次就是桩全绿、真鼠标一条都收不到（pointermove 绑错了元素）。
+     */
+    {
+      const w4 = await mk(null, 'dirs');
+      const ids = ['base64', 'json-format', 'port-occupy'];
+      await w4.webContents.executeJavaScript(
+        "window.App.openTool('base64');" +
+        "window.App.openTool('json-format');" +
+        "window.App.openTool('port-occupy'); true", true);
+      await new Promise(r => setTimeout(r, 900));
+
+      const tabRect = async (idx) => JSON.parse(await w4.webContents.executeJavaScript(
+        "(function(){ var ts=[...document.querySelectorAll('.tabbar .tab')];" +
+        "var t=ts[" + idx + "]; if(!t) return 'null';" +
+        "var r=t.getBoundingClientRect();" +
+        "return JSON.stringify({x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)," +
+        " left:Math.round(r.left), right:Math.round(r.right)}); })()", true));
+      const orderOf = async () => JSON.parse(await w4.webContents.executeJavaScript(
+        "JSON.stringify([...document.querySelectorAll('.tabbar .tab')].map(function(t){return t.dataset.toolId;}))", true));
+
+      w4.webContents.debugger.attach('1.3');
+      const send4 = (type, x, y) => w4.webContents.debugger.sendCommand(
+        'Input.dispatchMouseEvent', { type, x, y, button: 'left',
+          buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+
+      /* ---- 方向测试：向上 / 向左 / 向右 各拖出一次 ----
+       * 【终点必须真的离开标签栏矩形】标签栏从侧栏右边一直铺到窗口右边
+       * （1000px 窗口下 right≈1000），所以"向右拖 120px"根本还在栏内 ——
+       * 第一次实现这条测试时就是按这个想当然的坐标写的，结果向右那组
+       * 收不到开窗请求，看起来像功能坏了，实际是坐标没出界（实测踩过）。
+       * 所以这里先问标签栏要真实矩形，再按矩形算终点。 */
+      const barRect = JSON.parse(await w4.webContents.executeJavaScript(
+        "(function(){var b=document.querySelector('.tabbar');var r=b.getBoundingClientRect();" +
+        "return JSON.stringify({left:Math.round(r.left),right:Math.round(r.right)," +
+        "top:Math.round(r.top),bottom:Math.round(r.bottom)});})()", true));
+      const dirResults = {};
+      const targets = [
+        /* dy 负值 = 向上（越出 top），正值 = 向下（越出 bottom）；
+         * dx 负值 = 向左（越出 left），正值 = 向右（越出 right）。 */
+        ['up', 0, barRect.top - 40],
+        ['left', barRect.left - 40, 0],
+        ['right', barRect.right + 40, 0],
+      ];
+      for (const [name, tx, ty] of targets) {
+        const before = H['test:open-reqs']().data.length;
+        const r0 = await tabRect(0);
+        if (!r0 || r0.x == null) { dirResults[name] = 'no-tab'; continue; }
+        const endX = tx || r0.x;
+        const endY = ty || r0.y;
+        /* 每一步都落在窗口内（窗口 1000x700），避免指针出窗后事件丢失 */
+        await send4('mousePressed', r0.x, r0.y);
+        await new Promise(r => setTimeout(r, 60));
+        await send4('mouseMoved', Math.round((r0.x + endX) / 2), Math.round((r0.y + endY) / 2));
+        await new Promise(r => setTimeout(r, 60));
+        await send4('mouseMoved', endX, endY);
+        await new Promise(r => setTimeout(r, 80));
+        const outCls = await w4.webContents.executeJavaScript(
+          "document.querySelector('.tabbar .tab').className", true);
+        await send4('mouseReleased', endX, endY);
+        await new Promise(r => setTimeout(r, 700));
+        dirResults[name] = {
+          opened: H['test:open-reqs']().data.length - before,
+          cls: outCls,
+          end: [endX, endY],
+          bar: barRect,
+        };
+      }
+
+      /* ---- 重排测试：把第 1 个标签向右拖过第 2 个的中线 ---- */
+      const orderBefore = await orderOf();
+      const reqsBeforeReorder = H['test:open-reqs']().data.length;
+      const r1 = await tabRect(0);
+      const r2 = await tabRect(1);
+      let orderAfter = orderBefore;
+      let reorderCls = '';
+      let markerSeen = false;
+      if (r1 && r2 && r1.x != null) {
+        await send4('mousePressed', r1.x, r1.y);
+        await new Promise(r => setTimeout(r, 60));
+        await send4('mouseMoved', r1.x + 10, r1.y);
+        await new Promise(r => setTimeout(r, 60));
+        /* 拖到第 2 个标签的右侧、但仍留在标签栏内（y 保持在标签栏内） */
+        await send4('mouseMoved', r2.right - 8, r1.y);
+        await new Promise(r => setTimeout(r, 100));
+        const rawCls = await w4.webContents.executeJavaScript(
+          "(function(){ var t=document.querySelector('.tabbar .tab');" +
+          "var m=document.querySelector('.tab-drop-marker');" +
+          "return JSON.stringify({cls:t?t.className:'', marker: !!(m && getComputedStyle(m).display!=='none')});})()", true);
+        /* 【只解析一次，并把解析后的对象存进 reorderCls】
+         * executeJavaScript 返回的已经是 JSON 字符串。早先的写法在 runner 里
+         * parse 了一次、在断言里又 parse 了一次，断言拿到的其实是字符串本身，
+         * 于是 /tab-reorder/.test(对象) 恒假 —— 断言红、实现却是对的（实测踩过）。 */
+        reorderCls = (() => {
+          try { return JSON.parse(rawCls); } catch (e) { return {}; }
+        })();
+        markerSeen = reorderCls.marker === true;
+        await send4('mouseReleased', r2.right - 8, r1.y);
+        await new Promise(r => setTimeout(r, 600));
+        orderAfter = await orderOf();
+      }
+
+      await new Promise(r => setTimeout(r, 300));
+      w4.webContents.debugger.detach();
+
+      console.log('DIRS ' + JSON.stringify(dirResults));
+      console.log('REORDER_CLS ' + JSON.stringify(reorderCls));
+      console.log('ORDER_BEFORE ' + JSON.stringify(orderBefore));
+      console.log('ORDER_AFTER ' + JSON.stringify(orderAfter));
+      /* 【重排那一下有没有开窗：用前后差值判，不能用总数】
+       * 这条 e2e 前面已经跑过好几轮拖出测试（T4/R2/G/DR-*），
+       * 总数里混着它们的开窗请求 —— 写死"总数应等于 3"会随上面增删用例而失效。 */
+      console.log('REORDER_OPENED ' + (H['test:open-reqs']().data.length - reqsBeforeReorder));
+      console.log('MARKER_SEEN ' + markerSeen);
+      w4.destroy();
+      void ids;
+    }
+
     // 开窗请愿记录：从 probe 模块里读（与 handler 共享同一个实例）
     console.log('REQS ' + JSON.stringify(H['test:open-reqs']().data || []));
   } catch (e) { console.log('FATAL ' + (e && e.stack || e)); }
@@ -357,6 +478,57 @@ else { console.log('FAIL  独立窗探测没返回结果'); fail++; }
   chk('G4 预览跟着指针移动（transform 有值）',
     typeof g.transform === 'string' && /translate3d[^;]*/.test(g.transform), 'transform=' + g.transform);
   chk('G5 松手后预览隐藏', gaObj.visible === false, JSON.stringify(gaObj));
+}
+
+/* ---- v0.6.5：四个方向都能拖出 ---- */
+{
+  const dm = /DIRS (.+)/.exec(raw);
+  const dirs = dm ? JSON.parse(dm[1]) : {};
+  for (const name of ['up', 'left', 'right']) {
+    const r = dirs[name] || {};
+    const label = { up: '向上', left: '向左', right: '向右' }[name];
+    /* 锁的是：v0.6.4 的判据 `dy > 40` 让向上/向左/向右三个方向全部失灵
+     * （向上时 dy 是负数，横向则完全不参与判据）。这里用真实鼠标事件验，
+     * 因为桩测试验不了"真鼠标走完命中/捕获链路之后还成立"——
+     * v0.6.2 就是桩全绿、真鼠标一条都收不到。 */
+    chk('DR-' + name + ' 真实鼠标' + label + '拖出标签栏能开独立窗口',
+      r.opened === 1, label + ' 收到 ' + (r.opened === undefined ? '?' : r.opened) + ' 次开窗请求');
+    chk('DR-' + name + 'b 真实鼠标' + label + '拖出时带虚线框反馈',
+      /tab-drag-out/.test(String(r.cls)), label + ' class=' + r.cls);
+  }
+}
+
+/* ---- v0.6.5：栏内左右拖 = 重排 ---- */
+{
+  const rc = /REORDER_CLS (.+)/.exec(raw);
+  const ob = /ORDER_BEFORE (.+)/.exec(raw);
+  const oa = /ORDER_AFTER (.+)/.exec(raw);
+  const ms = /MARKER_SEEN (.+)/.exec(raw);
+  const before = ob ? JSON.parse(ob[1]) : [];
+  const after = oa ? JSON.parse(oa[1]) : [];
+  const markerSeen = ms ? ms[1].trim() === 'true' : false;
+  /* 【只解析一次】runner 里已经把 reorderCls 打印成 JSON，这里 rc[1] 是
+   * 那一行剩下的原始文本、也就是一个 JSON 字符串，parse 一次即可得到对象。
+   * （之前在 runner 里 parse 过一次、这里又 parse 了一次，拿到的是字符串本身，
+   * 于是 /tab-reorder/.test(对象) 恒假 —— 断言红、实现却是对的。） */
+  const rcObj = rc ? (() => { try { return JSON.parse(rc[1]); } catch (e) { return {}; } })() : {};
+  void rc;
+
+  /* 锁的是：旧实现完全没有重排逻辑 —— 用户把标签往右拖一小段，
+   * 既不开窗也不会换位置，什么反应都没有。 */
+  chk('RR1 真实鼠标横向拖动后标签顺序真的变了',
+    before.length >= 2 && after.length === before.length && before.join() !== after.join(),
+    '前=' + JSON.stringify(before) + ' 后=' + JSON.stringify(after));
+  chk('RR2 重排时画出落点指示条（用户要知道松手会落到哪）',
+    markerSeen === true, 'MARKER_SEEN=' + markerSeen);
+  chk('RR3 重排时标签带 .tab-reorder、不带 .tab-drag-out（两种结果视觉可分）',
+    /tab-reorder/.test(String(rcObj.cls)) && !/tab-drag-out/.test(String(rcObj.cls)),
+    'class=' + JSON.stringify(rcObj));
+  chk('RR4 重排不会开独立窗口（那是另一个手势的结果）',
+    (() => {
+      const ro = /REORDER_OPENED (-?\d+)/.exec(raw);
+      return ro ? Number(ro[1]) === 0 : false;
+    })(), '重排那一下的开窗次数应为 0');
 }
 
 /* 开窗请求里带的工具 id 必须是用户拖的那个 */

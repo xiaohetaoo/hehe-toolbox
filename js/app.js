@@ -787,29 +787,37 @@
       tabbarEl.appendChild(tab);
     }
   }
-  /* ============ 标签拖拽：跟手缩略预览 + 拖出成独立窗口 ============
+  /* ============ 标签拖拽：重排 + 拖出成独立窗口 ============
    *
-   * 【三个面板的分工 —— 这是踩过两次坑之后定下来的】
-   *   pointerdown  → 标签栏（委托：要从具体标签反查是哪个工具）
-   *   pointermove  → document（**指针一旦离开标签栏就收不到了**，标签栏只有 36px 高）
-   *   pointerup    → document + setPointerCapture（拖到窗口外松手也能收到）
+   * 【手势有两种结果，判据必须先把它们分开】
+   *   · 在标签栏内**水平**移动 → 重排（调换标签顺序）
+   *   · 离开标签栏（上下左右任一方向超出边界）→ 拖出为独立窗口
    *
-   * 第一版全绑在标签上；第二版全绑在标签栏上 —— 都拖不出来。
-   * 真实鼠标事件日志（CDP）证明：往下拖 40px 后指针早已离开标签栏，
-   * 绑在它上面的 pointermove 一条都收不到。
+   * v0.6.4 之前只有"向下拖 40px"这一条判据，等于只实现了后一半：
+   * 用户把标签往右拖一小段，既没反应也不会重排 —— 而浏览器里这是
+   * 最常见的操作（把刚打开的标签挪到顺手的位置）。往上/往左更别提：
+   * 早期版本只认 dy>0，向上拖是负数，怎么拖都不会触发。
    *
-   * 【为什么要有跟手缩略图】
-   * 只有"标签变半透明"的话，拖动过程中没有任何东西跟着鼠标，
-   * 观感是"拖了一下、松手后别处冒出个窗口"。浏览器拖标签会跟着一张
-   * 页面缩略图 —— 它把"我正在搬运这个东西"讲清楚了，而且给出了
-   * "松手会在哪里出现"的心理预期。
+   * 【为什么用"离开标签栏"而不是"某个方向的位移阈值"】
+   * 位移阈值是**猜**：40px 向下成立，向上要不要 40？向左呢？
+   * 每个方向一个阈值，等于四条互相打架的规则，而且它们在角落里会重叠
+   * （同时满足两条判据时该算哪个？）。
+   * "有没有离开标签栏"是几何事实，与方向无关，天然覆盖上下左右四个方向，
+   * 而且与用户的心智一致 —— 浏览器的语义正是"拖出标签栏 = 拖出窗口"。
    *
-   * 【性能依据（实测，不是估计）】
-   * webContents.capturePage 截内容区：预热后 5ms，缩到 360px 宽约 14KB。
-   * 所以**在 pointerdown 时截一次就够了**，不必每帧重截 ——
-   * 拖拽过程中只是移动那张已经拿到的图。
+   * 【纵向仍然留一个位移阈值兜底】
+   * 标签栏只有 36px 高，往下拖 20px 就已经离开它了；但往下拖到内容区之后，
+   * 指针可能还在窗口内、也还在标签栏的水平范围内（标签栏 overflow-x 很长）。
+   * 单靠"离开标签栏"会让"往下轻轻蹭一下"就弹窗，那太敏感。
+   * 所以纵向额外要求越过 TAB_DRAG_THRESHOLD，横向出界则立即生效
+   * （横向出界意味着指针到了侧栏上，那是明确得多的意图）。
    */
   const TAB_DRAG_THRESHOLD = 40;
+  /* 重排的启动阈值：横向移动超过它才开始算"在挪位置"。
+   * 定 6px 而不是 0：指针按下去总会有 1~2px 的抖动，没有阈值的话
+   * 用户"点一下标签"就会被记成一次 1 个位置的移动，标签会莫名其妙
+   * 往前挪一格。6px 也小于手指/鼠标能有意停留的范围。 */
+  const TAB_REORDER_THRESHOLD = 6;
 
   /* 跟手预览的浮层。整条拖拽期间只创建一次，复用同一个 <img>。
    * 放在 document.body 而不是标签栏里：它要盖在内容区上面，
@@ -824,6 +832,86 @@
   }
   function hideDragGhost() {
     if (dragGhostEl) { dragGhostEl.style.display = 'none'; dragGhostEl.innerHTML = ''; }
+  }
+
+  /* 落点指示条：一条 2px 竖线，插在"松手会落到的位置"上。
+   * 绝对定位、不参与 flex 布局，所以不会把邻居推开（见 app.css 里的说明）。 */
+  let dropMarkerEl = null;
+  function ensureDropMarker() {
+    if (dropMarkerEl && dropMarkerEl.isConnected) return dropMarkerEl;
+    dropMarkerEl = div('tab-drop-marker');
+    dropMarkerEl.style.display = 'none';
+    document.body.appendChild(dropMarkerEl);
+    return dropMarkerEl;
+  }
+  function hideDropMarker() {
+    if (dropMarkerEl) { dropMarkerEl.style.display = 'none'; }
+  }
+
+  /* 把一条拖拽路径上的"当前顺序"算出来。
+   *
+   * @param {HTMLElement} bar 标签栏
+   * @param {string} movingId 正在拖的工具 id
+   * @param {number} clientX 指针的横坐标
+   * @returns {{index:number, beforeEl:HTMLElement|null, x:number}}
+   *   index    松手后它会落在第几个位置（按当前数组顺序）
+   *   beforeEl 落点右侧的那个标签元素（null = 挪到最右）
+   *   x        指示条应该画在哪（页面坐标）
+   */
+  function computeDropTarget(bar, movingId, clientX) {
+    const tabs = [...bar.querySelectorAll('.tab')].filter((el) => el.dataset.toolId !== movingId);
+    let index = tabs.length;
+    let beforeEl = null;
+    for (let i = 0; i < tabs.length; i++) {
+      const r = tabs[i].getBoundingClientRect();
+      /* 用"指针过了这个标签的中线"作为判据，而不是"过了它的左边缘"：
+       * 用左边缘的话，指针停在某个标签的左半边时要等到完全越过它才算落点后移，
+       * 观感上总慢半拍；中线是浏览器与文件管理器都用的手感。 */
+      if (clientX < r.left + r.width / 2) { index = i; beforeEl = tabs[i]; break; }
+    }
+    let x;
+    if (beforeEl) {
+      x = beforeEl.getBoundingClientRect().left - 2;
+    } else if (tabs.length) {
+      x = tabs[tabs.length - 1].getBoundingClientRect().right + 1;
+    } else {
+      x = bar.getBoundingClientRect().left + 16;
+    }
+    return { index, beforeEl, x };
+  }
+
+  /* 把落点指示条画在视口坐标 x 处，高度与标签栏一致。
+   * 【为什么用 position:fixed 而不是 absolute】绝对定位要相对最近的定位祖先，
+   * 而标签栏本身没有建立定位上下文（它是普通 flex 容器）。用 fixed 直接按
+   * 视口坐标画最稳，也不必去给标签栏加 position:relative（那可能影响
+   * 其它布局）。 */
+  function showDropMarker(bar, x) {
+    const marker = ensureDropMarker();
+    const r = bar.getBoundingClientRect();
+    marker.style.position = 'fixed';
+    marker.style.left = x + 'px';
+    marker.style.top = r.top + 'px';
+    marker.style.height = r.height + 'px';
+    marker.style.display = '';
+  }
+
+  /* 把拖拽结果写回 state.tabs。
+   * 【为什么要重新算最终下标，而不是直接用 computeDropTarget 的 index】
+   * computeDropTarget 算的是"在**去掉被拖那一个**之后的数组里"的下标。
+   * 真正落位时数组里还留着它，所以要按原下标换算。
+   * 直接 splice(原下标,1) 再 splice(新下标,0) 正好对上 —— 因为
+   * 去掉它之后的下标 i，等价于"插回原位后的位置"。 */
+  function reorderTabs(movingId, targetIndex) {
+    const from = state.tabs.indexOf(movingId);
+    if (from < 0) return false;
+    /* targetIndex 是"去掉它之后"的下标；夹在合法范围内 */
+    const to = Math.max(0, Math.min(targetIndex, state.tabs.length - 1));
+    /* 原地不动：直接返回，不触发重绘 —— 重绘会让工具页重新渲染，
+     * 正在跑的任务可能受影响（虽然 renderTabs 只动标签栏，但没有必要多做）。 */
+    if (from === to) return false;
+    state.tabs.splice(from, 1);
+    state.tabs.splice(to, 0, movingId);
+    return true;
   }
 
   /* 把拖拽委托挂到标签栏上，**返回一个退订函数**。
@@ -860,8 +948,24 @@
     };
 
     const clearVisual = () => {
-      if (dragState && dragState.tabEl) dragState.tabEl.classList.remove('tab-drag-out');
+      if (dragState && dragState.tabEl) {
+        dragState.tabEl.classList.remove('tab-drag-out');
+        dragState.tabEl.classList.remove('tab-reorder');
+      }
       hideDragGhost();
+      hideDropMarker();
+      bar.classList.remove('dragging');
+    };
+
+    /* 判断指针是否已经离开标签栏。
+     * 用标签栏的**矩形**而不是它自身的事件：标签栏只有 36px 高，
+     * 且 overflow-x 可能让它比可视区还宽，元素本身的事件目标并不可靠。
+     * 留 2px 容差 —— 贴边的那一瞬间不该被算成"出界"。
+     */
+    const isOutsideBar = (x, y) => {
+      const r = bar.getBoundingClientRect();
+      const pad = 2;
+      return y < r.top - pad || y > r.bottom + pad || x < r.left - pad || x > r.right + pad;
     };
 
     const onDown = (e) => {
@@ -875,25 +979,57 @@
         tabEl: tab,
         startX: e.clientX,
         startY: e.clientY,
+        /* out      = 松手会弹成独立窗口
+           reorder  = 正在重排（已越过横向阈值、且还没离开标签栏）
+           targetIndex = 松手后会落在去掉自己之后的下标 */
         out: false,
-        pointerId: e.pointerId,
+        reorder: false,
+        targetIndex: 0,
         ghostReady: false,
+        pointerId: e.pointerId,
       };
       try { tab.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件不支持，忽略 */ }
     };
 
     const onMove = (e) => {
       if (!dragState || e.pointerId !== dragState.pointerId) return;
-      const dy = e.clientY - dragState.startY;
-      const dx = Math.abs(e.clientX - dragState.startX);
-      const nowOut = dy > TAB_DRAG_THRESHOLD && dy > dx;
+      const st = dragState;
+      const dx = e.clientX - st.startX;
+      const dy = e.clientY - st.startY;
+      const adx = Math.abs(dx), ady = Math.abs(dy);
 
-      if (nowOut !== dragState.out) {
-        dragState.out = nowOut;
-        dragState.tabEl.classList.toggle('tab-drag-out', nowOut);
+      /* ---- ① 先判"是否要拖出" ----
+       * 四个方向一视同仁：指针离开标签栏就算拖出。
+       *
+       * 【为什么纵向要加阈值、横向不加】
+       * 标签栏只有 36px 高。往下拖 20px 就已经出界了，可"手抖一下"也能到
+       * 20px —— 不设阈值会让轻轻一蹭就弹窗。横向出界（左/右）不一样：
+       * 那意味着指针已经压到侧栏或窗口边缘上了，跨越的距离天然就短
+       * （标签栏两侧只有 16px 内边距），意图明确得多。
+       *
+       * 【为什么保留"纵向深拖"这条路】
+       * 指针拖到窗口外再拖回来时，isOutsideBar 那一刻可能已经判过 out 了；
+       * 这条只处理"指针还在标签栏矩形内、但纵向已经拖得很深"的边界情况，
+       * 与 v0.6.4 的行为保持连续 —— 老用户的手势不能突然失灵。
+       */
+      const outside = isOutsideBar(e.clientX, e.clientY);
+      const nowOut = outside
+        ? (ady > TAB_DRAG_THRESHOLD || adx > TAB_DRAG_THRESHOLD)
+        : (ady > TAB_DRAG_THRESHOLD && ady > adx * 2);
+
+      if (nowOut !== st.out) {
+        st.out = nowOut;
+        st.tabEl.classList.toggle('tab-drag-out', nowOut);
         if (nowOut) {
+          /* 转为"拖出"：重排状态必须立刻撤掉，否则标签会同时带着
+           * 重排（半透明）与拖出（虚线框）两套视觉，用户分不清松手会怎样。 */
+          st.reorder = false;
+          st.tabEl.classList.remove('tab-reorder');
+          hideDropMarker();
+          bar.classList.add('dragging');
+
           /* 刚越过阈值：这时才去截图（而不是按下就截）。
-           * 好处是"只是点了一下标签"的操作完全不产生截图开销。
+           * 好处是"只是拖去重排"和"只是点了一下标签"都不产生截图开销。
            *
            * 【截图回来时必须校验「还是不是同一次拖拽」】
            * 用局部 const st 抓住发起截图那一刻的 dragState，回来先比指针身份：
@@ -905,7 +1041,6 @@
            *     dragState 时，错的是**名字**，用户看到的是"图标对、名字错"。
            * 所以下面一律从 st 取，不再碰全局。 */
           const ghost = ensureDragGhost();
-          const st = dragState;
           if (!st.ghostReady) {
             st.ghostReady = true;
             captureContentThumb().then((url) => {
@@ -926,7 +1061,7 @@
                * 浮层的 transform 初始是空的，等于画在 (0,0)。若这里只把它
                * 显示出来、位置留给下一次 rAF，就会出现一帧「预览从窗口左上角
                * 窜到指针下面」。本地机器这一帧只有 ~16ms，且刚好被
-               * opacity 0→0.94 的入场遮住，看不出来；CI 没有 GPU、rAF 被拖慢,
+               * opacity 0→0.94 的入场遮住，看不出来；CI 没有 GPU、rAF 被拖慢，
                * 这一帧就变得可见 —— 实测 G4（预览跟着指针）在 CI 上拿到空
                * transform，本地却一直是绿的。
                * 所以位置同步写好（不经过 rAF），后续移动仍走 rAF 节流。 */
@@ -942,9 +1077,34 @@
           }
         } else {
           hideDragGhost();
+          bar.classList.remove('dragging');
         }
       }
-      if (dragState.out) scheduleGhostPos(e.clientX, e.clientY);
+
+      /* ---- ② 没在拖出时：走重排 ----
+       * 【为什么重排只在"没有 out"时进行】
+       * 一旦进入拖出状态，标签位置就不该再跟着指针变 —— 用户此时意图是
+       * "把它弄出去"，中途又在列表里挪来挪去会让人困惑，而且松手开的是
+       * 独立窗口、原标签本来也不动。
+       */
+      if (!st.out) {
+        const movingHorizontally = adx > TAB_REORDER_THRESHOLD && adx > ady;
+        if (movingHorizontally) {
+          st.reorder = true;
+          st.tabEl.classList.add('tab-reorder');
+          bar.classList.add('dragging');
+          const target = computeDropTarget(bar, st.toolId, e.clientX);
+          st.targetIndex = target.index;
+          showDropMarker(bar, target.x);
+        } else if (st.reorder) {
+          /* 又拖回到阈值以内：撤掉重排视觉，避免"只是抖了一下"留下痕迹 */
+          st.reorder = false;
+          st.tabEl.classList.remove('tab-reorder');
+          hideDropMarker();
+        }
+      }
+
+      if (st.out) scheduleGhostPos(e.clientX, e.clientY);
     };
 
     const finish = (e) => {
@@ -952,13 +1112,31 @@
       const st = dragState;
       dragState = null;
       clearVisual();
-      if (!st.out) return;
       if (!st.toolId) return;
-      /* 【不关闭原标签】用户可能只是想"多开一个"；而且工具页可能正在跑任务，
-       * 关标签会触发页面清理、任务中断。 */
-      invoke(Channels.CHANNELS.APP.OPEN_TOOL_WINDOW, st.toolId).catch((err) => {
-        toast((err && err.message) || '无法打开独立窗口', 'error');
-      });
+
+      /* 松手分三种结果：
+       *   拖出 → 开独立窗口（原标签保留，见下方说明）
+       *   重排 → 改写 state.tabs 顺序，然后重画标签栏
+       *   都不是 → 交给 click 事件处理（切换到该标签） */
+      if (st.out) {
+        /* 【不关闭原标签】用户可能只是想"多开一个"；而且工具页可能正在跑任务，
+         * 关标签会触发页面清理、任务中断。 */
+        invoke(Channels.CHANNELS.APP.OPEN_TOOL_WINDOW, st.toolId).catch((err) => {
+          toast((err && err.message) || '无法打开独立窗口', 'error');
+        });
+        return;
+      }
+      if (!st.reorder) return;
+
+      const from = state.tabs.indexOf(st.toolId);
+      const changed = reorderTabs(st.toolId, st.targetIndex);
+      if (!changed) return;
+      void from;
+      /* 【只重画标签栏，不调 render()】
+       * render() 会走 renderContent → runPageCleanup，把工具页整个重建。
+       * 用户只是把标签挪了个位置，正在跑的任务不该因此中断一遍。
+       * renderTabs 足够：它只重建标签栏 DOM，不动内容区。 */
+      renderTabs();
     };
     const onCancel = () => { dragState = null; clearVisual(); };
 
@@ -978,6 +1156,8 @@
       try { delete bar.__heheTabDrag; } catch (e) { bar.__heheTabDrag = false; }
       dragState = null;
       hideDragGhost();
+      hideDropMarker();
+      try { bar.classList.remove('dragging'); } catch (e) {}
     };
   }
 
