@@ -651,14 +651,22 @@
   function renderTabs() {
     /* 独立窗只有一个工具，没有标签栏可画。 */
     if (IS_STANDALONE || !tabbarEl) return;
+    /* 委托只挂一次；attachTabDragDelegation 内部用 __heheTabDrag 做幂等。
+     * 放在这里而不是 buildShell：独立窗不会走到这儿，而主窗每次重画标签栏
+     * 都顺便确保一次 —— 即使壳被重建过也不会漏。 */
+    attachTabDragDelegation(tabbarEl);
     tabbarEl.innerHTML = '';
     if (!state.tabs.length) return;
     for (const id of state.tabs) {
       const t = R.get(id);
       if (!t) continue;
       const tab = div('tab' + (state.view.type === 'tool' && state.view.toolId === id ? ' active' : ''));
+      /* 拖拽委托要靠它反查是哪个工具（事件冒泡上来时只有 DOM，没有闭包里的 id） */
+      tab.dataset.toolId = id;
       tab.appendChild(icon(t.icon));
-      tab.appendChild(h('span', null, TN(t)));
+      /* 包一层 .tab-label：省略号只能做在文本块上，
+       * 给 .tab（flex 容器）加 text-overflow 不会生效。 */
+      tab.appendChild(h('span', { class: 'tab-label' }, TN(t)));
       const c = h('span', { class: 'tab-close' }, icon('x'));
       /* 关闭按钮是 span + click，同样进不了 Tab 序列。
        * 它的读屏名称必须带上是**哪个**标签 —— 一屏可能开着五六个标签，
@@ -675,98 +683,92 @@
       tab.addEventListener('mousedown', (e) => {
         if (e.button === 1) { e.preventDefault(); e.stopPropagation(); closeTab(id); }
       });
-      installTabDragOut(tab, id);
       tabbarEl.appendChild(tab);
     }
   }
-
-  /* ============ 把标签拖出标签栏 → 弹成独立窗口（v0.6.0）============
+  /* ============ 标签拖拽：事件委托在标签栏上 ============
    *
-   * 【手势怎么判定】鼠标按在标签上、纵向拖出标签栏区域一定距离，才算"拖出"。
-   * 三个约束，缺一个就会误触：
-   *   1) 只有**纵向**离开标签栏才算 —— 横向拖动是"调整顺序"的自然手势，
-   *      而且标签栏本身横向可滚动，横拖应该是滚动/后续的排序功能。
-   *   2) 阈值 40px：太小的话，用户点击时手抖两下就弹出窗口；
-   *      太大则要甩鼠标，操作累。
-   *   3) 拖出后**必须** mouseup 才执行：拖出去又拖回来 = 取消。
-   *      这与浏览器一致 —— 用户会习惯性用"拖回原处"反悔。
+   * 【为什么改成 pointerdown + 委托】
+   * 第一版给每个标签各自绑 mousedown，再由 document 上的 mousemove/mouseup
+   * 收口。实测（用 sendInputEvent 打真实鼠标事件）拖拽完全不触发。
+   * 逐个标签绑定的写法有两个隐患：
+   *   1) renderTabs 每次重建标签，那些 mousedown 监听跟着重建 ——
+   *      只要有一次在重建期间发生（打开工具的瞬间），拖拽就丢了；
+   *   2) 合成事件测试用 dispatchEvent 直接派发到 document，
+   *      绕过了命中测试，于是测试绿、真实操作却是坏的。
    *
-   * 【为什么不用 HTML5 drag & drop】
-   * dnd 需要 draggable="true" 与 dragstart，而标签上已经有 mousedown
-   * （中键关闭）与 click（切换）。dnd 的 dragstart 会抢走 click，
-   * 表现为"点标签不切换了"。手写 mousedown/mousemove 能精确控制
-   * "点击"与"拖拽"的分界，不必跟浏览器的 dnd 状态机搏斗。
+   * 改成委托：监听挂在 tabbarEl（它的生命周期与壳一致，只在切语言时重建），
+   * 用 e.target.closest('.tab') 找标签。这样标签怎么重建都不影响。
+   * 用 pointerdown 而不是 mousedown：指针事件统一处理鼠标/触控/笔，
+   * 且能拿到 pointerId 做去重。
    *
-   * 【视觉反馈】拖出阈值后给标签加 .tab-drag-out（半透明 + 虚框），
-   * 让用户知道"松手就会开新窗"。没有反馈的话，用户不知道自己拖到位没有。
-   */
+   * 【阈值 40px】太小的话点击时手抖两下就弹窗，太大则要甩鼠标。
+   * 必须 pointerup 才执行 —— 拖出去又拖回来 = 取消。
+   *
+   * 【只认纵向】横向拖动是"调整顺序"的自然手势（将来可能做），
+   * 而且标签栏本身横向可滚动，横拖应该是滚动。 */
   const TAB_DRAG_THRESHOLD = 40;
-  let tabDragState = null;
-  /* document 级监听只挂一次。
-   *
-   * 【为什么不能每个标签各挂一份】第一版把 mousemove/mouseup 挂在 document 上、
-   * 每次渲染标签各挂一份，再用 App.onCleanup 收口。而 onCleanup 是**页面级**
-   * 清理 —— 每次 openTool / showView 都会跑。于是切一次工具，所有标签的
-   * 拖拽监听就被摘掉了，第二次拖什么都不会发生（实测确认：T3/T4 失败）。
-   *
-   * 现在监听挂在 document 上一次，用 tabDragState 判断"当前拖的是哪个标签"，
-   * 生命周期与壳一致而不是与页面一致。 */
-  let tabDragInstalled = false;
-  function installTabDragListenersOnce() {
-    if (tabDragInstalled) return;
-    tabDragInstalled = true;
-    document.addEventListener('mousemove', (e) => {
-      const st = tabDragState;
-      if (!st) return;
-      const dy = e.clientY - st.startY;
-      const dx = Math.abs(e.clientX - st.startX);
-      /* 纵向为主、且超出阈值才算"拖出"。
-       * 要求纵向大于横向，是为了不与将来可能做的"横向拖动调整顺序"冲突。 */
-      const nowOut = dy > TAB_DRAG_THRESHOLD && dy > dx;
-      if (nowOut !== st.out) {
-        st.out = nowOut;
-        st.tabEl.classList.toggle('tab-drag-out', nowOut);
-      }
-    });
-    document.addEventListener('mouseup', () => {
-      const st = tabDragState;
-      if (!st) return;
-      tabDragState = null;
-      st.tabEl.classList.remove('tab-drag-out');
-      if (!st.out) return;   // 没拖出阈值：当作普通点击，什么都不做
-      /* 【不关闭原标签】用户可能只是想"多开一个"；而且这个工具页可能正在
-       * 跑任务（压制、扫描），关标签会触发页面清理、任务中断。
-       * 多留一个标签的成本远低于"拖一下把正在跑的活儿弄丢了"。 */
-      invoke(Channels.CHANNELS.APP.OPEN_TOOL_WINDOW, st.toolId).catch((err) => {
-        toast((err && err.message) || '无法打开独立窗口', 'error');
-      });
-    });
-  }
 
-  /* 标签上的 mousedown：只记录"起手位置"，其余判定都在上面的 document 监听里。
-   *
-   * 阈值 40px：太小的话点击时手抖两下就弹窗；太大则要甩鼠标，操作累。
-   * 必须 mouseup 才执行 —— 拖出去又拖回来 = 取消，与浏览器一致
-   * （用户会习惯性用"拖回原处"反悔）。
-   *
-   * 【为什么不用 HTML5 drag & drop】dnd 的 dragstart 会抢走 click，
-   * 表现为"点标签不切换了"。手写 mousedown/mousemove 能精确控制
-   * "点击"与"拖拽"的分界，不必跟浏览器的 dnd 状态机搏斗。 */
-  function installTabDragOut(tab, toolId) {
-    installTabDragListenersOnce();
-    tab.addEventListener('mousedown', (e) => {
-      /* 只认左键（0）；点在关闭按钮上不启动拖拽（那是"关掉"，不是"拖走"）。 */
+  function attachTabDragDelegation(bar) {
+    if (!bar || bar.__heheTabDrag) return;
+    bar.__heheTabDrag = true;
+
+    let dragState = null;   // { toolId, tabEl, startX, startY, out, pointerId }
+
+    const clearVisual = () => {
+      if (dragState && dragState.tabEl) dragState.tabEl.classList.remove('tab-drag-out');
+    };
+
+    bar.addEventListener('pointerdown', (e) => {
+      /* 只认主键（左键 / 触控 / 笔尖）。1 = 中键（关闭标签），
+       * 2 = 右键，都不该启动拖拽。 */
       if (e.button !== 0) return;
+      const tab = e.target.closest && e.target.closest('.tab');
+      if (!tab) return;
+      /* 点在关闭按钮上不启动拖拽：那是"关掉"，不是"拖走" */
       if (e.target.closest('.tab-close')) return;
-      tabDragState = {
-        toolId,
+      /* 从 closeTab 的 id 反查：标签元素上没存 id，用顺序取更快出错，
+       * 所以渲染时把 id 写到 dataset 上（见 renderTabs）。 */
+      dragState = {
+        toolId: tab.dataset.toolId || '',
         tabEl: tab,
         startX: e.clientX,
         startY: e.clientY,
         out: false,
+        pointerId: e.pointerId,
       };
     });
+
+    bar.addEventListener('pointermove', (e) => {
+      if (!dragState || e.pointerId !== dragState.pointerId) return;
+      const dy = e.clientY - dragState.startY;
+      const dx = Math.abs(e.clientX - dragState.startX);
+      const nowOut = dy > TAB_DRAG_THRESHOLD && dy > dx;
+      if (nowOut !== dragState.out) {
+        dragState.out = nowOut;
+        dragState.tabEl.classList.toggle('tab-drag-out', nowOut);
+      }
+    });
+
+    const finish = (e) => {
+      if (!dragState || (e && e.pointerId !== dragState.pointerId)) return;
+      const st = dragState;
+      dragState = null;
+      clearVisual();
+      if (!st.out) return;     // 没拖出阈值：当作普通点击
+      if (!st.toolId) return;  // 理论上不会发生（renderTabs 一定会写 dataset）
+      /* 【不关闭原标签】用户可能只是想"多开一个"；而且工具页可能正在跑任务，
+       * 关标签会触发页面清理、任务中断。 */
+      invoke(Channels.CHANNELS.APP.OPEN_TOOL_WINDOW, st.toolId).catch((err) => {
+        toast((err && err.message) || '无法打开独立窗口', 'error');
+      });
+    };
+    bar.addEventListener('pointerup', finish);
+    /* pointercancel：系统抢走指针（例如开始拖窗口）时也要收口，
+     * 否则 dragState 会一直挂着，下次 pointermove 用旧起点算位移。 */
+    bar.addEventListener('pointercancel', () => { dragState = null; clearVisual(); });
   }
+
 
   /* 页面级清理：切换页面时清理上一个工具页注册的定时器/监听，防止资源泄漏 */
   let pageCleanupFns = [];

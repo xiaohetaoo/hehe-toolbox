@@ -79,13 +79,18 @@ const PROBE_MAIN = `(async function(){
   const tab = tabs[0];
   const r = tab.getBoundingClientRect();
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-  const fire = (type, x, y) => document.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, bubbles: true, button: 0 }));
+  /* 拖拽已改为 pointer 事件 + 委托在标签栏上。
+   * 合成事件必须用 PointerEvent 并带 pointerId —— 用 MouseEvent 派发
+   * pointerdown 不会触发监听器（事件类型不同）。 */
+  const PID = 1;
+  const down = (el, x, y) => el.dispatchEvent(new PointerEvent('pointerdown', { clientX: x, clientY: y, bubbles: true, button: 0, pointerId: PID, isPrimary: true }));
+  const fire = (type, x, y) => document.querySelector('.tabbar').dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, bubbles: true, button: 0, pointerId: PID, isPrimary: true }));
 
   // ---- 横向拖动不算拖出 ----
-  tab.dispatchEvent(new MouseEvent('mousedown', { clientX: cx, clientY: cy, bubbles: true, button: 0 }));
-  fire('mousemove', cx + 80, cy + 10);   // 横向为主
+  down(tab, cx, cy);
+  fire('pointermove', cx + 80, cy + 10);   // 横向为主
   const horizMarked = tab.classList.contains('tab-drag-out');
-  fire('mouseup', cx + 80, cy + 10);
+  fire('pointerup', cx + 80, cy + 10);
   await tick(300);
   chk('T2 横向拖动不触发拖出（不标记、不开窗）', !horizMarked, 'class=' + tab.className);
 
@@ -103,11 +108,11 @@ const PROBE_MAIN = `(async function(){
   };
   const before = (await reqCount()).length;
 
-  tab.dispatchEvent(new MouseEvent('mousedown', { clientX: cx, clientY: cy, bubbles: true, button: 0 }));
-  fire('mousemove', cx, cy + 60);        // 纵向 60px > 阈值 40
+  down(tab, cx, cy);
+  fire('pointermove', cx, cy + 60);        // 纵向 60px > 阈值 40
   const marked = tab.classList.contains('tab-drag-out');
   chk('T3 纵向拖出后有视觉反馈', marked, 'class=' + tab.className);
-  fire('mouseup', cx, cy + 60);
+  fire('pointerup', cx, cy + 60);
   await tick(500);
   /* 轮询等待而不是定长 sleep：invoke 是异步的，mouseup → 开窗请求 →
    * 另一个 invoke 取计数，两跳 IPC。固定 500ms 在负载高时会不够。 */
@@ -125,11 +130,11 @@ const PROBE_MAIN = `(async function(){
 
   // ---- 拖出后又拖回来 = 取消 ----
   const b6 = (await reqCount()).length;
-  tab.dispatchEvent(new MouseEvent('mousedown', { clientX: cx, clientY: cy, bubbles: true, button: 0 }));
-  fire('mousemove', cx, cy + 60);        // 先拖出
-  fire('mousemove', cx, cy + 5);         // 又拖回来
+  down(tab, cx, cy);
+  fire('pointermove', cx, cy + 60);        // 先拖出
+  fire('pointermove', cx, cy + 5);         // 又拖回来
   const stillMarked = tab.classList.contains('tab-drag-out');
-  fire('mouseup', cx, cy + 5);
+  fire('pointerup', cx, cy + 5);
   await tick(400);
   const o6 = (await reqCount()).length - b6;
   chk('T6 拖回原处后取消（标记消失、不开窗）', !stillMarked && o6 === 0,
@@ -137,10 +142,10 @@ const PROBE_MAIN = `(async function(){
 
   // ---- 阈值以下不触发 ----
   const b7 = (await reqCount()).length;
-  tab.dispatchEvent(new MouseEvent('mousedown', { clientX: cx, clientY: cy, bubbles: true, button: 0 }));
-  fire('mousemove', cx, cy + 20);        // 20px < 40
+  down(tab, cx, cy);
+  fire('pointermove', cx, cy + 20);        // 20px < 40
   const belowMarked = tab.classList.contains('tab-drag-out');
-  fire('mouseup', cx, cy + 20);
+  fire('pointerup', cx, cy + 20);
   await tick(300);
   const o7 = (await reqCount()).length - b7;
   chk('T7 阈值内的纵向移动不触发', !belowMarked && o7 === 0, 'class=' + tab.className + ' opens=' + o7);
@@ -150,10 +155,10 @@ const PROBE_MAIN = `(async function(){
   const closeEl = tab.querySelector('.tab-close');
   if (closeEl) {
     const cr = closeEl.getBoundingClientRect();
-    closeEl.dispatchEvent(new MouseEvent('mousedown', { clientX: cr.left + 2, clientY: cr.top + 2, bubbles: true, button: 0 }));
-    fire('mousemove', cr.left + 2, cr.top + 80);
+    down(closeEl, cr.left + 2, cr.top + 2);
+    fire('pointermove', cr.left + 2, cr.top + 80);
     const closeMarked = tab.classList.contains('tab-drag-out');
-    fire('mouseup', cr.left + 2, cr.top + 80);
+    fire('pointerup', cr.left + 2, cr.top + 80);
     await tick(300);
     const o8 = (await reqCount()).length - b8;
     chk('T8 从关闭按钮起手不触发拖出', !closeMarked && o8 === 0, 'class=' + tab.className + ' opens=' + o8);

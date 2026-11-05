@@ -334,7 +334,20 @@ body {
   background: transparent; border-bottom: none;
   -webkit-app-region: drag;
 }
-.titlebar .breadcrumb { display: flex; align-items: center; gap: 2px; font-size: 13px; color: var(--text-3); white-space: nowrap; }
+/* 【面包屑必须显式声明 no-drag】
+ * .titlebar 整条是窗口拖拽区（-webkit-app-region: drag），
+ * 而这个属性会被**子元素继承**。面包屑没有自己的 no-drag 声明，
+ * 于是整条落进拖拽区：鼠标按下时被系统当成"拖窗口"，
+ * 点击事件根本到不了 span，onclick 永远不触发。
+ *
+ * 这正是用户报的「点击这里并不能返回对应的页」——
+ * 上一版给面包屑加了 onclick、hover、键盘可达，但**没有一个能生效**，
+ * 因为事件在更早的一层就被系统拿走了。
+ *
+ * 搜索框与右侧按钮早就各自声明了 no-drag，唯独面包屑漏了。
+ * 这类遗漏的表现极具迷惑性：代码看起来完全正确，鼠标移上去也有
+ * hover 效果（CSS 生效），但点击毫无反应。 */
+.titlebar .breadcrumb { display: flex; align-items: center; gap: 2px; font-size: 13px; color: var(--text-3); white-space: nowrap; -webkit-app-region: no-drag; }
 /* 【面包屑的可点项必须有可见反馈】
  * 旧实现只给 home 挂了 inline 的 cursor:pointer，其余层级连光标都不变 ——
  * 用户看到一行蓝色文字，鼠标移上去毫无反应，自然不会去点。
@@ -418,17 +431,62 @@ body {
 .tb-btn:hover { background: var(--nav-hover); color: var(--primary); }
 .tb-btn.close:hover { background: var(--danger); color: #fff; }
 
-/* 标签栏 */
+/* 标签栏
+ *
+ * 【溢出时必须压缩标签，而不是把它推出可视区】
+ * 原来只有 `overflow-x: auto` + 标签的 `white-space: nowrap`：
+ * 标签一多，后面的标签被挤出右边界，用户看不到、也点不到，
+ * 而滚动条在本项目里是全局隐藏的（见 `* { scrollbar-width: none }`）——
+ * 于是**完全没有任何线索**表明右边还有标签。
+ *
+ * 现在改成压缩式：标签本身可收缩（flex: 0 1 auto + min-width: 0），
+ * 文字超长时省略号截断。这样开到十几个标签仍能全部看见。
+ * 保留 overflow-x: auto 作为最后兜底（极端窄窗口下仍可滚）。 */
 .tabbar {
   display: flex; align-items: flex-end; gap: 2px; background: transparent;
   padding: 0 16px; overflow-x: auto; min-height: 36px;
+  /* 标签之间不换行 —— 换行会让标签栏高度跳动，把内容区往下推 */
+  flex-wrap: nowrap;
 }
 .tabbar:empty { display: none; }
 .tab {
   display: flex; align-items: center; gap: 6px; padding: 6px 12px 8px; font-size: 13px; color: var(--text-2);
   cursor: pointer; border-radius: 8px 8px 0 0; white-space: nowrap; border-bottom: 2px solid transparent;
   transition: color 0.15s, background 0.15s;
+  /* 【压缩三件套】
+   *   flex: 0 1 auto  —— 可收缩（第一个 0 是不放大，避免少数几个标签时被拉满）
+   *   min-width: 0     —— 关键：flex 子项默认 min-width:auto，等于内容宽度，
+   *                       不设 0 的话压缩根本不生效（这是最容易漏的一条）
+   *   overflow: hidden —— 配合下面 .tab-label 的省略号 */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  /* 单个标签不该吃掉半个标签栏：只开两个工具时，没有上限它们会各自
+     按内容宽度展开、把标签栏撑得很松散。 */
+  max-width: 200px;
 }
+/* 标签名单独成块才能做省略号：直接给 .tab 加 text-overflow 不会生效，
+   因为它是 flex 容器，文字与图标是两个子项。 */
+.tab .tab-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+/* 【不要给标签设固定像素下限】
+ * 第一版写了 min-width: 56px（"至少放得下图标 + 两三个字"），
+ * 实测在 125% 缩放的窗口里：标签栏可用 327px，8 个标签 × 56 = 448px，
+ * 照样溢出 5 个 —— 压缩生效了，但被下限顶住。
+ *
+ * 固定像素下限在自适应布局里总是错的：容器宽度不确定，任何绝对下限
+ * 都会在某个宽度下溢出。改成完全弹性：标签按内容比例分摊可用宽度，
+ * 窄到一定程度文字就只余省略号，但**始终全部可见**。
+ * 图标是 flex:none 的 16px，不会被压缩，所以再窄也能认出是哪个标签，
+ * 配合 title 悬停提示读全名。 */
+.tab { min-width: 0; }
+/* 窄标签时把左右内边距收掉一部分：默认 12px×2 = 24px 的留白，
+   在 35px 宽的标签里占掉七成，图标和文字挤不下。
+   用 clamp 让 padding 跟随可用宽度自动收缩。 */
+.tab { padding-left: clamp(4px, 1.2vw, 12px); padding-right: clamp(4px, 1.2vw, 12px); }
+/* 图标不参与压缩：它是"这是哪个工具"的唯一线索，必须始终完整。 */
+.tab .icon { flex: none; }
 .tab:hover { color: var(--primary); background: var(--nav-hover); }
 .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 500; background: var(--hover-fill); }
 .tab .tab-close { width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; border-radius: 3px; color: var(--text-3); visibility: hidden; }
