@@ -230,7 +230,91 @@
     }, { passive: false });
   }
 
+  /* ============ 独立工具窗口模式（v0.6.0）============
+   * 主进程用 index.html?tool=xxx&standalone=1 打开独立窗口，
+   * 这里把参数读出来。**放在模块级、任何一个函数之前读一次** ——
+   * buildShell 与启动流程都要看它，读两遍容易不一致。
+   *
+   * 【为什么不另做一个 tool.html】见 main.js 里 openToolWindow 的说明：
+   * 工具页依赖 20 多个 <script>（ui/registry/i18n/channels/各工具文件…），
+   * 复制一份必然分叉。复用同一页面 + 参数，加载的是同一批文件。 */
+  const bootParams = (() => {
+    try {
+      const q = new URLSearchParams(window.location.search || '');
+      return { tool: q.get('tool') || null, standalone: q.get('standalone') === '1' };
+    } catch (e) {
+      return { tool: null, standalone: false };
+    }
+  })();
+  const IS_STANDALONE = bootParams.standalone && !!bootParams.tool;
+
+  /* 独立窗口的外壳：标题栏（可拖动/最小化/最大化/关闭）+ 内容区。
+   * 没有侧栏、没有标签栏、没有搜索框、没有状态栏 —— 那些都是"工具箱"的东西，
+   * 而这个窗口只是"一个工具"。 */
+  function buildStandaloneShell() {
+    const main = div('main standalone');
+    const titlebar = div('titlebar');
+    /* 面包屑在独立窗里只显示工具名（没有层级可回退 —— 回退到哪儿？
+     * 主窗的首页？那会把用户从专注窗口拽走）。
+     * 所以这里只放一个不可点的标题，位置与主窗面包屑一致，视觉连贯。 */
+    breadcrumbEl = div('breadcrumb');
+    const t = R.get(bootParams.tool);
+    breadcrumbEl.appendChild(div('bc-node bc-current', t ? TN(t) : bootParams.tool));
+    titlebar.appendChild(breadcrumbEl);
+
+    const tbRight = div('tb-right');
+    const themeBtn = h('button', { class: 'tb-btn', title: T('common.theme') });
+    themeIconEl = h('span', { style: { display: 'inline-flex' } });
+    themeIconEl.appendChild(icon('moon', 'icon-lg'));
+    themeBtn.appendChild(themeIconEl);
+    themeBtn.addEventListener('click', async (e) => {
+      const cur = document.documentElement.dataset.theme;
+      await changeTheme(cur === 'dark' ? 'light' : 'dark', { x: e.clientX, y: e.clientY });
+    });
+    const minBtn = h('button', { class: 'tb-btn', title: T('common.minimize') }, icon('minus', 'icon-lg'));
+    minBtn.addEventListener('click', () => invoke(Channels.CHANNELS.WIN.MINIMIZE).catch(() => {}));
+    maxBtn = h('button', { class: 'tb-btn', title: T('common.maximize') }, icon('square', 'icon-lg'));
+    maxBtn.addEventListener('click', () => invoke(Channels.CHANNELS.WIN.MAXIMIZE).catch(() => {}));
+    const closeBtn = h('button', { class: 'tb-btn close', title: T('common.close') }, icon('x', 'icon-lg'));
+    closeBtn.addEventListener('click', () => invoke(Channels.CHANNELS.WIN.CLOSE).catch(() => {}));
+    tbRight.appendChild(themeBtn); tbRight.appendChild(minBtn); tbRight.appendChild(maxBtn); tbRight.appendChild(closeBtn);
+    titlebar.appendChild(tbRight);
+
+    tabbarEl = div('tabbar');
+    contentEl = div('content');
+
+    const statusbar = div('statusbar');
+    statusText = h('span', null, isDesktop ? T('status.ready') : T('status.browser'));
+    statusbar.appendChild(statusText);
+
+    main.appendChild(titlebar); main.appendChild(tabbarEl); main.appendChild(contentEl); main.appendChild(statusbar);
+    document.body.appendChild(main);
+
+    /* 【独立窗仍然要订阅这几个事件】
+     * 它不是"只显示不工作"的静态窗口 —— 用户会在里面点开始、跑任务。
+     * 但订阅范围比主窗小得多：不要 sys:stats（那是状态栏的）、
+     * 不要托盘/热键/截图那些全局事件（它们属于主窗，独立窗响应只会重复）。
+     * 只留：主题变化、窗口最大化状态。 */
+    const shellUnsubs = [];
+    const sub = (ev, cb) => { const u = on(ev, cb); if (typeof u === 'function') shellUnsubs.push(u); return u; };
+    sub('win:maximized', (v) => { if (maxBtn) { maxBtn.innerHTML = ''; maxBtn.appendChild(icon(v ? 'copy' : 'square', 'icon-lg')); } });
+
+    shellCleanup = () => {
+      shellUnsubs.forEach((u) => { try { u(); } catch (e) {} });
+      shellUnsubs.length = 0;
+    };
+  }
+
   function buildShell() {
+    /* 独立窗口没有侧边栏 —— 它就是"一个工具占一个窗口"，
+     * 带上侧栏会让它变成缩小版主窗，失去"专注"的意义。
+     * 同理没有标签栏（只有一个工具，没有可切换的东西）。
+     * 标题栏保留（要能拖动、最小化、关闭），但去掉搜索框。 */
+    if (IS_STANDALONE) {
+      buildStandaloneShell();
+      return;
+    }
+
     /* 侧边栏 */
     sidebarEl = div('sidebar');
     const logo = div('logo');
@@ -462,6 +546,11 @@
     render();
   }
   function renderNav() {
+    /* 【独立窗口没有侧栏】它只显示一个工具，没有可高亮的导航项。
+     * 直接返回 —— 少了这个守卫，下面 sidebarEl.querySelectorAll 会抛
+     * TypeError，而它在 render() 里排在 renderContent 之前，
+     * 于是整个独立窗口是空白的（实测确认过：body 里只有脚本标签 + 一个空的 .main）。 */
+    if (!sidebarEl) return;
     const items = sidebarEl.querySelectorAll('.nav-item');
     items.forEach(el => el.classList.remove('active'));
     let sel = null;
@@ -488,8 +577,18 @@
    * 另外整条面包屑现在有 hover 反馈 + 键盘可达：以前鼠标移上去没有任何变化，
    * 用户根本不知道哪里能点。 */
   function renderBreadcrumb() {
+    if (!breadcrumbEl) return;
     breadcrumbEl.innerHTML = '';
     const v = state.view;
+
+    /* 【独立窗的面包屑就是工具名，没有层级】
+     * 回退到哪儿？主窗的首页？那会把用户从专注窗口拽走。
+     * 所以独立窗只渲染一个不可点的当前项。 */
+    if (IS_STANDALONE) {
+      const tb = R.get(bootParams.tool);
+      breadcrumbEl.appendChild(div('bc-node bc-current', tb ? TN(tb) : bootParams.tool));
+      return;
+    }
 
     /* 先攒出「层级」数组，再统一渲染 —— 这样每一级的点击行为都能由它在
      * 数组里的位置推出来（末级 → 上一级），不必逐个手写。 */
@@ -550,6 +649,8 @@
     });
   }
   function renderTabs() {
+    /* 独立窗只有一个工具，没有标签栏可画。 */
+    if (IS_STANDALONE || !tabbarEl) return;
     tabbarEl.innerHTML = '';
     if (!state.tabs.length) return;
     for (const id of state.tabs) {
@@ -574,9 +675,99 @@
       tab.addEventListener('mousedown', (e) => {
         if (e.button === 1) { e.preventDefault(); e.stopPropagation(); closeTab(id); }
       });
+      installTabDragOut(tab, id);
       tabbarEl.appendChild(tab);
     }
   }
+
+  /* ============ 把标签拖出标签栏 → 弹成独立窗口（v0.6.0）============
+   *
+   * 【手势怎么判定】鼠标按在标签上、纵向拖出标签栏区域一定距离，才算"拖出"。
+   * 三个约束，缺一个就会误触：
+   *   1) 只有**纵向**离开标签栏才算 —— 横向拖动是"调整顺序"的自然手势，
+   *      而且标签栏本身横向可滚动，横拖应该是滚动/后续的排序功能。
+   *   2) 阈值 40px：太小的话，用户点击时手抖两下就弹出窗口；
+   *      太大则要甩鼠标，操作累。
+   *   3) 拖出后**必须** mouseup 才执行：拖出去又拖回来 = 取消。
+   *      这与浏览器一致 —— 用户会习惯性用"拖回原处"反悔。
+   *
+   * 【为什么不用 HTML5 drag & drop】
+   * dnd 需要 draggable="true" 与 dragstart，而标签上已经有 mousedown
+   * （中键关闭）与 click（切换）。dnd 的 dragstart 会抢走 click，
+   * 表现为"点标签不切换了"。手写 mousedown/mousemove 能精确控制
+   * "点击"与"拖拽"的分界，不必跟浏览器的 dnd 状态机搏斗。
+   *
+   * 【视觉反馈】拖出阈值后给标签加 .tab-drag-out（半透明 + 虚框），
+   * 让用户知道"松手就会开新窗"。没有反馈的话，用户不知道自己拖到位没有。
+   */
+  const TAB_DRAG_THRESHOLD = 40;
+  let tabDragState = null;
+  /* document 级监听只挂一次。
+   *
+   * 【为什么不能每个标签各挂一份】第一版把 mousemove/mouseup 挂在 document 上、
+   * 每次渲染标签各挂一份，再用 App.onCleanup 收口。而 onCleanup 是**页面级**
+   * 清理 —— 每次 openTool / showView 都会跑。于是切一次工具，所有标签的
+   * 拖拽监听就被摘掉了，第二次拖什么都不会发生（实测确认：T3/T4 失败）。
+   *
+   * 现在监听挂在 document 上一次，用 tabDragState 判断"当前拖的是哪个标签"，
+   * 生命周期与壳一致而不是与页面一致。 */
+  let tabDragInstalled = false;
+  function installTabDragListenersOnce() {
+    if (tabDragInstalled) return;
+    tabDragInstalled = true;
+    document.addEventListener('mousemove', (e) => {
+      const st = tabDragState;
+      if (!st) return;
+      const dy = e.clientY - st.startY;
+      const dx = Math.abs(e.clientX - st.startX);
+      /* 纵向为主、且超出阈值才算"拖出"。
+       * 要求纵向大于横向，是为了不与将来可能做的"横向拖动调整顺序"冲突。 */
+      const nowOut = dy > TAB_DRAG_THRESHOLD && dy > dx;
+      if (nowOut !== st.out) {
+        st.out = nowOut;
+        st.tabEl.classList.toggle('tab-drag-out', nowOut);
+      }
+    });
+    document.addEventListener('mouseup', () => {
+      const st = tabDragState;
+      if (!st) return;
+      tabDragState = null;
+      st.tabEl.classList.remove('tab-drag-out');
+      if (!st.out) return;   // 没拖出阈值：当作普通点击，什么都不做
+      /* 【不关闭原标签】用户可能只是想"多开一个"；而且这个工具页可能正在
+       * 跑任务（压制、扫描），关标签会触发页面清理、任务中断。
+       * 多留一个标签的成本远低于"拖一下把正在跑的活儿弄丢了"。 */
+      invoke(Channels.CHANNELS.APP.OPEN_TOOL_WINDOW, st.toolId).catch((err) => {
+        toast((err && err.message) || '无法打开独立窗口', 'error');
+      });
+    });
+  }
+
+  /* 标签上的 mousedown：只记录"起手位置"，其余判定都在上面的 document 监听里。
+   *
+   * 阈值 40px：太小的话点击时手抖两下就弹窗；太大则要甩鼠标，操作累。
+   * 必须 mouseup 才执行 —— 拖出去又拖回来 = 取消，与浏览器一致
+   * （用户会习惯性用"拖回原处"反悔）。
+   *
+   * 【为什么不用 HTML5 drag & drop】dnd 的 dragstart 会抢走 click，
+   * 表现为"点标签不切换了"。手写 mousedown/mousemove 能精确控制
+   * "点击"与"拖拽"的分界，不必跟浏览器的 dnd 状态机搏斗。 */
+  function installTabDragOut(tab, toolId) {
+    installTabDragListenersOnce();
+    tab.addEventListener('mousedown', (e) => {
+      /* 只认左键（0）；点在关闭按钮上不启动拖拽（那是"关掉"，不是"拖走"）。 */
+      if (e.button !== 0) return;
+      if (e.target.closest('.tab-close')) return;
+      tabDragState = {
+        toolId,
+        tabEl: tab,
+        startX: e.clientX,
+        startY: e.clientY,
+        out: false,
+      };
+    });
+  }
+
   /* 页面级清理：切换页面时清理上一个工具页注册的定时器/监听，防止资源泄漏 */
   let pageCleanupFns = [];
   /* 注册页面卸载清理函数。
@@ -1801,6 +1992,18 @@
     installNumberWheelGuard();
     await loadUserData();
     await loadDangerousState();
+    /* 独立窗口直接打开指定工具。
+     * 【必须在 render() 之前设好 state.view】render 会按 state.view 画内容，
+     * 先 render 一次首页再切工具页的话，用户会看到一次首页闪过去
+     * （工具页是 async 渲染，中间那一帧是可见的）。 */
+    if (IS_STANDALONE) {
+      state.view = { type: 'tool', toolId: bootParams.tool };
+      /* 独立窗不维护标签列表：它只有一个工具，标签栏也是空的不显示。
+       * 但仍然 push 进 tabs —— 有些工具页会读 state.tabs 判断"我是不是当前标签"
+       * （见 renderTabs 里对 state.view.toolId 的比对）。
+       * 保持与"用主窗打开一个工具"一致的状态，工具页代码一行都不用改。 */
+      state.tabs = [bootParams.tool];
+    }
     render();
 
     /* 数据文件损坏时必须主动告知。

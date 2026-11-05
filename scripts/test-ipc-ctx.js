@@ -82,15 +82,41 @@ t('ctx 的访问器全部是 getter（源码层约束）', () => {
     'ctx 里出现了普通属性形式（win/jobs/isWin/isMac 必须是 getter）');
 });
 
-t('main.js 的 send 走 ipcCtx，且 ipcCtx 在 send 之前声明', () => {
+/* 【这条断言在 v0.6.0 改了形态，语义没变】
+ * 原来它要求 send 的函数体**逐字等于**一行：
+ *     function send(ev, data) { ipcCtx.send(ev, data); }
+ * 多窗口改造之后 send 多了一层：先看 ALS 上下文里有没有发起者，
+ * 有就定向发给它，没有才落到 ipcCtx.send。逐字匹配自然失败。
+ *
+ * 要守的东西其实有两条，都不依赖版面：
+ *   ① send 仍然**最终**走 ipcCtx.send —— 否则 ctx.send 就成了没人验证的
+ *      死代码（这正是当初写这条断言的原因）；
+ *   ② ipcCtx 必须在 send **之前**声明 —— const 有暂时性死区，
+ *      反过来写会在首次调用 send 时 ReferenceError，而 node --check 看不出来。
+ * 把 ① 从"逐字一行"放宽成"函数体里出现 ipcCtx.send"，② 原样保留。 */
+t('main.js 的 send 仍然走 ipcCtx，且 ipcCtx 在 send 之前声明', () => {
   const src = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
   const code = require(path.join(ROOT, 'lib', 'src-scan')).stripComments(src);
-  const sendDecl = code.indexOf('function send(ev, data) { ipcCtx.send(ev, data); }');
-  assert.ok(sendDecl > 0, 'send 没有走 ipcCtx.send —— ctx.send 就成了没人验证过的死代码');
+
+  const sendAt = code.indexOf('function send(ev, data)');
+  assert.ok(sendAt > 0, '找不到 send 的定义');
+  /* 取 send 的函数体（到它自己的闭合花括号） */
+  const open = code.indexOf('{', sendAt);
+  let depth = 0, end = -1;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === '{') depth++;
+    else if (code[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  assert.ok(end > open, 'send 的函数体括号不配平');
+  const body = code.slice(open, end);
+  // 锁的是：send 必须仍有 ipcCtx.send 这条兜底 —— 少了它，ctx.send 就成了
+  // 没人验证过的死代码，而无调用者的分支不会在任何测试里失败。
+  assert.ok(/ipcCtx\.send/.test(body), 'send 没有走 ipcCtx.send —— ctx.send 就成了没人验证过的死代码');
+
   const ctxDecl = code.indexOf('const ipcCtx = require');
   assert.ok(ctxDecl > 0, '找不到 ipcCtx 的构造');
-  /* const 有暂时性死区：声明在 send 之后就 ReferenceError，而 node --check 看不出来 */
-  assert.ok(ctxDecl < sendDecl, 'ipcCtx 声明在 send 之后 —— 首次调用 send 必然 ReferenceError');
+  // 锁的是：ipcCtx 必须在 send 之前声明（const 暂时性死区）。
+  assert.ok(ctxDecl < sendAt, 'ipcCtx 声明在 send 之后 —— 首次调用 send 必然 ReferenceError');
 });
 
 done();

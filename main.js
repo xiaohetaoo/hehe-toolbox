@@ -154,6 +154,38 @@ function storeSet(key, val) {
  * 【必须在 send 之前声明】send 会调用 ipcCtx.send；const 有暂时性死区，
  * 声明在后的话 send 在首次调用时会 ReferenceError（而 node --check 看不出来）。
  */
+/* ============ 多窗口：事件按「发起它的那个窗口」路由 ============
+ *
+ * 【为什么必须做这件事】
+ * 在「标签可以拖出来变独立窗口」之前，全进程只有一个 win，所有推送都发它，
+ * 从不出错。有了第二个窗口之后，同一个 IPC 通道会被两个窗口分别调用：
+ *   · 主窗打开「视频压制」并开始压制；
+ *   · 独立窗打开「磁盘分析」并开始扫描。
+ * 两边的 job:stream 都走同一个 send()，于是**两边的进度条互相串**：
+ * 主窗的压制进度被扫描进度顶掉，反之亦然。而渲染层按 job id 前缀认领
+ * （JobPrefix.subscribe），认领不上的就静默丢弃 —— 表现是"进度条不动"或"跳变"，
+ * 很难归因。
+ *
+ * 【做法】改 send() 的语义，而不是改 50 处调用点：
+ *   · ipcMain.handle 的包装层用 AsyncLocalStorage 把**发起调用的 webContents**
+ *     记进上下文；
+ *   · 该 handler 同步或异步派生的一切（await、spawn 的 data 回调、setTimeout）
+ *     都携带这个上下文 —— 已用探针验证 ALS 能穿过 spawn 回调，这是前提；
+ *   · send(ev, data) 优先发给上下文里的那个 webContents，
+ *     没有上下文（定时任务、托盘、启动期）才退回主窗口/广播。
+ *
+ * 【为什么用 ALS 而不是给每个 send 加参数】
+ * 50 处 send('job:stream', …) 分散在 main.js 与 4 个 ipc 模块里，逐个加参数
+ * 要穿透十几层调用（handler → runFfmpeg → 进度回调），改漏一处就是那个工具的
+ * 进度串到别的窗口去。ALS 让"谁发起的"自动流动，调用点一个都不用改。 */
+const als = new (require('async_hooks').AsyncLocalStorage)();
+
+/* 当前 handler 调用来自哪个 webContents。没有上下文时返回 null。 */
+function currentSender() {
+  const st = als.getStore();
+  return (st && st.sender) || null;
+}
+
 const ipcCtx = require('./ipc/ctx').createIpcCtx({
   getWin: () => win,
   getJobs: () => jobs,
@@ -162,10 +194,29 @@ const ipcCtx = require('./ipc/ctx').createIpcCtx({
   getIsMac: () => isMac,
 });
 
-/* 【send 现在走 ipcCtx.send】是为了让 ctx.send **此刻就在链路里**，
- * 而不是一份"将来才用"的平行实现 —— 两份逻辑各写一遍的话，
- * ctx 那份要等搬完才第一次执行，差异也会一起推迟到那时才暴露。 */
-function send(ev, data) { ipcCtx.send(ev, data); }
+/* 向「发起这次操作的窗口」推送事件；没有上下文时退回主窗口。
+ *
+ * 路由优先级：
+ *   1) ALS 上下文里的 webContents —— 即本次 IPC 调用来自哪个窗口
+ *   2) 主窗口 win —— 定时任务、托盘、启动期这些没有调用者的事件
+ *   3) 全都没有：静默丢弃（窗口可能还没建好或已销毁）
+ *
+ * 【第 1 条是这次改动的全部意义】见上方"多窗口：事件按发起它的那个窗口路由"。
+ * 没有它，两个窗口的后台任务进度会互相覆盖 —— 而渲染层按 job id 前缀认领，
+ * 认领不上的静默丢弃，表现成"进度条不动"，完全无法归因。
+ *
+ * 【为什么不广播给所有窗口】广播会让"主窗正在压制、独立窗正在扫描"时，
+ * 两边都收到对方的事件。渲染层的 JobPrefix 只认自己认领的那个 id，
+ * 多余的事件虽然会被丢弃，但每次都要过一遍 IPC 广播 + 监听器分发；
+ * 而且广播会把"哪个窗口该响应"变成渲染层的责任，主进程反而失去控制。
+ * 定向发送更准，也更省。 */
+function send(ev, data) {
+  const target = currentSender();
+  if (target && !target.isDestroyed()) {
+    try { target.send(ev, data); return; } catch (e) { /* 落到下面的兜底 */ }
+  }
+  ipcCtx.send(ev, data);
+}
 
 function fmtErr(e) { return (e && e.message) || String(e); }
 const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
@@ -176,14 +227,23 @@ const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
   if (cap && !dangerousEnabled(cap)) {
     return { ok: false, error: dangerousDenied(cap) };
   }
-  try { return { ok: true, data: await fn(e, ...args) }; }
-  catch (err) {
-    /* 结构化错误：除了原来给渲染端用的 error 字符串，再附带稳定错误码与建议操作。
-       渲染端 window.api.invoke 仍然 throw new Error(error)，旧代码零改动；
-       需要更细信息的地方可以读 err.code / err.advice。 */
-    const payload = errorInfo.toPayload(err);
-    return { ok: false, error: payload.message, code: payload.code, advice: payload.advice };
-  }
+  /* 【把「谁调用的」记进 ALS，供 send() 定向推送】
+   * als.run 的作用域必须**包住整个 fn 的执行**，包括它 await 出去的一切、
+   * spawn 的子进程 data 回调、以及 setTimeout —— 那些正是发 job:stream 的地方。
+   * 已用探针验证 ALS 能穿过 spawn 回调（这是整套路由的前提）。
+   *
+   * e.sender 指向发起调用的 webContents。它在 handler 返回后可能已被销毁
+   * （用户关掉了那个窗口），所以 send() 里每次都要判 isDestroyed，不能缓存。 */
+  return als.run({ sender: e && e.sender }, async () => {
+    try { return { ok: true, data: await fn(e, ...args) }; }
+    catch (err) {
+      /* 结构化错误：除了原来给渲染端用的 error 字符串，再附带稳定错误码与建议操作。
+         渲染端 window.api.invoke 仍然 throw new Error(error)，旧代码零改动；
+         需要更细信息的地方可以读 err.code / err.advice。 */
+      const payload = errorInfo.toPayload(err);
+      return { ok: false, error: payload.message, code: payload.code, advice: payload.advice };
+    }
+  });
 });
 /* 执行外部命令的通用入口。
  *
@@ -862,9 +922,27 @@ setInterval(() => {
 }, 1500);
 
 /* ================= IPC: app / window / store ================= */
-handle(CH.WIN.MINIMIZE, () => { win && win.minimize(); });
-handle(CH.WIN.MAXIMIZE, () => { if (!win) return; win.isMaximized() ? win.unmaximize() : win.maximize(); });
-handle(CH.WIN.CLOSE, () => { win && win.close(); });
+/* 【窗口控制必须作用于「发起调用的那个窗口」】
+ * 这三个通道原来直接操作主窗 win。独立工具窗口出现之后，
+ * 用户点独立窗上的最小化，被最小化的是**主窗** —— 独立窗纹丝不动，
+ * 看起来像按钮坏了；点关闭则关掉主窗，而用户想关的是手上这个。
+ *
+ * 优先按 ALS 上下文取发起者（BrowserWindow.fromWebContents），
+ * 取不到才退回主窗 —— 托盘、快捷键这些没有调用者的路径仍然走主窗。 */
+function senderWindow() {
+  const wc = currentSender();
+  if (wc && !wc.isDestroyed()) {
+    try { const w = BrowserWindow.fromWebContents(wc); if (w && !w.isDestroyed()) return w; } catch (e) {}
+  }
+  return (win && !win.isDestroyed()) ? win : null;
+}
+handle(CH.WIN.MINIMIZE, () => { const w = senderWindow(); if (w) w.minimize(); });
+handle(CH.WIN.MAXIMIZE, () => {
+  const w = senderWindow();
+  if (!w) return;
+  w.isMaximized() ? w.unmaximize() : w.maximize();
+});
+handle(CH.WIN.CLOSE, () => { const w = senderWindow(); if (w) w.close(); });
 /* 让渲染层知道「这次是从默认值起来的」。
  * 不加这条的话，用户只会看到笔记/收藏/剪贴板历史全空了，却不知道
  * 是数据文件损坏、也不知道原文件已被另存到哪 —— 只会以为程序把数据弄丢了。
@@ -887,6 +965,60 @@ handle(CH.STORE.GET, (e, key, def) => storeGet(key, def));
 handle(CH.STORE.SET, (e, key, val) => storeSet(key, val));
 /* store:remove 已移除：全项目没有任何调用方（渲染层只删收藏/历史时用的是
  * store:set 置空）。js/api.js 的浏览器模拟分支曾保留它，也一并删掉。 */
+/* ============ 独立工具窗口（v0.6.0）============
+ * 渲染层把标签拖出标签栏时调用它，把该工具弹成一个独立窗口。
+ *
+ * 【为什么复用 index.html 而不是另做一个 tool.html】
+ * 工具页依赖整套外壳：js/ui.js 的组件、Registry、i18n、channels 常量表、
+ * JobPrefix、i18n 工具正文表…… 另做一个页面就要复制这 20 多个 <script>，
+ * 两份迟早分叉（改了一条通道常量、独立窗仍是旧的）。复用同一个页面 +
+ * 一个 standalone 启动参数，加载的是同一批文件、同一个启动路径。
+ *
+ * 【用 query 参数而不是 additionalArguments】
+ * additionalArguments 在 preload 里读（process.argv），
+ * 而"要打开哪个工具"是渲染层的事，preload 不该知道。
+ * 用 loadFile 的 query 传 tool / standalone，渲染层启动时读 location.search。
+ *
+ * 【独立窗口不继承主窗口的标签栏状态】
+ * 它就是"一个工具占一个窗口"，没有标签栏、没有侧边栏，只有标题栏 + 工具页。
+ * 这样拖出去之后用户得到的是一个干净的专注窗口，而不是一个缩小版主窗。 */
+let toolWindows = [];
+
+function openToolWindow(toolId) {
+  if (!toolId || typeof toolId !== 'string') throw new Error('缺少工具 id');
+  /* 同一个工具已经弹出去过：聚焦那一个，而不是开第二个。
+   * 用户拖出去两次通常是不确定"上次成没成"，再开一个反而更乱。 */
+  for (const w of toolWindows) {
+    if (w && !w.isDestroyed() && w.__heheToolId === toolId) {
+      try { if (w.isMinimized()) w.restore(); w.focus(); } catch (e) {}
+      return { focused: true, id: w.id };
+    }
+  }
+  const packagedArg = '--hehe-packaged=' + (app.isPackaged ? '1' : '0');
+  const w = new BrowserWindow({
+    /* 比主窗小一圈：它是"一个工具"，不需要主窗那么大的画布。
+     * 宽高给得够放常见的表单 + 结果区。 */
+    width: 900, height: 640, minWidth: 560, minHeight: 420,
+    frame: false, show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#202020' : '#F2F3F5',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    title: '核核工具箱',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: false,
+      additionalArguments: [packagedArg],
+      spellcheck: false,
+    }
+  });
+  w.__heheToolId = toolId;
+  w.loadFile('index.html', { query: { tool: toolId, standalone: '1' } });
+  w.once('ready-to-show', () => { try { w.show(); } catch (e) {} });
+  w.on('closed', () => { toolWindows = toolWindows.filter((x) => x !== w); });
+  toolWindows.push(w);
+  return { focused: false, id: w.id };
+}
+
+handle(CH.APP.OPEN_TOOL_WINDOW, (e, toolId) => openToolWindow(toolId));
 handle(CH.APP.SET_THEME, (e, mode) => { nativeTheme.themeSource = mode; return nativeTheme.shouldUseDarkColors; });
 handle(CH.APP.SET_AUTOSTART, (e, enable) => {
   if (isWin || isMac) app.setLoginItemSettings({ openAtLogin: !!enable });

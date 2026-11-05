@@ -47,6 +47,7 @@
       SET_HOTKEY: 'app:set-hotkey',
       SET_LANG: 'app:set-lang',
       SET_THEME: 'app:set-theme',
+      OPEN_TOOL_WINDOW: 'app:open-tool-window',
     },
 
     /* ---- 开机自启项（注册表 Run 键） ---- */

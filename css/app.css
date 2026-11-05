@@ -435,6 +435,21 @@ body {
 .tab:hover .tab-close { visibility: visible; }
 .tab .tab-close:hover { background: var(--border); color: var(--text-1); }
 
+/* 标签被拖出标签栏时的反馈（v0.6.0）。
+   松手就会弹成独立窗口，所以这里必须让用户**看得出"到位了"** ——
+   没有反馈的话，拖到一半松手什么都不会发生，用户会以为功能坏了。
+   用半透明 + 虚线框：与"选中"（实底 + 主色下划线）在视觉上完全不同，
+   不会让人误以为这一下把标签选中了。 */
+.tab-drag-out {
+  opacity: 0.55;
+  outline: 1px dashed var(--primary);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+/* 拖动过程中不要选中文字 —— 否则拖出标签会把标签名选成蓝色高亮，
+   看起来像误操作。 */
+.tabbar.dragging { user-select: none; }
+
 /* 内容区 */
 .content { flex: 1; overflow-y: auto; padding: 16px 24px 20px; }
 .page { animation: fadeIn 0.2s ease; max-width: 1200px; margin: 0 auto; }
