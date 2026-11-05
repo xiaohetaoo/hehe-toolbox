@@ -336,6 +336,7 @@
       RULER: 'win:ruler',
       RULER_CLOSE: 'win:ruler-close',
       RULER_MOVE: 'win:ruler-move',
+      THUMBNAIL: 'win:thumbnail',
     },
 
     /* ---- 窗口管理（置顶/透明度/列表） ---- */

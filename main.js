@@ -943,6 +943,44 @@ handle(CH.WIN.MAXIMIZE, () => {
   w.isMaximized() ? w.unmaximize() : w.maximize();
 });
 handle(CH.WIN.CLOSE, () => { const w = senderWindow(); if (w) w.close(); });
+/* 截取调用方窗口的内容区，缩成小图给标签拖拽做跟手预览。
+ *
+ * 【为什么需要它】浏览器拖标签时会跟着一个页面缩略图，用户立刻明白
+ * "我正在搬运这个东西"。只让标签变半透明的话，拖动过程中没有任何
+ * 东西跟着鼠标，观感是"拖了一下、松手后别处冒出个窗口"。
+ *
+ * 【为什么在主进程做，不在渲染层用 html2canvas】
+ * 渲染层拿不到自己的像素（contextIsolation + 无 nodeIntegration）。
+ * 而 webContents.capturePage 是主进程 API，且**实测很快**：
+ * 区域截图预热之后 5ms（全窗口 15ms），缩到 360px 宽后约 14KB 的 data URL。
+ * 一次截图的开销远低于拖拽时每帧移位的开销，不会让拖动变卡。
+ *
+ * @param {{x:number,y:number,width:number,height:number}} [rect]
+ *   内容区在窗口内的 DIP 矩形；不传则截整窗。
+ * @returns {Promise<string|null>} data:image/png;base64,… ；失败返回 null
+ *   （不做成抛错：拖拽预览拿不到图是可以接受的降级，不该打断拖拽本身）
+ */
+handle(CH.WIN.THUMBNAIL, async (e, rect) => {
+  const w = senderWindow();
+  if (!w) return null;
+  try {
+    const opts = (rect && rect.width > 0 && rect.height > 0)
+      ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
+      : undefined;
+    const img = await w.webContents.capturePage(opts);
+    if (!img || img.isEmpty()) return null;
+    /* 缩到 360px 宽：够看清是哪个工具页，又不至于让 IPC 传几百 KB。
+     * 高度按比例，不裁剪 —— 预览图长宽比与真实页面一致才像"缩略图"。 */
+    const sz = img.getSize();
+    const targetW = 360;
+    const scaled = sz.width > targetW
+      ? img.resize({ width: targetW, height: Math.round(sz.height * targetW / sz.width) })
+      : img;
+    return scaled.toDataURL();
+  } catch (err) {
+    return null;
+  }
+});
 /* 让渲染层知道「这次是从默认值起来的」。
  * 不加这条的话，用户只会看到笔记/收藏/剪贴板历史全空了，却不知道
  * 是数据文件损坏、也不知道原文件已被另存到哪 —— 只会以为程序把数据弄丢了。

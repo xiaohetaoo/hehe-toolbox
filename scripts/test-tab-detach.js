@@ -56,7 +56,10 @@ module.exports = {
   'app:crash-info': () => ({ ok:true, data:{lastSessionCrashed:false,dir:'/x',count:0,totalBytes:0,latest:null} }),
   /* 记录开窗请求，供测试断言"拖出确实发出了正确的 id" */
   'app:open-tool-window': (e, id) => { openReqs.push(id); return { ok:true, data:{ focused:false, id: 42 } }; },
-  'test:open-reqs': () => ({ ok:true, data: openReqs })
+  'test:open-reqs': () => ({ ok:true, data: openReqs }),
+  /* 缩略图：打桩返回一张 1x1 PNG。真实 capturePage 的验证在
+   * .tmp 探针里做过（5ms / 14KB），这里只验渲染层的展示逻辑。 */
+  'win:thumbnail': () => ({ ok:true, data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' })
 };
 `, 'utf8');
 
@@ -240,7 +243,7 @@ app.whenReady().then(async () => {
         " const r=t.getBoundingClientRect(); return JSON.stringify({x:Math.round(r.left+r.width/2)," +
         " y:Math.round(r.top+r.height/2)}); })()", true));
 
-      let delta = 0, midCls = null, moved = null;
+      let delta = 0, midCls = null, ghostInfo = null, ghostAfter = null;
       if (rect && rect.x != null) {
         const before = H['test:open-reqs']().data.length;
         /* 起点在标签中心，终点在下方 80px —— 中间必然越出标签栏。
@@ -257,13 +260,28 @@ app.whenReady().then(async () => {
         await new Promise(r => setTimeout(r, 60));
         midCls = await w3.webContents.executeJavaScript(
           "document.querySelector('.tabbar .tab').className", true);
+        /* 【缩略预览】越过阈值后应当出现 .tab-drag-ghost，里面是一张图，
+         * 且 pointer-events:none（否则预览会挡住指针、拖拽跟着抖）。 */
+        const ghost = JSON.parse(await w3.webContents.executeJavaScript(
+          "(function(){var g=document.querySelector('.tab-drag-ghost');" +
+          "if(!g) return JSON.stringify({exists:false});" +
+          "var cs=getComputedStyle(g);" +
+          "return JSON.stringify({exists:true, visible:cs.display!=='none'," +
+          " hasImg:!!g.querySelector('img'), pe:cs.pointerEvents, transform:g.style.transform});})()", true));
+        ghostInfo = ghost;
         await send('mouseReleased', rect.x, rect.y + 80);
+        await new Promise(r => setTimeout(r, 500));
+        ghostAfter = JSON.parse(await w3.webContents.executeJavaScript(
+          "(function(){var g=document.querySelector('.tab-drag-ghost');" +
+          "return JSON.stringify({visible: g ? getComputedStyle(g).display!=='none' : false});})()", true));
         await new Promise(r => setTimeout(r, 800));
         w3.webContents.debugger.detach();
         delta = H['test:open-reqs']().data.length - before;
       }
       console.log('REAL_MIDCLASS ' + JSON.stringify(midCls));
       console.log('REAL_DELTA ' + delta);
+      console.log('GHOST_INFO ' + JSON.stringify(ghostInfo));
+      console.log('GHOST_AFTER ' + JSON.stringify(ghostAfter));
       w3.destroy();
     }
 
@@ -312,6 +330,20 @@ else { console.log('FAIL  独立窗探测没返回结果'); fail++; }
   chk('R1 真实鼠标拖出后有视觉反馈（pointermove 越出标签栏仍被收到）',
     /tab-drag-out/.test(String(cls)), 'class=' + cls);
   chk('R2 真实鼠标松手后主进程收到开窗请求', delta === 1, '收到 ' + delta + ' 次');
+}
+
+/* ---- 拖拽缩略预览 ---- */
+{
+  const gi = /GHOST_INFO (.+)/.exec(raw);
+  const ga = /GHOST_AFTER (.+)/.exec(raw);
+  const g = gi ? JSON.parse(gi[1]) : {};
+  const gaObj = ga ? JSON.parse(ga[1]) : {};
+  chk('G1 拖拽时出现缩略预览浮层', g.exists === true && g.visible === true, JSON.stringify(g));
+  chk('G2 预览里是一张图（不是降级卡片）', g.hasImg === true, JSON.stringify(g));
+  chk('G3 预览不拦截指针（否则拖拽会抖）', g.pe === 'none', 'pointer-events=' + g.pe);
+  chk('G4 预览跟着指针移动（transform 有值）',
+    typeof g.transform === 'string' && /translate3d[^;]*/.test(g.transform), 'transform=' + g.transform);
+  chk('G5 松手后预览隐藏', gaObj.visible === false, JSON.stringify(gaObj));
 }
 
 /* 开窗请求里带的工具 id 必须是用户拖的那个 */

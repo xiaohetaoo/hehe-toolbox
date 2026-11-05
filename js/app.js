@@ -686,67 +686,79 @@
       tabbarEl.appendChild(tab);
     }
   }
-  /* ============ 标签拖拽：事件委托在标签栏上 ============
+  /* ============ 标签拖拽：跟手缩略预览 + 拖出成独立窗口 ============
    *
-   * 【为什么改成 pointerdown + 委托】
-   * 第一版给每个标签各自绑 mousedown，再由 document 上的 mousemove/mouseup
-   * 收口。实测（用 sendInputEvent 打真实鼠标事件）拖拽完全不触发。
-   * 逐个标签绑定的写法有两个隐患：
-   *   1) renderTabs 每次重建标签，那些 mousedown 监听跟着重建 ——
-   *      只要有一次在重建期间发生（打开工具的瞬间），拖拽就丢了；
-   *   2) 合成事件测试用 dispatchEvent 直接派发到 document，
-   *      绕过了命中测试，于是测试绿、真实操作却是坏的。
+   * 【三个面板的分工 —— 这是踩过两次坑之后定下来的】
+   *   pointerdown  → 标签栏（委托：要从具体标签反查是哪个工具）
+   *   pointermove  → document（**指针一旦离开标签栏就收不到了**，标签栏只有 36px 高）
+   *   pointerup    → document + setPointerCapture（拖到窗口外松手也能收到）
    *
-   * 改成委托：监听挂在 tabbarEl（它的生命周期与壳一致，只在切语言时重建），
-   * 用 e.target.closest('.tab') 找标签。这样标签怎么重建都不影响。
-   * 用 pointerdown 而不是 mousedown：指针事件统一处理鼠标/触控/笔，
-   * 且能拿到 pointerId 做去重。
+   * 第一版全绑在标签上；第二版全绑在标签栏上 —— 都拖不出来。
+   * 真实鼠标事件日志（CDP）证明：往下拖 40px 后指针早已离开标签栏，
+   * 绑在它上面的 pointermove 一条都收不到。
    *
-   * 【阈值 40px】太小的话点击时手抖两下就弹窗，太大则要甩鼠标。
-   * 必须 pointerup 才执行 —— 拖出去又拖回来 = 取消。
+   * 【为什么要有跟手缩略图】
+   * 只有"标签变半透明"的话，拖动过程中没有任何东西跟着鼠标，
+   * 观感是"拖了一下、松手后别处冒出个窗口"。浏览器拖标签会跟着一张
+   * 页面缩略图 —— 它把"我正在搬运这个东西"讲清楚了，而且给出了
+   * "松手会在哪里出现"的心理预期。
    *
-   * 【只认纵向】横向拖动是"调整顺序"的自然手势（将来可能做），
-   * 而且标签栏本身横向可滚动，横拖应该是滚动。 */
+   * 【性能依据（实测，不是估计）】
+   * webContents.capturePage 截内容区：预热后 5ms，缩到 360px 宽约 14KB。
+   * 所以**在 pointerdown 时截一次就够了**，不必每帧重截 ——
+   * 拖拽过程中只是移动那张已经拿到的图。
+   */
   const TAB_DRAG_THRESHOLD = 40;
+
+  /* 跟手预览的浮层。整条拖拽期间只创建一次，复用同一个 <img>。
+   * 放在 document.body 而不是标签栏里：它要盖在内容区上面，
+   * 若留在标签栏内会被 overflow 裁掉。 */
+  let dragGhostEl = null;
+  function ensureDragGhost() {
+    if (dragGhostEl && dragGhostEl.isConnected) return dragGhostEl;
+    dragGhostEl = div('tab-drag-ghost');
+    dragGhostEl.style.display = 'none';
+    document.body.appendChild(dragGhostEl);
+    return dragGhostEl;
+  }
+  function hideDragGhost() {
+    if (dragGhostEl) { dragGhostEl.style.display = 'none'; dragGhostEl.innerHTML = ''; }
+  }
 
   function attachTabDragDelegation(bar) {
     if (!bar || bar.__heheTabDrag) return;
     bar.__heheTabDrag = true;
 
-    let dragState = null;   // { toolId, tabEl, startX, startY, out, pointerId }
+    let dragState = null;
+    /* 用 rAF 节流：pointermove 触发频率可达每秒上百次，
+     * 每次都写 style 会让主线程忙于样式计算，反而拖不跟手。 */
+    let rafPending = false;
+    let lastX = 0, lastY = 0;
+
+    const applyGhostPos = () => {
+      rafPending = false;
+      if (!dragState || !dragGhostEl || dragGhostEl.style.display === 'none') return;
+      /* 偏移 14px 让预览不被指针挡住，用户能看见自己抓着的是什么 */
+      dragGhostEl.style.transform = 'translate3d(' + (lastX + 14) + 'px,' + (lastY + 14) + 'px,0)';
+    };
+    const scheduleGhostPos = (x, y) => {
+      lastX = x; lastY = y;
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(applyGhostPos);
+    };
 
     const clearVisual = () => {
       if (dragState && dragState.tabEl) dragState.tabEl.classList.remove('tab-drag-out');
+      hideDragGhost();
     };
 
-    /* 【pointerdown 挂在标签栏上（委托），pointermove/up 必须挂在 document 上】
-     *
-     * 这是拖拽一直不生效的真正原因。用真实鼠标事件（CDP）实测拿到的日志：
-     *
-     *   bar-down|t=tab-label|313,66      ← 按下：到达标签栏 ✅
-     *   doc-move|t=content|313,96        ← 移动：只在 document 上被看到
-     *   doc-move|t=th-desc|313,146       ← 继续下移，target 已是内容区
-     *   doc-up|t=th-desc|313,146
-     *
-     * 也就是说：往下拖 40px 之后，指针早已离开标签栏（它只有 36px 高），
-     * 事件不再经过 bar，所以绑在 bar 上的 pointermove 一条都收不到 ——
-     * 拖拽状态永远停在 out=false，松手时判定为"没拖出"。
-     *
-     * 之前所有测试都用 dispatchEvent 直接派发到 bar/document 上，
-     * **绕过了真实的命中路径**，于是测试全绿而真实操作无效。
-     *
-     * 现在按面板分工：
-     *   · pointerdown → 挂在 bar 上（委托：要从具体标签反查是哪个工具）
-     *   · pointermove / pointerup / pointercancel → 挂在 document 上
-     *     （指针离开标签栏后仍能收到）
-     * 两者通过 dragState 关联。 */
     bar.addEventListener('pointerdown', (e) => {
-      /* 只认主键（左键 / 触控 / 笔尖）。1 = 中键（关闭标签），2 = 右键。 */
-      if (e.button !== 0) return;
+      if (e.button !== 0) return;                       // 只认主键
       const tab = e.target.closest && e.target.closest('.tab');
       if (!tab) return;
-      /* 点在关闭按钮上不启动拖拽：那是"关掉"，不是"拖走" */
-      if (e.target.closest('.tab-close')) return;
+      if (e.target.closest('.tab-close')) return;       // 点关闭按钮 ≠ 拖走
+
       dragState = {
         toolId: tab.dataset.toolId || '',
         tabEl: tab,
@@ -754,25 +766,52 @@
         startY: e.clientY,
         out: false,
         pointerId: e.pointerId,
+        ghostReady: false,
       };
-      /* 【指针捕获】把后续 pointer 事件定向到被按下的标签元素。
-       * 虽然 move/up 已经挂到 document 上也能收到，但捕获能保证
-       * 指针移出窗口边界后仍然收到 pointerup —— 否则用户拖到窗口外松手，
-       * dragState 会一直挂着，下一次移动用旧起点算位移，行为会很怪。 */
-      try { tab.setPointerCapture(e.pointerId); } catch (err) { /* 旧版/合成事件不支持，忽略 */ }
+      try { tab.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件不支持，忽略 */ }
     });
 
     document.addEventListener('pointermove', (e) => {
       if (!dragState || e.pointerId !== dragState.pointerId) return;
       const dy = e.clientY - dragState.startY;
       const dx = Math.abs(e.clientX - dragState.startX);
-      /* 纵向为主、且超出阈值才算"拖出"。要求纵向大于横向，
-       * 是为了不与将来可能做的"横向拖动调整顺序"冲突。 */
       const nowOut = dy > TAB_DRAG_THRESHOLD && dy > dx;
+
       if (nowOut !== dragState.out) {
         dragState.out = nowOut;
         dragState.tabEl.classList.toggle('tab-drag-out', nowOut);
+        if (nowOut) {
+          /* 刚越过阈值：这时才去截图（而不是按下就截）。
+           * 好处是"只是点了一下标签"的操作完全不产生截图开销。 */
+          const ghost = ensureDragGhost();
+          if (!dragState.ghostReady) {
+            dragState.ghostReady = true;
+            captureContentThumb().then((url) => {
+              /* 截图是异步的：回来时用户可能已经松手或拖回原处，
+               * 那时不该再冒出预览。 */
+              if (!dragState || !dragState.out) return;
+              if (!url) {
+                /* 拿不到图也要有反馈：退回一个只有图标 + 名字的小卡片。
+                 * 静默什么都不显示会让用户以为拖拽没生效。 */
+                ghost.innerHTML = '';
+                const t = R.get(dragState.toolId);
+                ghost.appendChild(div('tab-drag-ghost-fallback',
+                  t ? icon(t.icon, 'icon-lg') : null,
+                  t ? TN(t) : (dragState.toolId || '')));
+              } else {
+                ghost.innerHTML = '';
+                ghost.appendChild(h('img', { src: url, alt: '' }));
+              }
+              ghost.style.display = '';
+              ghost.classList.add('show');
+              scheduleGhostPos(lastX || e.clientX, lastY || e.clientY);
+            });
+          }
+        } else {
+          hideDragGhost();
+        }
       }
+      if (dragState.out) scheduleGhostPos(e.clientX, e.clientY);
     });
 
     const finish = (e) => {
@@ -780,7 +819,7 @@
       const st = dragState;
       dragState = null;
       clearVisual();
-      if (!st.out) return;     // 没拖出阈值：当作普通点击
+      if (!st.out) return;
       if (!st.toolId) return;
       /* 【不关闭原标签】用户可能只是想"多开一个"；而且工具页可能正在跑任务，
        * 关标签会触发页面清理、任务中断。 */
@@ -789,9 +828,23 @@
       });
     };
     document.addEventListener('pointerup', finish);
-    /* pointercancel：系统抢走指针（例如开始拖窗口）时也要收口，
-     * 否则 dragState 会一直挂着。 */
     document.addEventListener('pointercancel', () => { dragState = null; clearVisual(); });
+  }
+
+  /* 取内容区缩略图。失败返回 null（调用方降级成图标卡片）。 */
+  async function captureContentThumb() {
+    try {
+      const el = document.querySelector('.content');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 20 || r.height < 20) return null;
+      const url = await invoke(Channels.CHANNELS.WIN.THUMBNAIL, {
+        x: r.left, y: r.top, width: r.width, height: r.height,
+      });
+      return typeof url === 'string' && url.indexOf('data:') === 0 ? url : null;
+    } catch (e) {
+      return null;
+    }
   }
 
 

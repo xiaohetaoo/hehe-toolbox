@@ -504,6 +504,51 @@ body {
   outline-offset: -2px;
   background: color-mix(in srgb, var(--primary) 8%, transparent);
 }
+
+/* 拖拽时跟着指针走的页面缩略图（v0.6.3）。
+ *
+ * 【为什么用 position: fixed + transform】
+ * fixed 让它脱离文档流、盖在内容区上方；transform 移位的开销最小
+ * （只走合成层，不触发重排/重绘），所以拖动时能跟手。
+ * 用 top:0/left:0 作原点、只在 transform 里写位移 —— 每帧只改一个属性。
+ *
+ * 【为什么 pointer-events: none】预览必须"摸不到"，否则指针一进入
+ * 预览区域就被它挡住，pointermove 的 target 变了、拖拽跟着抖。
+ *
+ * 【缩放只做 1.02】再大会让人以为"窗口已经变大了"；阴影 + 半透明
+ * 表达的是"被提起来的一层纸"，与浏览器拖标签的观感一致。
+ */
+.tab-drag-ghost {
+  position: fixed; top: 0; left: 0;
+  z-index: 4000;
+  pointer-events: none;
+  will-change: transform;
+  width: 240px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--card-bg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.16);
+  border: 1px solid var(--border);
+  /* 入场：从略小、略透明放大到位 —— 让"提起"这个动作有实感。
+     120ms 足够短，不会拖慢跟手。 */
+  opacity: 0;
+  transform-origin: top left;
+  transition: opacity 0.12s ease, scale 0.12s ease;
+}
+.tab-drag-ghost.show { opacity: 0.94; scale: 1.02; }
+.tab-drag-ghost img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+
+/* 截不到图时的降级卡片：图标 + 工具名。仍然给用户"拖着一个东西"的反馈。 */
+.tab-drag-ghost-fallback {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; font-size: 13px; color: var(--text-1);
+}
+.tab-drag-ghost-fallback .icon { color: var(--primary); }
+/* 关掉动效时不做缩放，但保留阴影与半透明 —— 那是"提着"的语义，不是装饰。 */
+@media (prefers-reduced-motion: reduce) {
+  .tab-drag-ghost { transition: none; }
+  .tab-drag-ghost.show { scale: 1; }
+}
 /* 拖动过程中不要选中文字 —— 否则拖出标签会把标签名选成蓝色高亮，
    看起来像误操作。 */
 .tabbar.dragging { user-select: none; }
