@@ -43,6 +43,9 @@ const tempNames = require('./lib/temp-names');
  * 这个模块负责脱敏、截断、轮转，主进程这边只提供目录与时机。 */
 const crashLog = require('./lib/crash-log');
 const CH = require('./lib/channels').CHANNELS;   // IPC 通道名唯一来源（见文件头说明）
+const { OwnerJobMap } = require('./lib/job-owner');   // 任务归属（谁发起的、关窗时清账）
+const { pickSendTarget } = require('./lib/ipc-route'); // 推送发给谁（三档判据，纯函数）
+const toolNames = require('./lib/tool-names');      // 工具 id → 中英文名（独立窗口标题用）
 /* 【任务 5 之后这里少了 5 个 require】rm-lockers / links / dir-move /
  * acl-repair / channels 现在只被 ipc/dir-acl-links.js 使用 —— 那两个域连同
  * handle(dirMoveCh.X.Y, ...) 一起搬过去了，模块自己 require 它们。
@@ -56,7 +59,22 @@ let win = null;
 let tray = null;
 let isQuitting = false;
 let jobSeq = 0;
-const jobs = new Map(); // id -> {cancel()}
+/* 后台任务表。形状仍是 Map（id → { cancel }），只是多记了一个 ownerWC ——
+ * 即「这条任务是哪个窗口发起的」。为什么要记：独立工具窗口关掉之后，
+ * 它启动的任务原来会继续跑，并且每条 job:stream 都被 send 的兜底逻辑
+ * 甩到主窗口去，冒充成主窗口的任务（详见 lib/job-owner.js 头部）。
+ *
+ * 【为什么收在这里而不是给 20 多处 jobs.set 逐个补字段】
+ * 那种做法漏一处就是一条静默的孤儿任务路径，而以后新写的任务默认又会忘。
+ * set() 里统一打标，调用点一处都不用改。
+ *
+ * 发起者从 ALS 上下文取（currentSender 会读 als）。这里传的是**函数**而不是
+ * 当场取到的值：als 在本行之后才声明（TDZ），而箭头体只在 set() 时才执行，
+ * 那时 als 早已初始化完毕。 */
+const jobs = new OwnerJobMap(() => {
+  const s = currentSender();
+  return (s && typeof s.id === 'number') ? s.id : null;
+});
 const serverMap = new Map();
 /* 静态服务的根目录与端口。服务活在主进程、跨页面存活，
  * 所以这些信息必须留在主进程，供 server:status 回填界面。 */
@@ -209,13 +227,56 @@ const ipcCtx = require('./ipc/ctx').createIpcCtx({
  * 两边都收到对方的事件。渲染层的 JobPrefix 只认自己认领的那个 id，
  * 多余的事件虽然会被丢弃，但每次都要过一遍 IPC 广播 + 监听器分发；
  * 而且广播会把"哪个窗口该响应"变成渲染层的责任，主进程反而失去控制。
- * 定向发送更准，也更省。 */
+ * 定向发送更准，也更省。
+ *
+ * 【第三档：调用者已销毁 —— 丢弃，不回退】
+ * 「回退主窗口」本是给**没有调用者**的场景准备的兜底（托盘 / 定时 / 启动期）。
+ * 用它去处理"调用者已经死了"，结果只会是串扰：独立窗里跑着 ffmpeg，
+ * 用户关掉那个窗口，之后每条 job:stream 都甩到主窗；主窗若开着同一个工具页，
+ * JobPrefix.subscribe 的「首次匹配即认领」会把它当成自己的任务 ——
+ * 进度条乱跳、结束弹「完成」，而用户手里连 jobId 都没有了，无从取消。
+ * 判据在 lib/ipc-route.js 里（纯函数，可脱离 Electron 单测）。 */
 function send(ev, data) {
   const target = currentSender();
-  if (target && !target.isDestroyed()) {
-    try { target.send(ev, data); return; } catch (e) { /* 落到下面的兜底 */ }
+  switch (pickSendTarget(target)) {
+    case 'sender':
+      try { target.send(ev, data); return; } catch (e) { /* 落到下面的兜底 */ }
+      break;
+    case 'drop':
+      /* 不静默：排查「进度条不动」时，最想知道的就是"事件到底有没有发出去"。
+       * 一行 warn 就能把这条路径与「任务根本没启动」区分开。 */
+      console.warn('[ipc] 丢弃推送 ' + ev + '：发起它的窗口已关闭（不回退主窗口，避免串到别人的任务）');
+      return;
+    default:
+      break;
   }
   ipcCtx.send(ev, data);
+}
+
+/* 把「全局界面偏好」推给所有窗口：主窗 + 独立工具窗 + 辅助窗口。
+ *
+ * 【为什么需要广播】语言 / 配色 / 深浅是全应用偏好，但状态所有权在渲染层：
+ * i18n.setLang 只作用当前窗口，data-accent / data-theme 写的是当前
+ * document 的 documentElement。所以主窗切了英文、换了主色、改了明暗之后，
+ * 已经打开的独立工具窗口（以及标尺/贴图/截图标注这些辅助窗口）
+ * 会一直停在旧值 —— 三个不同实例，同一个共因。
+ *
+ * 【theme 为什么传最终结果而不是原始 mode】'system' 要按 nativeTheme 解析，
+ * 而各个窗口自己 matchMedia 得到的答案可能因为时机不同而不一致。
+ * 主进程这边解析一次，广播的就是确定的 dark / light。
+ *
+ * ev：{ lang, accent, theme } —— theme 是 'dark' | 'light'。 */
+function broadcastUiPrefs() {
+  const payload = {
+    lang: uiLang,
+    accent: currentAccent,
+    theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+  };
+  const targets = [win, ...toolWindows, ...auxWindows()];
+  for (const w of targets) {
+    if (!w || w.isDestroyed()) continue;
+    try { w.webContents.send(CH.APP.UI_PREFS_CHANGED, payload); } catch (e) { /* 窗口刚销毁，忽略 */ }
+  }
 }
 
 function fmtErr(e) { return (e && e.message) || String(e); }
@@ -853,7 +914,11 @@ function createTray() {
 }
 
 /* 渲染层切换界面语言时通知主进程，让托盘菜单跟着换。
- * 只重建托盘菜单，不动别的状态。语言值不认识时保守回中文。 */
+ * 只重建托盘菜单，不动别的状态。语言值不认识时保守回中文。
+ *
+ * 【写完必须广播】托盘只是主进程自己画的那一半；语言真正的消费者是各窗口的
+ * 渲染层。不广播的话，主窗切成英文后，已经打开的独立工具窗口仍是中文 ——
+ * 而它是用户刚刚从这里拖出去的，两秒之内就看到两种语言。 */
 handle(CH.APP.SET_LANG, (e, lang) => {
   const next = lang === 'en' ? 'en' : 'zh';
   if (next === uiLang && tray) return true; // 没变就不用重建
@@ -863,6 +928,7 @@ handle(CH.APP.SET_LANG, (e, lang) => {
     tray = null;
     createTray();
   }
+  broadcastUiPrefs();
   return true;
 });
 
@@ -1040,7 +1106,13 @@ function openToolWindow(toolId) {
     frame: false, show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#202020' : '#F2F3F5',
     icon: path.join(__dirname, 'assets', 'icon.png'),
-    title: '核核工具箱',
+    /* 【标题必须带上工具名】原来所有独立窗口都叫「核核工具箱」：开三个之后，
+     * 任务栏与 Alt+Tab 里是三个同名条目，只能靠缩略图辨认哪个是哪个。
+     * 名字从 lib/tool-names.js 取 —— 主进程读不到渲染层的注册表（js/tools/*
+     * 是浏览器脚本，require 会立刻 TypeError），而给 100 多个工具文件加 UMD
+     * 适配只为拿一个名字，不值得。两张表由 scripts/test-tool-window-title.js
+     * 守着一致性，新增工具漏登记会直接红。 */
+    title: toolNames.toolTitle(toolId, uiLang),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: false,
@@ -1049,15 +1121,38 @@ function openToolWindow(toolId) {
     }
   });
   w.__heheToolId = toolId;
+  /* 【窗口的 webContents id 要在创建时记下来】'closed' 触发时 webContents
+   * 已经销毁，那时 getWebContents() 拿不到 id —— 而没有它就无法判断
+   * 「哪些任务是这个窗口发起的」。 */
+  let wcId = null;
+  try { wcId = w.webContents.id; } catch (e) { wcId = null; }
   w.loadFile('index.html', { query: { tool: toolId, standalone: '1' } });
   w.once('ready-to-show', () => { try { w.show(); } catch (e) {} });
-  w.on('closed', () => { toolWindows = toolWindows.filter((x) => x !== w); });
+  w.on('closed', () => {
+    toolWindows = toolWindows.filter((x) => x !== w);
+    /* 【关窗必须连带取消它启动的任务，否则任务变孤儿、事件漏到主窗口】
+     * 用户关掉正在跑 ffmpeg 的独立窗口，任务却继续在后台跑：
+     *   · 没有任何 UI 能再取消它（jobId 已随窗口消失）；
+     *   · 之后每条 job:stream 都会命中 send() 的"调用者已销毁"那一档，
+     *     要么被丢弃、要么（在老代码里）漏到主窗口，被主窗同工具页的
+     *     JobPrefix 认领成自己的任务 —— 进度条乱跳、结束时弹「完成」。
+     * 归属是在 jobs.set 时打上的（见 lib/job-owner.js），这里按 id 清账。 */
+    const killed = jobs.cancelOwnedBy(wcId);
+    if (killed > 0) console.warn('[job] 独立窗口关闭，已取消它启动的 ' + killed + ' 个任务');
+  });
   toolWindows.push(w);
   return { focused: false, id: w.id };
 }
 
 handle(CH.APP.OPEN_TOOL_WINDOW, (e, toolId) => openToolWindow(toolId));
-handle(CH.APP.SET_THEME, (e, mode) => { nativeTheme.themeSource = mode; return nativeTheme.shouldUseDarkColors; });
+/* 主题：nativeTheme 是系统级开关，改完各窗口的 CSS 却不会自动跟着变 ——
+ * 它们看的是自己 documentElement 上的 data-theme。所以必须广播。
+ * 返回值带上最终明暗，调用方（主窗）不用再猜 'system' 解出来是什么。 */
+handle(CH.APP.SET_THEME, (e, mode) => {
+  nativeTheme.themeSource = mode;
+  broadcastUiPrefs();
+  return nativeTheme.shouldUseDarkColors;
+});
 handle(CH.APP.SET_AUTOSTART, (e, enable) => {
   if (isWin || isMac) app.setLoginItemSettings({ openAtLogin: !!enable });
   return app.getLoginItemSettings().openAtLogin;
@@ -1856,10 +1951,16 @@ function broadcastAccent(id) {
     try { w.webContents.send('aux:accent', id); } catch (e) {}
   }
 }
+/* 配色要同时发给两类窗口，而且用的通道不一样 —— 这不是重复：
+ *   · 辅助窗口（标尺/贴图/截图标注）是独立页面，只认 aux:accent；
+ *   · 独立工具窗口跑的是 index.html 渲染层，它靠 UI_PREFS_CHANGED 一起
+ *     更新语言/明暗/主色三项。
+ * 早先只广播了 auxWindows()，独立工具窗因此一直停在旧主色。 */
 handle(CH.APP.SET_ACCENT, (e, id) => {
   const accent = ACCENT_IDS.indexOf(id) !== -1 ? id : 'polar';
   currentAccent = accent;
   broadcastAccent(accent);
+  broadcastUiPrefs();
   return accent;
 });
 /* app:get-accent 已移除：渲染层自己知道当前强调色（它是自己 set 的），

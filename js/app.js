@@ -63,15 +63,41 @@
   let themeListeners = [];
   /* buildShell 注册的 document 级监听的退订函数（见 applyLangLabels） */
   let shellCleanup = null;
+  /* UI 偏好广播的订阅（app:ui-prefs-changed）。
+   *
+   * 【为什么不像别的订阅那样塞进 shellUnsubs】这条订阅的生命周期与「壳」无关：
+   * 壳会被整壳重建（切语言），而这条订阅本身正是"要因为切语言而重建"的
+   * 触发源之一。若放进 shellUnsubs，重建时先退订、再由重建后的代码重新订阅，
+   * 中间那段真空期会漏掉紧随其后到来的广播。
+   * 所以它挂在模块级，整壳重建前后都活着，只在这里一次性退订（重建前）。 */
+  let uiPrefsUnsub = null;
+  /* 标签拖拽在 document 上挂的三个监听的退订函数（见 attachTabDragDelegation
+   * 与 renderTabs）。整壳重建前由 shellCleanup 调用，否则每切一次语言多一份。 */
+  let tabDragUnsub = null;
   /* matchMedia 的 change 监听只挂一次。
    * applyTheme 会在每次整壳重建（切语言）后重新调用，无守卫就会累积：
    * 切三次语言就有三份监听，每份都会去 store:get 一次。 */
   let schemeListenerBound = false;
+  /* 【广播应用过的偏好，不许被更慢的本地读取盖回去】
+   * applyTheme 里的 store:get 是异步的（两次 IPC 往返）。而 UI 偏好广播
+   * 可能在它返回之前就到了 —— 那种情况下，广播先正确地把 accent 改成
+   * 新值，随后那次**早于广播发出**的 store:get 才返回旧值，把它盖回旧色。
+   * 用户在另一个窗口刚换的配色，在这个窗口上闪一下就退回去了。
+   *
+   * 用一个「广播覆盖标记」解决：广播应用过的项记下来，applyTheme 的
+   * 回调看到标记就不再覆盖。不用时间戳比较大小 —— 那需要两边的时钟同源，
+   * 而这两条路径的时间基准本来就不一样（一个是 IPC 往返，一个是事件到达）。
+   *
+   * 整壳重建（切语言）时不清空：重建只是重画 DOM，偏好本身没变，
+   * 而重建触发的 applyTheme 同样会去读旧值。 */
+  const prefsFromBroadcast = { accent: false, theme: false };
   function applyTheme() {
     invoke(Channels.CHANNELS.STORE.GET, 'settings.theme', 'system').then(mode => {
+      if (prefsFromBroadcast.theme) return;   // 见上：广播已经给了更新的值
       setThemeAttr(mode);
     });
     invoke(Channels.CHANNELS.STORE.GET, 'settings.accent', 'polar').then(accent => {
+      if (prefsFromBroadcast.accent) return;
       setAccent(accent || 'polar');
     });
     if (!schemeListenerBound) {
@@ -92,8 +118,23 @@
     const id = ACCENTS.some(a => a.id === accent) ? accent : 'polar';
     currentAccent = id;
     document.documentElement.dataset.accent = id;
+    /* 用户在本窗口主动换色：解除广播覆盖标记，理由同 changeTheme 里那条。 */
+    prefsFromBroadcast.accent = false;
     // 通知主进程广播给辅助窗口（标尺/贴图/截图标注），让它们同步换色
     if (isDesktop) invoke(Channels.CHANNELS.APP.SET_ACCENT, id).catch(() => {});
+  }
+  /* 【从广播里应用配色：不能走 setAccent】
+   * setAccent 末尾会 invoke(app:set-accent) 回头通知主进程 —— 而此刻正是
+   * 主进程刚广播过来。那样会形成 A→主进程→A 的回环：主进程每次广播都触发
+   * 每个窗口再广播一次。窗少时看不出来，开到三个独立窗口就是 N² 条 IPC。
+   * 所以把"只改本窗口外观"与"改完通知主进程"分开：
+   *   setAccent    用户点了色卡 → 改本窗口 + 通知主进程（由它广播给所有窗口）
+   *   applyAccent  收到广播 → 只改本窗口，不再回头通知
+   */
+  function applyAccent(accent) {
+    const id = ACCENTS.some(a => a.id === accent) ? accent : 'polar';
+    currentAccent = id;
+    document.documentElement.dataset.accent = id;
   }
   function setThemeAttr(mode) {
     let dark = false;
@@ -106,11 +147,44 @@
       themeIconEl.replaceChildren(icon(dark ? 'sun' : 'moon', 'icon-lg'));
     }
   }
+
+  /* ============ 全局界面偏好的广播订阅 ============
+   * 语言 / 配色 / 深浅是全应用偏好，但状态所有权在渲染层（i18n 是每个窗口
+   * 各自的一份、data-theme / data-accent 写在各自 document 上）。所以主窗
+   * 改了之后，已打开的独立工具窗口必须收到通知才会跟上 —— 否则用户刚把标签
+   * 拖出去，两秒之内就能看到两种语言/两种主色。
+   *
+   * 【为什么退订要重来一次】收到广播后 setLang 会让整壳重建
+   * （applyLangLabels → body.innerHTML='' → buildShell），而路由层并没有
+   * 重收订阅。若这里不退订，每切一次语言就多一条订阅，
+   * 切 N 次之后一次广播会触发 N 次重建 —— 表现是界面越来越卡，
+   * 以及 toast 连弹好几条。
+   */
+  function bindUiPrefs() {
+    if (!isDesktop) return;
+    if (typeof uiPrefsUnsub === 'function') { try { uiPrefsUnsub(); } catch (e) {} }
+    uiPrefsUnsub = on(Channels.CHANNELS.APP.UI_PREFS_CHANGED, (p) => {
+      if (!p || typeof p !== 'object') return;
+      /* 先应用外观（不触发重建），再处理语言（会重建）。
+       * 顺序反过来时，setLang 重建出来的新壳会带着旧主色/旧明暗渲染一帧，
+       * 用户能看见一次闪色。 */
+      if (p.accent) { prefsFromBroadcast.accent = true; applyAccent(p.accent); }
+      if (p.theme) { prefsFromBroadcast.theme = true; setThemeAttr(p.theme); }
+      if (p.lang && window.i18n && window.i18n.normalize(p.lang) && p.lang !== lang) {
+        applyLang(p.lang);
+        applyLangLabels();
+      }
+    });
+  }
   /* 切换主题；origin = {x, y} 时以该点为圆心做扩散揭示动画 */
   async function changeTheme(mode, origin) {
     const apply = async () => {
       try {
         await invoke(Channels.CHANNELS.STORE.SET, 'settings.theme', mode);
+        /* 用户在本窗口主动改主题：解除广播覆盖标记。
+         * 不解除的话，之后 applyTheme 的本地读取会被永久忽略 ——
+         * 用户改了主题、重启应用，看到的还是上一次广播来的值。 */
+        prefsFromBroadcast.theme = false;
         if (isDesktop) {
           try {
             const isDark = await invoke(Channels.CHANNELS.APP.SET_THEME, mode);
@@ -247,6 +321,23 @@
     }
   })();
   const IS_STANDALONE = bootParams.standalone && !!bootParams.tool;
+
+  /* 独立窗口的文档标题 = 工具名。
+   *
+   * 【为什么渲染层还要设一次】主进程创建 BrowserWindow 时已经设过 title，
+   * 但页面加载完成后 Electron 会把 document.title（来自 index.html 的
+   * <title>核核工具箱</title>）同步回窗口标题，把主进程那次覆盖掉。
+   * 结果就是：主进程改了、渲染层没改 = 窗口标题仍是「核核工具箱」。
+   * 所以两边都要设，各管一个阶段。
+   *
+   * 主窗口不设：它的标题本来就该是应用名。
+   * 语言变化时要重设（切语言会重建外壳，工具名会变英文）。 */
+  function setDocTitle() {
+    if (!IS_STANDALONE) return;
+    const t = R.get(bootParams.tool);
+    const name = t ? TN(t) : bootParams.tool;
+    try { document.title = name; } catch (e) {}
+  }
 
   /* 独立窗口的外壳：标题栏（可拖动/最小化/最大化/关闭）+ 内容区。
    * 没有侧栏、没有标签栏、没有搜索框、没有状态栏 —— 那些都是"工具箱"的东西，
@@ -504,11 +595,16 @@
      * 切一次语言多一份 Ctrl+K 处理、多一份点空白关闭搜索。
      * 把退订函数交给 applyLangLabels，重建前统一调用。
      * 同时把上面那 9 个 IPC 订阅的退订函数也一并收口 —— 它们同样是
-     * 「重建一次就多一份」的类型（见 shellUnsubs 的注释）。 */
+     * 「重建一次就多一份」的类型（见 shellUnsubs 的注释）。
+     * 标签拖拽那三个 document 监听也在这里收口（见 tabDragUnsub）。 */
     shellCleanup = () => {
       document.removeEventListener('click', onDocClick);
       document.removeEventListener('keydown', onDocKey);
       for (const u of shellUnsubs.splice(0)) { try { u(); } catch (e) {} }
+      if (typeof tabDragUnsub === 'function') {
+        try { tabDragUnsub(); } catch (e) {}
+        tabDragUnsub = null;
+      }
     };
   }
 
@@ -653,8 +749,13 @@
     if (IS_STANDALONE || !tabbarEl) return;
     /* 委托只挂一次；attachTabDragDelegation 内部用 __heheTabDrag 做幂等。
      * 放在这里而不是 buildShell：独立窗不会走到这儿，而主窗每次重画标签栏
-     * 都顺便确保一次 —— 即使壳被重建过也不会漏。 */
-    attachTabDragDelegation(tabbarEl);
+     * 都顺便确保一次 —— 即使壳被重建过也不会漏。
+     *
+     * 【退订函数存模块级，交给 shellCleanup 收口】
+     * tabbarEl 是 buildShell 新建的，切语言重建后是新元素、旧标记随元素消失，
+     * 于是这里会再挂一次。不记下退订函数的话，三个 document 监听永远跟着走，
+     * 切 N 次语言一次拖动就发 N 次开窗请求。 */
+    tabDragUnsub = attachTabDragDelegation(tabbarEl) || tabDragUnsub;
     tabbarEl.innerHTML = '';
     if (!state.tabs.length) return;
     for (const id of state.tabs) {
@@ -725,8 +826,18 @@
     if (dragGhostEl) { dragGhostEl.style.display = 'none'; dragGhostEl.innerHTML = ''; }
   }
 
+  /* 把拖拽委托挂到标签栏上，**返回一个退订函数**。
+   *
+   * 【为什么必须返回退订】三个监听挂在 document 上，而 tabbarEl 是
+   * buildShell() 每次新建的元素 —— 切一次语言（applyLangLabels →
+   * body.innerHTML='' → buildShell）就换一个新标签栏，旧标签栏上的
+   * __heheTabDrag 标记随元素一起被丢弃，于是新元素会再挂一次。
+   * 挂上去的三个 document 监听从不退订，切 N 次语言就有 N 份：
+   * 一次拖动会触发 N 次开窗请求，用户得到 N 个独立窗口。
+   * shellCleanup 早就收口了 click / keydown 与 9 个 IPC 订阅，
+   * 唯独这三个漏在外面 —— 这就是那个缺口。 */
   function attachTabDragDelegation(bar) {
-    if (!bar || bar.__heheTabDrag) return;
+    if (!bar || bar.__heheTabDrag) return null;
     bar.__heheTabDrag = true;
 
     let dragState = null;
@@ -753,7 +864,7 @@
       hideDragGhost();
     };
 
-    bar.addEventListener('pointerdown', (e) => {
+    const onDown = (e) => {
       if (e.button !== 0) return;                       // 只认主键
       const tab = e.target.closest && e.target.closest('.tab');
       if (!tab) return;
@@ -769,9 +880,9 @@
         ghostReady: false,
       };
       try { tab.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件不支持，忽略 */ }
-    });
+    };
 
-    document.addEventListener('pointermove', (e) => {
+    const onMove = (e) => {
       if (!dragState || e.pointerId !== dragState.pointerId) return;
       const dy = e.clientY - dragState.startY;
       const dx = Math.abs(e.clientX - dragState.startX);
@@ -782,22 +893,31 @@
         dragState.tabEl.classList.toggle('tab-drag-out', nowOut);
         if (nowOut) {
           /* 刚越过阈值：这时才去截图（而不是按下就截）。
-           * 好处是"只是点了一下标签"的操作完全不产生截图开销。 */
+           * 好处是"只是点了一下标签"的操作完全不产生截图开销。
+           *
+           * 【截图回来时必须校验「还是不是同一次拖拽」】
+           * 用局部 const st 抓住发起截图那一刻的 dragState，回来先比指针身份：
+           *   · 只判 dragState.out 是不够的 —— 用户在等待期间松手、再重新按下
+           *     另一个标签并拖出，新的一轮 dragState.out 同样是 true，
+           *     于是上一轮的截图会盖到这一轮的预览上（预览内容是错的工具页）。
+           *   · 这个窗口只有 5ms 宽（实测截图预热后 5ms），但合成事件与
+           *     慢机器上确实能撞上；而且 fallback 卡片里的工具名读全局
+           *     dragState 时，错的是**名字**，用户看到的是"图标对、名字错"。
+           * 所以下面一律从 st 取，不再碰全局。 */
           const ghost = ensureDragGhost();
-          if (!dragState.ghostReady) {
-            dragState.ghostReady = true;
+          const st = dragState;
+          if (!st.ghostReady) {
+            st.ghostReady = true;
             captureContentThumb().then((url) => {
-              /* 截图是异步的：回来时用户可能已经松手或拖回原处，
-               * 那时不该再冒出预览。 */
-              if (!dragState || !dragState.out) return;
+              if (dragState !== st || !st.out) return;
               if (!url) {
                 /* 拿不到图也要有反馈：退回一个只有图标 + 名字的小卡片。
                  * 静默什么都不显示会让用户以为拖拽没生效。 */
                 ghost.innerHTML = '';
-                const t = R.get(dragState.toolId);
+                const t = R.get(st.toolId);
                 ghost.appendChild(div('tab-drag-ghost-fallback',
                   t ? icon(t.icon, 'icon-lg') : null,
-                  t ? TN(t) : (dragState.toolId || '')));
+                  t ? TN(t) : (st.toolId || '')));
               } else {
                 ghost.innerHTML = '';
                 ghost.appendChild(h('img', { src: url, alt: '' }));
@@ -812,7 +932,7 @@
         }
       }
       if (dragState.out) scheduleGhostPos(e.clientX, e.clientY);
-    });
+    };
 
     const finish = (e) => {
       if (!dragState || (e && e.pointerId !== dragState.pointerId)) return;
@@ -827,8 +947,25 @@
         toast((err && err.message) || '无法打开独立窗口', 'error');
       });
     };
+    const onCancel = () => { dragState = null; clearVisual(); };
+
+    bar.addEventListener('pointerdown', onDown);
+    document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', finish);
-    document.addEventListener('pointercancel', () => { dragState = null; clearVisual(); });
+    document.addEventListener('pointercancel', onCancel);
+
+    /* 退订要连 bar 上的 pointerdown 一起退：整个壳都换新元素了，
+     * 留着旧 bar 的监听没有意义（旧 bar 已被 GC 掉，但退订函数是
+     * 唯一能让「挂了哪些监听」这件事有始有终的地方）。 */
+    return function unsubTabDrag() {
+      try { bar.removeEventListener('pointerdown', onDown); } catch (e) {}
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', onCancel);
+      try { delete bar.__heheTabDrag; } catch (e) { bar.__heheTabDrag = false; }
+      dragState = null;
+      hideDragGhost();
+    };
   }
 
   /* 取内容区缩略图。失败返回 null（调用方降级成图标卡片）。 */
@@ -2023,6 +2160,9 @@
     applyTheme();
     state.view = keepView;
     state.tabs = keepTabs;
+    /* 独立窗的窗口标题是工具名，工具名跟着语言变（name / nameEn）。
+     * 重建之后必须重设一次，否则英文界面下窗口标题还停在中文。 */
+    setDocTitle();
     render();
   }
 
@@ -2069,6 +2209,11 @@
     applyLang(readLangSync());
     buildShell();
     applyTheme();
+    /* 订阅全局界面偏好的广播。**必须在这里订阅一次**（而不是在 buildShell 里）：
+     * 它要跨整壳重建存活，见 bindUiPrefs 的说明。
+     * 放在 applyTheme 之后：先按本地缓存/存储把外观定下来，
+     * 再开始接受"别处改了"的通知，不会出现先收到广播、又被本地值盖回去。 */
+    bindUiPrefs();
     installNumberWheelGuard();
     await loadUserData();
     await loadDangerousState();
@@ -2083,6 +2228,12 @@
        * （见 renderTabs 里对 state.view.toolId 的比对）。
        * 保持与"用主窗打开一个工具"一致的状态，工具页代码一行都不用改。 */
       state.tabs = [bootParams.tool];
+      /* 文档标题 = 工具名。主进程创建窗口时已经设过一次 title，
+       * 但那之后页面加载完成会用 <title> 里的「核核工具箱」把它盖掉
+       * （Electron 默认把 document.title 同步到窗口标题）。
+       * 所以渲染层必须再设一次 —— 否则三个独立窗口在任务栏/Alt+Tab 里
+       * 又是三个同名条目，等于主进程那次改动白做。 */
+      setDocTitle();
     }
     render();
 

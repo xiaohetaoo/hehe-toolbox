@@ -91,6 +91,15 @@ t('6c 表里的每个通道都真的在主进程里注册了', () => {
     else registered.add('(未登记常量: ' + key + ')');
   }
 
+  /* 【纯推送通道不算「没注册」】
+   * 表原先全是 invoke 通道，"表里有 = 主进程 handle 了"一直成立。
+   * v0.6.4 的 app:ui-prefs-changed 是第一条纯推送通道（主进程 send、
+   * 渲染层 on，没有 handle，也不该有 —— 给它开个 handle 就是一条无人调用的
+   * 死入口）。这类通道登记在 lib/channels.js 的 PUSH_ONLY 里，
+   * 这里按同一份声明放行，不放宽判据本身。 */
+  const pushOnly = new Set((libChannels().PUSH_ONLY || []).map((k) => lib[k]).filter(Boolean));
+  for (const ch of pushOnly) registered.add(ch);
+
   const missing = Object.entries(lib).filter(([, ch]) => !registered.has(ch))
     .map(([k, ch]) => k + ' → ' + ch);
   assert.deepStrictEqual(missing, [],
@@ -146,6 +155,11 @@ function registeredChannels() {
   for (const m of mainSrc.matchAll(/handle\((?:dirMoveCh|CH)\.([A-Z0-9_]+)\.([A-Z0-9_]+)\s*,/g)) {
     const key = m[1] + '.' + m[2];
     if (lib[key]) set.add(lib[key]);
+  }
+  /* 纯推送通道：没有 handle，但确实是主进程在往外发。
+   * 与 6c 用同一份声明（见 lib/channels.js 的 PUSH_ONLY）。 */
+  for (const k of (libChannels().PUSH_ONLY || [])) {
+    if (lib[k]) set.add(lib[k]);
   }
   return set;
 }

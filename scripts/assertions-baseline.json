@@ -1,8 +1,8 @@
 {
   "_comment": "断言总数基线。由 scripts/check-assertion-count.js --write 生成，不要手改。",
   "_why": "防止「某个测试文件里悄悄删掉一堆用例，剩下的仍然全绿」。只允许往上走。\n注意：本基线是在**这台机器**上拍的。换一台机器（缺第二块盘、无交互桌面）时，依赖环境的脚本会走 SKIP 分支、PASS 数偏少 —— 那种情况由 skipped 判定放行并打印，不判红。",
-  "generatedAt": "2026-11-05T11:10:01.987Z",
-  "total": 1551,
+  "generatedAt": "2026-11-05T13:12:39.870Z",
+  "total": 1610,
   "files": {
     "scripts/test-acl-repair.js": 51,
     "scripts/test-archive-guard.js": 30,
@@ -41,7 +41,7 @@
     "scripts/test-i18n-coverage.js": 17,
     "scripts/test-icon-consistency.js": 2,
     "scripts/test-img-scramble.js": 12,
-    "scripts/test-ipc-channels.js": 8,
+    "scripts/test-ipc-channels.js": 9,
     "scripts/test-ipc-ctx.js": 5,
     "scripts/test-ipc-split.js": 10,
     "scripts/test-job-prefix-sync.js": 8,
@@ -87,16 +87,20 @@
     "scripts/test-stopwatch-resume.js": 8,
     "scripts/test-store-health.js": 2,
     "scripts/test-svc-action.js": 1,
+    "scripts/test-tab-drag-cleanup.js": 6,
     "scripts/test-target-size.js": 26,
     "scripts/test-temp-names.js": 8,
     "scripts/test-test-map.js": 6,
     "scripts/test-tool-i18n.js": 8,
     "scripts/test-tool-name-en.js": 5,
     "scripts/test-tool-order.js": 7,
+    "scripts/test-tool-window-title.js": 11,
     "scripts/test-two-pass-e2e.js": 6,
+    "scripts/test-ui-prefs-sync.js": 20,
     "scripts/test-update-cleanup.js": 9,
     "scripts/test-version.js": 14,
     "scripts/test-video-trim.js": 10,
+    "scripts/test-window-job-owner.js": 14,
     "scripts/test-zip-extract.js": 5,
     "scripts/test-about-merge.js": 12,
     "scripts/test-acl-diagnose-e2e.js": 6,
@@ -123,6 +127,7 @@
     "scripts/test-tabbar-breadcrumb-fix.js": 14,
     "scripts/test-target-e2e.js": 1,
     "scripts/test-tool-i18n-e2e.js": 4,
-    "scripts/test-tray-i18n.js": 7
+    "scripts/test-tray-i18n.js": 7,
+    "scripts/test-ui-prefs-e2e.js": 7
   }
 }

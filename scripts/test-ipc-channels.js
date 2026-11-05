@@ -307,14 +307,52 @@ t('注册通道总数仍在其量级（防止误删）', () => {
  */
 t('常量表里的通道：主进程注册 + 渲染层调用 双向都在', () => {
   const chTable = require('../lib/channels').flatten();
+  const pushOnly = new Set((require('../lib/channels').PUSH_ONLY || [])
+    .map((k) => chTable[k]).filter(Boolean));
   const entries = Object.entries(chTable);
   assert.ok(entries.length > 0, '通道常量表是空的 —— 迁移未生效？');
-  const noReg = entries.filter(([, ch]) => !reg.has(ch)).map(([k, ch]) => k + '→' + ch);
+  /* 【纯推送通道不要求 handle】详见 lib/channels.js 的 PUSH_ONLY 声明。
+   * 它们只在主进程出现一次 send，没有 handle，也不该有。 */
+  const noReg = entries.filter(([, ch]) => !reg.has(ch) && !pushOnly.has(ch))
+    .map(([k, ch]) => k + '→' + ch);
   assert.deepStrictEqual(noReg, [],
     '这些通道登记在常量表里但主进程没注册：' + noReg.join(', '));
   const noCall = entries.filter(([, ch]) => !allRef.has(ch)).map(([k, ch]) => k + '→' + ch);
   assert.deepStrictEqual(noCall, [],
     '这些通道登记在常量表里但渲染层没有调用点（登记了却没人用 = 未来误删风险）：' + noCall.join(', '));
+});
+
+/* ---- 6b. 声明为「纯推送」的通道，主进程必须真的在发它 ----
+ *
+ * 【为什么必须与 6 的反向断言配对】
+ * 上面那条为了容纳 app:ui-prefs-changed，允许 PUSH_ONLY 里的通道不进 reg。
+ * 但这条豁免是有代价的：往 PUSH_ONLY 里随手写一条并不存在的通道，
+ * 上面那条不会红，而「表里每条都真的有人用」这个保证就出现了一个洞。
+ * 所以这里验另一个方向 —— 声明的每一条都必须在主进程源码里以
+ * send(...) 出现。两个方向合起来，豁免才是安全的。 */
+t('声明为纯推送的通道，主进程确实在发它（豁免的代价要对得上）', () => {
+  const chTable = require('../lib/channels').flatten();
+  const keys = (require('../lib/channels').PUSH_ONLY || []);
+  assert.ok(Array.isArray(keys), 'lib/channels.js 的 PUSH_ONLY 应是数组');
+  const sentSrc = mainProcSources().map(strip).join('\n');
+  const bad = [];
+  for (const k of keys) {
+    const ch = chTable[k];
+    if (!ch) { bad.push(k + ' 不在常量表里'); continue; }
+    /* 推送可能写成字面量，也可能写成 CH.APP.UI_PREFS_CHANGED 常量。
+     * 两种都认 —— 本项目的迁移方向是后者，只认字面量等于逼人写回字面量。 */
+    /* 锁的是：PUSH_ONLY 被当成免死金牌乱挂 —— 挂一条没人发的通道进去，
+     * 6c 与上面那条都不会红，常量表与现实的对应关系就悄悄断了一条。
+     * 只能用源码断言：要验的是通道名有没有作为 send 的实参出现。 */
+    const byLiteral = sentSrc.includes("'" + ch + "'") || sentSrc.includes('"' + ch + '"');
+    /* 锁的是同上：常量形式的发送也要认出来，否则迁移过的写法会被判成"没在发"。 */
+    const byConst = new RegExp('(?:CH|Channels\\.CHANNELS)\\.[A-Z0-9_]+\\.[A-Z0-9_]+')
+      .test(sentSrc) && new RegExp('send\\(\\s*(?:CH|Channels\\.CHANNELS)\\.' +
+        k.replace('.', '\\.')).test(sentSrc);
+    if (!byLiteral && !byConst) bad.push(k + ' → ' + ch);
+  }
+  assert.deepStrictEqual(bad, [],
+    '这些通道被声明成纯推送（PUSH_ONLY），但主进程里找不到发送它的代码：\n  ' + bad.join('\n  '));
 });
 
 /* ---- 7. 高危门禁表必须与真实通道对账 ----

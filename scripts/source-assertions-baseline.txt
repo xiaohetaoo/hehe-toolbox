@@ -91,7 +91,9 @@ scripts/test-svc-action.js | A=0 | B=3 | legacy-source-assertion
 scripts/test-target-e2e.js | A=1 | B=0 | e2e-fixture
 scripts/test-tool-i18n.js | A=4 | B=4 | legacy-source-assertion
 scripts/test-tool-order.js | A=2 | B=2 | legacy-source-assertion
+scripts/test-tool-window-title.js | A=0 | B=0 | exact:本文件的断言全部改写成了行为断言（直接 require lib/tool-names.js 调 toolTitle()）；对注册表的对账走 readSrc（会剥注释），没有裸读
 scripts/test-tray-i18n.js | A=3 | B=1 | e2e-fixture
+scripts/test-ui-prefs-sync.js | A=1 | B=0 | exact:那 1 处用 fs.readFileSync 读 js/channels.js 是为了把它**原样求值**（在最小 window 桩里跑出 window.Channels 再比对，属于行为断言）。不能换成 readSrc：readSrc 会先剥注释，而这里要跑的就是项目里那份 IIFE 原文；剥过注释的文本虽语义等价，却让「求值的是项目里那份」这个前提不再直观。求值前也不需要剥注释 —— 注释本就不参与语义
 scripts/test-update-cleanup.js | A=0 | B=2 | legacy-source-assertion
 scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta

@@ -48,6 +48,11 @@
       SET_LANG: 'app:set-lang',
       SET_THEME: 'app:set-theme',
       OPEN_TOOL_WINDOW: 'app:open-tool-window',
+      /* 「全局界面偏好变了」的推送：语言 / 配色 / 深浅。
+       * 由主进程在 SET_LANG / SET_ACCENT / SET_THEME 之后广播，已打开的
+       * 独立工具窗口靠它跟上 —— 没有这条通道时，主窗切成英文后独立窗
+       * 仍然是中文，它自己的 data-theme / data-accent 也停在旧值。 */
+      UI_PREFS_CHANGED: 'app:ui-prefs-changed',
     },
 
     /* ---- 开机自启项（注册表 Run 键） ---- */
