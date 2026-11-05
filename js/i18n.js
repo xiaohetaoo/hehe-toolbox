@@ -100,7 +100,7 @@
       'settings.data': '数据与隐私',
       'settings.about': '关于',
       'settings.language': '界面语言',
-      'settings.languageDesc': '覆盖导航、首页、设置等界面文字、全部 102 个工具的名称与描述，以及二维码、哈希、EXIF、截图标注、文本编解码这几组工具页正文；其余工具页正文仍为中文',
+      'settings.languageDesc': '覆盖导航、首页、设置等界面文字、全部 103 个工具的名称与描述，以及二维码、哈希、EXIF、截图标注、文本编解码这几组工具页正文；其余工具页正文仍为中文',
       'settings.autostart': '开机自动启动',
       'settings.autostartDesc': '登录 Windows 后自动运行核核工具箱',
       'settings.autostartOn': '已开启开机自启',

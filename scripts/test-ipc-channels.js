@@ -123,7 +123,8 @@ function referenced() {
   const RE = /['"`]([a-z][a-z0-9]*(?:[-:][a-z0-9]+)*)['"`]/gi;
   for (const f of files) {
     if (CONST_TABLE_FILES.has(f)) continue;
-    const src = fs.readFileSync(f, 'utf8');
+    /* 剥注释再扫 —— 理由见本函数上方注释。 */
+    const src = strip(fs.readFileSync(f, 'utf8'));
     for (const m of src.matchAll(RE)) {
       /* 锁的是：渲染层引用但主进程没注册的通道（历史缺陷 qr:save 那类任意写盘入口）。
        * 只能用源码断言：要收集的是「全项目源码里出现过哪些通道名」这一文本事实，
@@ -222,7 +223,12 @@ const INTENTIONALLY_KEPT = {
 /* ---- 1. 渲染层 invoke 的通道必须都已注册（推送事件与 CSS 值不计） ---- */
 t('渲染层引用的通道都有主进程注册或属于推送事件', () => {
   /* 这些不是 IPC 通道，是被正则误抓的 CSS 属性值 / DOM 类名 */
-  const NOT_A_CHANNEL = new Set(['user-select:text', 'td:last-child']);
+  /* 这些不是 IPC 通道，是被正则误抓的 CSS 属性值 / DOM 类名 / 时间格式占位符。
+   * 【为什么是白名单而不是改进正则】这些字符串在源码里长得和通道名一模一样
+   * （`xxx:yyy` 形态），正则本身无法区分「这是通道」和「这是时间格式」。
+   * 白名单至少让每一次新增都显式出现，而收紧正则只能让通道名受限 ——
+   * 后者已经开始出现（video-trim 的 'mm:ss.mmm' 时间输入占位符）。 */
+  const NOT_A_CHANNEL = new Set(['user-select:text', 'td:last-child', 'mm:ss.mmm']);
   const missing = [...ref].filter((c) => !reg.has(c) && !pushed.has(c) && !NOT_A_CHANNEL.has(c));
   assert.deepStrictEqual(missing, [], '这些通道渲染层在用但主进程既没注册也不推送：' + missing.join(', '));
 });

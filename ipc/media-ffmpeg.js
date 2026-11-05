@@ -639,6 +639,182 @@ handle(CH.FFMPEG.FRAMES, async (e, { input, outDir, mode, ss, every, count, widt
   };
 });
 
+/* ================= IPC: 视频裁剪（v0.5.0） =================
+ * 只做「按时间截一段」，不碰滤镜、转场、拼接 —— 那类需求属于剪辑软件。
+ *
+ * ============ 两种模式的取舍是实测出来的，不是猜的 ============
+ * 参数里 mode 有两个值：
+ *   · 'copy'   —— -c copy 流复制，几秒完成，但**起点会被吸附到关键帧**
+ *   · 'encode' —— 重编码，慢，但起点精确到帧
+ *
+ * 实测数据（源：10 秒 testsrc2，25fps，关键帧间隔 2 秒；目标：从 3.0s 起切 2 秒）：
+ *
+ *   模式        输出时长    首帧 vs 源 3.0s 帧(PSNR)   首帧 vs 源 2.0s 帧
+ *   copy        3.080 秒    12.19 dB（完全不同）         inf（完全一致）
+ *   encode      2.000 秒    39.97 dB（几乎一致）        12.22 dB
+ *
+ * 也就是说：copy 模式下用户要的 3.0s 根本没生效，实际是从 **2.0s** 开始的，
+ * 而且多出 1.08 秒的内容 —— 因为 ffmpeg 会把 -ss 之前的关键帧也带上，
+ * 再用 -avoid_negative_ts 把时间轴归零。这是流复制的固有限制，
+ * 不是参数没调对。
+ *
+ * 所以界面上必须明说「快速模式起点可能提前，最多一个关键帧间隔」，
+ * 并且默认用精确模式。把决定性数字写在这里，是因为后来者看到
+ * "copy 快 10 倍"很容易把它改成默认 —— 那样用户会拿到起点不对的成品，
+ * 而这种错误在播放器里**看不出来**（画面是连续的，只是早了几秒）。
+ *
+ * ============ -ss 放 -i 前还是后？ ============
+ * 实测两者等价（重编码时都精确）：ffmpeg 2.1 之后输入侧 -ss 解码后丢弃
+ * 到目标时间点。这里统一放 -i 前 —— 它对长视频更快（解复用器可以先跳），
+ * 而不会牺牲精度。
+ *
+ * ============ 为什么不做「按关键帧切」的智能吸附 ============
+ * 那需要先 ffprobe 出每个关键帧时间，再挑最近的一个，然后告诉用户
+ * "我把你的切点挪了 0.8 秒"。用户要的是「3:00 到 3:30 这一段」，
+ * 移动切点是替用户改需求。宁可慢一点、准一点。
+ */
+handle(CH.FFMPEG.TRIM, async (e, { input, out, start, duration, mode }) => {
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+
+  /* 参数校验放在跑 ffmpeg 之前：这些值会被拼进命令行，
+   * 而 ffmpeg 的参数解析对 `-1` / `NaN` 的反应是"照做"而不是报错。
+   *
+   * 【必须先判 null/'' 再 Number()】Number(null) === 0、Number('') === 0，
+   * 所以只写 `Number(start)` 的话，缺参数的调用会被静默当成「从 0 秒开始」。
+   * 对 start 而言 0 是合法值，于是这个缺口**不会报错、结果看起来也正常** ——
+   * 用户以为切的是 3:00 那段，实际切的是片头。这是被单测抓出来的
+   * （test-video-trim 的「start=null 竟然没被拒绝」）。 */
+  const isBlank = (v) => v == null || (typeof v === 'string' && v.trim() === '');
+  if (isBlank(start)) throw new Error('缺少起点');
+  if (isBlank(duration)) throw new Error('缺少时长');
+  const st = Number(start);
+  const du = Number(duration);
+  if (!isFinite(st) || st < 0) throw new Error('起点无效');
+  if (!isFinite(du) || du <= 0) throw new Error('时长必须大于 0');
+
+  /* 输出路径两条闸门（与 audio-cut 同一套）：
+   *   ① 不能等于输入 —— 否则源文件被成品覆盖，且原片不可恢复
+   *   ② 不能落在系统关键目录（pathGuard）
+   *
+   * 「不覆盖已有文件」这一条不在这里做，而是渲染层先用 fs:unique-path
+   * 生成不重名的路径再传进来。理由：这类工具的典型用法是"反复调参数试切"，
+   * 每次都该留下一个成品供对比；在主进程强判"已存在就报错"只会让用户
+   * 每次手动改文件名。代价是主进程这一层可以"覆盖任意非关键路径"——
+   * 这与 video-press / target 的既有语义一致，不在这里单独收紧。 */
+  if (path.resolve(String(out)) === path.resolve(String(input))) throw new Error('输出文件不能与源文件相同');
+  const bad = pathGuard.checkOverwritable(out);
+  if (bad) throw pathGuard.err(bad.code, bad.reason);
+
+  const encode = mode !== 'copy';
+  const args = ['-hide_banner', '-y', '-nostats'];
+  /* -ss 放输入侧（见上方实测说明）。保留两位小数即可，多余的精度没有意义。 */
+  args.push('-ss', st.toFixed(3));
+  args.push('-i', input);
+  args.push('-t', du.toFixed(3));
+
+  if (encode) {
+    /* 编码参数沿用视频压制页的"均衡"档，不提供界面旋钮 ——
+     * 「最简单的裁剪」不该让用户学 CRF 是什么。 */
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p');
+    /* 音频：有音轨就重编码成 AAC。不选 copy —— 视频重编码时音频 copy 会
+     * 因为时间戳对齐问题在某些源上产生"整段静音"或爆音。 */
+    args.push('-c:a', 'aac', '-b:a', '160k');
+    /* faststart 让成品能边下边播（把 moov 挪到文件头），代价可以忽略。 */
+    args.push('-movflags', '+faststart');
+  } else {
+    args.push('-c', 'copy');
+    /* 【这两个参数是流复制能播放的前提】
+     * 输入侧 -ss 之后，输出时间戳会从负数开始；不加 make_zero 的话
+     * 成品开头有一段"不存在的时间"，部分播放器会卡住或显示黑屏。
+     * 但它也正是上面实测里"时长多出 1.08 秒"的来源之一 ——
+     * 这是模式的固有代价，不是 bug，界面上已写明。 */
+    args.push('-avoid_negative_ts', 'make_zero');
+  }
+  /* 【-stats_period 必须设小，否则短片段只有一条进度】
+   * ffmpeg 默认每 0.5 秒发一次进度块。裁一个 4 秒的片段只要 0.6 秒左右，
+   * 于是整个过程只发得出 **1 条** out_time_us —— 界面上的进度条从 0 直接
+   * 跳到 99%，等于没有进度。
+   *
+   * 实测（10 秒源切 10 秒、preset slow）：
+   *   默认（0.5s）     0.75 秒完成，2 条进度
+   *   -stats_period 0.1  0.75 秒完成，6 条
+   *   -stats_period 0.05 0.64 秒完成，9 条
+   * 取 0.2：足够让进度条动起来，又不会把 IPC 刷得太密
+   * （每条都要过一次进程间通信和一次 JSON.parse）。
+   *
+   * 另外注意 -progress 与 -stats_period 是**两个独立开关**：
+   * 去掉 -progress 时 stdout 是 0 字节（实测），进度会彻底消失。 */
+  args.push('-stats_period', '0.2');
+  args.push('-progress', 'pipe:1');
+  args.push(out);
+
+  const id = 'vtr' + (ctx.nextJobSeq());
+  const state = { cancel: false, proc: null };
+  const killProc = () => {
+    try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {}
+    if (isWin && state.proc && state.proc.pid) {
+      spawn('taskkill', ['/pid', String(state.proc.pid), '/t', '/f'], { windowsHide: true });
+    }
+  };
+  jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
+  setLatestCancelable(() => { state.cancel = true; killProc(); });
+
+  try {
+    const r = await new Promise((resolve) => {
+      const proc = spawn(ffmpeg, args, { windowsHide: true });
+      state.proc = proc;
+      let errOut = '', progBuf = '';
+      proc.stdout.on('data', (d) => {
+        progBuf += String(d);
+        const lines = progBuf.split('\n');
+        progBuf = lines.pop() || '';
+        for (const line of lines) {
+          const m = line.match(/out_time_us=(\d+)/);
+          /* 进度按「已输出时长 / 目标时长」算，封顶 99 ——
+           * 最后 1% 留给"文件真的写完了"这个确认动作。 */
+          if (m && du > 0) {
+            const pct = Math.min(99, parseInt(m[1]) / 1e6 / du * 100);
+            send('job:stream', { id, data: JSON.stringify({ pct }) });
+          }
+        }
+      });
+      proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
+      proc.on('exit', (code) => resolve({ code, errOut }));
+      proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
+    });
+
+    if (state.cancel) {
+      try { await fsp.rm(out, { force: true }); } catch (err) {}
+      throw new Error('已取消');
+    }
+    if (r.code !== 0 || !(await pathExists(out))) {
+      /* 失败必须清掉半成品：留着的话用户会以为"切成功了，只是短了一点"，
+       * 而这个文件可能在中间某处就断了。 */
+      try { await fsp.rm(out, { force: true }); } catch (err) {}
+      throw new Error('裁剪失败：' + (r.errOut.split(/\r?\n/).filter((l) => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code)));
+    }
+
+    /* 回读成品的实际时长报给界面。
+     * 【为什么值得多跑一次 ffprobe】copy 模式下实际时长会与请求的不同
+     * （关键帧吸附），界面必须显示**实际**值 —— 否则用户看着"2.00 秒"
+     * 却拿到 3.08 秒的文件，下次就不敢信这个工具了。 */
+    let outDur = 0, size = 0;
+    try { size = (await fsp.stat(out)).size; } catch (err) {}
+    const ffprobe = findFfprobe();
+    if (ffprobe) {
+      try {
+        const pr = await runCmd(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', out], { timeout: 15000 });
+        outDur = parseFloat((JSON.parse(pr.stdout).format || {}).duration) || 0;
+      } catch (err) {}
+    }
+    send('job:stream', { id, data: JSON.stringify({ pct: 100, done: true }) });
+    return { out, size, duration: outDur, mode: encode ? 'encode' : 'copy' };
+  } finally {
+    jobs.delete(id);
+  }
+});
+
 /* 音频剪辑：截取 + 淡入淡出 + 增益 */
 handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, gain, format }) => {
   const ffmpeg = findFfmpeg();

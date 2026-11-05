@@ -153,8 +153,9 @@
       'img-stitch', 'img-dedup', 'exif-view',
       // 隐私遮挡：混淆与还原放在一起，紧挨着 EXIF（同属「发图前处理」）
       'img-scramble',
-      // 音视频：转换 → 压制 → 截帧 → 音频剪辑 → 参数
-      'av-convert', 'video-press', 'video-frames', 'audio-cut', 'av-info',
+      // 音视频：转换 → 压制 → 裁剪 → 截帧 → 音频剪辑 → 参数
+      // 裁剪挨着压制：都是"处理已有视频"，用户找其中一个时另一个多半也相关
+      'av-convert', 'video-press', 'video-trim', 'video-frames', 'audio-cut', 'av-info',
       // 引擎配置放最后：装一次就不再动
       'ffmpeg-setup'
     ],

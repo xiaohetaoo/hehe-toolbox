@@ -110,6 +110,7 @@
       PROBE: 'ffmpeg:probe',
       REMOVE: 'ffmpeg:remove',
       STATUS: 'ffmpeg:status',
+      TRIM: 'ffmpeg:trim',
     },
 
     /* ---- 文件系统（最大的一个域：读写/哈希/加密/分割/重命名/清理） ---- */
