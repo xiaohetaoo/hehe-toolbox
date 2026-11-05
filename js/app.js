@@ -719,16 +719,34 @@
       if (dragState && dragState.tabEl) dragState.tabEl.classList.remove('tab-drag-out');
     };
 
+    /* 【pointerdown 挂在标签栏上（委托），pointermove/up 必须挂在 document 上】
+     *
+     * 这是拖拽一直不生效的真正原因。用真实鼠标事件（CDP）实测拿到的日志：
+     *
+     *   bar-down|t=tab-label|313,66      ← 按下：到达标签栏 ✅
+     *   doc-move|t=content|313,96        ← 移动：只在 document 上被看到
+     *   doc-move|t=th-desc|313,146       ← 继续下移，target 已是内容区
+     *   doc-up|t=th-desc|313,146
+     *
+     * 也就是说：往下拖 40px 之后，指针早已离开标签栏（它只有 36px 高），
+     * 事件不再经过 bar，所以绑在 bar 上的 pointermove 一条都收不到 ——
+     * 拖拽状态永远停在 out=false，松手时判定为"没拖出"。
+     *
+     * 之前所有测试都用 dispatchEvent 直接派发到 bar/document 上，
+     * **绕过了真实的命中路径**，于是测试全绿而真实操作无效。
+     *
+     * 现在按面板分工：
+     *   · pointerdown → 挂在 bar 上（委托：要从具体标签反查是哪个工具）
+     *   · pointermove / pointerup / pointercancel → 挂在 document 上
+     *     （指针离开标签栏后仍能收到）
+     * 两者通过 dragState 关联。 */
     bar.addEventListener('pointerdown', (e) => {
-      /* 只认主键（左键 / 触控 / 笔尖）。1 = 中键（关闭标签），
-       * 2 = 右键，都不该启动拖拽。 */
+      /* 只认主键（左键 / 触控 / 笔尖）。1 = 中键（关闭标签），2 = 右键。 */
       if (e.button !== 0) return;
       const tab = e.target.closest && e.target.closest('.tab');
       if (!tab) return;
       /* 点在关闭按钮上不启动拖拽：那是"关掉"，不是"拖走" */
       if (e.target.closest('.tab-close')) return;
-      /* 从 closeTab 的 id 反查：标签元素上没存 id，用顺序取更快出错，
-       * 所以渲染时把 id 写到 dataset 上（见 renderTabs）。 */
       dragState = {
         toolId: tab.dataset.toolId || '',
         tabEl: tab,
@@ -737,12 +755,19 @@
         out: false,
         pointerId: e.pointerId,
       };
+      /* 【指针捕获】把后续 pointer 事件定向到被按下的标签元素。
+       * 虽然 move/up 已经挂到 document 上也能收到，但捕获能保证
+       * 指针移出窗口边界后仍然收到 pointerup —— 否则用户拖到窗口外松手，
+       * dragState 会一直挂着，下一次移动用旧起点算位移，行为会很怪。 */
+      try { tab.setPointerCapture(e.pointerId); } catch (err) { /* 旧版/合成事件不支持，忽略 */ }
     });
 
-    bar.addEventListener('pointermove', (e) => {
+    document.addEventListener('pointermove', (e) => {
       if (!dragState || e.pointerId !== dragState.pointerId) return;
       const dy = e.clientY - dragState.startY;
       const dx = Math.abs(e.clientX - dragState.startX);
+      /* 纵向为主、且超出阈值才算"拖出"。要求纵向大于横向，
+       * 是为了不与将来可能做的"横向拖动调整顺序"冲突。 */
       const nowOut = dy > TAB_DRAG_THRESHOLD && dy > dx;
       if (nowOut !== dragState.out) {
         dragState.out = nowOut;
@@ -756,17 +781,17 @@
       dragState = null;
       clearVisual();
       if (!st.out) return;     // 没拖出阈值：当作普通点击
-      if (!st.toolId) return;  // 理论上不会发生（renderTabs 一定会写 dataset）
+      if (!st.toolId) return;
       /* 【不关闭原标签】用户可能只是想"多开一个"；而且工具页可能正在跑任务，
        * 关标签会触发页面清理、任务中断。 */
       invoke(Channels.CHANNELS.APP.OPEN_TOOL_WINDOW, st.toolId).catch((err) => {
         toast((err && err.message) || '无法打开独立窗口', 'error');
       });
     };
-    bar.addEventListener('pointerup', finish);
+    document.addEventListener('pointerup', finish);
     /* pointercancel：系统抢走指针（例如开始拖窗口）时也要收口，
-     * 否则 dragState 会一直挂着，下次 pointermove 用旧起点算位移。 */
-    bar.addEventListener('pointercancel', () => { dragState = null; clearVisual(); });
+     * 否则 dragState 会一直挂着。 */
+    document.addEventListener('pointercancel', () => { dragState = null; clearVisual(); });
   }
 
 

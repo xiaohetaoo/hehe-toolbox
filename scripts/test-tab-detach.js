@@ -230,6 +230,43 @@ app.whenReady().then(async () => {
     const w2 = await mk({ tool: 'base64', standalone: '1' }, 'standalone');
     console.log('SA ' + await w2.webContents.executeJavaScript(P_STANDALONE, true));
 
+    /* ===== 真实鼠标事件（CDP）：走完整命中/捕获链路 ===== */
+    {
+      const w3 = await mk(null, 'real');
+      await w3.webContents.executeJavaScript("window.App.openTool('json-format'); window.App.openTool('port-occupy'); true", true);
+      await new Promise(r => setTimeout(r, 900));
+      const rect = JSON.parse(await w3.webContents.executeJavaScript(
+        "(function(){ const t=document.querySelector('.tabbar .tab'); if(!t) return 'null';" +
+        " const r=t.getBoundingClientRect(); return JSON.stringify({x:Math.round(r.left+r.width/2)," +
+        " y:Math.round(r.top+r.height/2)}); })()", true));
+
+      let delta = 0, midCls = null, moved = null;
+      if (rect && rect.x != null) {
+        const before = H['test:open-reqs']().data.length;
+        /* 起点在标签中心，终点在下方 80px —— 中间必然越出标签栏。
+         * 若 move 监听仍绑在标签栏上，这里就收不到事件、拖拽状态停在 false。 */
+        w3.webContents.debugger.attach('1.3');
+        const send = (type, x, y) => w3.webContents.debugger.sendCommand(
+          'Input.dispatchMouseEvent', { type, x, y, button: 'left',
+            buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+        await send('mousePressed', rect.x, rect.y);
+        await new Promise(r => setTimeout(r, 80));
+        await send('mouseMoved', rect.x, rect.y + 30);
+        await new Promise(r => setTimeout(r, 60));
+        await send('mouseMoved', rect.x, rect.y + 80);
+        await new Promise(r => setTimeout(r, 60));
+        midCls = await w3.webContents.executeJavaScript(
+          "document.querySelector('.tabbar .tab').className", true);
+        await send('mouseReleased', rect.x, rect.y + 80);
+        await new Promise(r => setTimeout(r, 800));
+        w3.webContents.debugger.detach();
+        delta = H['test:open-reqs']().data.length - before;
+      }
+      console.log('REAL_MIDCLASS ' + JSON.stringify(midCls));
+      console.log('REAL_DELTA ' + delta);
+      w3.destroy();
+    }
+
     // 开窗请愿记录：从 probe 模块里读（与 handler 共享同一个实例）
     console.log('REQS ' + JSON.stringify(H['test:open-reqs']().data || []));
   } catch (e) { console.log('FATAL ' + (e && e.stack || e)); }
@@ -265,6 +302,17 @@ if (mainOut) for (const c of mainOut.checks) chk(c.n, c.ok, c.d);
 else { console.log('FAIL  主窗探测没返回结果'); fail++; }
 if (saOut) for (const c of saOut.checks) chk(c.n, c.ok, c.d);
 else { console.log('FAIL  独立窗探测没返回结果'); fail++; }
+
+/* ---- 真实鼠标事件（CDP）的结果 ---- */
+{
+  const mc = /REAL_MIDCLASS (.+)/.exec(raw);
+  const dl = /REAL_DELTA (\d+)/.exec(raw);
+  const cls = mc ? JSON.parse(mc[1]) : '';
+  const delta = dl ? Number(dl[1]) : -1;
+  chk('R1 真实鼠标拖出后有视觉反馈（pointermove 越出标签栏仍被收到）',
+    /tab-drag-out/.test(String(cls)), 'class=' + cls);
+  chk('R2 真实鼠标松手后主进程收到开窗请求', delta === 1, '收到 ' + delta + ' 次');
+}
 
 /* 开窗请求里带的工具 id 必须是用户拖的那个 */
 const reqM = /REQS (.+)/.exec(raw);
