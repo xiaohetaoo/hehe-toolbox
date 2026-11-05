@@ -128,7 +128,7 @@
       '两边改成一样': 'Both changed the same way',
       '行数不一致': 'Line count mismatch',
       '请至少填入基准版本与一份改法': 'Fill in the base version and at least one set of changes',
-      '⚠ {n} 处冲突': '⚠ {n} conflict(s)',
+      '{n} 处冲突': '{n} conflict(s)',
       '无冲突': 'No conflicts',
       '仅 A 改 {n} 行': 'A only: {n} line(s)',
       '仅 B 改 {n} 行': 'B only: {n} line(s)',

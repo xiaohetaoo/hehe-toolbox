@@ -855,16 +855,39 @@
     const wrap = h('span', { class: 'progress-wrap' }, p, label);
     let startedAt = 0;
     let samples = 0;
+    /* 【跨次运行必须复位，否则第二轮的「剩余时间」整轮偏大】
+     * 原实现只在 startedAt 为 0 时记起点，而 startedAt 一旦写上就再没人清零。
+     * 于是一个进度条被同一个工具复用两次时（点「开始」→ 完成 → 再点「开始」），
+     * 第二轮 elapsed 里含着上一轮的全部耗时：
+     *   真实这轮 10 秒跑到 50% → 理应「还剩约 10 秒」；
+     *   实际 elapsed 是 120 秒 → 显示「还剩约 2 分钟」。
+     * 进度越靠前偏得越狠，而用户完全无从判断它为什么这么慢。
+     *
+     * 判据取两条，任一成立即视为新一轮：
+     *   · 上次已经到过 100%（正常跑完）
+     *   · 这次的值比上次小（调用方手动把进度拨回去重新开始）
+     * 两条都是"事件层面明确的新一段"，不需要调用方额外声明，
+     * 所以 40 多个调用点一个都不用改 —— 这正是修在组件里的理由。 */
+    let lastPct = -1;
+    let finished = false;
     return {
       el: wrap,
       etaEl: label,
       set(pct) {
         const v = Math.max(0, Math.min(100, pct));
         p.firstChild.style.width = v + '%';
+        if (finished || (lastPct >= 0 && v < lastPct)) {
+          startedAt = 0; samples = 0; finished = false;
+        }
+        lastPct = v;
         // 首次调用记为起点；之后按速率推算
         if (!startedAt) { startedAt = Date.now(); samples = 1; return; }
         samples++;
-        if (samples < 3 || v < 8 || v >= 100) { label.style.display = 'none'; return; }
+        if (samples < 3 || v < 8 || v >= 100) {
+          label.style.display = 'none';
+          if (v >= 100) finished = true;
+          return;
+        }
         const elapsed = Date.now() - startedAt;
         const remainMs = elapsed / (v / 100) - elapsed;
         if (!isFinite(remainMs) || remainMs <= 0) { label.style.display = 'none'; return; }

@@ -120,16 +120,28 @@
         return [...parts, nb + ne].join('/');
       }
       /* 预取 EXIF 时间。只读文件头 64KB —— EXIF 一定在 JPEG 开头，
-       * 整份读进来再解析纯属浪费（一张 5MB 的照片 × 500 张 = 2.5GB IO）。 */
+       * 整份读进来再解析纯属浪费（一张 5MB 的照片 × 500 张 = 2.5GB IO）。
+       *
+       * 【这里曾经整条路径都是死的，务必别改回去】
+       * fs:read-file-b64 返回的是 { b64, size } 对象，不是 base64 字符串。
+       * 原代码 `const b64 = await invoke(...); atob(b64)` 把对象直接喂给 atob，
+       * 每次都抛 InvalidCharacterError，被下面的 catch 吞成 t = null，
+       * 于是**每一张照片都退到文件修改时间** —— 用户拿到的永远是下载/复制那一刻，
+       * 而界面写着「按 EXIF 拍摄时间命名」。功能宣称与实际完全不符，且不报错。
+       * 这条路径的错误全都会被 catch 吃掉，所以只能靠 e2e 断言去验
+       * （见 scripts/test-exif-rename-e2e.js：真实 JPEG 字节 → 真实 IPC → 文件名）。
+       *
+       * 第二个参数 maxBytes 以前也是假的：handler 签名只有 (e, p)，
+       * 第三参被 IPC 静默丢弃，现在真的只读前 64KB（见 ipc/fs-ops.js）。 */
       async function ensureExifTimes() {
         if (!useExif.checked) return;
         const todo = files.filter((p) => !exifTimeCache.has(p));
         for (const p of todo) {
           let t = null;
           try {
-            const b64 = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, p, 65536);
-            if (b64) {
-              const bin = atob(b64);
+            const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, p, 65536);
+            if (r && r.b64) {
+              const bin = atob(r.b64);
               const bytes = new Uint8Array(bin.length);
               for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
               t = exifLib.pickShotTime(exifLib.parseExif(bytes));
@@ -269,8 +281,13 @@
         /* 捕获组说明：功能本身一直可用（JS 的 String.replace 原生支持 $1），
          * 但界面上没有任何提示，用户不知道能这么用 —— 等于没有。
          * 写清替换串里可用的三种写法，比让用户去猜或查文档有用。 */
+        /* 【提示里的正则要写两个反斜杠】
+         * 这是单引号字符串，'\d' 在 JS 里是未识别的转义 → 求值成 'd'，
+         * 界面上就显示成 IMG_(d+)_(.*)。用户照着抄，得到的正则匹配不到任何东西，
+         * 而工具本身工作正常 —— 这种「文档写错」最难被发现：没人会怀疑提示。
+         * 源码里必须写 \\d，运行时才是 \d。 */
         div('form-row', h('span', { class: 'form-label' }), h('span', { class: 'field-hint' },
-          '正则替换支持捕获组：用 $1 $2 引用第 1、2 个括号。例：IMG_(\d+)_(.*) → $2-$1')),
+          '正则替换支持捕获组：用 $1 $2 引用第 1、2 个括号。例：IMG_(\\d+)_(.*) → $2-$1')),
         div('form-row', h('span', { class: 'form-label' }, '其他'), caseSel, extIn),
         div('form-row', btn('刷新预览', 'btn-secondary btn-sm', safePreview),
           btn('导出预览 CSV', 'btn-secondary btn-sm', exportCsv, 'download'), applyBtn, prog.el)));

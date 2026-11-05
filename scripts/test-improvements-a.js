@@ -130,6 +130,54 @@ const PROBE = `(async function () {
     eta ? ('text=' + eta.textContent) : 'no node');
   chk('B6 剩余时间文案可读', !!eta && /约|即将/.test(eta.textContent), eta ? eta.textContent : '');
 
+  /* ---- B6b: 同一个进度条跑第二轮时，ETA 必须复位 ----
+   *
+   * 【这条锁的是一个具体现象】
+   * startedAt 原来只在为 0 时写入、之后再没人清零。于是同一个工具的
+   * 进度条被复用两次时（点开始 → 跑完 → 再点开始），第二轮的 elapsed
+   * 里含着上一轮的全部耗时，剩余时间整轮偏大：
+   *   真跑 10 秒到 50% 应显示「约 10 秒」，实际按 130 秒算出「约 2 分钟」。
+   * 进度越靠前偏得越狠，而用户完全无从判断它为什么这么慢。
+   *
+   * 【怎么构造这个场景才不依赖真实耗时】
+   * 关键是让两轮之间有"明显的绝对时间差"，但每轮内部的速率一致：
+   *   第一轮：立刻跑到 100%（记为完成）
+   *   等 1.2 秒（这就是会污染第二轮的"上一轮耗时"）
+   *   第二轮：连续喂三次，每次间隔相同 → 推算出的剩余时间应当与
+   *           "单轮速率"一致（几十毫秒量级），而不是把 1.2 秒算进去。
+   * 如果不复位，第二轮第一次 set 就带着 1.2s 的 elapsed，进度 20% 时
+   * 会算出「约 5 秒」；复位后应是"即将完成"或个位数秒。
+   * 所以判据取"是否小于 3 秒"：够宽松（不依赖机器快慢），
+   * 又足以把"1.2 秒 × 5 倍 = 6 秒"那种污染区分开。 */
+  const prog2 = window.ui.progressEl();
+  const eta2 = prog2.el.querySelector('.progress-eta');
+  prog2.set(0);
+  prog2.set(50);
+  prog2.set(100);            // 第一轮跑完
+  await tick(1200);          // 期间不做任何事：这段空白不应进入第二轮的计时
+  /* 【读取点必须在低进度，不能等到 set(30)】
+   * 实测两版在 set(30) 会收敛到同一句"即将完成"：
+   * 修复前 elapsed=1305ms / 30% → 剩 3.0 秒 → 被"< 5 秒显示即将完成"吃掉了。
+   * 低进度才是差异最大的地方（10% 时修复前显示"约 11 秒"、修复后"即将完成"），
+   * 因为污染量是固定的 1.2 秒，而分母越小放大倍数越大。
+   * 所以三次取样停在 15%：修复后 elapsed≈90ms → 剩 0.5 秒 → 即将完成；
+   * 修复前 elapsed≈1300ms → 剩 7.4 秒 → 「约 7 秒」。两者一眼可分。 */
+  prog2.set(10);
+  await tick(40);
+  prog2.set(12);
+  await tick(40);
+  prog2.set(15);
+  const txt = String(eta2.textContent || '');
+  const mSec = /约 (\\d+) 秒/.exec(txt);
+  const mMin = /约 (\\d+) 分钟/.exec(txt);
+  const estSec = mMin ? Number(mMin[1]) * 60 : (mSec ? Number(mSec[1]) : 0);
+  /* 前置：ETA 必须真的显示出来了。否则「estSec=0 秒」可能只是
+   * 标签隐藏（textContent 为空）导致的恒真，断言就白写了。 */
+  chk('B6b 第二轮确实有 ETA 文案（否则下面的秒数比较是恒真）',
+    eta2.style.display !== 'none' && /即将完成|约/.test(txt), 'display=' + eta2.style.display + ' text=' + txt);
+  chk('B6b 第二轮进度条的 ETA 不复用上一轮起点', estSec < 2,
+    '显示「' + txt + '」→ 估 ' + estSec + ' 秒（把 1.2s 空白算进去会到 ~7s）');
+
   // ---- B2: 拖入文件夹时的样式类存在 ----
   let hasDirStyle = false;
   for (const sh of document.styleSheets) {
@@ -155,6 +203,92 @@ const PROBE = `(async function () {
   await tick(900);
   const q2 = document.querySelector('input[type=number]');
   chk('B1 参数被记住并回填', !!q2 && q2.value === '42', q2 ? ('恢复值=' + q2.value) : 'no input');
+
+  /* ---- B1b: 多行正文（textarea）不进参数记忆 ----
+   *
+   * 【为什么这条值得单独测】
+   * 参数记忆本来是为「质量 80、帧率 30、起始序号 1」这类小参数设计的。
+   * textarea 装的是"这一次要处理的正文"：diff3 的三份原文、Markdown 笔记、
+   * 粘贴的 JSON。它们动辄几十 KB，被记住的后果有三层：
+   *   · hehe-data.json 被撑大 —— 它是整份 JSON 原子改名写的，
+   *     越大越慢，断电时越容易写坏（写坏会走 .corrupt 备份那条路）；
+   *   · 下次进同一个工具，输入框里自动填着上次那一大坨内容，
+   *     用户还没开始就先被旧数据挡住，得先全选删掉；
+   *   · 粘贴进来的可能是聊天记录/日志/密钥，存进一个明文配置里，
+   *     用户完全不知道。
+   * 判据用「store 里有没有 toolParams.<工具> 这个键」——
+   * 直接看落盘结果，比看代码里有没有某行过滤更接近事实。 */
+  const bigText = 'X'.repeat(4000);
+  {
+    /* 【选页面有讲究：textarea 的 placeholder 不能命中「不记」规则】
+     * PARAM_SKIP_PLACEHOLDER 会过滤掉 placeholder 含「粘贴/输入文本/搜索」的控件 ——
+     * 不少 textarea 正是这样被顺带排除的（例如 csv-json 的「粘贴 CSV 文本…」）。
+     * 用那种页面测"textarea 不该被记"，即使把标签名过滤删掉也照样绿，
+     * 因为别的规则已经挡住了 —— 断言等于没测到东西（这一条实测确认过）。
+     *
+     * 翻译工具的正文框 placeholder 是「输入要翻译的文本…」，
+     * 不含任何被过滤的词，是**真会被记住**的那一类；
+     * 同页还有两个语言下拉框，用来证明记忆机制本身是活的。 */
+    window.App.showView({ type: 'tool', toolId: 'translate' });
+    await tick(700);
+    const tas = [...document.querySelectorAll('textarea')].filter((ta) => !ta.readOnly);
+    chk('B1b 测试页有可编辑的 textarea（否则这条用例没意义）', tas.length > 0, '可编辑 textarea 数=' + tas.length);
+    for (const ta of tas) {
+      ta.value = bigText;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const sels = [...document.querySelectorAll('select')];
+    chk('B1b 测试页有下拉框（用来证明记忆机制在跑）', sels.length > 0, 'select 数=' + sels.length);
+    for (const sel of sels) {
+      sel.value = sel.options[sel.options.length - 1].value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    await tick(900);   // 等防抖写盘
+    const saved = await window.api.invoke(window.Channels.CHANNELS.STORE.GET, 'toolParams.translate', null);
+    const dump = JSON.stringify(saved == null ? {} : saved);
+    /* 前置：短参数必须真的被记住。否则下面那些"正文没被记住"只是
+     * 整页都没记（断言空转、永远绿）—— 这个空转真的发生过：
+     * 换成 diff3 页时 store 一直是 null，而断言照样通过。 */
+    chk('B1b 该页的下拉框仍被记住（证明记忆机制在跑）',
+      dump.indexOf('select#') >= 0, 'store 里的 toolParams.translate = ' + dump.slice(0, 200));
+    chk('B1b 多行正文没有被写进参数记忆', dump.indexOf('XXXX') < 0,
+      'store 里出现了 4000 字的正文（dump 长度 ' + dump.length + '）');
+  }
+
+  /* ---- B1c: 短正文同样不进记忆（这条才真正锁住"按标签名排除"） ----
+   *
+   * 【为什么 B1b 不够】
+   * 这里有**两道独立的闸**：① textarea 按标签名整体排除；
+   * ② 单值超过 512 字直接不存（PARAM_MAX_LEN）。
+   * B1b 喂的是 4000 字，两道闸都能拦住它 —— 实测把①删掉，B1b 依然绿。
+   * 要证明①真的存在、没有被②顶替，必须喂一段**不触发②**的短正文：
+   * 比如 20 个字符。这时只有"按标签名排除"能拦住它。
+   * （一个防护被另一个更宽的防护遮住，是这类断言最常见的假绿来源。） */
+  {
+    window.App.showView({ type: 'tool', toolId: 'translate' });
+    await tick(700);
+    const ta = [...document.querySelectorAll('textarea')].find((x) => !x.readOnly);
+    chk('B1c 找到可编辑 textarea', !!ta);
+    if (ta) {
+      /* 20 字，远小于 512 的上限；同时把下拉框也改一下，保证确实触发了写盘 */
+      ta.value = 'SHORTTEXTMARKER-20ch';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.dispatchEvent(new Event('change', { bubbles: true }));
+      const sel2 = document.querySelector('select');
+      if (sel2) {
+        sel2.value = sel2.options[0].value;
+        sel2.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await tick(900);
+      const saved2 = await window.api.invoke(window.Channels.CHANNELS.STORE.GET, 'toolParams.translate', null);
+      const dump2 = JSON.stringify(saved2 == null ? {} : saved2);
+      chk('B1c 写盘确实发生了（否则下面的"没存"是空转）',
+        dump2.indexOf('select#') >= 0, 'store = ' + dump2.slice(0, 200));
+      chk('B1c 短正文也没进记忆（20 字，不触发长度闸）', dump2.indexOf('SHORTTEXTMARKER') < 0,
+        'store 里出现了短正文：' + dump2.slice(0, 300) + ' ');
+    }
+  }
 
   return JSON.stringify(out);
 })()`;

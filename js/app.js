@@ -879,8 +879,24 @@
    * 【哪些控件不记】
    * 文件框、搜索框、密码框不记：它们要么是一次性输入，要么记录会有隐私问题。
    * 搜索框（type=search）尤其不该记 —— 每次进页面都带着上次的搜索词很奇怪。
-   */
+   *
+   * 【textarea 一律不记】
+   * 多行框装的是"这一次要处理的正文"：diff3 的三份原文、Markdown 笔记、
+   * JSON 粘贴、要统计的文本…… 它们动辄几十 KB，一次粘贴就会被打包写进
+   * hehe-data.json。后果很具体：
+   *   · store 文件被撑大（它是**整份 JSON 原子改名**写的，越大越慢、
+   *     越容易在断电时写坏，而写坏会走 .corrupt 备份那条路）；
+   *   · 下次进同一个工具，输入框里自动填着上次那一大坨内容，
+   *     用户还没开始就被自己的旧数据挡住了；
+   *   · 粘贴的内容可能含隐私（聊天记录、日志、密钥），
+   *     存进一个明文的配置 JSON 里，用户完全不知道。
+   * 记忆功能的价值在"体积小的参数"（质量、帧率、起始序号），
+   * 对多行正文则是纯粹的负收益，所以按标签名直接排除，不按 placeholder 猜。 */
   const PARAM_SKIP_TYPES = new Set(['file', 'password', 'search', 'hidden']);
+  /* 【单行框也有上限】即使不是 textarea，也可能被塞进超长内容
+   * （例如用地址栏/接口返回当输入）。超过这个长度的值不记，
+   * 只保留"参数型"短值 —— 与上面 textarea 的理由同源。 */
+  const PARAM_MAX_LEN = 512;
   const PARAM_SKIP_PLACEHOLDER = /搜索|search|输入文本|粘贴|请输入内容|要处理|关键词/i;
 
   function paramKeyFor(el, indexMap) {
@@ -894,7 +910,12 @@
 
   function rememberToolParams(toolId, page) {
     if (!isDesktop) return;
+    /* 【textarea 按标签名排除，而不是靠 type】
+     * textarea 的 el.type 是 'textarea'，本来就不在 PARAM_SKIP_TYPES 里
+     * （那个集合只列了 input 的类型），所以必须单独判标签名。
+     * 见上方「哪些控件不记」里对 textarea 的说明。 */
     const controls = [...page.querySelectorAll('input, select, textarea')]
+      .filter((el) => el.tagName.toLowerCase() !== 'textarea')
       .filter((el) => !PARAM_SKIP_TYPES.has(el.type) && el.type !== 'checkbox' && el.type !== 'radio');
     if (!controls.length) return;
 
@@ -932,7 +953,11 @@
       const data = {};
       for (const { el, key } of picked) {
         if (!el.isConnected) continue;
-        data[key] = el.value;
+        /* 超长值不落盘（见 PARAM_MAX_LEN）。传空串而不是跳过这个键：
+         * 用户把一段超大内容删干净之后，store 里那份旧的大值也该跟着消失，
+         * 否则它会一直躺在 hehe-data.json 里直到工具被卸载。 */
+        const v = String(el.value == null ? '' : el.value);
+        data[key] = v.length > PARAM_MAX_LEN ? '' : v;
       }
       invoke(Channels.CHANNELS.STORE.SET, storeKey, data).catch(() => {});
     };
@@ -1413,7 +1438,7 @@
         ? T('crash.descCount', { n: info.count, size: fmtBytes(info.totalBytes) })
         : T('crash.descNone')),
       // 上次异常退出是一次性提示：这次启动告诉用户，之后就该消失
-      crashed ? div('set-desc', { style: { color: 'var(--warning)', marginTop: '2px' } }, T('crash.lastAbnormal')) : null
+      crashed ? div('set-desc', { style: { color: 'var(--warning)', marginTop: '2px' } }, icon('alert'), T('crash.lastAbnormal')) : null
     ));
     const ctl = div('set-control', { style: { display: 'flex', gap: '6px' } });
     if (hasLog) ctl.appendChild(viewBtn);

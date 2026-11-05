@@ -16,7 +16,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, filePicker, progressEl } = window.ui;
+  const { div, btn, toast, filePicker, progressEl, icon } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
   const { isImgPath, IMG_FILTER, loadImg } = window.MediaShared;
@@ -115,15 +115,24 @@
        * 这个工具最危险的误用是"以为它是加密"。 */
       const warning = div('danger-banner');
       warning.style.marginTop = '12px';
-      warning.appendChild(div('danger-banner-title', '⚠ 视觉混淆不是加密'));
+      warning.appendChild(div('danger-banner-title', icon('alert'), '视觉混淆不是加密'));
       warning.appendChild(div('danger-banner-text',
         '混淆只打乱像素位置，图片的统计特征仍在，有意的攻击者可以恢复大致轮廓。'
         + '真需要保密请用「文件加密解密」（AES-256）把整个文件加密。'));
 
       const runBtn = btn('开始处理', 'btn-primary', run, 'crop');
 
-      async function processOne(path, perm, inverse, outDir) {
-        const img = await loadImg(path);
+      /* 【一张图只解码一次】
+       * 原实现里 run() 先 await loadImg(files[i]) 取尺寸算置换表，
+       * 紧接着 processOne() 内部又 await loadImg(path) 一次 ——
+       * 同一张图被解码两遍。这不是"性能小瑕疵"那么轻：
+       *   · loadImg 走 fs:read-file-b64，把整张图的 base64 过一次 IPC，
+       *     再交给 Chromium 解码；一张 4000×3000 的照片，多出来的是
+       *     几十 MB 的跨进程拷贝 + 一次完整解码；
+       *   · 500 张图的批量任务里等于白跑一整轮 IO 和解码，而进度条已经在动，
+       *     用户感受到的是"比同类工具慢一倍"，却看不出慢在哪。
+       * 现在把已解码的 img 直接传进来，只解码一次。 */
+      async function processOne(path, img, perm, inverse, outDir) {
         const w = img.naturalWidth, h0 = img.naturalHeight;
         if (w * h0 > MAX_PIXELS) throw new Error('图片过大（超过 ' + (MAX_PIXELS / 1048576) + ' 百万像素），请先压缩');
         const canvas = document.createElement('canvas');
@@ -164,7 +173,7 @@
               if (n > MAX_PIXELS) throw new Error('图片过大');
               // 每张图都重建置换表：同一密钥 + 同一尺寸 → 表相同，可还原
               const perm = buildPermutation(n, seedOf(key));
-              const dataUrl = await processOne(files[i], perm, inverse, outDir[0]);
+              const dataUrl = await processOne(files[i], img, perm, inverse, outDir[0]);
               ok++;
               if (i === 0) {
                 preview.innerHTML = '';

@@ -125,6 +125,9 @@ function referenced() {
     if (CONST_TABLE_FILES.has(f)) continue;
     const src = fs.readFileSync(f, 'utf8');
     for (const m of src.matchAll(RE)) {
+      /* 锁的是：渲染层引用但主进程没注册的通道（历史缺陷 qr:save 那类任意写盘入口）。
+       * 只能用源码断言：要收集的是「全项目源码里出现过哪些通道名」这一文本事实，
+       * 不起 Electron 就没有别的入口能拿到渲染层的调用清单。 */
       if (m[1].includes(':')) set.add(m[1]);
     }
   }
@@ -266,8 +269,11 @@ t('三个辅助窗口依赖的通道仍在注册', () => {
     }
     /* 字面量形式（迁移前遗留写法，仍要认） */
     for (const m of s.matchAll(/['"`]([a-z][a-z0-9-]*:[a-z][a-z0-9-]*)['"`]/g)) {
-      if (chTable[Object.keys(chTable).find((k) => chTable[k] === m[1])]) need.add(m[1]);
-      else if (/^(win|snip|lan):/.test(m[1])) need.add(m[1]);
+      const known = Object.keys(chTable).find((k) => chTable[k] === m[1]);
+      /* 锁的是：辅助窗口引用但主进程没注册的通道（win:ruler:close 改名那次靠它兜住）。
+       * 只能用源码断言：三个辅助窗口是各自独立的 BrowserWindow，
+       * 要拿到"它引用了哪些通道"只能读它们的源码文本，没有运行时入口。 */
+      if (known || /^(win|snip|lan):/.test(m[1])) need.add(m[1]);
     }
   }
   assert.ok(need.size >= 5, '只从辅助窗口源码里解析出 ' + need.size + ' 个通道，正则疑似失效（这条断言会空转）');
@@ -303,6 +309,104 @@ t('常量表里的通道：主进程注册 + 渲染层调用 双向都在', () =
   const noCall = entries.filter(([, ch]) => !allRef.has(ch)).map(([k, ch]) => k + '→' + ch);
   assert.deepStrictEqual(noCall, [],
     '这些通道登记在常量表里但渲染层没有调用点（登记了却没人用 = 未来误删风险）：' + noCall.join(', '));
+});
+
+/* ---- 7. 高危门禁表必须与真实通道对账 ----
+ *
+ * 【这条要抓的是「表里留着已经删掉的通道」】
+ * CAP_GATED_CHANNELS 是「通道名 → 高危能力」的映射，按名字查表。
+ * 条目指向一个**并不存在**的通道时不会有任何报错：那个键永远查不到，
+ * 等于一条沉默的死配置。
+ *
+ * 实测就有一条：'clip:gc-images' 在通道被删之后仍留在表里。
+ * 它不构成安全漏洞（没有 handler，调不到），但会让「表里几条、真有通道几条」
+ * 的核对永远差一条，也让后来者以为还有这么个入口。
+ * 更麻烦的是它掩盖了同类的真问题：如果谁**写了门禁却拼错通道名**，
+ * 表现完全一样 —— 高危通道实际没被保护，而表里看着"有"。
+ * 那是安全问题，必须能被抓住，所以两个方向都查：
+ *   ① 表里每一条都必须真在主进程注册过；
+ *   ② 门禁点到的高危通道渲染层要真还在用（防条目与调用点脱节）。
+ * 反方向（某个高危通道漏进表）无法靠名字自动判定，
+ * 继续由 test-destructive2 的逐条断言守着。 */
+t('高危门禁表里没有指向已删除通道的孤儿条目', () => {
+  const src = strip(mainProcSources()[0]);
+  const m = /const CAP_GATED_CHANNELS = \{[\s\S]*?\n\};/.exec(src);
+  assert.ok(m, '找不到 CAP_GATED_CHANNELS（正则失配？）—— 这条断言会空转');
+  const gate = new Map();
+  for (const e of m[0].matchAll(/'([^']+)':\s*'([^']+)'/g)) gate.set(e[1], e[2]);
+  assert.ok(gate.size >= 10, '只解析出 ' + gate.size + ' 条门禁，正则疑似失效（这条断言会空转）');
+
+  /* 锁的是：'clip:gc-images' 这条孤儿门禁 —— 通道删了、条目留着，长期无人发现。
+   * 只能用源码断言：CAP_GATED_CHANNELS 是 main.js 里的字面量对象，
+   * 不起 Electron 就没有 require 路径拿到它；这里要验的正是
+   * 「表里的键与主进程注册的通道名对不对得上」这层文本关系。 */
+  const orphans = [...gate.keys()].filter((ch) => !reg.has(ch));
+  assert.deepStrictEqual(orphans, [],
+    '这些门禁条目指向的通道在主进程并不存在（通道删了，条目忘了删）：\n  ' + orphans.join('\n  '));
+
+  const unused = [...gate.keys()].filter((ch) => !allRef.has(ch) && !pushed.has(ch));
+  assert.deepStrictEqual(unused, [],
+    '这些门禁通道渲染层已经不调用（门禁护着一个没人用的入口，应一并删除）：\n  ' + unused.join('\n  '));
+});
+
+/* ---- 8. 主进程推送的事件必须有渲染层订阅 ----
+ *
+ * 【这条抓的是「死推送」：发了没人收，且两边都不报错】
+ * 主进程 `send('x:y', …)` 与渲染层 `on('x:y', …)` 是两个进程各写一半的约定。
+ * 任一边写错、或者一边改了另一边没跟上，运行时都**完全静默**：
+ *   · 发一个没人监听的事件 → 消息被丢弃，不抛异常
+ *   · 监听一个从不发的事件 → 回调永远不进，也不抛异常
+ * 所以没有任何一条行为测试会因为它们失效而变红。
+ *
+ * 实测就有一条：app:crash-logged 推了两个版本，渲染层 0 个订阅。
+ * 更麻烦的是它让崩溃兜底看起来"已经通知了用户"，掩盖了真实情况
+ * （用户只能在设置页里看到上次异常退出的提示，走的是落盘标记，不是这条推送）。
+ *
+ * 【判据为什么是"渲染层源码里出现过该事件名"】
+ * 这里不要求它必须是 on()：辅助窗口用 .on，主界面用 sub()（内部就是 on），
+ * 有些事件还会被写进常量或用于比较。要求"名字被引用过"足够挡住"完全没人要"，
+ * 又不会因为订阅写法变化而假红。
+ *
+ * 空转防护：解析出的推送事件少于 10 个直接失败 —— 正则一失效，
+ * 这条断言就会变成永远通过的空断言。 */
+t('主进程推送的每个事件都有渲染层订阅（无死推送）', () => {
+  const sent = new Set();
+  for (const s of mainProcSources().map(strip)) {
+    for (const m of s.matchAll(/(?:\bsend|\w*Send)\(\s*'([^']+)'/g)) sent.add(m[1]);
+  }
+  assert.ok(sent.size >= 10,
+    '只解析出 ' + sent.size + ' 个推送事件，正则疑似失效（这条断言会空转）');
+
+  /* 渲染层全部源码：js/ 下递归 + 三个辅助窗口页面 + preload */
+  const files = [];
+  const push = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const q = path.join(dir, e.name);
+      if (e.isDirectory()) { push(q); continue; }
+      if (q.endsWith('.js') || q.endsWith('.html')) files.push(q);
+    }
+  };
+  push(path.join(ROOT, 'js'));
+  for (const f of ['index.html', 'pin.html', 'ruler.html', 'snip.html', 'preload.js']) {
+    const q = path.join(ROOT, f);
+    if (fs.existsSync(q)) files.push(q);
+  }
+  const hay = [];
+  for (const q of files) {
+    /* 用 readSrc 而不是裸读：它会先剥注释。
+     * 这一点很关键 —— 本项目到处在注释里举事件名当例子，
+     * 不剥注释的话这条断言几乎永远不会红。 */
+    hay.push(readSrc(path.relative(ROOT, q).split(path.sep).join('/')));
+  }
+  const joined = hay.join(String.fromCharCode(10));
+
+  /* 锁的是：app:crash-logged 这条死了两个版本的推送 —— 主进程发、渲染层 0 订阅。
+   * 只能用源码断言：要验的是「一条消息的两个端点是否都存在」这种跨文件事实，
+   * 行为断言需要真造一次崩溃并观察渲染层有没有反应 ——
+   * 而"没反应"恰恰是缺陷本身，无法与"正常"区分开。 */
+  const dead = [...sent].filter((ev) => !joined.includes("'" + ev + "'") && !joined.includes('"' + ev + '"'));
+  assert.deepStrictEqual(dead, [],
+    '这些事件主进程在推，但渲染层全项目无订阅（死推送，应删除或补上订阅）：\n  ' + dead.join('\n  '));
 });
 
 console.log(`\n注册 ${reg.size} 个通道，渲染层引用 ${allRef.size} 个，无人调用 ${[...reg].filter((c) => !allRef.has(c)).length} 个`);

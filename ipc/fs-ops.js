@@ -116,10 +116,42 @@ async function writeFileAtomic(dest, data, encoding) {
   }
 }
 handle(CH.FS.WRITE_TEXT, async (e, p, content) => { await writeFileAtomic(p, content, 'utf8'); return true; });
-handle(CH.FS.READ_FILE_B64, async (e, p) => {
+/* 读文件 → base64。
+ *
+ * 【第三个参数 maxBytes：只要文件开头 N 字节】
+ * 调用方「按拍摄时间批量重命名」只需要 EXIF，而 EXIF 的 APP1 段紧跟在 SOI
+ * 之后（EXIF 规范就是这么规定的），几 KB 就够 —— 一张 5MB 的照片 × 500 张，
+ * 整份读进来是 2.5GB IO。
+ *
+ * 【为什么以前这个参数"传了但没用"】
+ * 渲染层早就在传 65536，但 handler 签名只有 (e, p)，第三参被 IPC 丢掉且
+ * 不报错。于是那行"只读文件头 64KB"的注释描述的是一个不存在的优化，
+ * 而下面这个真缺陷（渲染层把 {b64,size} 当字符串）也因此没人发现：
+ * 反正读多读少都走 catch 退路，看不出差别。参数被静默丢弃这种事，
+ * 类型系统看不见、跑起来也不报错，只能靠「注释说的和代码做的是不是一回事」的对账去抓。
+ *
+ * @param {number} [maxBytes] 可选：只读前 N 字节（超出文件大小时按文件大小）
+ */
+handle(CH.FS.READ_FILE_B64, async (e, p, maxBytes) => {
   const st = await fsp.stat(p);
   if (st.size > BIN_LIMIT) throw new Error('文件超过 64MB 限制');
-  return { b64: (await fsp.readFile(p)).toString('base64'), size: st.size };
+  /* 传入非法值（NaN / 负数 / 字符串）一律当"没传"，退回整读 ——
+   * 静默读成 0 字节比多读 5MB 危险得多：前者会让 EXIF 永远解析不出来。 */
+  const want = Number(maxBytes);
+  const head = Number.isFinite(want) && want > 0 ? Math.min(Math.floor(want), st.size) : 0;
+  if (!head || head >= st.size) {
+    return { b64: (await fsp.readFile(p)).toString('base64'), size: st.size };
+  }
+  /* 只读前 head 字节。用 open + read 而不是 readFile + subarray：
+   * 后者仍然把整个文件读进内存，省不了 IO 也省不了内存。 */
+  const fh = await fsp.open(p, 'r');
+  try {
+    const buf = Buffer.alloc(head);
+    const { bytesRead } = await fh.read(buf, 0, head, 0);
+    return { b64: buf.subarray(0, bytesRead).toString('base64'), size: st.size };
+  } finally {
+    await fh.close();
+  }
 });
 handle(CH.FS.WRITE_FILE_B64, async (e, p, b64) => { await writeFileAtomic(p, Buffer.from(b64, 'base64')); return true; });
 handle(CH.FS.STAT, async (e, p) => { const st = await fsp.stat(p); return { size: st.size, mtime: st.mtimeMs, isDir: st.isDirectory() }; });

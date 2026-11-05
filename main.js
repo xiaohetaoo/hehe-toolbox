@@ -431,7 +431,13 @@ const CAP_GATED_CHANNELS = {
    * 现在两者都补上：目标路径过 checkOverwritable，通道归 file-delete 门禁。 */
   'fs:rename': 'file-delete',
   'clip:remove-images': 'file-delete',
-  'clip:gc-images': 'file-delete',
+  /* 曾经还有一条 'clip:gc-images': 'file-delete'。
+   * 那个通道已经删了（孤图清扫改成启动时走 sweepClipImages()），
+   * 但门禁表里留了这一行 —— 门禁是「通道名 → 能力」的映射表，
+   * 条目指向一个不存在的通道时不会报错，只会永远不被查到。
+   * 它不会造成安全漏洞，但会让「表里有多少条、对应多少通道」这种
+   * 对账永远差一条，也让后来者以为还有这么个入口可用。
+   * 现在由 test-ipc-channels 强制对账（表里每条都必须真注册过），删掉才绿。 */
   'fs:clean-junk': 'junk-clean',
   'sys:recycle-empty': 'recycle-empty',
   'proc:kill': 'process-kill',
@@ -4322,27 +4328,34 @@ function recordCrash(kind, payload) {
   }
 }
 
+/* ============ 全局崩溃兜底 ============
+ * 这两处的唯一职责是**落盘**（recordCrash），不再向渲染层推事件。
+ *
+ * 【为什么删掉了那段 webContents.send('app:crash-logged')】
+ * 它推了整整两个版本，而渲染层从来没有任何地方订阅这个事件 ——
+ * 全项目 0 个监听器。也就是说那段代码的作用是：判窗口是否还活着、
+ * 拼消息、跨进程发一条没人收的消息，然后被 try/catch 吞掉。
+ *
+ * 危害不是"白跑几行"。它让这段兜底逻辑看起来**已经通知了用户**，
+ * 于是没人再去想"用户到底怎么知道刚才崩了"。事实是：
+ * 界面上唯一能看到崩溃的入口是「设置 → 崩溃日志」，
+ * 那里读的是 recordCrash 写下的标记文件（见 crashLog 模块），
+ * 与这个 IPC 推送毫无关系。真正在起作用的链路一直只有落盘这一条。
+ *
+ * 【死推送为什么难发现】
+ * 推送和订阅分居两个进程，删掉一边不会有任何报错：
+ * ipcRenderer.on 一个从不发的事件 = 静默无操作；
+ * 发一个没人监听的事件 = 静默丢弃。两边都不会抛，
+ * 也都不影响任何一条行为测试。所以由 scripts/test-ipc-channels.js
+ * 做静态对账：主进程 send 的每个事件名，渲染层必须有对应订阅。
+ */
 process.on('uncaughtException', (err) => {
   // 先落盘再决定后续：写日志可能失败，但不能因为失败就丢掉原始错误信息
-  const written = recordCrash('uncaughtException', { err: err });
+  recordCrash('uncaughtException', { err: err });
   console.error('uncaught', err);
-  if (!written) return;
-  /* 尝试让界面知道（窗口可能还没建好，所以兜底判空）。
-   * 只发事件、不弹模态框：多数异常是局部的，弹框比异常本身更烦人。 */
-  try {
-    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
-      win.webContents.send('app:crash-logged', { kind: 'uncaughtException', message: String(err && err.message || err) });
-    }
-  } catch (e) {}
 });
 
 process.on('unhandledRejection', (reason) => {
-  const written = recordCrash('unhandledRejection', { err: reason });
+  recordCrash('unhandledRejection', { err: reason });
   console.error('unhandledRejection', reason);
-  if (!written) return;
-  try {
-    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
-      win.webContents.send('app:crash-logged', { kind: 'unhandledRejection', message: String(reason && reason.message || reason) });
-    }
-  } catch (e) {}
 });

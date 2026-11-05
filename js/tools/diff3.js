@@ -23,7 +23,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, copyText } = window.ui;
+  const { div, btn, toast, copyText, icon } = window.ui;
   const { invoke } = window.api;
   const MOD = 'office';
   /* 文案取词（与 qr / hash / exif / snip / codec 同一套约定）：中文原文作键，
@@ -113,7 +113,7 @@
         const mismatch = rows.filter((r) => r.kind === 'miss').length;
 
         const head = div('form-row',
-          conflicts ? h('span', { class: 'tag tag-red' }, T('⚠ {n} 处冲突', { n: conflicts })) : h('span', { class: 'tag tag-green' }, T('无冲突')),
+          conflicts ? h('span', { class: 'tag tag-red' }, icon('alert'), T('{n} 处冲突', { n: conflicts })) : h('span', { class: 'tag tag-green' }, T('无冲突')),
           onlyA ? h('span', { class: 'tag tag-blue' }, T('仅 A 改 {n} 行', { n: onlyA })) : null,
           onlyB ? h('span', { class: 'tag tag-blue' }, T('仅 B 改 {n} 行', { n: onlyB })) : null,
           bothSame ? h('span', { class: 'tag tag-green' }, T('两边改成一样 {n} 行', { n: bothSame })) : null,
