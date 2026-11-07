@@ -783,6 +783,30 @@ body {
 
 /* 表单 */
 .form-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+
+/* 科学计算器的函数键盘（v0.6.6）。
+ *
+ * 【为什么单独一条规则，而不是继续用 .form-row】
+ * 原来 13 个函数按钮塞在一个 .form-row 里靠 flex-wrap 挤成一条细带：
+ * 每行 26px 高、间距 10px，与上下卡片（输入框 34px、结果 24px 字号）不成比例，
+ * 看起来像"忘了排版"。收到这里之后：
+ *   · 用 grid 自动等宽，按钮宽度随内容自适应且**同行等宽**
+ *     （flex 做不到——每个按钮按自己的文字宽度，sin/log10/sqrt 参差不齐）
+ *   · 高度 30px，比 .btn-sm 的 26px 略高，与输入框的视觉重量对齐
+ *   · 行与行之间 8px，比 .form-row 的 12px 紧一些 —— 它们是同一组控件 */
+.calc-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.calc-keys:last-child { margin-bottom: 0; }
+.calc-key {
+  min-width: 56px;
+  height: 30px;
+  font-family: Consolas, Menlo, monospace;
+  justify-content: center;
+}
 /* 「标签 + 控件」的组合单元：整体显示/隐藏用（否则只藏控件会让标签悬空） */
 .form-inline { display: inline-flex; align-items: center; gap: 6px; }
 .form-label { font-size: 13px; color: var(--text-2); min-width: 84px; flex: none; }

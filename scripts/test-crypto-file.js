@@ -33,10 +33,13 @@ function extractCryptStream() {
    * tempNames.cryptTmp(outPath)（任务 10 把临时名前缀收进了 lib/temp-names.js）。
    * 抽取这段代码求值时若不给它 tempNames，会直接 'tempNames is not defined'。
    * 注入的是**真实现**（require 真实模块），不是复刻，所以行为与生产一致。 */
-  return new Function('fs', 'fsp', 'path', 'crypto', 'send', 'require', 'tempNames',
+  /* 【必须注入 pathGuard】cryptStream 现在会先过 checkOverwritable / checkFileName
+   * （输出路径闸门，见 test-crypt-guard.js 的说明），不再只有 tempNames 一个外部依赖。
+   * 注入的同样是**真实现**：拒绝理由、错误码、canonical 归一都与生产一致。 */
+  return new Function('fs', 'fsp', 'path', 'crypto', 'send', 'require', 'tempNames', 'pathGuard',
     block + '\nreturn { cryptStream };')(
     fs, fs.promises, path, require('crypto'), () => {}, requireShim,
-    require('../lib/temp-names'));
+    require('../lib/temp-names'), require('../lib/path-guard'));
 }
 
 t('1a crypto：加密 0~16 字节的文件，全部能原样解回来', async () => {

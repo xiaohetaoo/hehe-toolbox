@@ -27,9 +27,18 @@
 
   /* 秒数 → mm:ss.mmm。播放器与输入框共用，保证两边永远同一个格式。 */
   function fmtClock(sec) {
-    const s = Math.max(0, Number(sec) || 0);
-    const m = Math.floor(s / 60);
-    const rest = s - m * 60;
+    /* 【先取整到毫秒，再拆分「分:秒」】
+     * 旧写法先按秒拆分、再对余数 toFixed(3)：
+     *   fmtClock(59.9996)  → m=0, rest=59.9996 → toFixed(3)='60.000' → '00:60.000'
+     *   fmtClock(119.9996) → '01:60.000'
+     * 「秒 = 60」不是合法读数，用户会以为裁切点算错了。
+     * toFixed 自己会四舍五入，但进位只发生在被格式化的那个片段里、
+     * 没有传回分钟 —— 所以必须在拆分**之前**把总秒数归到毫秒精度。 */
+    const raw = Math.max(0, Number(sec) || 0);
+    const totalMs = Math.round(raw * 1000);
+    const m = Math.floor(totalMs / 60000);
+    const restMs = totalMs - m * 60000;
+    const rest = restMs / 1000;
     const ss = rest.toFixed(3).padStart(6, '0');
     return String(m).padStart(2, '0') + ':' + ss;
   }
@@ -217,35 +226,45 @@
       async function run() {
         if (running) return;
         if (!picker.count) return toast('请先选择视频', 'warn');
-        const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
-        if (!st.ffmpeg) {
+        /* 【防重入标志必须在第一个 await 之前置位】
+         * 本工具比另外两个媒体工具更危险：running=true 原来排在
+         * FFMPEG.STATUS 与 FS.UNIQUE_PATH **两次** IPC 往返之后，
+         * 加上参数校验，窗口期更长。连点会起两个 ffmpeg 进程写同一个输出目录，
+         * 而模块级 runJobId 只留得下后一个 —— 取消只能杀掉一个，
+         * 另一路继续跑完，用户看到"取消了但文件还在变大"。
+         * 参数校验失败时也要复位，所以统一用 try/finally 收口。 */
+        running = true; goBtn.disabled = true;
+        let unsub = null;
+        try {
+          const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
+          if (!st.ffmpeg) {
           toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
           window.App.openTool('ffmpeg-setup');
           return;
         }
-        const src = picker.paths[0];
-        const start = parseClock(startIn.value);
-        const du = parseClock(durIn.value);
-        if (!isFinite(start) || start < 0) return toast('起点无效，请用 mm:ss.mmm 或秒数', 'warn');
-        if (!isFinite(du) || du <= 0) return toast('时长无效，请用 mm:ss.mmm 或秒数', 'warn');
-        if (meta && meta.duration > 0 && start >= meta.duration) {
+          const src = picker.paths[0];
+          const start = parseClock(startIn.value);
+          const du = parseClock(durIn.value);
+          if (!isFinite(start) || start < 0) return toast('起点无效，请用 mm:ss.mmm 或秒数', 'warn');
+          if (!isFinite(du) || du <= 0) return toast('时长无效，请用 mm:ss.mmm 或秒数', 'warn');
+          if (meta && meta.duration > 0 && start >= meta.duration) {
           return toast('起点超过了视频长度（' + fmtClock(meta.duration) + '）', 'warn');
         }
 
-        /* 输出路径：源文件名 + _trim + 原扩展名，走 fs:unique-path 保证不覆盖。
-         * 【为什么保留原扩展名】copy 模式下流复制不改容器格式，
-         * 把 mkv 改成 mp4 会得到一个扩展名说谎的文件；
-         * encode 模式下输出永远是 mp4 容器，所以那种情况才换扩展名。 */
-        const mode = modeSel.value;
-        const base = src.replace(/\.[^.\\/]+$/, '');
-        const ext = mode === 'copy' ? (src.match(/\.[^.\\/]+$/) || ['.mp4'])[0] : '.mp4';
-        const out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, base + '_trim' + ext);
+          /* 输出路径：源文件名 + _trim + 原扩展名，走 fs:unique-path 保证不覆盖。
+           * 【为什么保留原扩展名】copy 模式下流复制不改容器格式，
+           * 把 mkv 改成 mp4 会得到一个扩展名说谎的文件；
+           * encode 模式下输出永远是 mp4 容器，所以那种情况才换扩展名。 */
+          const mode = modeSel.value;
+          const base = src.replace(/\.[^.\\/]+$/, '');
+          const ext = mode === 'copy' ? (src.match(/\.[^.\\/]+$/) || ['.mp4'])[0] : '.mp4';
+          const out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, base + '_trim' + ext);
 
-        running = true; goBtn.disabled = true; cancelBtn.disabled = false;
-        picker.setLocked(true); prog.show(); prog.set(0);
-        status.textContent = '处理中…'; status.style.color = '';
-        runJobId = null;
-        const unsub = window.JobPrefix.subscribe('vtr', (d) => {
+          cancelBtn.disabled = false;
+          picker.setLocked(true); prog.show(); prog.set(0);
+          status.textContent = '处理中…'; status.style.color = '';
+          runJobId = null;
+          unsub = window.JobPrefix.subscribe('vtr', (d) => {
           const jid = String(d.id || '');
           if (!runJobId) runJobId = jid; else if (jid !== runJobId) return;
           try {
@@ -253,7 +272,7 @@
             if (j.pct != null) prog.set(j.pct);
           } catch (e) {}
         });
-        if (window.App && App.onCleanup) App.onCleanup(unsub);
+          if (window.App && App.onCleanup) App.onCleanup(unsub);
         try {
           const r = await invoke(Channels.CHANNELS.FFMPEG.TRIM, {
             input: src, out, start, duration: du, mode
@@ -276,9 +295,14 @@
           status.textContent = '失败：' + e.message;
           status.style.color = 'var(--danger)';
           toast(e.message, 'error');
+        }
         } finally {
+          /* 复位必须无条件执行 —— 包括"参数无效"这类早退路径，
+           * 否则按钮会永久禁用、用户以为工具坏了。 */
           running = false; goBtn.disabled = false; cancelBtn.disabled = true;
-          picker.setLocked(false); prog.hide(); unsub();
+          try { picker.setLocked(false); } catch (e) {}
+          try { prog.hide(); } catch (e) {}
+          if (unsub) { try { unsub(); } catch (e) {} }
         }
       }
 

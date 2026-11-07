@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; child-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; font-src 'self' data:; connect-src 'self' https: http: blob:; media-src 'self' blob: file:">
+        content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; child-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; font-src 'self' data:; connect-src 'self' https: http: blob:; media-src 'self' blob: file:">
   <title>核核工具箱</title>
   <link rel="stylesheet" href="css/app.css">
   <link rel="icon" href="assets/icon32.png">
@@ -39,6 +39,22 @@
        的拼音排序做区间判定，不背拼音数据表。
        必须排在 js/registry.js 之前：它在定义时就会读 window.Pinyin。 -->
   <script src="lib/pinyin.js"></script>
+  <!-- lib/ocr-guard.js：OCR 的超时与失败归因（UMD 同上，挂到 window.OcrGuard）。
+       两个 OCR 工具共用 —— tesseract.js 的 recognize 在 wasm 被拦/语言包下载
+       卡住时**永不 settle**，界面会永久停在「初始化 OCR 引擎…」。
+       写两份必然分叉，所以收成一份；主进程测试也能 require 它验归因逻辑。
+       必须排在 js/tools/media/*.js 之前。 -->
+  <script src="lib/ocr-guard.js"></script>
+  <!-- lib/csv-table.js：CSV 表头 → 对象数组的组装（UMD 同上，挂 window.CsvTable）。
+       抽出来是为了修一个静默丢列的缺陷：表头里有 `__proto__` 时，
+       `o[表头] = 值` 改的是原型而不是加属性，那一列整个消失。
+       必须排在 js/tools/text-tools.js 之前（那个工具在 fire() 里就要用它）。 -->
+  <script src="lib/csv-table.js"></script>
+  <!-- lib/net-error.js：网络失败中文归因（UMD 同上，挂 window.NetError）。
+       为什么需要它：fetch 失败时 e.message 恒为 "fetch failed"（实测），
+       DNS 错、端口没开、超时三种情况的原文**完全一样** ——
+       中文界面里冒出一句英文，用户既不知道原因也不知道下一步做什么。 -->
+  <script src="lib/net-error.js"></script>
   <!-- IPC 通道名常量表：工具文件在定义时就会引用 window.Channels，
        所以必须排在 ui.js / registry.js / 各 tools/*.js 之前 -->
   <script src="js/channels.js"></script>

@@ -55,13 +55,36 @@ for (const f of AUX) {
   });
 }
 
-/* ---- 2. 主窗口仍保留 unsafe-eval（计算器需要，属已知取舍） ---- */
-t('index.html 的 CSP 仍在（记录已知取舍）', () => {
+/* ---- 2. 主窗口的 CSP：必须允许 wasm，但不许放开 eval ---- */
+t('index.html 的 CSP 允许 WebAssembly，且仍然禁止 unsafe-eval', () => {
   const s = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-  /* 锁的是：「index.html 的 CSP 仍在（记录已知取舍）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/Content-Security-Policy/.test(s), 'index.html 应有 CSP');
+  const m = /<meta[^>]*Content-Security-Policy[^>]*content="([^"]+)"/i.exec(s);
+  assert.ok(m, 'index.html 应有 CSP');
+
+  /* 锁的是：两个 OCR 工具在打包版与开发版**完全不可用**那条回归。
+   * CSP 原先是 `script-src 'self' blob:` —— tesseract.js 的 worker 只会加载
+   * wasm 版 core，识别时必然调用 WebAssembly.Module/instantiate，于是被
+   * CSP 直接拒绝。而 recognize 的 promise 在 worker 内部抛错时**永不 settle**，
+   * 界面永久停在「初始化 OCR 引擎…」，比直接报错更难归因。
+   *
+   * 【为什么断言 'wasm-unsafe-eval' 而不是 'unsafe-eval'】
+   * 后者会重新开放任意字符串求值，把 v0.4.x 起的加固全抵消掉；
+   * 'wasm-unsafe-eval' 是专为 WebAssembly 设计的窄指令，只开 wasm 编译。
+   * 所以这里两个方向都断言：必须有 wasm-unsafe-eval、必须没有 unsafe-eval。
+   * 这条是纯静态断言，**不依赖 Electron** —— test-aux-csp 的真机部分在
+   * 无桌面环境会整段 SKIP，但这条必须永远跑得到。 */
+  /* 锁的是：CSP 不放行 wasm → 两个 OCR 工具完全不可用且静默卡死。
+   * 只能用源码断言：这是配置文本里有没有那个许可；真机行为由 test-csp-wasm 的 E1/E2 覆盖。 */
+  assert.ok(/'wasm-unsafe-eval'/.test(m[1]),
+    "主窗口 script-src 缺少 'wasm-unsafe-eval' —— tesseract.js 的 wasm core 无法编译，两个 OCR 工具会静默卡死");
+  /* 锁的是：修 wasm 时顺手加 'unsafe-eval'，把 v0.4.x 起的加固一次性抵消掉。
+   * 这是上一条的配对 —— 少了它，把 CSP 改成 'unsafe-eval' 也能让上面那条绿。 */
+  assert.strictEqual(/['"\s]unsafe-eval['"\s]/.test(m[1]), false,
+    "主窗口不该有 'unsafe-eval'（那会重新开放任意字符串求值；wasm 只需要 'wasm-unsafe-eval'）");
+  /* 锁的是：把许可写进 default-src 但 script-src 里没有 ——
+   * script-src 一旦出现就完全覆盖 default-src，写错位置等于没写。 */
+  assert.ok(/script-src[^;]*'wasm-unsafe-eval'/.test(m[1]),
+    "'wasm-unsafe-eval' 必须落在 script-src 里（写进 default-src 不一定覆盖 script-src）");
 });
 
 /* ---- 3. 真机：用 Electron 打开三个窗口，确认脚本执行 ---- */

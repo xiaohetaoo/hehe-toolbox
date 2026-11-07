@@ -43,8 +43,22 @@ function createIpcCtx(hosts) {
     get isWin() { return hosts.getIsWin(); },
     get isMac() { return hosts.getIsMac(); },
     /**
-     * 向渲染层推送事件。语义与 main.js 原来的 send() **完全一致**：
-     * 窗口不存在或已销毁时静默丢弃（不抛、不排队）。
+     * 向渲染层推送事件。**这只是「无调用者时的兜底」，业务推送不要用它。**
+     *
+     * 【v0.6.0 之后它的语义变了，别被函数名骗了】
+     * 它做的是「直接发主窗口」——不看 ALS、不判调用者是谁。
+     * 而 main.js 现在的 send() 是三档路由（lib/ipc-route.js）：
+     *   · ALS 里有调用者且还活着 → 发给那个窗口
+     *   · 没有调用者（托盘/定时/启动期）→ 回退主窗 ← **只有这一档等价于本函数**
+     *   · 调用者已被销毁 → 丢弃，不回退（回退会制造串扰）
+     *
+     * 所以：**任何跟着某个窗口任务走的推送（job:stream / job:progress），
+     * 都必须用 main.js 注入的 send，不能用 ctx.send** —— 后者会让独立工具
+     * 窗口收不到自己的进度，反而让主窗把它认领成自己的任务。
+     * 本函数保留，只是为了给「确实只想发主窗」的场景一个不误导的入口。
+     *
+     * 【不要再让 ctx.send 反向调用 main.js 的 send()】main.js 的 send
+     * 本身以 ipcCtx.send 作为兜底，那样会成环。
      */
     send(ev, data) {
       const w = hosts.getWin();

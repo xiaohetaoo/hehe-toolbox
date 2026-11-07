@@ -768,6 +768,14 @@
       /* 包一层 .tab-label：省略号只能做在文本块上，
        * 给 .tab（flex 容器）加 text-overflow 不会生效。 */
       tab.appendChild(h('span', { class: 'tab-label' }, TN(t)));
+      /* 【title 提示：图标 + 16px 文字时唯一的全名来源】
+       * 标签压缩成 flex: 0 1 auto 之后，8 个标签时 .tab-label 实测只有
+       * 16px（一个字都放不下），只剩图标。css/app.css 的注释明确写了
+       * 「配合 title 悬停提示读全名」—— 但这里一直只设了 aria-label。
+       * aria-label 只对读屏器生效，鼠标悬停是**看不到任何东西**的，
+       * 于是窄标签对普通用户就是一堆无法分辨的图标。
+       * 两者都要有：aria-label 给读屏器，title 给鼠标。 */
+      tab.title = TN(t);
       const c = h('span', { class: 'tab-close' }, icon('x'));
       /* 关闭按钮是 span + click，同样进不了 Tab 序列。
        * 它的读屏名称必须带上是**哪个**标签 —— 一屏可能开着五六个标签，
@@ -947,25 +955,44 @@
       requestAnimationFrame(applyGhostPos);
     };
 
-    const clearVisual = () => {
-      if (dragState && dragState.tabEl) {
-        dragState.tabEl.classList.remove('tab-drag-out');
-        dragState.tabEl.classList.remove('tab-reorder');
+    /* 清掉拖拽留下的视觉状态。
+     *
+     * 【必须显式接 st，不能读外层的 dragState】
+     * finish / onCancel 的顺序都是「先置空 dragState，再清理」，所以函数执行时
+     * dragState 早已是 null —— 读它的话两个 class 一个也清不掉。实测到的残留：
+     *   · 拖出成窗口（不拖回）→ 松手后标签仍是 tab-drag-out（半透明 + 虚线框），
+     *     而 finish 的拖出分支 return 前不调 renderTabs，没有任何重建会抹掉它；
+     *   · 重排但落点没变（changed=false 提前 return）→ tab-reorder 残留，
+     *     标签永久 opacity 0.6 且 z-index 压在邻项之上；
+     *   · pointercancel → 同样残留。
+     * 只有「重排成功」那条路径因为调了 renderTabs() 重建 DOM 才碰巧清掉 ——
+     * 所以这个 bug 在开发时极难遇到，用户却会稳定撞上。
+     *
+     * 残留还会级联：下次拖同一个标签时 onDown 重建 dragState 但不清旧 class，
+     * 一旦进入重排，标签就同时带 tab-drag-out 与 tab-reorder ——
+     * 正是注释里反复强调「两套视觉必须一眼分开」要避免的状态。
+     *
+     * @param {object|null} st 本次拖拽的状态快照；拿不到（unsub）时传 null，
+     *   走下面的兜底扫描。
+     */
+    const clearVisual = (st) => {
+      const tabEl = st && st.tabEl;
+      if (tabEl) {
+        tabEl.classList.remove('tab-drag-out');
+        tabEl.classList.remove('tab-reorder');
+      }
+      /* 兜底：unsub 时拿不到 st，把标签栏里所有标签扫一遍。
+       * 正常路径不会有多余标签带这两个 class，扫描的代价可以忽略
+       * （标签数量是个位数），而漏掉一个就又是永久残留。 */
+      if (!tabEl && bar && typeof bar.querySelectorAll === 'function') {
+        for (const el of bar.querySelectorAll('.tab')) {
+          el.classList.remove('tab-drag-out');
+          el.classList.remove('tab-reorder');
+        }
       }
       hideDragGhost();
       hideDropMarker();
       bar.classList.remove('dragging');
-    };
-
-    /* 判断指针是否已经离开标签栏。
-     * 用标签栏的**矩形**而不是它自身的事件：标签栏只有 36px 高，
-     * 且 overflow-x 可能让它比可视区还宽，元素本身的事件目标并不可靠。
-     * 留 2px 容差 —— 贴边的那一瞬间不该被算成"出界"。
-     */
-    const isOutsideBar = (x, y) => {
-      const r = bar.getBoundingClientRect();
-      const pad = 2;
-      return y < r.top - pad || y > r.bottom + pad || x < r.left - pad || x > r.right + pad;
     };
 
     const onDown = (e) => {
@@ -1001,20 +1028,35 @@
       /* ---- ① 先判"是否要拖出" ----
        * 四个方向一视同仁：指针离开标签栏就算拖出。
        *
-       * 【为什么纵向要加阈值、横向不加】
+       * 【为什么纵向要 40px 阈值、横向只要越过边界】
        * 标签栏只有 36px 高。往下拖 20px 就已经出界了，可"手抖一下"也能到
-       * 20px —— 不设阈值会让轻轻一蹭就弹窗。横向出界（左/右）不一样：
-       * 那意味着指针已经压到侧栏或窗口边缘上了，跨越的距离天然就短
-       * （标签栏两侧只有 16px 内边距），意图明确得多。
+       * 20px —— 不设阈值会让轻轻一蹭就弹窗。
+       * 横向出界（左/右）不一样：指针已经压到侧栏或窗口边缘上了，
+       * 跨越的距离天然就短（标签栏两侧只有 16px 内边距），意图明确得多。
+       * 所以横向的判据是「越过 bar 的左/右边界」，不再额外要求 40px 位移。
+       *
+       * 【为什么不能写成 `adx > TAB_DRAG_THRESHOLD || ady > ...`】
+       * 那会把"横向出界但只移了 20px"漏进重排分支：标签变半透明、画出落点
+       * 竖线，松手后如果落点恰好是原位就什么都不发生 —— 用户想"往左拖出去"，
+       * 得到的是闪一下就恢复原状。实测过：标签栏 (0,0)-(600,36)、从 x=20 起手
+       * 拖到 x=-4，adx 只有 24，旧写法 out 恒为 false。
        *
        * 【为什么保留"纵向深拖"这条路】
-       * 指针拖到窗口外再拖回来时，isOutsideBar 那一刻可能已经判过 out 了；
+       * 指针拖到窗口外再拖回来时，出界那一刻可能已经判过 out 了；
        * 这条只处理"指针还在标签栏矩形内、但纵向已经拖得很深"的边界情况，
        * 与 v0.6.4 的行为保持连续 —— 老用户的手势不能突然失灵。
        */
-      const outside = isOutsideBar(e.clientX, e.clientY);
+      const barRect = bar.getBoundingClientRect();
+      const outLeft = e.clientX < barRect.left;
+      const outRight = e.clientX > barRect.right;
+      const outVert = e.clientY < barRect.top || e.clientY > barRect.bottom;
+      const outside = outLeft || outRight || outVert;
+      /* 横向越界（含"已越过左右边界"）只需越过重排阈值即可认定意图；
+       * 纵向越界要 40px 兜底（防手抖）；矩形内只认纵向深拖。 */
+      const horizontalOut = (outLeft || outRight) && adx > TAB_REORDER_THRESHOLD;
+      const verticalOut = outVert && ady > TAB_DRAG_THRESHOLD;
       const nowOut = outside
-        ? (ady > TAB_DRAG_THRESHOLD || adx > TAB_DRAG_THRESHOLD)
+        ? (horizontalOut || verticalOut)
         : (ady > TAB_DRAG_THRESHOLD && ady > adx * 2);
 
       if (nowOut !== st.out) {
@@ -1078,6 +1120,24 @@
         } else {
           hideDragGhost();
           bar.classList.remove('dragging');
+          /* 【拖回标签栏时必须复位 ghostReady，否则再拖出去就永远没有预览】
+           * hideDragGhost 会把浮层 innerHTML 清空、display 设 none，但 ghostReady
+           * 还停在 true。再次越过阈值时 `if (!st.ghostReady)` 为假 —— 截图分支
+           * 被整个跳过；而 applyGhostPos 里又有「display === 'none' 就 return」，
+           * 于是浮层既不重新截图、也不重新显示。
+           * 用户看到的是：标签半透明 + 虚线框都在，唯独没有跟着指针的预览图。
+           *
+           * 触发路径很自然：拖出去时犹豫了一下、拖回来又想拖出去；
+           * 或者先试着往上拖、觉得不对又拖下去。
+           *
+           * 【为什么是复位标志，而不是改判"浮层里有没有内容"】
+           * 两种写法都能修，但复位标志更直接：它表达的是"这一轮拖出还没截图"。
+           * 而"有没有内容"会受截图失败影响 —— 截图失败时浮层里是降级卡片
+           * （有内容），那就不该再截一次；反之成功时有一张图，也不该再截。
+           * 两者语义不同，混用会让"截图失败后重试"的行为变得难以推理。
+           * 正在飞的那次截图回调自带 `dragState !== st || !st.out` 校验，
+           * 拖回后它会自行作废，不需要在这里额外取消。 */
+          st.ghostReady = false;
         }
       }
 
@@ -1111,7 +1171,9 @@
       if (!dragState || (e && e.pointerId !== dragState.pointerId)) return;
       const st = dragState;
       dragState = null;
-      clearVisual();
+      /* 顺序是硬的：先存 st 再置空，然后把 st 交给 clearVisual ——
+       * 传进去而不是让它读全局，因为全局这一刻已经是 null（见 clearVisual 的说明）。 */
+      clearVisual(st);
       if (!st.toolId) return;
 
       /* 松手分三种结果：
@@ -1138,7 +1200,12 @@
        * renderTabs 足够：它只重建标签栏 DOM，不动内容区。 */
       renderTabs();
     };
-    const onCancel = () => { dragState = null; clearVisual(); };
+    const onCancel = () => {
+      const st = dragState;
+      dragState = null;
+      /* 同样要把 st 传进去 —— 置空之后再读全局是读不到的。 */
+      clearVisual(st);
+    };
 
     bar.addEventListener('pointerdown', onDown);
     document.addEventListener('pointermove', onMove);
@@ -1154,10 +1221,12 @@
       document.removeEventListener('pointerup', finish);
       document.removeEventListener('pointercancel', onCancel);
       try { delete bar.__heheTabDrag; } catch (e) { bar.__heheTabDrag = false; }
+      /* 拖拽可能正在进行中（用户在拖的时候切了语言），所以先取快照再清。
+       * 快照为空时 clearVisual 会走兜底扫描，把标签栏里所有标签的两个 class
+       * 都扫掉 —— 整个壳都要换掉了，任何残留都该抹掉。 */
+      const st = dragState;
       dragState = null;
-      hideDragGhost();
-      hideDropMarker();
-      try { bar.classList.remove('dragging'); } catch (e) {}
+      clearVisual(st);
     };
   }
 

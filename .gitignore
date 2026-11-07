@@ -48,3 +48,5 @@ reports/
 .gm.txt
 .m.txt
 .msg.txt
+# 真机测试与排查时用的临时探针/截图/日志目录（349 个一次性文件，不进仓库）
+.realrun/

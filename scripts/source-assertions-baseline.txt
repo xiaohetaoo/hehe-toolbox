@@ -25,7 +25,9 @@ scripts/test-aux-csp.js | A=4 | B=0 | legacy-source-assertion
 scripts/test-aux-windows-csp.js | A=4 | B=8 | legacy-read
 scripts/test-channels-sync.js | A=2 | B=1 | legacy-read
 scripts/test-click-sweep.js | A=1 | B=0 | e2e-fixture
+scripts/test-ui-dpi-fixes.js | A=1 | B=0 | exact:那 1 处读的是本测试在 %TEMP% 里让 Electron 子进程写出的探测结果 JSON（运行时数据，不是项目源码，没有剥注释的语义）；对 ruler-2.js / main.js / convert.js / app.css 的 4 处源码读取已全部改用 readSrc
 scripts/test-crash-log.js | A=1 | B=0 | exact:那 1 处是 readFile() 助手，读的是测试自己在 %TEMP% 里刚写的 crash.log（运行时日志正文，不是项目源码，没有剥注释的语义）；另有 3 处直接调用已改成走这个助手；对 main.js 的 4 条接线断言走 readMain()，已写「锁的是」
+scripts/test-csp-wasm.js | A=3 | B=0 | exact:三处裸读都是为"原样检查文本"服务的 —— index.html 根本不是 JS，stripComments 对它没有意义（要验的是 CSP 属性原文）；两个 OCR 工具那两处只判"有没有调用 OcrGuard.withTimeout/failReason"，剥不剥注释结果相同（注释里也不该出现该调用）。真机 CSP 行为由本文件的 E1/E2 用 Electron 实测覆盖
 scripts/test-keyboard-a11y.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本的断言全部是真实渲染后的 DOM/样式探测，没有源码匹配断言
 scripts/test-improvements-a.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本全部是真实渲染后的事件/DOM 断言，没有源码匹配断言
 scripts/run-tests.js | A=1 | B=0 | exact:这是测试运行器本身，必须读测试脚本的原始文本才能判断它是否依赖 Electron（分组依据）。它不做任何"断言实现形态"的事，因此不存在需要剥注释的问题；上面的 electronNeeded 三条匹配已写「锁的是」
@@ -55,6 +57,7 @@ scripts/test-i18n-coverage.js | A=10 | B=18 | legacy-source-assertion
 scripts/test-ipc-channels.js | A=4 | B=0 | legacy-read
 scripts/test-ipc-ctx.js | A=2 | B=0 | legacy-source-assertion
 scripts/test-ipc-split.js | A=3 | B=0 | legacy-source-assertion
+scripts/test-job-ownership.js | A=1 | B=0 | exact:那 1 处 readFileSync 读的是 main.js，但**不能**用 harness 的 readMain —— 它对同一文件有模块级缓存，本文件顶部已调用过一次，再调拿到的是修改前的快照（实测因此让 JO7 假红）。这里必须从磁盘重读再 stripComments
 scripts/test-job-prefix-sync.js | A=5 | B=6 | legacy-source-assertion
 scripts/test-job-stream-isolation.js | A=2 | B=0 | legacy-read
 scripts/test-job-subscribe.js | A=2 | B=0 | legacy-read
@@ -99,3 +102,5 @@ scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
 scripts/test-version.js | A=3 | B=0 | exact:三处读的都是用例自己在 %TEMP% 里生成的 package.json 副本（验证 --write 是否落盘、是否只改一行），不是项目源码
 scripts/version.js | A=3 | B=0 | build-meta
+scripts/test-crypt-guard.js | A=1 | B=0 | exact:那 1 处 fs.readFileSync 读的是用例自己在 %TEMP% 里刚写的 a.txt / b.txt（CS5 用来实测「rename 到已存在目标会静默覆盖」这个前提），不是项目源码；换成 readSrc 无从谈起
+scripts/test-spawn-detached.js | A=1 | B=0 | exact:那 1 处读的是**主进程树的每一个文件**（main.js + ipc/*.js，文件名在循环里动态拼出），要的是"这一批文件里还有没有裸 spawn"。readSrc/readMain 都不接受动态清单 —— readMain 只返回拼接后的一整串，行号与文件对不上；而这条断言报错时必须指出**是哪个文件**漏改（历史回归：只修 main.js、ipc/media-ffmpeg.js 的 6 处 taskkill 没动，断言却绿）。所以这里必须逐文件读，并自己 stripComments 后扫描

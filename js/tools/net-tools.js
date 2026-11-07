@@ -46,7 +46,10 @@
       const pubBtn = btn('查询公网 IP（联网）', 'btn-secondary btn-sm', async () => {
         pubEl.textContent = '查询中…';
         try { const r = await invoke(Channels.CHANNELS.NET.PUBLIC_IP); pubEl.textContent = r.ip; }
-        catch (e) { pubEl.textContent = '查询失败：' + e.message; }
+        /* 【不能用 e.message】fetch 失败时它恒为 "fetch failed"（实测），
+         * 真正的原因在 e.cause.code 里。用户看到中文界面里一句英文，
+         * 既不知道是 DNS 还是端口，也不知道下一步做什么。 */
+        catch (e) { pubEl.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message); }
       });
       const pubEl = h('span', { class: 'mono', style: { userSelect: 'text' } }, '-');
       invoke(Channels.CHANNELS.NET.INTERFACES).then(r => {
@@ -66,7 +69,11 @@
           ]));
         }
         result.appendChild(card);
-      }).catch(e => { result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; });
+      }).catch(e => {
+        /* 读网卡失败通常是 PowerShell/ipconfig 层的问题，原文可能是英文；
+         * NetError 认不出时会把原文附在建议里，至少不会只剩一句"失败"。 */
+        result.innerHTML = `<div class="field-err">${escapeHtml(window.NetError ? window.NetError.text(e) : e.message)}</div>`;
+      });
       function icon(n) { const t = document.createElement('span'); t.innerHTML = window.iconSvg(n); return t.firstChild; }
       page.appendChild(div('card', div('card-title', '公网 IP（需主动联网查询）'), pubBtn, ' ', pubEl));
       page.appendChild(result);
@@ -315,7 +322,12 @@
           const r = await invoke(Channels.CHANNELS.NET.TCP_TEST, hostIn.value.trim(), parseInt(portIn.value), 5000);
           result.style.color = r.open ? 'var(--success)' : 'var(--danger)';
           result.textContent = r.open ? `✓ 端口开放（连接耗时 ${r.ms}ms）` : '✗ 端口不通或被拒绝';
-        } catch (e) { result.textContent = '✗ ' + e.message; result.style.color = 'var(--danger)'; }
+        } catch (e) {
+          /* 主进程这一路把 errno 写进了 message（connect ECONNREFUSED …），
+           * 但仍是英文。统一交给 NetError 说中文。 */
+          result.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message);
+          result.style.color = 'var(--danger)';
+        }
       }
       page.appendChild(div('card', div('card-title', '测试目标'),
         div('form-row', hostIn, h('span', { class: 'form-label', style: { minWidth: 'auto' } }, ':'), portIn,
@@ -374,7 +386,10 @@
             ],
             rows: r.open.map(p => ({ p, s: SERVICES[p] || '未知' }))
           }));
-        } catch (e) { status.textContent = '✗ ' + e.message; }
+        } catch (e) {
+          /* 端口扫描同样走 net 层（NET.SCAN），失败原文是英文 errno 串 */
+          status.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message);
+        }
       }
       page.appendChild(div('card', div('card-title', '扫描目标'),
         div('form-row', h('span', { class: 'form-label' }, '主机'), hostIn, ' ', preset),
@@ -486,7 +501,10 @@
           else upEl.textContent = mbps.toFixed(1);
           status.textContent = `完成：${fmtBytes(r.bytes)} / ${r.elapsed.toFixed(1)}s`;
           if (r.samples && r.samples.length) { samples = r.samples.map(s => s.mbps); chart.draw(samples, { max: Math.max(10, ...samples) * 1.3 }); }
-        } catch (e) { status.textContent = '✗ ' + e.message; }
+        } catch (e) {
+          /* 测速走 fetch，失败时 e.message 是 "fetch failed" —— 换成中文归因 */
+          status.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message);
+        }
         finally { downBtn.disabled = upBtn.disabled = false; if (unsub) unsub(); }
       }
       page.appendChild(div('card', div('card-title', '带宽测试'),
@@ -591,6 +609,13 @@
         unsub = window.JobPrefix.subscribe('dlg', (d) => {
           try {
             const j = JSON.parse(d.data);
+            /* 【取消按钮不能依赖 invoke 返回值】
+             * jobId 要等 net:download 返回（主进程真的开始下载）才有，
+             * 而第一条 job:stream 往往比这个返回值更早到。
+             * 不在事件里认领的话，那段时间点「取消」毫无反应 ——
+             * 用户看到进度在动、按钮却是死的。
+             * 认领后 job:kill 立刻有对象可杀（与 av-convert.js 同一做法）。 */
+            if (!jobId) jobId = d.id;
             if (jobId && d.id !== jobId) return;
             if (j.pct != null) { prog.set(j.pct); status.textContent = `${(j.mb || 0).toFixed(1)} / ${(j.totalMB || 0).toFixed(1)} MB（${(j.pct || 0).toFixed(0)}%）`; }
             if (j.label && j.pct == null) status.textContent = j.label;
@@ -602,8 +627,33 @@
             }
           } catch (e) {}
         });
-        const r = await invoke(Channels.CHANNELS.NET.DOWNLOAD, { url, out });
-        jobId = r.id;
+        /* 【invoke 必须有收尾，否则失败后界面永久卡死】
+         * 主进程在两种情况下会抛错：保存路径命中 checkOverwritable（选了系统关键目录），
+         * 或 fs.existsSync(out) 为真（目标已存在）。最容易踩的是第二条 ——
+         * 保存路径留空时 out 由 url 推导，**同一个 URL 下载第二次必然撞上**。
+         * 原来这里是裸 await：抛错后
+         *   · 产生一个未捕获 rejection；
+         *   · 状态永远停在「连接中…」；
+         *   · 开始按钮永久置灰（没有 finally 复位）；
+         *   · 取消按钮因为 jobId 还是 null 而完全无效；
+         *   · unsub 泄漏到下一次进页面（切页时 onCleanup 已跑过）。
+         * 现在把整段包进 try/finally，失败路径也要把界面还回可用状态。 */
+        try {
+          const r = await invoke(Channels.CHANNELS.NET.DOWNLOAD, { url, out });
+          jobId = r.id;
+        } catch (err) {
+          status.textContent = '✗ ' + (window.api.errText ? window.api.errText(err) : (err && err.message) || '下载失败');
+          toast('下载失败：' + ((err && err.message) || err), 'error');
+        } finally {
+          /* 无论成功失败都复位：这里的「成功」指的是**任务已受理**，
+           * 真正的完成由 job:stream 的 j.done 分支处理（那时才隐藏进度条）。
+           * 失败时任务根本没起来，按钮必须恢复可点，否则用户改完路径也点不动。 */
+          if (!jobId) {
+            startBtn.disabled = false; stopBtn.disabled = true;
+            prog.hide();
+            if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+          }
+        }
         if (pageDead && jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       }
       page.appendChild(div('card', div('card-title', '下载'),

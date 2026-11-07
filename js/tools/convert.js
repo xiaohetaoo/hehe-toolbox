@@ -204,8 +204,7 @@
       const fns = [
         ['sin', 'sin('], ['cos', 'cos('], ['tan', 'tan('], ['asin', 'asin('], ['log', 'log10('], ['ln', 'ln('],
         ['sqrt', 'sqrt('], ['abs', 'abs('], ['π', 'pi'], ['e', 'e'], ['^', '^'], ['(', '('], [')', ')']
-      ];
-      /* 求值交给 lib/expr-eval.js（递归下降解析器，不执行任何代码）。
+      ];      /* 求值交给 lib/expr-eval.js（递归下降解析器，不执行任何代码）。
        * 原实现是 Function('return (...)')()，为此整站 CSP 必须开 unsafe-eval；
        * 现在可以彻底关掉。lib 通过 preload 的 evalExpr 暴露（contextIsolation 限制）。 */
       function evaluate(expr) {
@@ -239,7 +238,15 @@
         } catch (err) {
           result.textContent = '';
           result.style.color = 'var(--danger)';
-          result.textContent = '⚠ ' + (err.message.includes('不允许') ? err.message : '表达式有误');
+          /* 【哪些错误原文该透出给用户】
+           * 原来只放行含「不允许」的那一种（安全相关），其它一律显示
+           * 「⚠ 表达式有误」—— 于是"嵌套太深"这种**能照着做**的提示也被吞了，
+           * 用户只知道算不出来，不知道是深度问题、更不知道可以分层算。
+           * 现在放行三类可操作提示：不允许（安全）/ 嵌套太深（复杂度）/
+           * 无法计算（除零、溢出）。语法错仍然用通用文案，
+           * 因为 parser 的语法提示对普通用户太细（"函数 log10 后需要括号"之类）。 */
+          const actionable = /不允许|嵌套太深|无法计算/.test(err.message || '');
+          result.textContent = '⚠ ' + (actionable ? err.message : '表达式有误');
           setTimeout(() => { result.style.color = 'var(--primary)'; }, 100);
         }
       }
@@ -256,10 +263,31 @@
       }
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') fire(); });
       input.addEventListener('change', fire);
+      /* 【布局按"输入—键盘—结果—历史"四段垂直排】
+       * 原来把 13 个函数按钮塞进**一个** .form-row，靠 flex-wrap 挤成一条；
+       * 在 1366px 宽的窗口里它们刚好一行放下，但每个只有 26px 高、10px 间距，
+       * 视觉上是一条细带，与上下卡片（输入框 34px、结果 24px 字号）不成比例 ——
+       * 这就是「UI 不和谐」的来源。
+       *
+       * 改法：
+       *   ① 按钮分成两组（三角函数 / 其它），各占一行，行数与按钮量级匹配
+       *   ② 按钮高度提到 30px，与输入框的间距感一致
+       *   ③ 结果区紧贴在键盘下方、历史记录单独成卡 —— 原来结果夹在
+       *      "表达式"卡里、历史又是另一张卡，视线要跨两次卡片边界
+       *   ④ 键盘区用等宽网格，不靠 flex-wrap 碰运气 */
+      const keyBtn = (label, insert) => btn(label, 'btn-sm btn-secondary calc-key', () => {
+        input.value += insert; input.focus();
+      });
+      const trigRow = div('calc-keys', ...fns.slice(0, 4).map(([n, v]) => keyBtn(n, v)));
+      const mathRow = div('calc-keys', ...fns.slice(4, 8).map(([n, v]) => keyBtn(n, v)));
+      const constRow = div('calc-keys', ...fns.slice(8).map(([n, v]) => keyBtn(n, v)));
+
       page.appendChild(div('card', div('card-title', '表达式'),
-        div('form-row', input, btn('计算', 'btn-primary', fire)),
-        div('form-row', ...fns.map(([n, v]) => btn(n, 'btn-sm btn-secondary', () => { input.value += v; input.focus(); }))),
-        result));
+        div('form-row', input, btn('计算', 'btn-primary', fire))));
+      page.appendChild(div('card',
+        div('card-title', '函数与常量'),
+        trigRow, mathRow, constRow));
+      page.appendChild(div('card', div('card-title', '结果'), result));
       const hcard = div('card', historyEl);
       page.appendChild(hcard);
     }

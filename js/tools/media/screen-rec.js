@@ -168,9 +168,29 @@ register({
         try {
           await invoke(Channels.CHANNELS.SNIP.START, 'region');
           status.textContent = '请在屏幕上框选录制区域…';
+          /* 【定时器与订阅都要能提前回收】
+           * 主进程的 cancel 分支现在会立刻回一条 snip:region(null)（见 main.js），
+           * 所以正常情况下不会等满 120 秒。但两道保险都要有：
+           *   · 超时/收到事件时都 clearTimeout + unsub（否则重复框选会叠订阅）；
+           *   · 登记到 App.onCleanup —— 用户在这 120 秒里切走页面时，
+           *     刚才是既不退订也不清定时器的，订阅和挂着的 Promise 一起泄漏。
+           * 重复框选前也要先清掉上一轮（下面先调一次 cleanup）。 */
+          let _cleanup = null;
+          const cleanup = () => { if (_cleanup) { try { _cleanup(); } catch (e2) {} _cleanup = null; } };
+          if (window.App && App.onCleanup) App.onCleanup(cleanup);
           const rect = await new Promise((resolve) => {
-            const t = setTimeout(() => { unsub(); resolve(null); }, 120000);
-            const unsub = window.api.on('snip:region', (rr) => { clearTimeout(t); unsub(); resolve(rr); });
+            let settled = false;
+            const t = setTimeout(() => finish(null), 120000);
+            const unsub = window.api.on('snip:region', (rr) => finish(rr));
+            function finish(v) {
+              if (settled) return;
+              settled = true;
+              clearTimeout(t);
+              try { unsub(); } catch (e2) {}
+              _cleanup = null;
+              resolve(v);
+            }
+            _cleanup = () => { if (!settled) { settled = true; clearTimeout(t); try { unsub(); } catch (e2) {} resolve(null); } };
           });
           if (rect && rect.w >= 64 && rect.h >= 64) { region = rect; regionLabel.textContent = `${rect.w}×${rect.h}`; status.textContent = '已选择录制区域'; }
           else if (rect) toast('区域太小，请重新选择', 'warn');

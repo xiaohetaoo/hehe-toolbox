@@ -2,7 +2,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, confirmBox, alertBox, filePicker, renderTable, fmtBytes, progressEl } = window.ui;
+  const { div, btn, guard, toast, copyText, confirmBox, alertBox, filePicker, renderTable, fmtBytes, progressEl } = window.ui;
   const { invoke } = window.api;
   /* EXIF 解析搬到了 lib/exif.js（纯函数，可单测，也被 exif-view 复用）。
    * 【为什么用 require 而不是 window.xxx】
@@ -866,7 +866,20 @@
       const ciChk = h('input', { type: 'checkbox', class: 'checkbox' }); ciChk.checked = true;
       const extIn = h('input', { class: 'input input-sm', placeholder: '扩展名过滤，如 js,txt,md（留空全部）', style: { width: '230px' } });
       const status = h('span', { class: 'field-hint' }, '');
-      const startBtn = btn('搜索', 'btn-primary', start, 'search');
+      /* 【startBtn 必须等 start 定义之后再造】
+       * start 是 `const start = guard(startImpl)`，位于 startImpl 之后；
+       * 把 `btn('搜索', …, start)` 放在前面会踩 TDZ —— 打开这个工具页直接
+       * 抛 `ReferenceError: Cannot access 'start' before initialization`，
+       * 整个页面渲染失败（js/app.js 的渲染兜底只打印一行日志，
+       * 用户看到的是「点了没反应」）。
+       * 真实回归：上一轮把 start 从 function 声明改成 const guard(...) 时，
+       * 按钮那一行留在了原处。function 声明会被提升，const 不会。
+       *
+       * 所以这里先占个位（用 h() 造一个空节点，不进 DOM），
+       * 等 start 就绪后用 replaceChild 换成真按钮 —— 见下面 start 之后那段。
+       * startImpl 内部对 startBtn.disabled 的读写都在点击之后才发生，
+       * 那时占位早已替换成真按钮，不存在 null 解引用。 */
+      let startBtn = h('span');
       const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); }, 'square');
       stopBtn.disabled = true;
       const listBox = div('');
@@ -902,13 +915,16 @@
           resTbody.appendChild(tr);
         }
       }
-      async function start() {
+      async function startImpl() {
         if (!root) return toast('请先选择目录', 'warn');
         const q = inBox.value.trim();
         if (!q) return toast('请输入搜索内容', 'warn');
         if (regexChk.checked) { try { new RegExp(q); } catch (e) { return toast('正则无效：' + e.message, 'error'); } }
         resTbody = null; listBox.innerHTML = ''; status.textContent = '搜索中…';
         startBtn.disabled = true; stopBtn.disabled = false;
+        /* 上一轮如果还在（正常路径已经退订过，这里兜底），先退掉再挂新的，
+         * 否则同时存在两个订阅、同一批行会被 appendRows 两次。 */
+        try { if (unsub) { unsub(); unsub = null; } } catch (e) {}
         let n = 0;
         /* 【必须按 id 过滤】内容搜索任务 id 形如 cs<数字>。原因同快扫：
          * 不过滤会被其他任务的进度事件污染，导致命中数错乱、提前判定 done。
@@ -942,6 +958,19 @@
         jobId = r.id;
         if (pageDead && jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       }
+      /* 【防重入走统一 guard，不手写 running 标志】
+       * startBtn.disabled = true 只挡鼠标点击；inBox 的 keydown 直接调 start()，
+       * 回车可以再进一次 —— 第二次会清空列表、覆盖 unsub 与 jobId，
+       * 第一个任务变成谁也取消不掉的孤儿。
+       * 这里用 window.ui.guard 而不是自己维护 running：项目里这类"手写标志
+       * + 若干早退分支"已经出过 7 次漏复位的 bug（按钮永久卡死），
+       * guard 在 finally 里复位，任何 return/throw 都覆盖到。
+       * 注意 Enter 与按钮用的是**同一个** guarded 函数，所以两条入口都受保护。 */
+      const start = guard(startImpl);
+      /* 现在 start 已初始化，把占位节点换成真按钮（见上面的 TDZ 说明） */
+      const realStartBtn = btn('搜索', 'btn-primary', start, 'search');
+      if (startBtn.parentNode) startBtn.parentNode.replaceChild(realStartBtn, startBtn);
+      startBtn = realStartBtn;
       inBox.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
       page.appendChild(div('card', div('card-title', '搜索范围'),
         div('form-row', pickBtn, rootLabel),

@@ -367,6 +367,63 @@ t('26 power-gate：cmd 开关形（/d /c）与解释器包装不能绕过', () =
   }
 });
 
+t('27 不带空格的 cmd 壳形态不能绕过（cmd/c、cmd.exe/c、带引号变体）', () => {
+  /* 锁的是：normalizeCommand 只认「cmd 与 /c 之间有空白」的写法，
+   * 于是 cmd/c 这类真实可执行的写法整条被放行。 */
+  const bypass = [
+    'cmd/c shutdown /s',
+    'cmd/c "shutdown /s"',
+    'cmd.exe/c shutdown /s',
+    'cmd /k shutdown /s',
+  ];
+  for (const c of bypass) {
+    assert.strictEqual(PG.isPowerCommand(c), true, '应被识别为电源命令：' + c);
+  }
+  /* 锁的是：为了拦住上面几条而把正常命令也一起拦了。 */
+  for (const c of ['cmd /c dir', 'cmd/c dir', 'cmd.exe/c ver']) {
+    assert.strictEqual(PG.isPowerCommand(c), false, '不该被当成电源命令：' + c);
+  }
+});
+
+t('28 shutdown 段内混入其它开关时不能靠 /a 蒙混放行', () => {
+  /* 锁的是：allSafeShutdown 只查「有没有 /a」，
+   * 于是 shutdown /a /s 这种「取消 + 关机」被当成安全段放行。 */
+  const bypass = [
+    'shutdown /a /s',
+    'shutdown /s /a',
+    'shutdown /? /s',
+    'shutdown /a /r /t 0',
+  ];
+  for (const c of bypass) {
+    assert.strictEqual(PG.isPowerCommand(c), true, '应被识别为电源命令：' + c);
+  }
+  /* 锁的是：严格枚举把真正的「只取消/只看帮助」也拦了。
+   * /t 单独出现只是修饰倒计时，不执行动作（既有 mustAllow 也锁着这条）。 */
+  for (const c of ['shutdown /a', 'shutdown /?', 'shutdown /a /?', 'shutdown /a /t 0']) {
+    assert.strictEqual(PG.isPowerCommand(c), false, '纯取消/帮助必须放行：' + c);
+  }
+});
+
+t('29 长命令判定不再近似 O(n^2)（40000 字符必须快速返回）', () => {
+  /* 锁的是：三条壳正则的可选路径前缀在大输入上反复回溯。
+   * 实测修复前 40000 字符约 2014ms —— 同步阻塞主进程两秒，
+   * 而这条路径来自渲染层 IPC / 命令收藏 / 导入，属公开通道。
+   * 修复后走「超长直接 fail-closed」，实测 0.01ms 量级。 */
+  const big = 'a'.repeat(40000);
+  const t0 = process.hrtime.bigint();
+  const r = PG.isPowerCommand(big);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.strictEqual(r, true, '超长命令必须 fail-closed（判不出来就不放行）');
+  assert.ok(ms < 200, '40000 字符判定耗时 ' + ms.toFixed(1) + 'ms，超过 200ms 阈值');
+});
+
+t('30 超长命令 fail-closed 但不误伤正常长度', () => {
+  /* 锁的是：长度上限设得太小，把真实的命令行也变成"需要门禁"。
+   * 正常电源命令行连同参数不到 200 字符，上限是它的几十倍。 */
+  assert.strictEqual(PG.isPowerCommand('a'.repeat(8000)), false, '8000 字符仍在分析范围内');
+  assert.strictEqual(PG.isPowerCommand('a'.repeat(9000)), true, '超过上限应 fail-closed');
+});
+
 /* ==================== 27. expr-eval 取余 vs 百分比 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');

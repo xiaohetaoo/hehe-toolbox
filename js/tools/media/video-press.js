@@ -69,13 +69,18 @@ register({
       async function run() {
         if (!picker.count) return toast('请先选择视频', 'warn');
         if (running) return;
+        /* 【防重入标志必须在第一个 await 之前置位】理由见 av-convert.js 同一处：
+         * 两次 IPC 往返回来之前按钮一直可点，连点会起两个 ffmpeg 任务。 */
+        running = true; startBtn.disabled = true;
+        let unsub = null;
+        try {
         const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) {
           toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
           window.App.openTool('ffmpeg-setup');
           return;
         }
-        running = true; startBtn.disabled = true; cancelBtn.disabled = false;
+        cancelBtn.disabled = false;
         picker.setLocked(true);
         status.textContent = '';
         runJobId = null;
@@ -83,7 +88,7 @@ register({
         // job id 从流事件里取：invoke 要等全部压制结束才返回，那时已经来不及取消了
         // 【必须按前缀认领】本任务 id 形如 prs<数字>。原因同 av-convert：
         // 不校验归属会抓到别的标签页的任务 id，点「取消」杀错任务。
-        const unsub = window.JobPrefix.subscribe('prs', (d) => {
+        unsub = window.JobPrefix.subscribe('prs', (d) => {
           const jid = String(d.id || '');
             /* 前缀认领已由 subscribe 完成；这里只同步 runJobId（job:kill 要传它）。
              * runJobId 是业务状态（取消按钮用），与 subscribe 内部的 claimedId 用途不同，
@@ -132,7 +137,13 @@ register({
         } catch (e) {
           status.textContent = '✗ ' + e.message;
           toast(e.message, 'error');
-        } finally { running = false; startBtn.disabled = false; cancelBtn.disabled = true; picker.setLocked(false); unsub(); }
+        }
+        } finally {
+          /* 复位必须无条件执行（早退路径也要走到），unsub 可能还是 null。 */
+          running = false; startBtn.disabled = false; cancelBtn.disabled = true;
+          try { picker.setLocked(false); } catch (e) {}
+          if (unsub) { try { unsub(); } catch (e) {} }
+        }
       }
       page.appendChild(div('card', div('card-title', '选择视频'), picker.el));
       page.appendChild(div('card', div('card-title', '压制参数'),

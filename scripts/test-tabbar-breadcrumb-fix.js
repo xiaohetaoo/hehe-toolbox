@@ -140,9 +140,23 @@ const PROBE = `(async function(){
   chk('F12 压缩后每个标签的图标仍完整可见（不被压缩）', badIcon.length === 0,
     '图标被压 ' + badIcon.length + ' 个');
   /* 每个标签都要有 title 提示，否则窄到只剩图标时用户没法知道全名 */
-  const noTitle = tabs.filter((t) => !t.getAttribute('title') && !t.getAttribute('aria-label'));
-  chk('F12b 每个标签都有 title/aria-label（窄到只剩图标时仍可知全名）',
-    noTitle.length === 0, '缺名称 ' + noTitle.length + ' 个');
+  /* 【这里原来写的是「没有 title 且没有 aria-label」—— 一条永远不会失败的断言】
+   * renderTabs 一直都会调 makeButtonLike(tab, …)，而它必定设置 aria-label。
+   * 于是「没有 title 且没有 aria-label」恒为 false，这条断言从建立起就没红过。
+   *
+   * 实际后果（2026-11-06 真机量到）：8 个标签时 .tab-label 只有 16px，
+   * 文字全被截断，只剩图标；aria-label 只对读屏器生效，
+   * **鼠标悬停没有任何提示** —— 而 css/app.css 的注释明确承诺了
+   * 「配合 title 悬停提示读全名」。承诺存在、实现不存在。
+   *
+   * 所以拆成两条：aria-label 必须继续有（读屏器），title 也必须真的有（鼠标）。 */
+  const noAria = tabs.filter((t) => !t.getAttribute('aria-label'));
+  chk('F12b 每个标签都有 aria-label（读屏器要能读出全名）',
+    noAria.length === 0, '缺 aria-label ' + noAria.length + ' 个');
+  /* 锁的是：只靠 aria-label 撑过断言，鼠标用户拿不到全名。 */
+  const noTitle = tabs.filter((t) => !t.getAttribute('title'));
+  chk('F12c 每个标签都有 title 提示（窄到只剩图标时鼠标能看到全名）',
+    noTitle.length === 0, '缺 title ' + noTitle.length + ' 个');
 
   /* 标签名有省略号容器 */
   const hasLabel = tabs.every(t => !!t.querySelector('.tab-label'));

@@ -215,13 +215,12 @@
           if (mode === 'csv2json') {
             const rows = parseCSV(ta.value, sepSel.value);
             if (rows.length < 1) return;
-            const header = rows[0];
-            const data = rows.slice(1).map(r => {
-              const o = {};
-              header.forEach((hd, i) => o[hd.trim() || `列${i + 1}`] = r[i] ?? '');
-              return o;
-            });
-            out.value = JSON.stringify(data, null, 2);
+            /* 【组装交给 lib/csv-table.js】原来这里是
+             *   const o = {}; header.forEach((hd,i)=> o[hd.trim()||`列${i+1}`] = r[i] ?? '');
+             * 表头里出现 __proto__ 时那一句改的是原型而不是加属性，
+             * 「Alice」整列会静默消失（实测）。constructor/toString 同理。
+             * 抽出去之后主代码与测试共用一份实现，断言落在返回值上。 */
+            out.value = JSON.stringify(window.CsvTable.rowsToObjects(rows), null, 2);
           } else {
             const data = JSON.parse(ta.value);
             if (!Array.isArray(data) || !data.length) throw new Error('需要非空 JSON 数组');

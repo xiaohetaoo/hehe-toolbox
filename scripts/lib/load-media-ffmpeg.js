@@ -62,18 +62,26 @@ function loadMediaFfmpeg(overrides) {
 
   const notNeeded = (name) => () => { throw new Error('测试桩不该被调用：' + name); };
 
+  /* 推送桩：只记录、不发送。
+   * 【ctx 和 deps 要共用同一个函数】v0.6.6 起 media-ffmpeg 从 **deps** 取 send
+   * （不再用 ctx.send —— 那个只发主窗、不看 ALS）。两边各写一份的话，
+   * 一旦哪天代码里同时存在两条路径，同一条进度会被记两次，断言就变成噪声。 */
+  const recordSend = (ev, payload) => { if (ev === 'job:stream') streams.push(payload); };
+
   const ctx = Object.assign({
     win: null,
     jobs,
     isWin: process.platform === 'win32',
-    /* 把 id 也记下来：多个用例共用一个 streams 数组，不按 id 分组的话
-     * 会读到别的任务（甚至上一个用例）的进度，断言就变成噪声。 */
-    send: (ev, payload) => { if (ev === 'job:stream') streams.push(payload); },
+    send: recordSend,
     nextJobSeq: () => ++jobSeq.n,
   }, o.ctx || {});
 
   const deps = Object.assign({
     handle: (ch, fn) => { handlers.set(ch, fn); },
+    /* 【send 必须显式给】不给的话第一次推送就 TypeError: send is not a function ——
+     * 实测踩过：test-video-trim 在这里崩掉，而它测的本来是别的东西。
+     * 推送去向（ALS 路由）由 test-ipc-send-wiring.js 单独覆盖。 */
+    send: recordSend,
     runCmd: makeRunCmd(),
     pathExists,
     fmtErr: (e) => String((e && e.message) || e),

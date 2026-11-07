@@ -30,6 +30,15 @@
       LINK_REMOVE: 'link:remove',
       WHO_LOCKS: 'file:who-locks',
       WHO_LOCKS_DIR: 'file:who-locks-dir',
+      /* 真正的「解锁」：结束占用文件的进程，然后重试原操作。
+       *
+       * 【为什么单开一条通道，而不是让渲染层连调 PROC.KILL + FS.DELETE】
+       * 三步之间必须原子：① 复核占用已解除 ② 结束进程 ③ 重试删除。
+       * 分开调的话，中间任何一步失败，界面都会停在一个说不清的状态
+       * （进程杀了但文件还是删不掉 / 文件没了但提示失败）。
+       * 而且「哪些进程允许结束」这条安全判据只能有一份 ——
+       * 放渲染层就等于把它交给了可以被页面脚本影响的代码。 */
+      UNLOCK: 'file:unlock',
     },
 
   /* v0.4.2：以下 39 组与 lib/channels.js 逐字一致（缩进差两格），
@@ -341,6 +350,7 @@
       RULER: 'win:ruler',
       RULER_CLOSE: 'win:ruler-close',
       RULER_MOVE: 'win:ruler-move',
+      RULER_RESIZE: 'win:ruler-resize',
       THUMBNAIL: 'win:thumbnail',
     },
 

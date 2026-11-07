@@ -635,12 +635,31 @@ const ENC_MAGIC = Buffer.from('HEHEENC1');
 function deriveKey(password, salt) { return crypto.scryptSync(password, salt, 32, { N: 16384, r: 8, p: 1 }); }
 async function cryptStream(p, outPath, password, decrypt) {
   const st = await fsp.stat(p);
+  /* 【加密/解密输出同样要过路径闸门】
+   * 对照 writeFileAtomic / FS.RENAME / MERGE_PARTS / ZIP.COMPRESS —— 它们都调了
+   * checkOverwritable，唯独这里没有。后果分三层：
+   *   · 输出可以选到系统关键目录（Windows / System32 …）而无人拦；
+   *   · 能生成带尾点、尾空格的非法文件名（checkFileName 会拒，但没被调用），
+   *     这类名字在资源管理器里存不住，用户以为加密成功了其实文件不见了；
+   *   · 绕过渲染层直接构造 IPC 时，可覆盖任意路径上的已有文件 ——
+   *     Windows 上 rename 到一个**已存在**的目标是静默覆盖（实测返回 0，
+   *     目标原内容被替换），不是抛错。
+   * 正常路径（js/tools/file-tools.js 走 dialog:save）因为原生保存框已经问过
+   * 覆盖，用户感知不到差别；补这两道纯属把"界面乖"与"通道本身安全"对齐。 */
+  const overwriteBad = pathGuard.checkOverwritable(outPath);
+  if (overwriteBad) throw pathGuard.err(overwriteBad.code, overwriteBad.reason);
+  const nameBad = pathGuard.checkFileName(path.basename(String(outPath || '')));
+  if (nameBad) throw pathGuard.err(nameBad.code, nameBad.reason);
   if (path.resolve(p) === path.resolve(outPath)) throw new Error('输出路径不能与源文件相同');
   // Windows 大小写不敏感 + 结尾点/空格差异：realpath 归一后按小写比较，防止同名变体绕过
   let sameFile = false;
+  /* 【用 pathGuard.canonical() 归一，而不是各自拼字符串】
+   * 旧写法把 realpath(p) 与「realpath(目录) + sep + basename(out)」直接比 ——
+   * 长度前缀（\\?\）、尾点尾空格、8.3 短名在这两条路径上的展开结果不一定一致，
+   * 于是同一份文件可能被判成"不同"。canonical 是项目里统一的那份归一，
+   * 判同源就用同一把尺子。 */
   try {
-    const rp = fs.realpathSync(p), ro = fs.realpathSync(path.dirname(outPath)) + path.sep + path.basename(outPath);
-    sameFile = rp.toLowerCase() === ro.toLowerCase();
+    sameFile = pathGuard.canonical(p) === pathGuard.canonical(outPath);
   } catch (e) { /* 输出目录尚不存在等情况按字符串比较兜底 */ }
   if (sameFile) throw new Error('输出路径不能与源文件相同');
   let srcStart = 0, cipher, header = null;
@@ -711,12 +730,19 @@ handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
   await fsp.mkdir(outDir, { recursive: true });
   let realParts = 0;      // 实际产出的分片数
   let writtenBytes = 0;   // 实际写入的总字节数
+  /* 【madePaths 必须提到这里】
+   * 它原来声明在 Promise 执行器内部，只有内部那个 fail() 能访问。
+   * 但真正会失败的地方有两处在 Promise **之后**：
+   *   · writtenBytes !== st.size 的校验
+   *   · writeFileAtomic(manifestPath)
+   * 它们访问不到 madePaths，也没有外层 try/catch ——
+   * 结果输出目录里留下 N 个 .partNNN 却没有清单。代码自己的注释已经写明
+   * 「下次分割必然撞 flags:'wx' 的 EEXIST 而永远失败」。
+   * 提到 handler 作用域后，两处后置失败都能把本次产出的分片清干净。 */
+  const madePaths = [];
   await new Promise((resolve, reject) => {
     const rs = fs.createReadStream(p, { highWaterMark: 1 << 20 });
     let idx = 1, ws = null, done = 0, pausedFor = null;
-    /* 【本次产出的分片路径】失败时要逐个清掉，否则输出目录里留下半截分片，
-     * 用户下次分割会撞上 flags:'wx' 的 EEXIST 而永远失败。 */
-    const madePaths = [];
     /* 【统一失败收口：读流必须销毁，否则 fd 挂到进程退出】
      * 原实现里 ws 的 error 直接 reject —— 既没 rs.destroy() 也没清半截分片。
      * 触发点很常见：默认输出目录是「源文件 + '.parts'」，同一个文件分两次
@@ -784,17 +810,33 @@ handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
   /* 源文件在分割期间被追加/截断会让「清单声明」与「磁盘实际」脱节：
      清单说 3 片、磁盘却有 5 片，合并时只读前 3 片 —— 合并结果少 20MB，
      而 UI 还显示「合并完成」。这里直接核对实际字节数与起始大小。 */
-  if (writtenBytes !== st.size) {
-    throw new Error(`源文件在分割期间发生变化（开始时 ${st.size} 字节，实际写出 ${writtenBytes} 字节），已中止。请重新分割。`);
+  /* 【产出之后的两处失败也要回收分片】
+   * 这两步都在 Promise 之外，所以必须在外面再包一层：
+   * 否则「读了半天、写了 N 片、最后校验失败」会把 N 个孤儿分片留在
+   * 用户目录里，而它们既没清单、又会挡住下一次分割（wx 的 EEXIST）。 */
+  try {
+    /* 源文件在分割期间被追加/截断会让「清单声明」与「磁盘实际」脱节：
+       清单说 3 片、磁盘却有 5 片，合并时只读前 3 片 —— 合并结果少 20MB，
+       而 UI 还显示「合并完成」。这里直接核对实际字节数与起始大小。 */
+    if (writtenBytes !== st.size) {
+      throw new Error(`源文件在分割期间发生变化（开始时 ${st.size} 字节，实际写出 ${writtenBytes} 字节），已中止。请重新分割。`);
+    }
+    // 分片数以磁盘实际为准，避免清单声明值与磁盘不符
+    const finalParts = realParts || parts;
+    const manifest = { tool: 'hehe-split', name: base, size: st.size, chunkSize, parts: finalParts };
+    const manifestPath = path.join(outDir, `${base}.manifest.hehe.json`);
+    // 清单必须原子写：它是合并分片的唯一索引。直接 writeFile 中途失败会把
+    // 原本有效的清单改成非法 JSON，分片还在但再也合不回来了。
+    await writeFileAtomic(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+    return { parts: finalParts, manifestPath, outDir, chunkSize };
+  } catch (err) {
+    /* 只清**本次确实创建成功**的分片。
+     * madePaths 的登记点在 ws 的 'open' 事件里（见 openPart），
+     * 所以别人已有的同名分片（EEXIST 那种）不会出现在这里 —— 这个设计要保留。 */
+    for (const fp of madePaths) { try { fs.unlinkSync(fp); } catch (x) {} }
+    madePaths.length = 0;
+    throw err;
   }
-  // 分片数以磁盘实际为准，避免清单声明值与磁盘不符
-  const finalParts = realParts || parts;
-  const manifest = { tool: 'hehe-split', name: base, size: st.size, chunkSize, parts: finalParts };
-  const manifestPath = path.join(outDir, `${base}.manifest.hehe.json`);
-  // 清单必须原子写：它是合并分片的唯一索引。直接 writeFile 中途失败会把
-  // 原本有效的清单改成非法 JSON，分片还在但再也合不回来了。
-  await writeFileAtomic(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-  return { parts: finalParts, manifestPath, outDir, chunkSize };
 });
 handle(CH.FS.MERGE_PARTS, async (e, pickedPath, outPath) => {
   let manifestPath;

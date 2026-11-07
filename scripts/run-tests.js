@@ -135,6 +135,14 @@ function main() {
   for (let i = 0; i < list.length; i++) {
     const f = list[i];
     const r = runOne(f);
+    /* 【先打一行 @@FILE 标记，再透传脚本输出】
+     * check-assertion-count.js 的 --no-run 靠「标记行 + 数其后的 PASS」来
+     * 归集「每个文件多少条断言」。原来这里**从来不打这个标记**，
+     * 于是 --no-run 读任何日志都解析成「0 个脚本 / 0 条」，
+     * 它会把每个文件都报成「基线 N → 现在 0（少 N 条）」而全红。
+     * 也就是说问题 16(c) 里指出的「CI 会跑两遍测试」这个绕法根本走不通 ——
+     * 不是慢，是完全不可用。这里补上标记之后，CI 才能真正复用同一份日志。 */
+    process.stdout.write('@@FILE ' + 'scripts/' + f + '\n');
     // 把每个脚本的输出原样透传（CI 日志要靠这些 PASS/FAIL 行）
     if (r.out) process.stdout.write(r.out);
     if (!r.ok) {

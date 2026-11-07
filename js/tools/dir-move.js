@@ -14,6 +14,28 @@
     desc: '把大目录搬到别的盘，并在原位置建目录联接 —— 路径不变，空间腾出来', descEn: 'Move a large folder across drives safely, with pre-checks and resume',
     keywords: ['搬家', '迁移', '移动目录', 'junction', '联接', '腾空间', '符号链接', 'move'],
     render(page) {
+      /* 【切页清理必须在同步阶段就注册】
+       * 原来整个文件没有任何 App.onCleanup：DIR_MOVE.MOVE 是阻塞式长任务，
+       * 用户切到别的页面之后整棵树还在复制，完成时 toast 弹在新页面上 ——
+       * 「我没在搬东西，它却说搬完了」。
+       *
+       * 注意注册位置：渲染新页面时会先执行上一轮登记的清理，
+       * 所以清理函数必须在这里（render 的同步阶段）挂上去；
+       * 挂在点击后的 await 之后就已经属于"新页面的生命周期"了，等于没挂。
+       * 变量用外层闭包承装，点击流程里只更新它的字段。 */
+      let runUnsub = null;
+      let runClaimedId = null;
+      if (window.App && App.onCleanup) {
+        App.onCleanup(() => {
+          if (runUnsub) { try { runUnsub(); } catch (e) {} runUnsub = null; }
+          /* 尽力请求停止：主进程若登记了 cancel 就真能停，没有也只是空操作，
+           * 但至少不会再把事件推给已经销毁的页面。 */
+          if (runClaimedId) {
+            try { invoke(Channels.CHANNELS.JOB.KILL, runClaimedId).catch(() => {}); } catch (e) {}
+            runClaimedId = null;
+          }
+        });
+      }
       const state = {
         src: '',
         dst: '',
@@ -284,7 +306,7 @@
          * 两张表里 —— belongsTo 永远匹配不上，test-job-prefix-sync 也覆盖不到。
          * 现在不传 jobId，让主进程按 jobSeq 生成 dirmv<序号>；
          * 渲染层这里按前缀认领（搬家是主进程单飞的，同一时刻只会有一个 dirmv 任务）。 */
-        let claimedId = null;
+        runClaimedId = null;
         /* 【把「复制期间消失」的文案集中到一处】
          * 复制阶段与校验阶段都会遇到源条目被删，两个阶段各写一份文案的话，
          * 措辞迟早会不一致（而且早期那版把目录也算成「文件」）。
@@ -300,13 +322,13 @@
           if (ex.length) s += '（如 ' + ex.slice(0, 3).join('、') + ((f + dd) > 3 ? ' 等' : '') + '）';
           return s;
         };
-        const unsub = window.api.on('job:stream', (d) => {
+        runUnsub = window.api.on('job:stream', (d) => {
           if (!d || !d.id) return;
           if (!window.JobPrefix) return;
-          if (!claimedId) {
+          if (!runClaimedId) {
             if (!window.JobPrefix.belongsTo(d.id, 'dirmv')) return;
-            claimedId = d.id;
-          } else if (d.id !== claimedId) {
+            runClaimedId = d.id;
+          } else if (d.id !== runClaimedId) {
             return;
           }
           let j = null;
@@ -380,7 +402,7 @@
             div('card-title', h('span', { class: 'tag tag-red', style: { marginRight: '8px' } }, '搬家未完成')),
             div('field-err', '✗ ' + e.message)));
         } finally {
-          try { unsub && unsub(); } catch (err) {}
+          try { if (runUnsub) runUnsub(); } catch (err) {}
           /* 成功时保持禁用（见上）；失败时才恢复可点，让用户能改完重试 */
           goBtn.disabled = done ? true : false;
         }

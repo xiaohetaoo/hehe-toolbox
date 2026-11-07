@@ -24,6 +24,23 @@ function body(src, channel) {
   return src.slice(start, src.indexOf('\n});', start));
 }
 
+/* 按**函数名**取函数体。proc:kill 的保护判定搬进了 killProcessChecked
+ * （解锁复用同一份白名单），按通道名只取到一行转发，P0 那两条会假红。 */
+function fnBody(src, name) {
+  const a = src.indexOf('async function ' + name + '(');
+  const i = a < 0 ? src.indexOf('function ' + name + '(') : a;
+  assert.ok(i > 0, '找不到函数: ' + name);
+  const open = src.indexOf('{', i);
+  assert.ok(open > 0, name + ' 没有函数体');
+  /* 用括号配平，不要 indexOf 找收尾 —— 函数以单括号结尾时那种找法会返回 -1 */
+  let depth = 0;
+  for (let k = open; k < src.length; k++) {
+    if (src[k] === '{') depth++;
+    else if (src[k] === '}') { depth--; if (depth === 0) return src.slice(i, k + 1); }
+  }
+  return src.slice(i);
+}
+
 /* 去掉注释再断言。否则「注释里写着旧实现」会让测试误判成仍有旧代码，
  * 而注释里描述旧行为恰恰是这类修复的正常做法（要说明为什么改）。 */
 /* 【stripComments 统一用 lib/src-scan.js 的实现，不要在这里另写一份】
@@ -77,12 +94,13 @@ t('P0 proc:kill 有系统进程黑名单', () => {
   }
 });
 t('P0 proc:kill 按进程名判断并拒绝关键进程', () => {
-  const fn = body(main, 'proc:kill');
+  /* 判据搬进了 killProcessChecked（解锁复用同一份） */
+  const fn = fnBody(main, 'killProcessChecked');
   assert.ok(fn.includes('PROTECTED_PROC_NAMES.has'), '没有按名字查黑名单');
   assert.ok(fn.includes('拒绝结束系统关键进程'), '没有拒绝提示');
 });
 t('P0 proc:kill 拒绝低 PID 区', () => {
-  const fn = body(main, 'proc:kill');
+  const fn = fnBody(main, 'killProcessChecked');
   assert.ok(fn.includes('PROTECTED_PROC_PID_MAX'), '没有低 PID 拦截');
 });
 

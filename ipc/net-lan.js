@@ -200,7 +200,7 @@ handle(CH.LAN.SCAN, async (e, opts = {}) => {
       const res = await Promise.all(slice.map(pingOne));
       for (let k = 0; k < res.length; k++) if (res[k]) pinged.push(slice[k]);
       done += slice.length;
-      send('job:progress', { id, kind: 'lan', done, total: hosts.length, found: pinged.length });
+      send('job:progress', { id, kind: 'lan', phase: 'scan', done, total: hosts.length, found: pinged.length });
     }
   } finally {
     jobs.delete(id);
@@ -214,17 +214,27 @@ handle(CH.LAN.SCAN, async (e, opts = {}) => {
     arpRows = lanScanLib.parseArp(String(r.stdout || ''));
   } catch (err) { arpRows = []; }
 
-  /* ---- 3) 反查主机名（只查前若干个，避免拖太久） ---- */
+  /* ---- 3) 反查主机名（只查前若干个，避免拖太久） ----
+   * 【这个阶段必须也推进度，否则界面会「卡住」5~10 秒】
+   * 实测：ping 阶段约 10 秒（254 个地址分 13 批，有进度条在动）；
+   * 之后这段反查最多 30 个 IP × 每个最长 6 秒 —— 而它**一个进度事件都不发**。
+   * 于是界面上进度条停在 100%、状态文字停在「扫描中 254/254」，
+   * 点完到出结果之间有一段完全没有反馈的空档，用户会以为卡死并反复点。
+   *
+   * phase 字段是这次新加的：渲染层据此把「反查主机名」与「扫描网段」分开描述。
+   * 老渲染层只读 done/total/found，多一个字段不影响它（向前兼容）。 */
   /** @type {Record<string,string>} 反查到的设备名，按 IP 索引 */
   const names = {};
   const toResolve = arpRows.slice(0, 30);
-  for (const row of toResolve) {
+  for (let k = 0; k < toResolve.length; k++) {
     if (cancelRef.canceled) break;
+    const row = toResolve[k];
     try {
       const r = await ps(`(Resolve-DnsName -Name '${row.ip}' -NameType A -ErrorAction SilentlyContinue).NameHost`, 6000);
       const n = String(r.stdout || '').trim().split(/\r?\n/)[0];
       if (n && !/^\d+\./.test(n)) names[row.ip] = n;
     } catch (err) { /* 反查失败很常见，忽略即可 */ }
+    send('job:progress', { id, kind: 'lan', phase: 'resolve', done: k + 1, total: toResolve.length, found: pinged.length });
   }
 
   /* ---- 4) 合并 ---- */

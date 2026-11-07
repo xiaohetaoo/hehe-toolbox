@@ -11,23 +11,29 @@
     name: '文件占用解锁', nameEn: 'File Unlock',
     module: MOD,
     icon: 'lock',
-    desc: '删不掉、提示被占用时，查出是哪个进程占着它（Windows Restart Manager）', descEn: 'Find which process is locking a file and release it',
+    desc: '删不掉、提示被占用时，查出是哪个进程占着它，并可一键结束它来解锁（Windows Restart Manager）', descEn: 'Find which process is locking a file and release it by closing that process',
     keywords: ['占用', '解锁', '删不掉', '被占用', 'lock', 'unlock', 'handle', '正在使用'],
     render(page) {
       const state = { items: [], lockers: [], notes: [] };
 
       /* 顶部说明：讲清「能做什么、不能做什么」。
        * 同类工具常号称「强制解锁」，实际是杀进程或强删句柄，
-       * 两者都可能让占用方丢数据。这里明确只做诊断 + 可选结束进程。 */
+       * 两者都可能让占用方丢数据。这里明确说清手段与代价。 */
       page.appendChild(div('card',
         div('card-title', '为什么删不掉？'),
         div('field-hint',
           'Windows 上文件被程序打开时无法删除或改名，系统只会提示「文件正在使用」。' +
-          '本工具用 Windows 自带的 Restart Manager 查出具体是哪个进程占着它，' +
-          '你可以据此关闭那个程序。'),
+          '本工具用 Windows 自带的 Restart Manager 查出具体是哪个进程占着它。'),
         div('field-hint', { style: { marginTop: '6px' } },
-          '只做查询与诊断。强制结束进程可能让占用方丢失未保存的数据 ——' +
-          '请先确认那确实是你在用的程序，系统服务尤其不要乱结束。')));
+          '查到之后可以「结束它并解锁」—— 这是 Windows 上唯一可靠的解锁手段：' +
+          '实测文件被独占打开时，删除 / 改名 / 清空内容全部返回「设备忙」，' +
+          '只有结束持有它的进程才能真正解开。所以这里不提供"静默强删"，' +
+          '而是把要结束谁、为什么结束摆在你面前。'),
+        div('field-hint', { style: { marginTop: '6px', display: 'flex', alignItems: 'flex-start', gap: '6px' } },
+          window.ui.icon('alert', { size: 14, style: { flex: '0 0 auto', marginTop: '2px' } }),
+          h('span', null,
+            '强制结束进程会让占用方丢失未保存的数据。请先确认那确实是你在用的程序，' +
+            '系统服务与系统关键进程会被拒绝。'))));
 
       const picker = filePicker({
         text: '选择或拖入被占用的文件 / 目录',
@@ -124,8 +130,18 @@
         /* 操作区：逐行一个按钮，文案带进程名，避免「结束进程 ×N」分不清谁是谁 */
         const ops = div('form-row');
         for (const row of state.lockers) {
-          const label = '结束「' + (row.name || row.procName || ('PID ' + row.pid)) + '」';
-          ops.appendChild(btn(label, 'btn-sm btn-danger-plain', () => killOne(row)));
+          const label = '结束「' + (row.name || row.procName || ('PID ' + row.pid)) + '」并解锁';
+          ops.appendChild(btn(label, 'btn-sm btn-danger-plain', () => unlockOne(row)));
+        }
+        /* 【一次性解锁全部：这是用户最想要的入口】
+         * 删除一个被占用的文件时，占用它的常常不止一个进程
+         * （编辑器 + 预览器 + 杀软扫描）。逐个点既慢又容易漏，
+         * 漏掉一个就还是删不掉。这里给一个"全部结束"的按钮，
+         * 但仍然走同一条后台通道（通道里逐 pid 过安全判据）。
+         * 文案里写明数量，让用户在点之前就知道会影响几个进程。 */
+        if (state.lockers.length > 1) {
+          ops.appendChild(btn('全部结束（' + state.lockers.length + ' 个）并解锁', 'btn-sm btn-danger-plain',
+            () => unlockOne(null)));
         }
         card.appendChild(ops);
         resultBox.appendChild(card);
@@ -135,30 +151,83 @@
         }
         resultBox.appendChild(div('field-hint', { style: { padding: '8px 6px' } },
           '建议：先回到占用它的那个程序里保存并关闭，再重新删除。' +
-          '只有确认那是你自己的程序、且没有未保存内容时，才用上面的「结束」。'));
+          '只有确认那是你自己的程序、且没有未保存内容时，才用上面的「结束并解锁」。'));
       }
 
-      async function killOne(row) {
-        if (row.type === 'service') {
-          return toast('这是系统服务，请到「服务管理」里处理，不要直接结束', 'warn');
+      /* 解锁：结束占用进程 → 复核 → 自动重查。
+       * 【走 UNLOCK 通道而不是连调 PROC.KILL】
+       * 后台会重新查一遍占用、逐 pid 过安全判据、杀完再复核，
+       * 三步原子，界面不会停在"进程杀了但文件还在占用"这种半截状态。
+       * 详见 lib/channels.js 里 UNLOCK 的注释。 */
+      async function unlockOne(row) {
+        const targets = row ? [row] : state.lockers.slice();
+        if (!targets.length) return;
+        const names = targets.map((x) => x.procName || x.name || ('PID ' + x.pid));
+        /* 服务类先在界面上挡一层：后台也会挡，但提前说清能少一次无谓的确认 */
+        const svc = targets.filter((x) => x.type === 'service');
+        if (row && svc.length) {
+          return toast('这是系统服务，请到「服务管理」里停止它，不要直接结束', 'warn');
         }
-        const nm = row.name || row.procName || ('PID ' + row.pid);
         const ok = await confirmBox({
-          title: '结束进程',
-          message: '确定结束「' + nm + '」（PID ' + row.pid + '）？\n\n' +
-            '如果它正在处理你的文件，未保存的数据会丢失。\n' +
-            '系统关键进程会被拒绝结束。',
-          danger: true, okText: '结束它',
+          title: targets.length === 1 ? '结束进程并解锁' : '结束 ' + targets.length + ' 个进程并解锁',
+          message: '将要结束：' + names.join('、') + '。\n\n' +
+            '注意：如果它们正在处理你的文件，未保存的数据会丢失。\n' +
+            '系统关键进程与服务会被自动拒绝。\n\n' +
+            '结束后会自动重查一次，确认文件是否真的解开了。',
+          danger: true, okText: '结束并解锁',
         });
         if (!ok) return;
+        const paths = state.items.map((it) => it.path);
         try {
-          await invoke(Channels.CHANNELS.PROC.KILL, row.pid);
-          toast('已结束「' + nm + '」', 'success');
-          scan();   // 自动重查，确认是否真的解锁了
+          const r = await invoke(Channels.CHANNELS.ACL_LINKS.UNLOCK, {
+            paths,
+            pids: targets.map((x) => x.pid),
+          });
+          /* 文案统一由主进程给（unlockSummary），界面只负责展示 ——
+           * 两边各拼一份必然分叉：主进程说"已结束 2 个"、界面说"解锁成功"，
+           * 而实际上文件还锁着。 */
+          if (r && r.summary) {
+            toast(r.summary, r.ok ? 'success' : 'warn', r.ok ? 2600 : 5000);
+          }
+          /* 【三种"没做成"要分别说清，不能都靠 summary 一句带过】
+           * 真机验证时踩到：持有者在我们查询之后自行退出了，
+           * 通道返回 { ok:false, missing:[pid], reason:'已经不在占用列表里' }，
+           * 而当时的界面**一个字都没显示** —— 用户点了「结束并解锁」，
+           * 既没看到成功也没看到失败，只能反复点。
+           * 这里把三类结果都落到 notes 上：
+           *   missing  已经自己退出了（等于解锁了，但要说清）
+           *   blocked  被安全判据拒绝（要解释为什么）
+           *   failed   执行失败（带原因） */
+          const notes = [];
+          if (r && r.missing && r.missing.length) {
+            notes.push('这些进程已经自行退出，无需结束：' + r.missing.join('、') +
+              '（文件现在应该可以删了，可以再试一次原操作）');
+          }
+          for (const b of (r && r.blocked) || []) {
+            notes.push('未结束「' + b.name + '」（PID ' + b.pid + '）：' + b.reason);
+          }
+          for (const f of (r && r.failed) || []) {
+            notes.push('结束「' + f.name + '」（PID ' + f.pid + '）失败：' + (f.error || '未知原因'));
+          }
+          if (r && r.stillLocked) {
+            notes.push('文件仍然被占用' + (r.remaining && r.remaining.length
+              ? '：' + r.remaining.map((x) => (x.name || 'PID ' + x.pid)).join('、')
+              : '') + '。可能是驱动或杀软扫描（这类占用 Restart Manager 看不到），建议重启后再试。');
+          }
+          /* reason 只在"完全没做事"时补一句，避免与上面的 notes 重复 */
+          if (r && !r.killed.length && !notes.length && r.reason) notes.push(r.reason);
+          state.notes = notes;
         } catch (e) {
-          toast(e.message, 'error');
+          toast(window.api.errText ? window.api.errText(e) : (e && e.message) || '解锁失败', 'error');
+          state.notes = [];
         }
+        scan();   // 无论成败都重查：失败了也要让用户看到"还剩下谁"
       }
+
+      /* 【已移除 killOne】它原来只做「结束进程」，不复核、不重查占用，
+       * 而解锁功能上线后所有按钮都走 unlockOne（结束 + 复核 + 重查）。
+       * 留着它就是一条"看起来能用但少了复核"的旁路 ——
+       * 谁把它接回按钮，界面就会在"进程杀了但文件还锁着"时说"已结束"。 */
 
       /* 【查询前先把「文件还是目录」确认掉，不靠 undefined 猜】
        * isDir 是 fileList 异步补上的：用户完全可能在 fs:stat-multi 返回之前

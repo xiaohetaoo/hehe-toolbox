@@ -236,6 +236,20 @@
        * 反过来中文界面照旧用中文键，所以中文输入不受影响。
        * 两种语言的名字/描述一起参与评分，不区分当前界面语言 ——
        * 中文用户输 'video' 找到「视频压制」也有好处。 */
+      /* 【精确/前缀判据必须按单个名称比，不能比拼接串】
+       * 原来 `name === tk` 与 `name.startsWith(tk)` 都比的是
+       * 「中文名 + 空格 + 英文名」这个拼接串 —— 而 103 个工具**全部**都有
+       * nameEn，所以那个串恒为「科学计算器 calculator」这种两段式。
+       * 用户输任何**单个词**都不可能与之全等：
+       *   · 精确匹配（100 分）这一档永远是死代码，没人拿得到；
+       *   · 英文名排在拼接串后面，startsWith 也永远为假，
+       *     于是英文界面下搜 "calculator" 只能拿到 includes 的 60 分，
+       *     反而输给某个在 keywords 里恰好有 calculator 整词的 70 分工具 ——
+       *     用户搜的精确英文名被次相关结果压过。
+       * 所以精确/前缀这两档拆成对 name / nameEn 分别判；
+       * 拼接串仍保留给 includes 类判据（跨词包含确实需要它）。 */
+      const nameZh = norm(t.name);
+      const nameEnNorm = norm(t.nameEn || '');
       const name = norm(t.name + ' ' + (t.nameEn || ''));
       const kwList = (t.keywords || []).map(norm);
       const kws = kwList.join(' ');
@@ -247,8 +261,8 @@
       let ok = true;
       for (const tk of tokens) {
         let s = 0;
-        if (name === tk) s = 100;
-        else if (name.startsWith(tk)) s = 80;
+        if (nameZh === tk || (nameEnNorm && nameEnNorm === tk)) s = 100;
+        else if (nameZh.startsWith(tk) || (nameEnNorm && nameEnNorm.startsWith(tk))) s = 80;
         else if (kwList.includes(tk)) s = 70;   // 关键词整词命中，优先于名称中段
         else if (name.includes(tk)) s = 60;
         else if (kws.includes(tk)) s = 40;
@@ -265,7 +279,13 @@
         total += s;
       }
       if (!ok) continue;
-      if (name.includes(raw)) total += 60;
+      /* 【整串连续命中的加成也要按单个名称判】
+       * 原来判的是拼接串 `name.includes(raw)` —— raw 是用户输入的**整条**查询。
+       * 拼接串形如「科学计算器 calculator」，任何跨词的整串（"计算器 calc"）
+       * 或单看英文名的整串（"calculator" 在中文名之后）都不可能命中，
+       * 于是这个加成同样偏向"中文名里恰好含整串"的工具，英文名精确的拿不到。
+       * 拆成两个名称分别判，谁是精确命中谁就该拿到加成。 */
+      if (nameZh.includes(raw) || (nameEnNorm && nameEnNorm.includes(raw))) total += 60;
       scored.push({ tool: t, score: total });
     }
     return scored

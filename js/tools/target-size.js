@@ -85,7 +85,7 @@
       const mbIn = h('input', { class: 'input input-sm mono', type: 'number', min: '0.1', step: '0.1', value: '10', style: { width: '90px' } });
       const modeRadios = [
         { id: 'ratio', label: '按原体积比例' },
-        { id: 'abs', label: '指定大小（MB）' }
+        { id: 'abs', label: '指定大小（MB＝10⁶ 字节）' }
       ];
       let mode = 'ratio';
       const modeBox = div('form-row');
@@ -145,7 +145,15 @@
         }
         const mb = parseFloat(mbIn.value);
         if (!(mb > 0)) return 0;
-        return Math.floor(mb * 1000000); // 与对方一致：1 MB = 1,000,000 字节
+        /* 【这里刻意用 1 MB = 1,000,000 字节（10^6），与项目 fmtBytes 的 1024² 不同】
+         * 理由：这个工具的语义是"把文件压到某个大小"，而用户心里那个数来自
+         * 各个平台的上传限制（多数站点按 10^6 标 MB）。10 MB 若按 1024² 算
+         * 是 10,485,760 字节，会超过对方"不超过 10MB"的判定而上传失败。
+         * 所以换算口径是**跟着对方的限制走**，不是项目内部显示口径。
+         * 代价：界面上的「MB」与结果列表里 fmtBytes 显示的 MiB 数字对不上
+         * （填 10 MB、结果却显示 9.5 MiB）。这不是 bug，是两种单位，
+         * 所以界面上必须把单位标清楚 —— 见 mbIn 的 placeholder / label。 */
+        return Math.floor(mb * 1000000);
       }
 
       /* ---- 单张图片的多轮逼近（在渲染层用 canvas 完成） ---- */
@@ -206,7 +214,7 @@
       async function run() {
         if (running) return;
         if (!files.length) return toast('请先选择文件', 'warn');
-        if (mode === 'abs' && !(parseFloat(mbIn.value) > 0)) return toast('请输入有效的目标大小（MB）', 'warn');
+        if (mode === 'abs' && !(parseFloat(mbIn.value) > 0)) return toast('请输入有效的目标大小（MB，1 MB = 1,000,000 字节）', 'warn');
 
         running = true; canceled = false;
         startBtn.disabled = true; cancelBtn.disabled = false;
@@ -279,13 +287,28 @@
             if (mode === 'ratio') ratio = parseFloat(String(tierSel.value).split(':')[1]) || 0.5;
             else targetBytes = Math.floor(parseFloat(mbIn.value) * 1000000);
 
-            /* 【seenId 已删除】用 JobPrefix.subscribe('tgt', ..., {mode:'loose'})。
-             * 原实现用的是「只要以 tgt 开头」的宽松前缀，再自己维护 seenId 严格比对；
-             * subscribe 的 loose 模式正是这个语义，claimedId 取代了 seenId。
-             * 保留 loose 而不是改成 strict：主进程的 tgt 任务 id 形态若变了
-             * （例如将来带横杠），strict 会静默失效。 */
+            /* 【这里用的是默认（宽松）模式，第三个参数本来就不传】
+             * 【seenId 已删除】原实现是「只要以 tgt 开头」的宽松前缀 + 自己维护
+             * seenId 严格比对；现在由 JobPrefix.subscribe 内部的 claimedId 承接，
+             * 语义等价。
+             * 【注释曾经写错】上一版注释说"用 subscribe('tgt', ..., {mode:'loose'})"，
+             * 但实际调用没传第三个参数 —— 注释与实现不一致，读代码的人会以为
+             * 有个显式开关而去找它。
+             * 为什么保持默认（宽松）而不是显式改成 strict：主进程的 tgt 任务 id
+             * 形态若变了（例如将来带横杠），strict 会静默失效、一条事件都收不到；
+             * 宽松前缀 + claimedId 认领对这种变化是稳的。 */
             const unsub = window.JobPrefix.subscribe('tgt', (d) => {
               try {
+                /* 【必须在这里认领 runJobId】
+                 * 主进程的 TARGET.COMPRESS_AV 是**阻塞式** handler：它把整轮
+                 * 8 次逼近跑完才 resolve，而 runJobId = r.id 写在 await 之后。
+                 * 于是整个压缩期间 runJobId 恒为 null：
+                 *   · 停止按钮只置 canceled=true，不会发 job:kill，ffmpeg 继续跑；
+                 *   · 切页 cleanup 里的 if (runJobId) 也不执行；
+                 *   · 最后界面显示「已停止：成功 N」，与磁盘上多出来的文件不符。
+                 * 认领之后停止与切页都能立刻拿到 id（av-convert / video-press /
+                 * video-trim 三处早就是这个写法，这里是唯一漏掉的一处）。 */
+                if (!runJobId) runJobId = d.id;
                 if (runJobId && d.id !== runJobId) return;
                 const j = JSON.parse(d.data);
                 const idx = avs[j.i] ? files.indexOf(avs[j.i]) : -1;
@@ -329,7 +352,14 @@
           }
 
           prog.set(100);
-          if (canceled) status.textContent = `已停止：成功 ${okCount}，失败 ${failCount}`;
+          /* 【「已请求停止」不等于「已停止」】
+           * 原来这里写「已停止：成功 N」，但：
+           *   · 停止只是发 job:kill 并置 canceled，ffmpeg 可能正在处理当前文件；
+           *   · 已经完成的文件是**真的**在磁盘上，不会因为停止而回滚。
+           * 一句话把两件事混起来，用户会以为停在了一个干净的状态，
+           * 去核对磁盘时发现多出若干文件，反而更困惑。
+           * 现在如实说明：请求已发出，已完成的保留。 */
+          if (canceled) status.textContent = `已请求停止，已完成的文件仍保留：成功 ${okCount}，失败 ${failCount}`;
           else status.textContent = `完成：成功 ${okCount}，失败 ${failCount}，输出到 ${outDirBase}`;
 
           if (failCount === 0) toast(okCount ? `全部完成，共 ${okCount} 个` : '没有可处理的文件', 'success');

@@ -4,6 +4,8 @@
   const { register } = window.Registry;
   const { div, btn, toast, progressEl } = window.ui;
   const { invoke } = window.api;
+  /* OCR 的超时与失败归因（lib/ocr-guard.js，UMD 挂到 window） */
+  const OcrGuard = window.OcrGuard;
   const MOD = 'media';
 
 register({
@@ -29,11 +31,23 @@ register({
         await invoke(Channels.CHANNELS.FS.WRITE_TEXT, p, out.value);
         toast('已导出：' + p, 'success');
       });
+      /* 【防重入，并且要说清楚「上一轮还活着」】
+       * 原来是一个裸 `if (running) return;` —— 用户点了没反应、也没有任何提示，
+       * 只能猜是不是卡了。
+       * 更要紧的是：超时**不会**终止 tesseract 的 worker（该库没有中止接口），
+       * 只是把控制权还给用户。于是每张超时的图都留下一个后台 worker，
+       * 20 张全超时就是 20 个僵尸。允许并发再起一轮会让这个问题翻倍。
+       * 所以这里挡下来，并明确告诉用户为什么 ——
+       * 不能只说「已在运行中」，那看不出「上一次可能还在后台耗着」。 */
       let running = false;
       async function run() {
         if (!dir) return toast('请先选择文件夹', 'warn');
         if (!window.Tesseract) return toast('OCR 引擎未加载，请重启应用', 'error');
-        if (running) return;
+        if (running) {
+          status.textContent = '上一次识别仍在进行，请等它结束（或等单张超时）';
+          toast('上一次识别仍在后台，请稍候', 'warn');
+          return;
+        }
         running = true; prog.show(); out.value = '';
         try {
           const items = await invoke(Channels.CHANNELS.FS.LIST, dir);
@@ -46,11 +60,22 @@ register({
             status.textContent = `识别中 ${done + 1}/${imgs.length}：` + name;
             try {
               const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, p);
-              const res = await window.Tesseract.recognize('data:image;base64,' + r.b64, langSel.value, {
-                workerPath: 'node_modules/tesseract.js/dist/worker.min.js', corePath: 'node_modules/tesseract.js-core'
-              });
+              /* 【单张也要超时】批量场景下"卡住"更致命：一张图永挂，
+               * 整个循环停在它上面，用户看到的是"识别中 3/20"再也不动，
+               * 而且没有任何错误提示。超时后按单张失败记，继续下一张 ——
+               * 宁可跳过一张，不要让整批停死。
+               * 超时值取单张的默认值：批量的慢是"张数多"，不是"单张慢"。 */
+              const res = await OcrGuard.withTimeout(
+                window.Tesseract.recognize('data:image;base64,' + r.b64, langSel.value, {
+                  workerPath: 'node_modules/tesseract.js/dist/worker.min.js', corePath: 'node_modules/tesseract.js-core'
+                }),
+                OcrGuard.DEFAULT_TIMEOUT_MS
+              );
               out.value += `===== ${name} =====\n${(res.data.text || '').trim()}\n\n`;
-            } catch (e) { out.value += `===== ${name} =====\n（识别失败：${e.message}）\n\n`; }
+            } catch (e) {
+              /* 失败原因走同一套归因，批量导出的文本里也要能看懂为什么失败。 */
+              out.value += `===== ${name} =====\n（识别失败：${OcrGuard.failReason(e)}）\n\n`;
+            }
             done++; prog.set(done / imgs.length * 100);
           }
           status.textContent = `完成：${imgs.length} 张`;

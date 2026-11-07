@@ -73,6 +73,17 @@
         if (unsub) { try { unsub(); } catch (e) {} }
         unsub = window.api.on('job:progress', (d) => {
           if (!d || d.kind !== 'lan') return;
+          /* 【两个阶段分开描述，不要只看 done/total】
+           * 扫描阶段 total=254，反查阶段 total≤30。若统一按「扫描中 x/y」显示，
+           * 反查时会突然变成「扫描中 3/30」—— 用户以为扫描重头开始了。
+           * phase 由主进程给（'scan' | 'resolve'）；老版本主进程不发这个字段，
+           * 那时按 done/total 也照旧能显示，所以这里不做强制判断。 */
+          if (d.phase === 'resolve') {
+            const rp = d.total ? Math.round(d.done / d.total * 100) : 0;
+            prog.set(rp);
+            status.textContent = '正在反查主机名 ' + d.done + '/' + d.total + '…（已发现 ' + (d.found || 0) + ' 台响应）';
+            return;
+          }
           const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
           prog.set(pct);
           status.textContent = '扫描中 ' + d.done + '/' + d.total + '，已发现 ' + (d.found || 0) + ' 台响应';

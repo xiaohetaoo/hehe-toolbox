@@ -286,7 +286,20 @@ const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
   // sys:power / svc:action 由各自 handler 按 action 精细判定（锁屏、启动服务无害）。
   const cap = CAP_GATED_CHANNELS[ch];
   if (cap && !dangerousEnabled(cap)) {
-    return { ok: false, error: dangerousDenied(cap) };
+    /* 【门禁拒绝也要带 code / advice，形状与正常错误分支一致】
+     * 下面 catch 分支返回的是 { ok:false, error, code, advice }，
+     * 而这里原来只有 error —— 于是 js/api.js 里
+     *   if (r && r.code) err.code = r.code;
+     *   if (r && r.advice) err.advice = r.advice;
+     * 两行全部落空，调用方拿到的 e.code 恒为 undefined，
+     * 「按码分支」的逻辑（例如引导用户去设置页开启）根本走不到。
+     * 拒绝理由本来就知道（就是没开这个能力），没道理不告诉前端。 */
+    return {
+      ok: false,
+      error: dangerousDenied(cap),
+      code: 'CAP_DENIED',
+      advice: dangerousDeniedAdvice(cap)
+    };
   }
   /* 【把「谁调用的」记进 ALS，供 send() 定向推送】
    * als.run 的作用域必须**包住整个 fn 的执行**，包括它 await 出去的一切、
@@ -321,6 +334,24 @@ const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
  * 所以新增 throwOnNonZero：需要「失败必须抛」的地方显式打开，
  * 不用逐个去猜调用点。
  */
+/* 【火后不理的子进程必须挂 error 监听并 unref】
+ * 项目里有十余处 `spawn('taskkill', …)` / `spawn('shutdown', …)`，
+ * 都是「发出去就不管了」的辅助动作。但 Node 的 ChildProcess 在 spawn 失败时
+ * （ENOENT / EACCES / 系统找不到可执行文件）会 emit 'error'；
+ * 没有监听器时，这个 error 会升级成主进程的 uncaughtException ——
+ * 结果是：一条取消动作没生效，却写进 crash-log、还把下次启动标记成
+ * 「上次异常退出」，让用户以为程序崩过。
+ * 统一收口到这个助手：挂一个空 error 监听（失败就当没做成，不上升为崩溃），
+ * 再 unref 让子进程不拖住主进程退出。返回值仍是 ChildProcess，调用方
+ * 若需要 pid 之类可以继续用。 */
+/* 【实现搬到 lib/spawn-detached.js】
+ * ipc/media-ffmpeg.js 的录制/转码域里有同样形态的 6 处 taskkill，
+ * 而那个模块拿不到 main.js 里的局部函数 —— 只在这里修，媒体域照旧裸 spawn，
+ * 就成了「修了一半」：测试断言 main.js 已经没有裸 spawn，看起来问题已解决。
+ * 搬到 lib/ 之后两边 require 同一份，断言也能按整棵主进程树来写。
+ * 这里保留同名绑定，避免动几十处调用点（行为不变）。 */
+const { spawnDetached } = require('./lib/spawn-detached');
+
 function runCmd(cmd, args, opts = {}) {
   const enc = opts.encoding || 'utf8';
   return new Promise((resolve, reject) => {
@@ -595,6 +626,19 @@ const GATE_TEXT = {
 };
 function dangerousDenied(cap) {
   const pack = GATE_TEXT[uiLang] || GATE_TEXT.zh;
+  return pack(DANGEROUS_CAPS[cap].name);
+}
+/* 门禁拒绝时的「下一步该做什么」。
+ * 与 dangerousDenied 分开成两个函数，是因为它们回答的是不同问题：
+ *   前者说「为什么被拦」，后者说「怎么才能用」。
+ * js/api.js 会把 advice 拼在错误文本后面（errText 里 `msg + '\n建议：' + advice`），
+ * 所以这里给一句可直接照做的操作路径，不要重复上面那句。 */
+const GATE_ADVICE = {
+  zh: (name) => `打开「设置 → 高危功能」，找到「${name}」并打开开关，然后重试。`,
+  en: (name) => `Open Settings → High-risk features, turn on "${name}", then try again.`,
+};
+function dangerousDeniedAdvice(cap) {
+  const pack = GATE_ADVICE[uiLang] || GATE_ADVICE.zh;
   return pack(DANGEROUS_CAPS[cap].name);
 }
 handle(CH.DANGEROUS.LIST, () => ({
@@ -1383,7 +1427,7 @@ handle(CH.EXEC.STREAM, (e, { command, args, cwd }) => {
     cancel: () => {
       try {
         if (!proc.pid) { try { proc.kill(); } catch (e2) {} return; }
-        if (isWin) spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true });
+        if (isWin) spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']);
         else proc.kill('SIGKILL');
       } catch (err) {}
     }
@@ -1397,7 +1441,24 @@ handle(CH.EXEC.STREAM, (e, { command, args, cwd }) => {
   proc.on('error', (err) => { jobs.delete(id); send('job:exit', { id, code: -1, error: fmtErr(err) }); });
   return id;
 });
-handle(CH.JOB.KILL, (e, id) => { const j = jobs.get(id); if (j) j.cancel(); return true; });
+/* 【取消任务必须核对归属】
+ * 这里原来是 `const j = jobs.get(id); if (j) j.cancel(); return true;` ——
+ * 一句校验都没有，而对任何 id（包括根本不存在的）都返回 true。
+ * 后果有两层：
+ *   · v0.6.0 多窗口之后，A 窗口拿到 B 窗口的 job id 就能直接杀掉它的任务；
+ *   · 调用方拿到的 true 无法区分"已取消"与"这个 id 根本不存在"。
+ * 归属由 OwnerJobMap 在 set() 时自动补 ownerWC（见 lib/job-owner.js）。
+ * 这里取当前调用者：als 上下文里有 sender 就用它，没有（托盘/定时）就是 null。 */
+handle(CH.JOB.KILL, (e, id) => {
+  const st = als.getStore();
+  const caller = (st && st.sender && typeof st.sender.id === 'number') ? st.sender.id : null;
+  if (jobs && typeof jobs.cancelIfOwnedBy === 'function') return jobs.cancelIfOwnedBy(id, caller);
+  /* 兜底：jobs 若不是 OwnerJobMap（测试桩等）就退回旧行为，不要因为这次加固
+   * 让取消按钮在那种环境下彻底失效。 */
+  const j = jobs.get(id);
+  if (j) j.cancel();
+  return { ok: true, cancelled: !!j };
+});
 // 取消最近一次启动的可取消任务（扫描/测速等，renderer 拿不到 job id 时使用）
 /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
 let latestCancelable = null;
@@ -1451,7 +1512,14 @@ const PROTECTED_PROC_NAMES = new Set([
 ]);
 const PROTECTED_PROC_PID_MAX = 1000;   // 低 PID 区几乎全是系统进程，保守拦截
 
-handle(CH.PROC.KILL, async (e, pid) => {
+/* 【结束进程的唯一实现：PROC.KILL 与「文件占用解锁」共用】
+ * 原来这段判据直接写在 PROC.KILL 的 handler 里。加解锁功能时如果另写一份，
+ * 就会出现两份白名单 —— 历史上已经踩过一次（加了一边忘另一边）。
+ * 抽成函数后：判据只有一份，两条通道各自只负责自己的上下文校验
+ * （PROC.KILL 不需要关心"这个 pid 是不是这个文件的占用者"，
+ *   解锁那边要）。
+ * 返回 true 表示已执行 taskkill；失败一律抛（带上给用户看的中文原因）。 */
+async function killProcessChecked(pid) {
   const n = Number(pid);
   if (!Number.isInteger(n) || n <= 0) throw new Error('进程 ID 无效');
   // 不能杀自己：主进程被杀会导致正在进行的录制/下载/写盘中断，
@@ -1484,7 +1552,8 @@ handle(CH.PROC.KILL, async (e, pid) => {
   }
   await runCmd('taskkill', ['/pid', String(n), '/f'], { timeout: 10000 });
   return true;
-});
+}
+handle(CH.PROC.KILL, async (e, pid) => killProcessChecked(pid));
 
 /* ================= IPC: network（已搬到 ipc/net-lan.js）================= */
 require('./ipc/net-lan')({
@@ -1553,6 +1622,29 @@ handle(CH.SERVER.START, async (e, root, port) => {
 });
 handle(CH.SERVER.STOP, () => {
   const s = serverMap.get('s');
+  /* 【时序问题：已实测，结论是「不成立，无 EADDRINUSE」，只留下 status 短暂的滞后】
+   * 原本担心的是：s.close() 是异步的（要等所有连接结束才真正释放端口），
+   * 而下面紧接着就 serverMap.delete('s') 并把 serverRoot/serverPort 置空。
+   * 若此刻还有 pipeline 在传大文件，理论上会 EADDRINUSE、甚至变成没人能 stop 的孤儿。
+   *
+   * 【实测：在 Windows 上不成立】
+   * 用慢速客户端 + 8MB 文件，传到一半调用 close() 并立刻同端口 listen：
+   *   · 同端口重启**成功**，没有 EADDRINUSE；
+   *   · 旧传输**自然完结**（8/8 MB 全部收完，不是被截断）；
+   *   · 唯一真实存在的现象是 status 短暂滞后：从 close() 到传输真正结束
+   *     约 170ms 内，server:status 已经返回 null，而端口还没释放。
+   * 成因是 Windows 的 socket 双绑定语义：listen 的独占性与「已建立的连接」
+   * 不是同一件事 —— 老连接继续跑，新 listen 照样能绑上同一个端口。
+   * Linux 上 close() 后立刻 listen 会 EADDRINUSE（这个差异如果哪天要跨平台，
+   * 需要重新评估，但本项目只发 Windows 包）。
+   *
+   * 【所以不改行为】改成「等 close 回调再清状态」只为消除 170ms 的显示滞后，
+   * 代价是 stop 之后按钮要等当前传输结束才恢复 —— 对用户是更糟的体验
+   * （点停止没反应）。**注意：这里不是"没验证过所以先不动"，而是验证过
+   * 之后确认原来的担心不成立**，才保持现状。
+   * scripts/test-static-server-stop.js 把这个实测结论钉住了：
+   * 它真的起服务器、真的限速传输、真的同端口重启，断言「不 EADDRINUSE
+   * + 旧传输完整」，所以将来若换平台或改 Node 版本导致行为变化，那条会先红。 */
   if (s) { s.close(); serverMap.delete('s'); }
   serverRoot = null; serverPort = null;
   return true;
@@ -1776,9 +1868,9 @@ handle(CH.SYS.POWER, async (e, action) => {
   switch (action) {
     case 'lock': await runCmd('rundll32.exe', ['user32.dll,LockWorkStation'], { timeout: 5000 }); return true;
     case 'sleep': await runCmd('rundll32.exe', ['powrprof.dll,SetSuspendState', '0,1,0'], { timeout: 5000 }); return true;
-    case 'hibernate': spawn('shutdown', ['/h'], { windowsHide: true }); return true;
-    case 'restart': spawn('shutdown', ['/r', '/t', '0'], { windowsHide: true }); return true;
-    case 'shutdown': spawn('shutdown', ['/s', '/t', '0'], { windowsHide: true }); return true;
+    case 'hibernate': spawnDetached('shutdown', ['/h']); return true;
+    case 'restart': spawnDetached('shutdown', ['/r', '/t', '0']); return true;
+    case 'shutdown': spawnDetached('shutdown', ['/s', '/t', '0']); return true;
     default: throw new Error('未知操作');
   }
 });
@@ -1967,20 +2059,50 @@ handle(CH.APP.SET_ACCENT, (e, id) => {
  * 辅助窗口通过 loadFile 的 query 参数拿到，不需要回头问主进程。 */
 
 /* screen ruler floating window */
+/* 【标尺必须能伸长/缩短】
+ * 工具页的说明一直写着「拖动边缘可调整长度」，但这个窗口是
+ * `resizable: false`、通道表里也只有 RULER / RULER_CLOSE / RULER_MOVE ——
+ * 用户拖边缘什么都不会发生，属于**承诺了却没实现**。
+ *
+ * 为什么不直接把 resizable 改成 true：无边框（frame: false）窗口在
+ * Windows 上没有系统边框，resizable: true 并不会给用户可抓的边缘，
+ * 只是让程序自己能改尺寸。所以这里自己画把手（见 ruler-2.js），
+ * 拖动时通过 RULER_RESIZE 精确设置尺寸。
+ *
+ * 长度下限：横向至少 160px（再短就只剩两个按钮），纵向同理；
+ * 上限取当前显示器工作区，避免拉出屏幕外之后抓不回来。 */
+const RULER_MIN = 160;
+/* 标尺的"厚度"（横向标尺的高 / 纵向标尺的宽）是固定值。
+ * 见 RULER_RESIZE 的注释：让它参与回读会带来 +1px/次的累积漂移。 */
+const RULER_THICK = { h: 56, v: 56 };
+/* 标尺当前的几何。**由主进程独占维护**：创建/拖动/拉伸都更新它，
+ * 拉伸时以它为基准而不是 getBounds()（回读会被 DPI 取整带偏）。 */
+let rulerGeom = null;
 let rulerWin = null;
 handle(CH.WIN.RULER, (e, dir) => {
   if (rulerWin && !rulerWin.isDestroyed()) rulerWin.close();
   const horizontal = dir !== 'v';
+  const w0 = horizontal ? 600 : RULER_THICK.v;
+  const h0 = horizontal ? RULER_THICK.h : 600;
   rulerWin = new BrowserWindow({
-    width: horizontal ? 600 : 56, height: horizontal ? 56 : 600,
-    frame: false, transparent: true, alwaysOnTop: true, resizable: false,
+    width: w0, height: h0,
+    frame: false, transparent: true, alwaysOnTop: true, resizable: true,
     skipTaskbar: true, hasShadow: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false,
       additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
+  /* 记录创建时的几何（位置由窗口管理器决定，用回读补齐一次 —— 之后就不再回读）。 */
+  try { rulerGeom = rulerWin.getBounds(); } catch (e) { rulerGeom = { x: 0, y: 0, width: w0, height: h0 }; }
   rulerWin.setAlwaysOnTop(true, 'screen-saver');
+  /* resizable: true 只是为了 setSize/setBounds 生效；用户抓不到系统边框，
+   * 真正的拉伸入口是我们自己画的把手。这里显式关掉最大化/全屏，
+   * 避免用户双击标题区（无边框时没有）或快捷键把它变成全屏。 */
+  try { rulerWin.setMaximizable(false); } catch (e) {}
+  try { rulerWin.setFullScreenable(false); } catch (e) {}
   const self = rulerWin;
-  self.on('closed', () => { if (rulerWin === self) rulerWin = null; });
+  self.on('closed', () => {
+    if (rulerWin === self) { rulerWin = null; rulerGeom = null; }
+  });
   rulerWin.loadFile('ruler.html', { query: { dir: horizontal ? 'h' : 'v', accent: currentAccent } });
   return true;
 });
@@ -1998,6 +2120,52 @@ handle(CH.WIN.RULER_MOVE, (e, x, y) => {
   const cx = Math.min(Math.max(px, wa.x - bw + 40), wa.x + wa.width - 40);
   const cy = Math.min(Math.max(py, wa.y), wa.y + wa.height - 40);
   rulerWin.setPosition(cx, cy);
+  /* 同步几何缓存：拖动与拉伸改的是同一份状态，漏了这句下次拉伸会跳回旧位置。 */
+  if (rulerGeom) { rulerGeom.x = cx; rulerGeom.y = cy; }
+  return true;
+});
+/* 拉伸标尺。anchor 说明**哪条边是固定的**：
+ *   'end'   —— 左上角不动，往右下拉长（拖右/下边缘）
+ *   'start' —— 右下角不动，往左上拉长（拖左/上边缘）
+ * 两个方向都要支持，否则用户拖左边会看到整个窗口跟着跑。
+ *
+ * 【几何必须用「我们上次设进去的值」，不能用 getBounds() 回读】
+ * 真机实测（dpr=1.875）踩到的两个漂移：
+ *   · 厚度每拉一次 +1px：58 → 59 → 60 → 61。因为 getBounds() 往返一次
+ *     会被 DPI 取整，回读值比设进去的大一点，再设回去又大一点，逐次累积。
+ *   · start 锚点每拉一次偏 2px：右边缘 1285 → 1283。同上，
+ *     cur.x + cur.width 不等于真实右边缘，于是 next.x 一步步跑偏。
+ * 只要窗口尺寸只由主进程改，缓存就是精确的 —— 回读只会引入误差。
+ * setPosition（拖动）也同步更新缓存，两者是同一份几何。 */
+handle(CH.WIN.RULER_RESIZE, (e, w, h, anchor) => {
+  if (!rulerWin || rulerWin.isDestroyed()) return false;
+  const cur = rulerGeom || rulerWin.getBounds();
+  const horizontal = cur.width >= cur.height;
+  const disp = screen.getDisplayNearestPoint({ x: cur.x + 20, y: cur.y + 20 });
+  const wa = disp.workArea;
+  const maxLen = horizontal ? wa.width : wa.height;
+
+  /* 厚度取**创建时定下的常量**，不参与计算，也不回读 —— 它是固定值，
+   * 一旦让它跟着当前几何走，就会变成上面那个 +1px 的累积漂移。 */
+  const thick = horizontal ? RULER_THICK.h : RULER_THICK.v;
+  /* 【长度取哪个参数必须跟着方向走】
+   * 横向标尺的长度是 width，纵向标尺的长度是 height。
+   * 写错会取到"厚度"那一维（57），于是永远被下限夹到 160 —— 真机实测：
+   * 纵向请求 800 却得到 161，表现就是"纵向标尺完全拉不动"。 */
+  let len = Math.round(horizontal
+    ? (Number(w) || cur.width)
+    : (Number(h) || cur.height));
+  len = Math.min(Math.max(len, RULER_MIN), maxLen);
+
+  const next = horizontal
+    ? { x: cur.x, y: cur.y, width: len, height: thick }
+    : { x: cur.x, y: cur.y, width: thick, height: len };
+  if (anchor === 'start') {
+    if (horizontal) next.x = cur.x + cur.width - len;
+    else next.y = cur.y + cur.height - len;
+  }
+  rulerGeom = next;
+  rulerWin.setBounds(next);
   return true;
 });
 
@@ -2068,6 +2236,10 @@ handle(CH.QR.GENERATE, async (e, text, opts = {}) => {
 
 const mediaIpc = require('./ipc/media-ffmpeg')(ipcCtx, {
   handle,
+  /* 【send 必须传 ALS 版（本文件的 send），不能让它用 ctx.send】
+   * ctx.send 只发主窗口；本文件的 send() 是三档路由。这一项漏了，
+   * 独立工具窗口里的进度事件就全跑到主窗去（详见 ipc/media-ffmpeg.js 的说明）。 */
+  send,
   runCmd,
   pathExists,
   shortErr,
@@ -2427,7 +2599,13 @@ namespace HeheUsn {
 '@
 Add-Type -TypeDefinition $src
 [HeheUsn.Enumerator]::Run('${drive}')`], { windowsHide: true });
-  const kill = () => { try { spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true }); } catch (err) {} };
+  /* 【在 spawn 的同一个同步块里就挂上 error 监听】
+   * 下面 Promise 里的 proc.on(error, reject) 才是真正的处理逻辑，
+   * 但它隔了 jobs.set / 索引结构初始化等几行。目前这段是纯同步的，
+   * 所以错误一定发生在监听挂上之后 —— 可这只是当前版面的巧合。
+   * 先把时间窗填掉，避免将来插入一个 await 就把 uncaughtException 放回来。 */
+  proc.on('error', () => {});
+  const kill = () => { try { spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']); } catch (err) {} };
   jobs.set(id, { cancel: kill });
   latestCancelable = kill;
   const map = new Map();
@@ -3215,8 +3393,15 @@ handle(CH.TTS.SPEAK, (e, { text, voice, rate, volume }) => {
     (voice ? `try{$p.SelectVoice('${ttsEsc(voice)}')}catch{};` : '') +
     `$p.Rate=[int]${Math.max(-10, Math.min(10, rate || 0))};$p.Volume=[int]${Math.max(0, Math.min(100, volume == null ? 100 : volume))};$p.Speak('${ttsEsc(text)}')|Out-Null`;
   const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true });
-  const kill = () => { try { spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true }); } catch (e) {} };
+  const kill = () => { try { spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']); } catch (e) {} };
   jobs.set(id, { cancel: kill });
+  /* 【必须挂 error 监听】powershell.exe 起不来时（被安全软件拦住、PATH 被改）
+   * 这个 spawn 会 emit 'error'，而这里原来只有 'exit' ——
+   * 没有 error 监听时它会升级成 uncaughtException，用户点「朗读」
+   * 换来的是整个程序崩掉 + 下次启动标「上次异常退出」。
+   * 与 exit 同样要销账并回一个 done:true，否则渲染层的朗读按钮永远处于
+   * 「正在朗读」状态（它靠 done:true 复位）。 */
+  proc.on('error', () => { jobs.delete(id); send('job:stream', { id, data: JSON.stringify({ done: true }) }); });
   proc.on('exit', () => { jobs.delete(id); send('job:stream', { id, data: JSON.stringify({ done: true }) }); });
   return { id };
 });
@@ -3489,14 +3674,45 @@ async function snipStart(mode) {
   const file = snipTmp();
   await fsp.writeFile(file, img.toPNG());
   snipSrcFile = file;
+  /* 【窗口必须精确覆盖屏幕，且不要再 setFullScreen】
+   * 实测（187.5% 缩放、逻辑 1366×854 的机器）：
+   *   · 按 display.bounds 建窗 → getBounds() 返回 1369×818（不是 1366×854）
+   *   · 再调 setFullScreen(true) → 变成 1367×855，而 isFullScreen() 仍返回 false
+   * 也就是说 setFullScreen 在这个"已经精确定位到屏幕区域"的 frameless 窗口上
+   * 既不生效、又把尺寸改坏。窗口比屏幕大一点点时，截图会露出黑边/错位，
+   * 用户看到的就是"屏幕变形"。
+   *
+   * 【实测：DPI 取整会让窗口永远差 1px，这是系统级限制】
+   * 在 187.5% 缩放的机器上（逻辑 1366×854），无论用不用 useContentSize、
+   * 无论怎么 setBounds，getBounds() 都稳定返回 **1367×855**（多 1px），
+   * getContentSize() 返回 1365×854（少 1px）：
+   *   1366 × 1.875 = 2561.25 物理像素 → Windows 取整成 2561 或 2562，
+   *   再除回 1.875 就不等于 1366。这个误差无法通过参数消除。
+   *
+   * 所以策略是"宁可多不能少"：
+   *   · 多出的 1px 在屏幕外，被系统裁掉，用户看不到；
+   *   · 少 1px 则会在边缘露出一条没被覆盖的旧画面（正是"变形"的观感）。
+   * 配合 setContentBounds 让**内容区**尽量贴近屏幕（内容区才是用户看的东西）。 */
+  const bounds = {
+    x: Math.round(display.bounds.x), y: Math.round(display.bounds.y),
+    width: Math.round(display.bounds.width), height: Math.round(display.bounds.height),
+  };
   snipWin = new BrowserWindow({
-    x: display.bounds.x, y: display.bounds.y, width: display.bounds.width, height: display.bounds.height,
+    x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
     frame: false, transparent: true, alwaysOnTop: true, resizable: false, skipTaskbar: true, hasShadow: false,
+    useContentSize: true, show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false,
       additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
   snipWin.setAlwaysOnTop(true, 'screen-saver');
-  snipWin.setFullScreen(true);
+  /* 用 setContentBounds 而不是 setBounds：用户看的是内容区，
+   * 而 setBounds 管的是"含边框的外框"——frame:false 时两者理论上相等，
+   * 但 DPI 取整会让它们各差 1px（见上）。直接约束内容区更贴近意图。 */
+  try {
+    if (typeof snipWin.setContentBounds === 'function') snipWin.setContentBounds(bounds);
+    else snipWin.setBounds(bounds);
+  } catch (e) { /* 某些平台在 ready 前不可设，忽略 */ }
+  /* 保留原来的语义说明：这里**刻意不调 setFullScreen**（见上方实测）。 */
   /* 关窗即清临时图。走到这里说明截图源图已经没用了
    * （pin/save/ocr 分支会各自另存一份新文件，不复用这张）。 */
   snipWin.on('closed', () => { snipWin = null; dropSnipSrc(); });
@@ -3514,8 +3730,19 @@ handle(CH.SNIP.FINISH, async (e, { action, dataUrl, rect }) => {
   const winToClose = snipWin;
   snipWin = null;
   try { if (winToClose && !winToClose.isDestroyed()) winToClose.close(); } catch (err) {}
+  /* 【取消也必须回一条 snip:region，否则调用方会干等到超时】
+   * 渲染层（screen-rec 的 pickRegion）用 Promise 等两个出口之一：
+   *   · 'snip:region' 事件
+   *   · 120 秒定时器
+   * 而 cancel 分支原来直接 return，一个事件都不发 ——
+   * 用户按 Esc 取消后，状态行会停在「请在屏幕上框选录制区域…」整整两分钟，
+   * 那期间订阅与定时器都不释放，切页也不会清（App.onCleanup 没登记它们）。
+   * 现在：cancel 也发一条 snip:region 且载荷为 null，
+   * 让调用方立刻按「未选择区域」收尾。 */
   if (action === 'cancel' || action === 'region') {
+    /* rect 只有在真框选了区域时才存在；取消时传 null，语义是"用户放弃了" */
     if (action === 'region' && rect) send('snip:region', rect); // 区域录制等用途
+    else send('snip:region', null);
     return { ok: true };
   }
   if (!dataUrl) return { ok: false };
@@ -3775,7 +4002,14 @@ async function updateApplyImpl(opts = {}) {
   if (opts && opts.dryRun) {
     return { ok: true, dryRun: true, script, rollbackScript, target, newExe, backup, args: spawnArgs };
   }
-  spawn('powershell.exe', spawnArgs, { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
+  /* 【走 spawnDetached，不要裸 spawn().unref()】
+   * 这句是「让替换脚本脱离父进程活下去」的典型写法，原来只有 unref ——
+   * powershell.exe 起不来时异步 emit 的 'error' 没有任何监听，
+   * 会升级成 uncaughtException。而这里恰好在**即将退出**的时刻：
+   * 崩溃日志会写进一份本该是「正常退出完成更新」的记录里，
+   * 用户下次看到「上次异常退出」却完全找不到对应现象。
+   * spawnDetached 已经挂了空 error 监听并 unref。 */
+  spawnDetached('powershell.exe', spawnArgs, { detached: true, stdio: 'ignore' });
   /* 替换脚本已经起来了：此后不再允许第二次 apply（标志也就不必再放开） */
   updateApplyingCommitted = true;
   /* 【退出前必须手动清会话标记】
@@ -4131,8 +4365,11 @@ handle(CH.CTXMENU.CLASSIC, async (e, on, restart) => {
     await runCmd('reg', ['delete', WIN11_CTX_HANDLER, '/f'], { timeout: 10000 }).catch(() => {});
   }
   if (restart) {
-    spawn('taskkill', ['/f', '/im', 'explorer.exe'], { windowsHide: true });
-    setTimeout(() => { try { spawn('explorer.exe', [], { windowsHide: true, detached: true }); } catch (e) {} }, 800);
+    spawnDetached('taskkill', ['/f', '/im', 'explorer.exe']);
+    /* 【不能只靠 try/catch】explorer.exe 找不到时 spawn 是**异步** emit 'error'，
+     * 外面这层 try/catch 接不到 —— 一次「恢复右键菜单」的收尾动作会把主进程带崩。
+     * opts 里的 detached 保留（explorer 要脱离本进程存活）。 */
+    setTimeout(() => { spawnDetached('explorer.exe', [], { detached: true }); }, 800);
   }
   return { on: await ctxClassicState() };
 });
@@ -4169,11 +4406,17 @@ handle(CH.CTXMENU.CLASSIC_STATUS, async () => ({ on: await ctxClassicState() }))
  * 又把耦合接回去）。 */
 const aclLinks = require('./ipc/dir-acl-links')(ipcCtx, {
   handle,
+  /* 同 mediaIpc：必须用 ALS 版 send，否则「目录搬家」的 7 个阶段进度
+   * 只会发给主窗口，独立工具窗口里点了没反应。 */
+  send,
   ps,
   runCmd,
   pathExists,
   shortErr,
   PS_PATH_BATCH,
+  /* 「文件占用解锁」要用同一个结束进程实现 —— 安全判据只此一份。
+   * 注入函数而不是让它自己 taskkill：那样白名单与低 PID 拦截会变成两份。 */
+  killProc: killProcessChecked,
 });
 const isRunningAsAdmin = aclLinks.isRunningAsAdmin;
 

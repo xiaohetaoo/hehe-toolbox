@@ -11,6 +11,15 @@ register({
     desc: '一键下载/导入 ffmpeg 与 ffprobe，为音视频功能提供引擎', descEn: 'Download or import ffmpeg and ffprobe to power the media tools',
     keywords: ['ffmpeg', 'ffprobe', '环境', '引擎'],
     render(page) {
+      /* 【切页要能收回下载订阅】
+       * 下载那段的 unsub 只在 try/finally 里退订 —— 用户中途切页时
+       * finally 还不会执行（await 还没回来），订阅就留在了原地，
+       * 之后每个后台任务的 pct 都会去改一个已经不在页面上的进度条。
+       * 这里在 render 的同步阶段登记一次清理，把句柄交给它。 */
+      let dlUnsub = null;
+      if (window.App && App.onCleanup) {
+        App.onCleanup(() => { if (dlUnsub) { try { dlUnsub(); } catch (e) {} dlUnsub = null; } });
+      }
       const statusBox = div('');
       const prog = progressEl(); prog.hide();
       const status = h('div', { class: 'field-hint' }, '');
@@ -48,9 +57,8 @@ register({
         if (!isDesktop) return toast('桌面端可用', 'warn');
         dlBtn.disabled = true;
         prog.show(); status.textContent = '';
-        let unsub = null;
         try {
-          unsub = window.JobPrefix.subscribe('dl', (d) => {
+          dlUnsub = window.JobPrefix.subscribe('dl', (d) => {
           /* 【必须按 id 过滤】ffmpeg 下载任务 id 形如 dl<数字>（通用下载器现在叫 dlg）。
            * 不过滤的话，任何后台任务的 pct 都会被画进 FFmpeg 下载进度条 ——
            * 用户看着进度条走到 100% 却发现没装上。
@@ -67,7 +75,7 @@ register({
           toast('FFmpeg 安装完成', 'success');
           status.textContent = '✓ 安装完成：' + (r.ffmpeg || '');
         } catch (e) { status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; toast(e.message, 'error'); }
-        finally { dlBtn.disabled = false; prog.hide(); if (unsub) unsub(); refresh(); }
+        finally { dlBtn.disabled = false; prog.hide(); if (dlUnsub) { try { dlUnsub(); } catch (e) {} dlUnsub = null; } refresh(); }
       }, 'download');
       const pickBtn = btn('手动导入 ffmpeg.exe', 'btn-secondary', async () => {
         try {

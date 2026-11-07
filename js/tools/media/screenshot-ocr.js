@@ -4,6 +4,8 @@
   const { register } = window.Registry;
   const { div, btn, toast, copyText, filePicker, progressEl } = window.ui;
   const { invoke } = window.api;
+  /* OCR 的超时与失败归因（lib/ocr-guard.js，UMD 挂到 window） */
+  const OcrGuard = window.OcrGuard;
   const MOD = 'media';
 
 register({
@@ -38,30 +40,46 @@ register({
         window.__ocrPendingPath = null;
         setTimeout(() => handleFile(p).catch(() => {}), 200);
       }
+      /* 【OCR 必须带超时 —— 否则失败时界面永久停在"初始化…"】
+       * tesseract.js 的 recognize 返回的 promise 在某些失败路径上**永不 settle**：
+       *   · wasm 编译被 CSP 拒绝（抛出发生在 blob worker 内部，不一定回传）
+       *   · 语言包下载被网络/安全软件拦在半路
+       * 实测：CSP 不允许 wasm 时，recognize 20 秒内既不 resolve 也不 reject，
+       * 进度条不动、状态行停在「初始化 OCR 引擎…」，用户只能干等 ——
+       * 他看到的是"很慢"，不是"坏了"，所以不会想到去报告。
+       * 超时逻辑与归因文案在 lib/ocr-guard.js（两个 OCR 工具共用一份）。 */
+      const OCR_TIMEOUT_MS = OcrGuard.DEFAULT_TIMEOUT_MS;
       async function recognize() {
         if (!currentImg) return toast('请先提供图片', 'warn');
         if (!window.Tesseract) return toast('OCR 引擎未加载，请重启应用', 'error');
         result.value = ''; prog.show();
         status.textContent = '初始化 OCR 引擎（首次识别需下载语言包，请耐心等待）…';
         try {
-          const r = await window.Tesseract.recognize(currentImg, langSel.value, {
-            workerPath: 'node_modules/tesseract.js/dist/worker.min.js',
-            corePath: 'node_modules/tesseract.js-core',
-            logger: (m) => {
-              if (m.progress != null) {
-                status.textContent = (m.status || '处理中') + ' ' + (m.progress * 100).toFixed(0) + '%';
-                prog.set(m.progress * 100);
+          const r = await OcrGuard.withTimeout(
+            window.Tesseract.recognize(currentImg, langSel.value, {
+              workerPath: 'node_modules/tesseract.js/dist/worker.min.js',
+              corePath: 'node_modules/tesseract.js-core',
+              logger: (m) => {
+                if (m.progress != null) {
+                  status.textContent = (m.status || '处理中') + ' ' + (m.progress * 100).toFixed(0) + '%';
+                  prog.set(m.progress * 100);
+                }
               }
-            }
-          });
+            }),
+            OCR_TIMEOUT_MS
+          );
           result.value = (r.data.text || '').trim();
           status.textContent = `✓ 识别完成（置信度 ${(r.data.confidence || 0).toFixed(0)}%）`;
           prog.hide();
           toast('识别完成', 'success');
         } catch (e) {
           prog.hide();
-          status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}（语言包需联网下载一次，之后离线可用）</span>`;
-          toast('识别失败：' + e.message, 'error');
+          /* 按错误类型给可操作的说明，而不是把原始报错甩给用户：
+           * 最常见的是引擎起不来（wasm/语言包），那时"再试一次"没用，
+           * 得告诉他是哪一环断的。 */
+          const reason = OcrGuard.failReason(e);
+          status.innerHTML = `<span class="status-err">✗ ${escapeHtml(reason)}</span>`;
+          toast('识别失败：' + reason, 'error');
         }
       }
       async function fromBlob(blob, label) {

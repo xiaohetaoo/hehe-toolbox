@@ -41,6 +41,16 @@ const OUT = path.join(ROOT, 'scripts', 'assertions-baseline.json');
 const REPORT = path.join(ROOT, 'reports', 'test-output.log');
 
 /** 把一段测试输出解析成「文件 → PASS 条数」。 */
+/** 日志里出现过 @@FILE <file> 标记吗（file 为不带 scripts/ 前缀的名字）。 */
+function cnt0(text) {
+  const out = {};
+  for (const ln of text.split('\n')) {
+    const m = /^@@FILE scripts\/(.+)$/.exec(ln);
+    if (m) out[m[1].trim()] = true;
+  }
+  return out;
+}
+
 function parseByFile(text) {
   /* 测试脚本是一条条 node 命令串起来的，输出里没有文件名。
    * 所以改用「标记行」：每个脚本跑之前由 runAll() 自己打一行
@@ -92,64 +102,32 @@ function detectSkipped(text) {
 
 /** 逐个跑 test:unit / test:ui 里的脚本，边跑边打 @@FILE 标记。 */
 function runAll() {
-  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  const cmds = [];
-  /* 【按分组展开，不能对每条命令都问一次全量清单】
-   * test:unit 与 test:ui 都调用 run-tests.js，若每条都取 --list（两组都列），
-   * 同一批脚本会被统计两次 —— 基线数字直接翻倍，而它看着"更高了"更安全，
-   * 实际上守卫从此对新增测试完全失效（分母虚高，少跑一整个分组也发现不了）。
-   * 所以按 key 传对应的分组参数。 */
-  for (const key of ['test:unit', 'test:ui']) {
-    const groupFlag = key === 'test:ui' ? ' --ui' : ' --unit';
-    for (const part of String(pkg.scripts[key] || '').split('&&')) {
-      const s = part.trim();
-      if (s) cmds.push({ cmd: s, groupFlag: groupFlag });
-    }
-  }
-  /* 【run-tests.js 会把一批脚本藏在内部】
-   * 它按内容自动分组（见 scripts/run-tests.js），package.json 里只留一条命令，
-   * 所以从 scripts 里展开不到具体文件。这里问它要一份清单。
-   * 不硬编码：清单会随新增测试变，写死必然过期 —— 过期表现为
-   * 「新加的测试不算进断言基线」，也就是守卫对它失效。 */
-  const expanded = [];
-  for (const item of cmds) {
-    const cmd = item.cmd;
-    if (/scripts[\/]run-tests\.js/.test(cmd)) {
-      try {
-        const listOut = cp.execSync('node scripts/run-tests.js --list' + item.groupFlag, { cwd: ROOT, encoding: 'utf8' });
-        for (const line of listOut.split(String.fromCharCode(10))) {
-          const m = line.trim().match(/^(test-[\w-]+\.js)$/);
-          if (m) expanded.push('node scripts/' + m[1]);
-        }
-        continue;
-      } catch (e) { /* 拿不到就退回原命令，至少不会完全没跑 */ }
-    }
-    expanded.push(cmd);
-  }
-  cmds.length = 0;
-  cmds.push(...expanded);
+  /* 【直接复用 run-tests.js 的输出，别再自己逐个 shell 跑】
+   * 原来的实现是：从 package.json 取 test:unit/test:ui → 问 run-tests.js --list
+   * 要文件清单 → 再用 `shell: 'cmd.exe'` 逐个 execSync。
+   * 这与 run-tests.js 自己跑脚本的**执行方式不同**，于是同一批脚本
+   * 两条路径统计出的条数对不上（实测 8 个文件有差异：acl-* / disk-health /
+   * file-unlock / tray-i18n 那几个在 --write 路径下因环境得 0，
+   * 在 run-tests.js 路径下却能跑出条数）。
+   * 后果：本地 `test:count:write` 拍出的基线，和 CI 里
+   * `test:count --no-run` 读日志算出的数字是两个口径 ——
+   * 守卫看着绿，但两边的分母根本不是同一件事。
+   * 现在只走一条路径：跑 run-tests.js，拿它那份带 @@FILE 标记的输出。
+   * 它自己就负责按内容分组、按需链接 node_modules、跳过需环境的脚本。 */
   const chunks = [];
   let failed = 0;
-  for (const cmd of cmds) {
-    const m = /^node\s+(\S+)/.exec(cmd);
-    if (!m) continue;
-    const rel = m[1];
-    chunks.push('@@FILE ' + rel);
-    let out = '';
-    let ok = true;
-    try {
-      out = cp.execSync(cmd, { cwd: ROOT, encoding: 'utf8', shell: 'cmd.exe', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (e) {
-      failed++;
-      ok = false;
-      out = String((e.stdout || '')) + String((e.stderr || ''));
-    }
-    chunks.push(out);
-    /* 对「不打印 PASS 行」的脚本补一条合成刻度，见 EXIT_ONLY_FILES 的说明 */
-    if (EXIT_ONLY_FILES.has(rel) && ok) chunks.push('PASS  （退出码 0 合成刻度：该脚本用 exit code 判定）');
+  try {
+    chunks.push(cp.execSync('node scripts/run-tests.js', {
+      cwd: ROOT, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }));
+  } catch (e) {
+    failed++;
+    chunks.push(String(e.stdout || '') + String(e.stderr || ''));
   }
-  return { text: chunks.join('\n'), failed, total: cmds.length };
+  return { text: chunks.join('\n'), failed, total: 1 };
 }
+
 
 function main() {
   const write = process.argv.includes('--write');
@@ -172,6 +150,18 @@ function main() {
   }
 
   const counts = parseByFile(text);
+  /* 【--no-run 也要给 EXIT_ONLY_FILES 补那条合成刻度】
+   * 这些脚本不打印 PASS 行，靠退出码记 1 条。之前那条合成 PASS 只在
+   * runAll() 内部（它自己拼输出时）追加 —— 而 run-tests.js 写出来的日志
+   * 里没有这一行。于是 --no-run 读同一份日志时会把它算成 0 条，
+   * 报「基线 1 → 现在 0」，无论测试跑没跑过都红。
+   * 这里按「日志里这个文件有 @@FILE 标记、且它整体不是失败」来补：
+   * 失败与否看全局汇总（失败脚本会在日志里以 FAIL 行出现）。
+   * 判据尽量保守：只有真在日志里出现过该标记才补，没跑过的文件仍记 0。 */
+  for (const f of EXIT_ONLY_FILES) {
+    if (!(f.replace(/^scripts\//, '') in cnt0(text))) continue;
+    if ((counts[f] || 0) === 0) counts[f] = 1;
+  }
   const files = Object.keys(counts).sort();
   const total = files.reduce((n, f) => n + counts[f], 0);
   console.log('统计到 ' + files.length + ' 个脚本，PASS 共 ' + total + ' 条');
@@ -230,6 +220,20 @@ function main() {
       dropped.push(f + '：基线 ' + n + ' → 现在 ' + now + '（少 ' + (n - now) + ' 条）');
     }
   }
+  /* 【未登记进基线的脚本：这次跑出 0 条也要判红】
+   * 上面那个循环只遍历 base.files —— 一个脚本如果**从来没进过基线**，
+   * 它的断言被删光时 now >= n 这一比较根本不会发生（n 都不存在）。
+   * 实测存在的缺口：scripts/ 下有 135 个 test-*.js，而基线只登记了 132 个，
+   * 漏掉的那几个（例如新加的）断言清零也不会判红。
+   * 补一条：counts 里有这个文件、但基线里没有、且这次 0 条 —— 说明它
+   * 从来没被拍进基线，或者被删空了，两种情况都该让人看见。 */
+  for (const [f, n] of Object.entries(counts)) {
+    if (Object.prototype.hasOwnProperty.call(base.files, f)) continue;
+    if (n > 0) continue;
+    if (skippedMap.has(f)) continue;
+    dropped.push(f + '：未登记进基线，且这次 0 条断言（跑 --write 补登记，或检查是否被删空）');
+  }
+
   const grown = [];
   let grew = 0;
   for (const [f, n] of Object.entries(counts)) {

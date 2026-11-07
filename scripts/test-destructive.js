@@ -71,6 +71,25 @@ function handlerBody(src, channel) {
   const end = srcScan.scanBrace(src, open);
   return end > 0 ? src.slice(start, end) : src.slice(start);
 }
+/**
+ * 按**函数名**取完整函数体。
+ *
+ * 【为什么需要它】「文件占用解锁」上线时，proc:kill 的保护判定从
+ * `handle(CH.PROC.KILL, ...)` 里抽成了 `killProcessChecked(pid)` ——
+ * 解锁要复用同一份白名单（两份必然分叉）。于是 handler 只剩一行转发，
+ * handlerBody 按通道名取到的片段里再没有任何判据，P0/P1 那几条
+ * 「不能杀自己 / 有黑名单 / 拦低 PID」全部假红。
+ * 判据的**语义**没变（还是那几条保护），变的只是它在哪个函数里。
+ */
+function fnBody(src, name) {
+  const start = src.indexOf('async function ' + name + '(');
+  const start2 = start < 0 ? src.indexOf('function ' + name + '(') : start;
+  assert.ok(start2 > 0, '找不到函数: ' + name);
+  const open = src.indexOf('{', start2);
+  assert.ok(open > 0, name + ' 没有函数体');
+  const end = srcScan.scanBrace(src, open);
+  return end > 0 ? src.slice(start2, end) : src.slice(start2);
+}
 /* 取升级脚本（const ps = [ ... ].join('\r\n');）的正文 */
 function updateScriptBody(src) {
   const start = src.indexOf('const ps = [');
@@ -443,7 +462,8 @@ t('P1 水印输出一律取唯一名', () => {
 
 /* ================= P1：proc:kill 自我保护 ================= */
 t('P1 proc:kill 不能杀自己', () => {
-  const fn = handlerBody(readMain(), 'proc:kill');
+  /* 判据搬进了 killProcessChecked（解锁复用同一份），按函数名取 */
+  const fn = fnBody(readMain(), 'killProcessChecked');
   /* 锁的是：「P1 proc:kill 不能杀自己」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */

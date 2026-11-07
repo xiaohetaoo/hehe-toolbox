@@ -40,6 +40,10 @@ const fsp = fs.promises;
 const path = require('path');
 const zlib = require('zlib');
 const { spawn, spawnSync } = require('child_process');
+/* 火后不理的 taskkill 必须挂 error 监听：见 lib/spawn-detached.js 顶部说明。
+ * 这个域原来有 6 处裸 spawn('taskkill', …)，与 main.js 里已修的那批同款 ——
+ * 但这里拿不到 main.js 的局部助手，于是「修了一半」。 */
+const { spawnDetached } = require('../lib/spawn-detached');
 /* dialog 只在 ffmpeg:pick 里用（选 ffmpeg.exe / ffprobe.exe）。
  * 它是 Electron 主进程 API，必须在主进程侧 require。 */
 const { dialog } = require('electron');
@@ -49,6 +53,8 @@ const CH = require('../lib/channels').CHANNELS;   // IPC 通道名唯一来源
  * @param {object} ctx  见 ipc/ctx.js（win / jobs / isWin / send / nextJobSeq）
  * @param {object} deps 由 main.js 注入
  * @param {Function} deps.handle         带门禁与错误包装的 ipcMain.handle 包装
+ * @param {Function} deps.send           向发起调用的窗口推送（ALS 三档路由版；
+ *   不能用 ctx.send —— 那个只发主窗，独立工具窗口的进度会全部跑到主窗去）
  * @param {Function} deps.runCmd         跑命令（非零不抛）
  * @param {Function} deps.pathExists
  * @param {Function} deps.fmtErr
@@ -70,12 +76,37 @@ const CH = require('../lib/channels').CHANNELS;   // IPC 通道名唯一来源
  */
 module.exports = function register(ctx, deps) {
   const {
-    handle, runCmd, pathExists, fmtErr,
+    handle, runCmd, pathExists, fmtErr, send,
     storeGet, storeSet, moveFile, uniqueTarget, setLatestCancelable,
     tempDir, userDataDir, pathGuard, tempNames, targetSize, AdmZip, downloadToFile,
   } = deps;
 
-  const { win, jobs, isWin, send } = ctx;
+  const { jobs, isWin } = ctx;
+  /* 【win 不能解构 —— 那会把 getter 当场求值成常量】
+   * `const { win } = ctx` 在**解构那一刻**就求值了 getter，而本模块的
+   * register 在 main.js 顶层执行、远早于 createWindow()，所以拿到的恒是 null；
+   * 此后主窗建好、甚至关闭重建，这个值都不会变。
+   * ipc/ctx.js 头部专门写了"用快照会『第一次能用、换窗口就不对』，所以做成
+   * getter"—— 机制写对了，用法又错回去了。
+   *
+   * 后果：dialog.showOpenDialog(null, …) 合法但退化成**无父窗口**的对话框：
+   * 不居中、不是主窗的模态子窗口，用户开着对话框还能继续点主窗
+   * （容易连点出好几个）；在独立工具窗里点「选择 ffmpeg.exe」时也不归属那个窗口。
+   *
+   * 所以下面一律用 `ctx.win`（每次读都走 getter，拿的是当前值）。
+   * jobs 返回同一个 Map、isWin 是布尔，都不变，可以安全解构。 */
+
+  /* 【send 必须来自 deps，不能从 ctx 取】
+   * ctx.send 是 v0.6.0 之前那版「只发主窗口」的实现；v0.6.0 起 main.js 的
+   * send() 升级成三档路由（ALS 里的 sender / 无调用者回退主窗 / 调用者已销毁丢弃，
+   * 判据在 lib/ipc-route.js）。本模块从 ctx 取 send，等于把整个域的多窗口路由
+   * 关掉了：独立工具窗口里跑视频压制/目标体积/FFmpeg 安装时，进度事件全发到主窗口 ——
+   *   · 发起窗口的进度条完全不动，取消按钮拿不到 runJobId（它是从 job:stream 里取的），
+   *     点了没反应；
+   *   · 主窗口若开着同一个工具页，JobPrefix 的「首次匹配前缀就认领」会把这个
+   *     不属于它的任务认领走 —— 进度条乱跳、结束时弹「完成」。
+   * 这正好抵消了 v0.6.4 修的孤儿任务防串扰。
+   * fs-ops / net-lan 早就是从 deps 取 send 的，本模块照同一形态改。 */
 
 
   /* ======================= 以下为逐字搬来的实现 ======================= */
@@ -116,7 +147,8 @@ handle(CH.FFMPEG.STATUS, async () => {
   return { ffmpeg, ffprobe, binDir: binDir(), version };
 });
 handle(CH.FFMPEG.PICK, async (e) => {
-  const picked = await dialog.showOpenDialog(win, {
+  /* ctx.win 是 getter，每次读都是当前主窗（见上方解构处的说明） */
+  const picked = await dialog.showOpenDialog(ctx.win || null, {
     title: '选择 ffmpeg.exe（可多选，同时选上 ffprobe.exe）',
     properties: ['openFile', 'multiSelections'],
     filters: [{ name: '可执行文件', extensions: ['exe'] }]
@@ -247,7 +279,7 @@ handle(CH.TARGET.COMPRESS_AV, async (e, { items, outDir, targetBytes, mode, rati
   const state = { cancel: false, proc: null };
   const killProc = () => {
     try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {}
-    if (isWin && state.proc && state.proc.pid) spawn('taskkill', ['/pid', String(state.proc.pid), '/t', '/f'], { windowsHide: true });
+    if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']);
   };
   jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
   setLatestCancelable(() => { state.cancel = true; killProc(); });
@@ -443,8 +475,8 @@ handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   const id = 'avc' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
-  jobs.set(id, { cancel: () => { state.cancel = true; try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {} if (isWin && state.proc && state.proc.pid) spawn('taskkill', ['/pid', String(state.proc.pid), '/t', '/f'], { windowsHide: true }); } });
-  setLatestCancelable(() => { state.cancel = true; try { if (isWin && state.proc && state.proc.pid) spawn('taskkill', ['/pid', String(state.proc.pid), '/t', '/f'], { windowsHide: true }); } catch (err) {} });
+  jobs.set(id, { cancel: () => { state.cancel = true; try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {} if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']); } });
+  setLatestCancelable(() => { state.cancel = true; try { if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']); } catch (err) {} });
   const extMap = { mp4: 'mp4', webm: 'webm', mkv: 'mkv', mp3: 'mp3', wav: 'wav', flac: 'flac', gif: 'gif', m4a: 'm4a' };
   await fsp.mkdir(outDir, { recursive: true });
   const results = [];
@@ -530,7 +562,7 @@ handle(CH.FFMPEG.PRESS, async (e, { items, outDir, opts }) => {
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   const id = 'prs' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
-  const killProc = () => { try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {} if (isWin && state.proc && state.proc.pid) spawn('taskkill', ['/pid', String(state.proc.pid), '/t', '/f'], { windowsHide: true }); };
+  const killProc = () => { try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {} if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']); };
   jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
   setLatestCancelable(() => { state.cancel = true; killProc(); });
   await fsp.mkdir(outDir, { recursive: true });
@@ -754,7 +786,7 @@ handle(CH.FFMPEG.TRIM, async (e, { input, out, start, duration, mode }) => {
   const killProc = () => {
     try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {}
     if (isWin && state.proc && state.proc.pid) {
-      spawn('taskkill', ['/pid', String(state.proc.pid), '/t', '/f'], { windowsHide: true });
+      spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']);
     }
   };
   jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
@@ -927,7 +959,14 @@ function recSpawnSeg(segPath) {
   args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
   if (o.audio) args.push('-c:a', 'aac', '-b:a', '128k');
   args.push('-movflags', '+faststart', segPath);
-  return { proc: spawn(ffmpeg, args, { windowsHide: true }), args };
+  const proc = spawn(ffmpeg, args, { windowsHide: true });
+  /* 【在 spawn 的同一个同步块里就挂上 error 监听】
+   * 调用方 recStartSeg 确实会再挂一个（它要拿错误原因），但此刻中间只隔了
+   * 几行同步代码 —— 那不是契约，是巧合。将来谁在这两处之间插一个 await，
+   * 监听就会晚于 error 事件发生，而那时它已经升级成 uncaughtException。
+   * 这里先挂一个空监听把这个时间窗填掉，语义上仍然是「调用方负责处理」。 */
+  proc.on('error', () => {});
+  return { proc, args };
 }
 handle(CH.REC.START, async (e, { outPath, fps, rect, audio, camera, camPos, camScale, overwrite }) => {
   const ffmpeg = findFfmpeg();
@@ -977,11 +1016,31 @@ async function recStartSeg() {
   const { proc } = recSpawnSeg(seg);
   recProc = proc;
   let errOut = '';
+  /* 【必须挂 error 监听，否则「ffmpeg 起不来」会把主进程炸掉】
+   * spawn 失败（可执行文件被删/被杀软隔离/无执行权限）时 Node 会 emit 'error'；
+   * 这里原来一个监听都没有，于是这个 error 升级成 uncaughtException ——
+   * 用户点「开始录制」看到的不是「启动失败」，而是整个程序没了，
+   * 下次启动还会被标成「上次异常退出」。
+   * 记进 errOut 而不是只吞掉：下面 1.2 秒后的判据要用它给出失败原因。 */
+  /* 【类型标注是给 tsc 看的】不写这一行时 `let spawnErr = null` 会被推断成
+   * 类型 never（从未赋过值），下面判空后的 `.message` 就报 TS2339。
+   * 运行时行为与此无关，但 checkJs 会红。 */
+  /** @type {Error|null} */
+  let spawnErr = null;
+  proc.on('error', (err) => { spawnErr = err; });
   proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 12000) errOut = errOut.slice(-6000); });
   await new Promise(r => setTimeout(r, 1200));
-  if (proc.exitCode !== null) {
+  /* 【判据要同时看 spawn 错误，不能只看 exitCode】
+   * spawn 失败时进程根本没起来，exitCode 一直是 null ——
+   * 只判 `proc.exitCode !== null` 会把它当成「录制正常进行中」，
+   * 于是界面上开始计时，而磁盘上什么都不会写出来。 */
+  if (spawnErr || proc.exitCode !== null) {
     recProc = null;
-    throw new Error('录制启动失败：' + errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
+    /* spawnErr 是 Error，但 Node 的 spawn 错误会在上面挂 code（ENOENT/EACCES），
+     * 所以这里按 any 取 —— 直接写 spawnErr.code 会让 checkJs 报"Error 上没有 code"。 */
+    const spawnCode = /** @type {any} */ (spawnErr || {}).code;
+    const reason = spawnErr ? ('无法启动 ffmpeg：' + (spawnErr.message || spawnCode)) : errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ');
+    throw new Error('录制启动失败：' + reason);
   }
   recSegs.push(seg);
   return { ok: true, paused: false };
@@ -993,7 +1052,7 @@ async function recStopSeg() {
   await new Promise((resolve) => {
     proc.once('exit', resolve);
     try { proc.stdin.write('q'); } catch (e) {}
-    setTimeout(() => { try { spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true }); } catch (err) {} }, 5000);
+    setTimeout(() => { try { spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']); } catch (err) {} }, 5000);
   });
   await new Promise(r => setTimeout(r, 300));
 }

@@ -148,4 +148,101 @@ t('format 输出「说明 + 建议」两段，且对空载荷有兜底', () => {
   }
 });
 
+/* ==================== err 自带 code / advice 的透传 ====================
+ * 锁的是 2026-11-06 复核出的真实退化：
+ *   实测 toPayload(pathGuard.err('CRITICAL','这是系统关键目录','请换一个目标路径'))
+ *   返回 { code:'UNKNOWN', advice:'可展开技术详情用于排查' }。
+ * 也就是说 lib/path-guard.js 与 lib/archive-guard.js 精心给 Error 挂上的
+ * 明确码与可操作建议，到了渲染层全被 classify() 抹平：
+ *   · js/api.js 里 `if (r && r.code) err.code = r.code` 拿到的恒为 UNKNOWN，
+ *     按码分支的逻辑全部失效；
+ *   · 用户看不到「请换一个目标路径」，只看到一句通用的排查提示。
+ */
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
+const { readMain } = require('./lib/harness');
+
+t('toPayload 透传 pathGuard/archiveGuard 自带的 code 与 advice', () => {
+  const pg = require(path.join(ROOT, 'lib', 'path-guard'));
+  const ag = require(path.join(ROOT, 'lib', 'archive-guard'));
+
+  const a = E.toPayload(pg.err('CRITICAL', '这是系统关键目录', '请换一个目标路径'));
+  /* 锁的是：自定义码被 classify 抹成 UNKNOWN。 */
+  assert.strictEqual(a.code, 'CRITICAL', 'pathGuard 的 code 丢了：' + a.code);
+  /* 锁的是：可操作建议被替换成通用文案。 */
+  assert.strictEqual(a.advice, '请换一个目标路径', 'pathGuard 的 advice 丢了：' + a.advice);
+
+  const b = E.toPayload(ag.err('ADS', '文件名含盘符数据流', '去掉冒号'));
+  /* 锁的是：第二个守卫模块也走同一条退化路径。 */
+  assert.strictEqual(b.code, 'ADS', 'archiveGuard 的 code 丢了：' + b.code);
+  assert.strictEqual(b.advice, '去掉冒号', 'archiveGuard 的 advice 丢了：' + b.advice);
+});
+
+t('toPayload 透传自定义 code（OCR_TIMEOUT / CAP_DENIED）', () => {
+  const ocr = Object.assign(new Error('OCR 超时'), { code: 'OCR_TIMEOUT', advice: '换小一点的图' });
+  const p1 = E.toPayload(ocr);
+  /* 锁的是：lib/ocr-guard.js 挂的 OCR_TIMEOUT 到界面退化成 UNKNOWN，
+   * 调用方无法据此提示「换小图」或「检查语言包」。 */
+  assert.strictEqual(p1.code, 'OCR_TIMEOUT', 'OCR_TIMEOUT 丢了：' + p1.code);
+  assert.strictEqual(p1.advice, '换小一点的图');
+
+  const cap = Object.assign(new Error('未开启'), { code: 'CAP_DENIED' });
+  const p2 = E.toPayload(cap);
+  /* 锁的是：门禁拒绝的码传不出来，前端做不了「引导去设置页」的分支。 */
+  assert.strictEqual(p2.code, 'CAP_DENIED', 'CAP_DENIED 丢了：' + p2.code);
+});
+
+t('toPayload 只在 classify 判不出时透传（认得出来的 errno 不被覆盖）', () => {
+  /* 锁的是：透传改得过头 —— 一个带了无关 code 的 EACCES 被自己的 code 顶掉，
+   * 反而丢了准确的权限分类与对应的中文建议。 */
+  const e = Object.assign(new Error('permission denied'), { code: 'SOME_RANDOM_CODE' });
+  const p = E.toPayload(e);
+  assert.strictEqual(p.code, E.CODES.PERMISSION.code,
+    'EACCES 应仍归为 PERMISSION，实际：' + p.code);
+});
+
+t('extra 仍然拥有最后覆盖权（别把既有行为改坏）', () => {
+  /* 锁的是：把 Object.assign 的顺序改反 —— extra 是调用方显式指定的，
+   * 必须能覆盖 code/advice（既有 test-errors 里 CUSTOM 那条锁着同一件事）。 */
+  const p = E.toPayload(Object.assign(new Error('a'), { code: 'X' }), { code: 'OVERRIDE' });
+  assert.strictEqual(p.code, 'OVERRIDE', 'extra 没能覆盖 code：' + p.code);
+  const q = E.toPayload(Object.assign(new Error('a'), { advice: '原建议' }), { advice: '新建议' });
+  assert.strictEqual(q.advice, '新建议', 'extra 没能覆盖 advice：' + q.advice);
+});
+
+t('门禁拒绝分支带 code / advice（与正常错误分支形状一致）', () => {
+  /* 锁的是：main.js 的 handle 包装里，门禁拒绝只返回 { ok:false, error }，
+   * 而 catch 分支返回 { ok:false, error, code, advice }。
+   * 形状不一致导致 js/api.js 的两行赋值落空（e.code 恒 undefined）。
+   * 【为什么用源码断言】这段在主进程的 ipcMain.handle 包装里，
+   * 要跑起来得连整套 Electron + 真实门禁开关，单测环境只能读结构。 */
+  const src = readMain({ raw: true });
+  const i = src.indexOf('const cap = CAP_GATED_CHANNELS[ch];');
+  assert.ok(i > 0, '找不到门禁判定行');
+  const seg = src.slice(i, i + 900);
+  /* 锁的是：拒绝分支只给 error，不给 code。 */
+  assert.ok(/code:\s*'CAP_DENIED'/.test(seg),
+    '门禁拒绝分支没有带 code: CAP_DENIED');
+  /* 锁的是：给了码却still没有可操作建议 —— 用户不知道怎么开。 */
+  assert.ok(/advice:\s*dangerousDeniedAdvice\(cap\)/.test(seg),
+    '门禁拒绝分支没有带 advice');
+});
+
+t('门禁拒绝的建议文案是中英双语，且指向设置路径', () => {
+  /* 锁的是：只加了 advice 但写死中文 —— 英文界面下变成中英混排
+   * （与 GATE_TEXT 上面那段注释描述的是同一个问题）。 */
+  const src = readMain({ raw: true });
+  const i = src.indexOf('const GATE_ADVICE = {');
+  assert.ok(i > 0, '找不到 GATE_ADVICE');
+  const seg = src.slice(i, i + 600);
+  /* 锁的是：只加了 advice 但只写中文 —— 英文界面下又是中英混排。 */
+  assert.ok(/zh:\s*\(name\)/.test(seg) && /en:\s*\(name\)/.test(seg),
+    'GATE_ADVICE 不是双语');
+  /* 文案要能照着做，必须点出设置页路径 */
+  /* 锁的是：建议写成「去设置里打开」却不说哪个分区 —— 用户找不到。 */
+  assert.ok(/设置\s*→\s*高危功能/.test(seg), '中文建议没有指向「设置 → 高危功能」');
+  /* 锁的是：英文侧漏掉了同样的路径指引。 */
+  assert.ok(/Settings\s*→\s*High-risk features/.test(seg), '英文建议没有指向设置路径');
+});
+
 done();

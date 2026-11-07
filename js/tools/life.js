@@ -81,6 +81,17 @@
            * 提醒本身已经由 toast + Notification 完成，不需要碰剪贴板。 */
           toast('⏰ 倒计时结束！', 'success', 4000);
           new Notification('核核工具箱', { body: '倒计时结束！' });
+          /* 【结束后必须把 remain 复位，否则再点「开始计时」会立刻又结束】
+           * remain 此刻已经是 <= 0。start() 按
+           *   startAt = Date.now() - (total - remain) * 1000
+           * 重锚，remain<=0 意味着"已经过去的时间 >= total"，
+           * 于是第一个 tick 立刻判定到点、再弹一次「倒计时结束」。
+           * 用户看到的是：再点开始 -> 马上又弹一次完成提示 -> 必须先点「重置」。
+           * 番茄钟分支末尾本来就有 remain = total; resetDisplay();，
+           * 这里是唯一漏掉复位的一条路径。
+           * 只复位、不自动 start —— 保持"结束后不自动重启"的现有行为。 */
+          remain = total;
+          resetDisplay();
           return;
         }
         if (phase === 'work') {
@@ -340,7 +351,7 @@
     desc: '像素级透明悬浮标尺，横竖切换，实时读数', descEn: 'Measure pixels on screen with a horizontal or vertical ruler',
     keywords: ['标尺', '像素', '测量'],
     render(page) {
-      page.appendChild(window.ui.placeholder('ruler', '屏幕标尺', '点击下方按钮将打开一个透明悬浮的像素标尺窗口，支持横向 / 纵向切换，拖动边缘可调整长度，双击关闭。'));
+      page.appendChild(window.ui.placeholder('ruler', '屏幕标尺', '点击下方按钮将打开一个透明悬浮的像素标尺窗口：支持横向 / 纵向切换；拖动标尺两端可伸长或缩短（最短 160 像素）；拖动标尺中部可挪位置；双击标尺或按 Esc 关闭。'));
       const openBtn = btn('打开横向标尺', 'btn-primary btn-lg', () => openRuler('h'), 'ruler');
       const openVBtn = btn('打开纵向标尺', 'btn-secondary btn-lg', () => openRuler('v'), 'ruler');
       async function openRuler(dir) {

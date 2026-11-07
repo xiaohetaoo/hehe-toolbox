@@ -48,15 +48,25 @@ const dirMoveCh = require('../lib/channels').CHANNELS;
  * @param {object} ctx 闭包状态，见 ipc/ctx.js
  * @param {object} deps main.js 提供的通用助手与常量
  * @param {(ch:string, fn:Function)=>void} deps.handle 统一 IPC 包装（含高危门禁与结构化错误）
+ * @param {Function} deps.send 向发起调用的窗口推送（ALS 三档路由版；不能用 ctx.send）
  * @param {Function} deps.ps PowerShell 执行
  * @param {Function} deps.runCmd 通用命令执行
  * @param {Function} deps.pathExists 异步存在性判断
  * @param {Function} deps.shortErr 错误信息缩短
  * @param {number} deps.PS_PATH_BATCH 路径批量分块大小
+ * @param {(pid:number)=>Promise<boolean>} [deps.killProc] 结束进程（由 main.js 注入，
+ *   与 PROC.KILL 共用同一份安全判据）。「文件占用解锁」用它；
+ *   测试可以不给，此时解锁通道会明确报「能力未注入」。
  */
 module.exports = function register(ctx, deps) {
-  const { handle, ps, runCmd, pathExists, shortErr, PS_PATH_BATCH } = deps;
-  const send = ctx.send;
+  const { handle, ps, runCmd, pathExists, shortErr, PS_PATH_BATCH, send, killProc } = deps;
+  const unlockSafety = require('../lib/unlock-safety');
+  /* 【send 必须来自 deps，不能是 ctx.send】
+   * ctx.send 只发主窗口；main.js 的 send() 才是三档路由（ALS sender /
+   * 无调用者回退主窗 / 调用者已销毁丢弃）。本模块的 dirMoveRun 会发 7 个
+   * 阶段的进度事件 —— 从 ctx 取 send 的话，独立工具窗口里跑「目录搬家」
+   * 时进度全跑到主窗口，发起窗口看到的是「点了没反应」。
+   * 详见 ipc/media-ffmpeg.js 里同一处的说明。 */
   /* 任务 id 与 main.js 共用同一份计数（ctx.nextJobSeq 委托回 ++jobSeq）。 */
   function nextJobId(prefix) { return prefix + ctx.nextJobSeq(); }
 
@@ -1212,6 +1222,109 @@ handle(dirMoveCh.ACL_LINKS.WHO_LOCKS_DIR, async (e, dir) => {
   });
 })
 
+/* 真正的「解锁」：结束占用文件的进程，然后复核是否真的解开了。
+ *
+ * 【为什么是「结束进程」而不是「绕过锁」】
+ * 用一个以 FileShare.None 打开文件的进程做对照，实测在锁持有期间：
+ *   unlink / rename / truncate / open(r+) / copyFile  → 全部 EBUSY
+ * 结束持有进程后 unlink 立刻成功。也就是说 Windows 上不存在
+ * 「不解锁也能删」的旁路 —— 号称"强制删除"的工具做的是同一件事
+ * （杀进程，或装驱动内核级清句柄）。本项目不装驱动、不做进程注入，
+ * 所以把手段如实说成「结束占用进程」，并在界面上讲清代价。
+ *
+ * 【输入是 pid 列表，不是"帮我删"】
+ * 结束进程与删除文件是两件事，混在一条通道里会出现「进程杀了但文件没了」
+ * 这种说不清的结果。这里只负责「结束进程 + 复核锁是否还在」，
+ * 删不删由用户自己决定（界面上给的是「重试原操作」按钮）。
+ *
+ * 【为什么不复用 PROC.KILL 通道】
+ * 那条通道没有「占用者」这个上下文，也不做"这条进程是不是该为这个文件负责"
+ * 的校验。解锁要保证：传进来的 pid 必须**确实出现在该路径的占用列表里**，
+ * 否则渲染层一个 typo 就能结束任意进程。所以这里重新查一遍占用，逐 pid 比对。
+ */
+handle(dirMoveCh.ACL_LINKS.UNLOCK, async (e, payload) => {
+  const o = payload || {};
+  const paths = (Array.isArray(o.paths) ? o.paths : [o.path]).filter((x) => typeof x === "string" && x.trim());
+  const wantPids = (Array.isArray(o.pids) ? o.pids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (!paths.length) throw new Error("没有要解锁的路径");
+  if (!wantPids.length) throw new Error("没有指定要结束的进程");
+  if (typeof killProc !== "function") throw new Error("结束进程的能力未注入（内部错误）");
+
+  /* 重新查一遍占用：不接受渲染层"我查过了"的结论 */
+  const cur = await rmQueryLockers(paths);
+  const present = new Map();
+  for (const l of (cur.lockers || [])) present.set(Number(l.pid), l);
+
+  const missing = wantPids.filter((pid) => !present.has(pid));
+  const targets = wantPids.filter((pid) => present.has(pid));
+  if (!targets.length) {
+    return {
+      ok: false,
+      killed: [], failed: [], blocked: [], missing,
+      stillLocked: (cur.lockers || []).length > 0,
+      reason: missing.length
+        ? "这些进程已经不在占用列表里了（可能已自行退出）：" + missing.join("、")
+        : "没有可结束的进程",
+    };
+  }
+
+  /* 安全判据：名单 / 低 PID / 不能杀自己或父进程链。
+   * 判据在 lib/unlock-safety.js 里，与 PROC.KILL 共用同一份名单。 */
+  const parentChain = [];
+  let pp = process.ppid;
+  for (let i = 0; i < 8 && pp && pp > 0; i++) {
+    parentChain.push(pp);
+    try {
+      const r = await ps(`(Get-CimInstance Win32_Process -Filter "ProcessId=${pp}").ParentProcessId`, 5000);
+      const nxt = parseInt(String(r.stdout || "").trim(), 10);
+      if (!Number.isFinite(nxt) || nxt === pp || parentChain.includes(nxt)) break;
+      pp = nxt;
+    } catch (err) { break; }
+  }
+  const { killable, blocked } = unlockSafety.partitionLockers(
+    targets.map((pid) => present.get(pid)),
+    { selfPid: process.pid, parentChain }
+  );
+
+  const killed = [];
+  const failed = [];
+  for (const it of killable) {
+    try {
+      await killProc(it.pid);
+      killed.push({ pid: it.pid, name: it.procName || it.name || ("PID " + it.pid) });
+    } catch (err) {
+      failed.push({ pid: it.pid, name: it.procName || it.name || ("PID " + it.pid), error: shortErr(err) });
+    }
+  }
+
+  /* 复核：结束之后这些路径还被占着吗？
+   * 【必须复核，不能假定"杀了就解开"】
+   * 实测存在这些情况：进程被杀但句柄由系统延迟回收；
+   * 同一文件被多个进程占用而列表只报了其中一个；
+   * 占用方是杀软的实时扫描（RM 看不到，杀了也没用）。
+   * 不复核就会对用户说"已解锁"，然后删除仍然失败。 */
+  let stillLocked = false;
+  let remaining = [];
+  if (killed.length) {
+    await new Promise((r) => setTimeout(r, 350));   // 给系统一点回收句柄的时间
+    try {
+      const after = await rmQueryLockers(paths);
+      remaining = after.lockers || [];
+      stillLocked = remaining.length > 0;
+    } catch (err) {
+      /* 复核失败不一定是坏事（路径可能已经能删了），如实标"未确认" */
+      stillLocked = false;
+    }
+  }
+
+  return {
+    ok: killed.length > 0 && !stillLocked,
+    killed, failed, blocked, missing,
+    stillLocked,
+    remaining: remaining.map((x) => ({ pid: x.pid, name: x.procName || x.name })),
+    summary: unlockSafety.unlockSummary({ killed, failed, blocked, stillLocked }),
+  };
+})
 handle(dirMoveCh.ACL_LINKS.LINK_SCAN, async (e, root, opts = {}) => {
   if (!(await pathExists(root))) throw new Error('目录不存在：' + root);
   const r0 = await fsp.stat(root).catch(() => null);

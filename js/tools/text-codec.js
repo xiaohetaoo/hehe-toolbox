@@ -11,6 +11,49 @@
   function utf8ToBytes(str) { return new TextEncoder().encode(str); }
   function bytesToUtf8(bytes) { return new TextDecoder().decode(bytes); }
 
+  /* 严格版解码：非法 UTF-8 直接抛错，而不是塞一堆 U+FFFD。
+   *
+   * 【为什么不用默认的 TextDecoder】默认是非严格模式，遇到非法字节**不报错**，
+   * 每个坏字节换成一个替换字符（U+FFFD，显示成「�」）。
+   * 实测：把「中文」的 GBK 字节 D6 D0 CE C4 喂进去，输出是「����」——
+   * 用户看到四个问号，分不清是"自己编码选错了"还是"工具坏了"。
+   *
+   * 而中文用户拿到的十六进制串**很可能就是 GBK**：抓包、老系统的配置、
+   * 记事本另存为 ANSI，都是 GBK。所以这条路径踩中的概率很高。
+   *
+   * 严格模式会抛 TypeError，调用方据此给出明确指引。
+   * 注意：不能直接用 fatal:true 的异常文案（"The encoded data was not valid..."），
+   * 那是英文且不提 GBK —— 归因见下面的 decodeErrHint。 */
+  function bytesToUtf8Strict(bytes) {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  }
+
+  /* 把解码失败归因成一句用户能据此行动的话。
+   *
+   * 【为什么要单独判"像不像 GBK"】光说"不是合法 UTF-8"用户仍然不知道该怎么办；
+   * 而绝大多数失败场景就是"这是 GBK 不是 UTF-8"。点出来他立刻知道换工具
+   * 或换来源。判据用"字节数是否成对且都 ≥ 0x80"粗略估计 —— 不做真正的 GBK
+   * 解码（那要引编码表，而本工具刻意不背表），只是给一句可操作的方向。
+   *
+   * 【真机踩坑：旧判据只认 Node 的措辞，浏览器里永远不触发】
+   * 旧判定是 `/not valid for encoding utf-8/i`。那串完整报错
+   * "The encoded data was not valid for encoding utf-8" 是 **Node** 拼的。
+   * 本工具跑在渲染进程，Chromium 的 TextDecoder 抛的是
+   * "Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid."
+   * —— 它把 "for encoding utf-8" 省掉了，正则因此永远不命中。
+   * 后果：单元测试用 Node 拼报错能过，真机上 GBK 归因**一次都没出现过**，
+   * 用户看到的是一条英文 TypeError。这是靠真机点击才发现的（单测测不出）。
+   * 所以判据收敛到各家共有的 "not valid"，再补其它引擎的措辞，
+   * 而不是依赖某一家把参数回显在报错文本里。 */
+  function decodeErrHint(e) {
+    const msg = String((e && e.message) || e);
+    if (/not valid|malformed|invalid|encodingerror/i.test(msg)) {
+      return '这串字节不是合法的 UTF-8。如果原文是中文，多半是 GBK 编码'
+        + '（抓包、旧系统、记事本「ANSI」另存都是 GBK），本工具只做 UTF-8。';
+    }
+    return msg;
+  }
+
   register({
     id: 'base64', name: 'Base64 编解码', nameEn: 'Base64 Codec', module: MOD, icon: 'box', i18n: true,
     desc: 'Base64 与文本实时互转，支持中文与文件安全字符集', descEn: 'Convert between Base64 and text in real time, safe for Chinese and file characters',
@@ -58,8 +101,32 @@
             out.value = btoa(bin);
           }
         } catch (e) {
-          // 静默清空会让用户以为工具"没反应"，这里必须把原因显示出来
-          out.value = '⚠ 不是合法的 Base64：' + e.message;
+          /* 静默清空会让用户以为工具"没反应"，这里必须把原因显示出来。
+           * 【但不能直接拼 e.message —— 那是浏览器的英文原文】
+           * 真机实测：解码模式下输入中文，界面显示的是
+           *   「⚠ 不是合法的 Base64：Failed to execute 'atob' on 'Window':
+           *     The string to be decoded contains characters outside of
+           *     the Latin1 range.」
+           * 中文界面里冒出一整句英文，用户既看不懂也不知道该改什么。
+           *
+           * 这里分三种情况给出可操作的中文说明：
+           *   ① 含非 Latin1 字符（中文/emoji）→ 用户把原文粘进了解码框，最常见
+           *   ② atob 报 InvalidCharacterError → 混进了非 base64 的字符
+           *   ③ UTF-8 解码失败（bytesToUtf8 抛出）→ 字节不像文本
+           * 兜底才附英文原文，避免"认不出就什么都不说"。 */
+          const msg = String((e && e.message) || e || '');
+          let hint;
+          if (/outside of the Latin1 range|not of type 'Latin1'|Latin1/i.test(msg)) {
+            hint = '这段内容不是 Base64（里面有中文或表情）。Base64 只包含 A-Z a-z 0-9 + / = 这些字符 —— 请确认你粘的是编码后的结果。';
+          } else if (/InvalidCharacterError|invalid character|Invalid character/i.test(msg)) {
+            hint = '这段内容里有不属于 Base64 的字符（只允许 A-Z a-z 0-9 + / =）。可能混入了中文标点、引号或说明文字。';
+          } else if (/不是合法的 UTF-8|UTF-8/i.test(msg)) {
+            hint = decodeErrHint(msg);
+          } else {
+            hint = '无法解码为文本。请确认内容完整的 Base64（可能把原文当成了编码结果）。' +
+              (msg ? '（原始报错：' + msg + '）' : '');
+          }
+          out.value = '⚠ ' + hint;
         }
       };
       ta.addEventListener('input', run);
@@ -193,9 +260,17 @@
   });
 
   register({
+    /* 【名称里的 ASCII 会误导，副标题必须把编码说清楚】
+     * 这个工具实际做的是 **UTF-8** 字节与十六进制的互转（靠 TextEncoder/
+     * TextDecoder，项目里没有任何内置编码表）。但中文用户看到「ASCII」
+     * 输入「中」时期望的是 GBK 的 D6 D0 —— 这里给的是 UTF-8 的 E4 B8 AD，
+     * 两边字节完全对不上，而旧文案没有任何地方说明。
+     * 名字本身保留（改 id/name 会牵动搜索关键词与用户习惯），
+     * 但在副标题里点明 UTF-8 —— 那是用户决定"要不要用这个工具"时看的字段。 */
     id: 'hex-ascii', name: 'Hex / ASCII 互转', nameEn: 'Hex ↔ ASCII', module: MOD, icon: 'hash', i18n: true,
-    desc: '文本与十六进制字节互转，支持自定义分隔符', descEn: 'Convert between hexadecimal and ASCII text',
-    keywords: ['hex', 'ascii', '十六进制', '字节'],
+    desc: '文本与十六进制字节互转（按 UTF-8 编码，非 GBK），支持自定义分隔符',
+    descEn: 'Convert between text and hex bytes (UTF-8, not GBK); custom separators',
+    keywords: ['hex', 'ascii', 'utf8', '十六进制', '字节'],
     render(page) {
       let sep = ' ';
       const box = convertLayout({
@@ -225,14 +300,28 @@
             if (!clean) { out.value = ''; return; }
             if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2) throw new Error('无效的十六进制输入');
             const bytes = new Uint8Array(clean.match(/.{2}/g).map(x => parseInt(x, 16)));
-            out.value = bytesToUtf8(bytes);
+            /* 【用严格解码，并给出可操作的归因】
+             * 旧的 bytesToUtf8 遇到 GBK 字节会静默输出「����」——
+             * 用户分不清是输入错了还是工具坏了。见 bytesToUtf8Strict 的说明。 */
+            try {
+              out.value = bytesToUtf8Strict(bytes);
+            } catch (e) {
+              out.value = '解码失败：' + decodeErrHint(e);
+            }
           } else {
             const arr = [...utf8ToBytes(ta.value)];
             out.value = sep === '' && sel.value === '\\x'
               ? arr.map(b => '\\x' + b.toString(16).padStart(2, '0')).join('')
               : arr.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(sep);
           }
-        } catch (e) { out.value = '⚠ ' + e.message; }
+        } catch (e) {
+          /* 走到这里的是"十六进制串本身有问题"（奇数长度、含非 hex 字符）——
+           * 解码失败已在上面就地处理并给了归因。这里只补一句格式指引。 */
+          const m = String((e && e.message) || e);
+          out.value = '格式错误：' + (/无效的十六进制/.test(m)
+            ? '无效的十六进制输入：只能是 0-9 / a-f，且每字节两位（长度必须是偶数）'
+            : decodeErrHint(e));
+        }
       }
       ta.addEventListener('input', fire2);
       fire2();

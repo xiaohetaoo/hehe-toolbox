@@ -57,23 +57,37 @@ register({
       async function run() {
         if (!picker.count) return toast('请先选择文件', 'warn');
         if (running) return;
-        const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
-        if (!st.ffmpeg) {
-          toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
-          window.App.openTool('ffmpeg-setup');
-          return;
-        }
-        running = true; startBtn.disabled = true; cancelBtn.disabled = false;
-        picker.setLocked(true);
-        status.textContent = '';
-        runJobId = null;
-        const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');
-        // job id 从流事件里取：invoke 要等全部转码结束才返回，那时已经来不及取消了
-        // 【必须按前缀认领】原来写的是 `if (!runJobId && d.id) runJobId = d.id`，
-        // 会抓任意任务的第一个 id —— 别的标签页在跑哈希/下载时，
-        // 本页拿到的 runJobId 其实是人家的任务，点「取消」杀错对象。
-        // 本任务 id 形如 avc<数字>，只认这个前缀；认领之后只认那一个 id。
-        const unsub = window.JobPrefix.subscribe('avc', (d) => {
+        /* 【防重入标志必须在第一个 await 之前置位】
+         * 原来 `running = true` 排在 `await invoke(FFMPEG.STATUS)` 之后 ——
+         * 那两次 IPC 往返期间按钮一直可点。用户连点两下，两次调用都会通过
+         * 上面的 `if (running)` 检查，各自生成输出路径、各自 subscribe、
+         * 各自 invoke 一次长任务。后果：
+         *   · 两个 ffmpeg 进程同时写同一批源文件；
+         *   · 三个工具共用模块级 runJobId，后者覆盖前者，「取消」只能杀掉一个；
+         *   · 两份进度事件混进同一条订阅，进度条来回跳；
+         *   · finally 里先结束的那轮会把 running/按钮全部复位，
+         *     而另一个任务还在跑 —— 用户此时能再点第三次。
+         * 所以先占位、再用 try/finally 保证每条早退路径都复位。 */
+        running = true; startBtn.disabled = true;
+        let unsub = null;
+        try {
+          const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
+          if (!st.ffmpeg) {
+            toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
+            window.App.openTool('ffmpeg-setup');
+            return;
+          }
+          cancelBtn.disabled = false;
+          picker.setLocked(true);
+          status.textContent = '';
+          runJobId = null;
+          const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');
+          // job id 从流事件里取：invoke 要等全部转码结束才返回，那时已经来不及取消了
+          // 【必须按前缀认领】原来写的是 `if (!runJobId && d.id) runJobId = d.id`，
+          // 会抓任意任务的第一个 id —— 别的标签页在跑哈希/下载时，
+          // 本页拿到的 runJobId 其实是人家的任务，点「取消」杀错对象。
+          // 本任务 id 形如 avc<数字>，只认这个前缀；认领之后只认那一个 id。
+          unsub = window.JobPrefix.subscribe('avc', (d) => {
           const jid = String(d.id || '');
             /* 前缀认领已由 subscribe 完成；这里只同步 runJobId（job:kill 要传它）。
              * runJobId 是业务状态（取消按钮用），与 subscribe 内部的 claimedId 用途不同，
@@ -89,9 +103,9 @@ register({
             if (j.pct != null && bar) bar.style.width = (j.pct || 0) + '%';
             if (j.done && tag) { tag.textContent = j.ok ? '✓ 完成' : '✗ 失败'; tag.className = 'tag ' + (j.ok ? 'tag-green' : 'tag-red'); }
           } catch (e) {}
-        });
-        if (window.App && App.onCleanup) App.onCleanup(unsub);
-        try {
+          });
+          if (window.App && App.onCleanup) App.onCleanup(unsub);
+          try {
           const r = await invoke(Channels.CHANNELS.FFMPEG.CONVERT, {
             items: picker.paths, outDir,
             opts: {
@@ -112,10 +126,18 @@ register({
           const okN = r.results.filter(x => x.ok).length;
           status.textContent = `完成：成功 ${okN} / 失败 ${r.results.length - okN}，输出目录 ${outDir}`;
           toast(`转换完成（${okN}/${r.results.length}）`, okN ? 'success' : 'error');
-        } catch (e) {
+          } catch (e) {
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
-        } finally { running = false; startBtn.disabled = false; cancelBtn.disabled = true; picker.setLocked(false); unsub(); }
+          }
+        } finally {
+          /* 【复位必须无条件执行】上面每一条早退路径（未选文件之外的：
+           * FFmpeg 未安装、参数无效、异常）都要走到这里，否则按钮会永久禁用。
+           * unsub 可能还是 null（在 subscribe 之前就早退了），要判一下。 */
+          running = false; startBtn.disabled = false; cancelBtn.disabled = true;
+          try { picker.setLocked(false); } catch (e) {}
+          if (unsub) { try { unsub(); } catch (e) {} }
+        }
       }
       page.appendChild(div('card', div('card-title', '选择文件'), picker.el));
       page.appendChild(div('card', div('card-title', '转换参数'),

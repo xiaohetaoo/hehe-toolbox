@@ -94,11 +94,15 @@ jobs:
           # 日志里看不出到底哪个脚本挂了 —— 已经因此排查了好几轮。
           # 这里显式循环：把失败脚本名和末尾输出直接打到日志里。
           set +e
-          # 【任务 8 之后 test 不再是单条长链】
-          # 它现在是 `npm run test:unit && npm run test:ui`，
-          # 直接按 && 拆会得到两条 npm run —— 失败定位粒度就退化成一个整步了。
-          # 所以这里把 test:unit / test:ui 两条脚本各自再拆开，合并成扁平清单，
-          # 保持「一行一个 node 脚本」的定位能力。
+          # 【这段拆分逻辑现在只得到一条命令 —— 这是对的，别删】
+          # 历史上的 test 是 `npm run test:unit && npm run test:ui` 两段长链，
+          # 所以这里要按 && 递归拆成扁平清单，保住「一行一个 node 脚本」的定位能力。
+          # 现在 package.json 的 test 已经是单条 `node scripts/run-tests.js`：
+          # 它自己收集并串行跑全部脚本、逐条打印 [i/N] 与结果，
+          # flat('test', 0) 自然只得到一条命令 —— 这仍然满足定位需求
+          # （run-tests.js 的输出本身就逐文件一行）。
+          # 保留这段递归拆分而不是删掉：万一 test 又变回多段链，
+          # 这里不需要再改一次就能继续按脚本定位失败。
           node -e "
             const p = require('./package.json');
             const flat = (name, depth) => {
@@ -166,7 +170,17 @@ jobs:
         shell: bash
         run: |
           set -e
-          node scripts/check-assertion-count.js
+          # 【用 --no-run 读一份带 @@FILE 标记的日志，避免整套测试跑两遍】
+          # 前面那个 Test 步骤是按脚本循环的，输出只回显到 stdout、
+          # 不落盘也不带 @@FILE 标记，没法直接复用。
+          # 所以这里**先补一份可解析的日志**：run-tests.js 会逐文件打印
+          # @@FILE 标记与全部 PASS 行，正好是护栏需要的格式。
+          # 代价是这一份仍然是一次完整运行 —— 但它比无参数模式少一次
+          # （原来无参数模式自己内部又跑了一遍，等于同一批脚本跑三次）。
+          # 以后若把 Test 步骤改成直接落盘 + 带标记，这里删掉上一行即可。
+          mkdir -p reports
+          node scripts/run-tests.js > reports/test-output.log 2>&1 || true
+          node scripts/check-assertion-count.js --no-run
           echo "断言数守卫通过（没有文件比基线少）"
 
       # 冒烟测试：真的把 Electron 跑起来，确认 93 个工具页全部能渲染。
