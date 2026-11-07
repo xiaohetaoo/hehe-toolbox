@@ -152,25 +152,62 @@ t('S6 没有 nameEn 的工具仍能精确匹配（回退路径）', () => {
   assert.strictEqual(hits[0].id, 'no-en', '没有 nameEn 时精确匹配失效');
 });
 
-t('S7 整串加成不能偏向中文名（跨词查询两边都该拿到）', () => {
-  /* 锁的是：`name.includes(raw)` 判的是拼接串 —— 跨词查询永远不成立，
-   * 于是这条加成只对"中文名里恰好含完整几段"的工具生效，不公平。 */
+t('S7 整串加成按单个名称判，拼接串凑出来的不算', () => {
+  /* 锁的是：`name.includes(raw)` 判的是拼接串「中文名 英文名」——
+   * 于是「工具A alpha」+「widget」这种**跨词边界**拼出来的整串也能拿加成，
+   * 而真正英文名就叫 "alpha widget" 的工具反而没优势。
+   *
+   * 【这条以前在 CI 上假红，根因值得记下来】
+   * 原来造的两个工具是「工具甲 / alpha widget」和「工具乙 / alpha widget plus」。
+   * 实测两者都是 **200 分**（alpha=80 + widget=60 + 整串 60），完全平局，
+   * 排序落到比较函数第二档 `norm(name).localeCompare(...)`。
+   * 而 localeCompare 依赖 ICU：本机 Node 24 + ICU 78 认为
+   * 「工具甲」<「工具乙」，CI 的 Node 22 给出相反结果 ——
+   * 同一 commit 本机绿、CI 红，且与这条用例想验的东西毫无关系。
+   *
+   * 【修法】改用**分数有明确差值**的夹具（160 vs 200），
+   * 结果由分数决定，不再经过 localeCompare，换 Node/ICU 都不会红。 */
   const R = loadRegistry('zh');
-  /* A：英文名里含整串（旧实现下 name 拼接串不含 "alpha widget" 连续片段？）
-   * 实际上拼接串是「甲工具 alpha widget」，含 "alpha widget" → 旧实现也命中。
-   * 真正不公平的是英文名单独构成整串时：中文名在前，raw 是纯英文，
-   * 拼接串仍包含它。所以旧实现在这条上也是对的 ——
-   * 这条改为验证"两边都拿到加成之后，分档仍然决定排序"。 */
-  R.register({ id: 'both', name: '工具甲', nameEn: 'alpha widget',
+  /* span：拼接串是「工具A alpha widget」—— 含整串，但任一个名称单独都不含 */
+  R.register({ id: 'span', name: '工具A alpha', nameEn: 'widget',
     desc: '', descEn: '', keywords: [], render() {} });
-  R.register({ id: 'other', name: '工具乙', nameEn: 'alpha widget plus',
+  /* real：英文名自己就是整串 */
+  R.register({ id: 'real', name: '工具B', nameEn: 'alpha widget',
     desc: '', descEn: '', keywords: [], render() {} });
 
   const hits = R.search('alpha widget');
-  assert.ok(hits.length >= 2, '应同时命中');
-  /* both 的英文名与整串全等 → 应排第一（精确 100 + 加成） */
-  assert.strictEqual(hits[0].id, 'both',
-    '英文名与查询全等的工具没有排第一：' + ids(hits));
+  assert.ok(hits.length >= 2, '应同时命中，实际 ' + ids(hits));
+  /* 锁的是：整串加成还按拼接串算 —— 那样 span 拿到 160+60=220，
+   * 会压过真正的整串命中。 */
+  assert.strictEqual(hits[0].id, 'real',
+    '英文名自身构成整串的工具没有排第一（整串加成可能仍在比拼接串）：' + ids(hits));
+});
+
+t('S8 同分时的先后不参与断言（排序稳定性单独验）', () => {
+  /* 锁的是：把「同分谁在前」写进断言 —— 那由 localeCompare + ICU 决定，
+   * 跨 Node 版本会翻车（S7 的假红就是这么来的）。
+   *
+   * 这里显式说明：同分顺序**不由本工具保证**，我们只保证
+   *   ① 两个都命中 ② 结果集合正确 ③ 同一查询两次结果一致（不会随机抖）。
+   * 想验证"某个必须排第一"的用例，必须造出分数差（见 S7）。 */
+  const R = loadRegistry('zh');
+  R.register({ id: 'tie-a', name: '甲工具', nameEn: 'gamma',
+    desc: '', descEn: '', keywords: [], render() {} });
+  R.register({ id: 'tie-b', name: '乙工具', nameEn: 'gamma',
+    desc: '', descEn: '', keywords: [], render() {} });
+
+  const hits = R.search('gamma');
+  assert.strictEqual(hits.length, 2, '两个同分工具都该命中，实际 ' + ids(hits));
+  /* 锁的是：同分时丢项 —— 那才是真的坏了（语言环境差异只影响先后）。
+   * 【必须用 join 归一，不能直接 deepStrictEqual 数组】
+   * 这些 id 来自 vm 沙箱，属于**另一个 realm** 的 String。
+   * 深比较会报 "Values have same structure but are not reference-equal"，
+   * 看起来像断言失败、其实结构完全一样（实测踩到，排查了很久）。 */
+  assert.strictEqual(hits.map((x) => String(x.id)).sort().join(','), 'tie-a,tie-b',
+    '同分工具的命中集合不正确：' + ids(hits));
+  /* 锁的是：同一查询两次给出不同顺序 —— 说明排序不稳定（依赖 Map 迭代等）。 */
+  const again = R.search('gamma').map((x) => String(x.id)).join(',');
+  assert.strictEqual(again, hits.map((x) => String(x.id)).join(','), '同一查询两次结果顺序不一致');
 });
 
 done();
