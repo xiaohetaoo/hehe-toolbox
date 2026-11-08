@@ -1,6 +1,6 @@
 # 核核工具箱 (HeHe Toolbox)
 
-> Windows 桌面效率工具箱 · 100 个工具 · 全部本地运行
+> Windows 桌面效率工具箱 · 103 个工具 · 全部本地运行
 
 ![tech](https://img.shields.io/badge/Electron-43-165DFF)
 
@@ -14,7 +14,7 @@ npx electron .     # 启动应用
 > 若首次安装后提示 "Electron failed to install correctly"，执行：
 > `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node node_modules/electron/install.js`
 
-## 功能总览（10 大模块 · 100 个工具）
+## 功能总览（10 大模块 · 103 个工具）
 
 > 这个数字不是手写的估计值，而是数出来的：`grep -c "^    id: '" js/tools/*.js` 求和
 > 得到的就是 `register()` 的工具总数（当前 100），`js/registry.js` 的 `ORDER`

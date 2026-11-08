@@ -22,8 +22,14 @@
    * 传了之后关闭等同于"取消"（resolve(null)），调用方判空返回即可。 */
   function pickOne(title, options) {
     return new Promise((resolve) => {
+      /* 【先 resolve 再 close，顺序不能反】close() 会触发 onClose → resolve(null)。
+       * Promise 只锁定第一次 resolve：若先 md.close() 再 resolve(val)，
+       * onClose 的 resolve(null) 先到，pickOne 永远返回 null ——
+       * 「命令收藏」「快捷启动栏」的添加流程在这里 100% 断掉（真机复现：
+       * 三步弹窗全部走完，最后无 toast、无列表刷新、store 写入不发生）。
+       * 先 resolve(val) 把结果锁定，onClose 的 resolve(null) 变成无效调用。 */
       const btns = options.map(([val, label]) =>
-        btn(label, 'btn-secondary', () => { md.close(); resolve(val); }));
+        btn(label, 'btn-secondary', () => { resolve(val); md.close(); }));
       const md = window.ui.modal({
         title,
         body: (b) => { b.appendChild(div('form-row', ...btns)); },

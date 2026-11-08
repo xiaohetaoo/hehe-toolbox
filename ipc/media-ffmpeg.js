@@ -82,6 +82,33 @@ module.exports = function register(ctx, deps) {
   } = deps;
 
   const { jobs, isWin } = ctx;
+
+  /* ============ ffmpeg 进程树的统一收尾 ============
+   *
+   * 【为什么要有这个函数】
+   * 本文件此前有 5 处几乎一样的「杀 ffmpeg」内联代码：
+   *     try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {}
+   *     if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', [...'/t','/f']);
+   * 每次新增一条需要取消的通道，就得把这四行再抄一遍 —— 漏抄 'taskkill' 那行，
+   * proc.kill() 在 Windows 上只杀得掉 ffmpeg 自己，它 fork 出去的编码子进程会留下，
+   * 表现是「点了取消，CPU 还满载」。抽出成函数后调用点只需一行。
+   *
+   * 【为什么先 proc.kill() 再 taskkill】
+   * proc.kill() 是同步的、立刻发出；taskkill 要起一个进程，慢一拍。
+   * 两个都做是刻意的冗余：proc.kill() 处理「进程还活着、信号能送达」的常见情况，
+   * taskkill /t /f 处理它已经僵死或还有子进程的情况。顺序反过来会让
+   * 「紧接着读进程状态」的调用方看到还没死的旧状态。
+   *
+   * @param {import('child_process').ChildProcess|null} proc
+ */
+  function killFfmpegTree(proc) {
+    if (!proc) return;
+    try { if (typeof proc.kill === 'function') proc.kill(); } catch (err) { /* 已退出 */ }
+    if (isWin && proc.pid) {
+      /* 火后不理：spawnDetached 内部已挂 error 监听，起不来也不会变成 uncaughtException。 */
+      try { spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']); } catch (err) { /* 进程可能刚好自己退了 */ }
+    }
+  }
   /* 【win 不能解构 —— 那会把 getter 当场求值成常量】
    * `const { win } = ctx` 在**解构那一刻**就求值了 getter，而本模块的
    * register 在 main.js 顶层执行、远早于 createWindow()，所以拿到的恒是 null；
@@ -107,7 +134,6 @@ module.exports = function register(ctx, deps) {
    *     不属于它的任务认领走 —— 进度条乱跳、结束时弹「完成」。
    * 这正好抵消了 v0.6.4 修的孤儿任务防串扰。
    * fs-ops / net-lan 早就是从 deps 取 send 的，本模块照同一形态改。 */
-
 
   /* ======================= 以下为逐字搬来的实现 ======================= */
 
@@ -277,10 +303,7 @@ handle(CH.TARGET.COMPRESS_AV, async (e, { items, outDir, targetBytes, mode, rati
   const ffprobe = findFfprobe();
   const id = 'tgt' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
-  const killProc = () => {
-    try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {}
-    if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']);
-  };
+  const killProc = () => killFfmpegTree(state.proc);
   jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
   setLatestCancelable(() => { state.cancel = true; killProc(); });
 
@@ -475,8 +498,8 @@ handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   const id = 'avc' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
-  jobs.set(id, { cancel: () => { state.cancel = true; try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {} if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']); } });
-  setLatestCancelable(() => { state.cancel = true; try { if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']); } catch (err) {} });
+  jobs.set(id, { cancel: () => { state.cancel = true; killFfmpegTree(state.proc); } });
+  setLatestCancelable(() => { state.cancel = true; killFfmpegTree(state.proc); });
   const extMap = { mp4: 'mp4', webm: 'webm', mkv: 'mkv', mp3: 'mp3', wav: 'wav', flac: 'flac', gif: 'gif', m4a: 'm4a' };
   await fsp.mkdir(outDir, { recursive: true });
   const results = [];
@@ -562,7 +585,7 @@ handle(CH.FFMPEG.PRESS, async (e, { items, outDir, opts }) => {
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   const id = 'prs' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
-  const killProc = () => { try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {} if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']); };
+  const killProc = () => killFfmpegTree(state.proc);
   jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
   setLatestCancelable(() => { state.cancel = true; killProc(); });
   await fsp.mkdir(outDir, { recursive: true });
@@ -783,12 +806,7 @@ handle(CH.FFMPEG.TRIM, async (e, { input, out, start, duration, mode }) => {
 
   const id = 'vtr' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
-  const killProc = () => {
-    try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {}
-    if (isWin && state.proc && state.proc.pid) {
-      spawnDetached('taskkill', ['/pid', String(state.proc.pid), '/t', '/f']);
-    }
-  };
+  const killProc = () => killFfmpegTree(state.proc);
   jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
   setLatestCancelable(() => { state.cancel = true; killProc(); });
 
@@ -907,15 +925,80 @@ function parseDshowDevices(text) {
   }
   return { audio, video };
 }
+/* ============ dshow 设备枚举的超时兜底 ============
+ *
+ * 【为什么必须有超时】
+ * 原实现只靠 exit / error 两个事件收尾：
+ *   p.on('exit',  () => resolve(out));
+ *   p.on('error', () => resolve(''));
+ * 只要 ffmpeg 既没退出也没报错，这个 Promise 就**永不 resolve** ——
+ *
+ *   实测（用一个永不退出的子进程模拟）：
+ *     3 秒后仍未 resolve —— 无超时会让通道永久挂起
+ *
+ * 而它的调用方是 rec:audio-devices，也就是录音页打开时拉下拉框的那次调用。
+ * 结果是：下拉框永远转圈，用户以为软件卡死，切走再切回来仍然是转圈。
+ * 主进程没崩、日志没有报错，只是那条通道再也没有回过话。
+ *
+ * 【什么情况会挂住】dshow 是驱动层枚举，实测过的卡死形态：
+ *   · 某个摄像头驱动占着设备不放（另一个会议软件正在用）
+ *   · 虚拟摄像头（OBS / ManyCam）已卸载但注册表残留，ffmpeg 反复重试
+ *   · 蓝牙音频设备休眠，OpenDevice 阻塞在驱动里
+ * 这些都不产生 exit 也不产生 error —— 正是超时要兜的那一档。
+ *
+ * 【为什么是 15 秒而不是 3 秒】
+ * 实测 dshow 枚举在设备多的机器上要 2~5 秒（每个设备都要 Open/Close 一次
+ * 拿能力信息）。取值太紧会把「慢」误判成「挂」，用户设备列表就变成空的 ——
+ * 那是把一个偶发的卡死换成每次必现的空列表，更糟。
+ * 15 秒 = 正常最慢情况（约 5 秒）的 3 倍余量，同时远小于用户的耐心阈值。
+ * 超时后返回空列表而不是抛错：调用方（录音页）对空列表已有「无可用设备」
+ * 的展示分支，抛错则会让整个页面报红。
+ *
+ * 【超时后必须 kill，不能只 resolve】
+ * 只 resolve 不杀的话，那个 ffmpeg 进程会一直挂着：下次打开录音页再枚举一次，
+ * 又多一个。用户来回切几次就是一堆孤儿进程，且它们可能正占着摄像头，
+ * 让新一次枚举也失败 —— 从「偶尔卡住」恶化成「永远拿不到设备」。
+ * kill 用 taskkill /t 连子进程一起收（ffmpeg 在 Windows 上会 fork 出子进程）。
+ *
+ * scripts/test-dshow-timeout.js 把这三件事分别钉住了：
+ * 挂住时必须 resolve、超时后必须 kill、正常退出时必须不 kill。 */
+const DSHOW_LIST_TIMEOUT_MS = 15000;
+
 async function listDshowDevices() {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) return { audio: [], video: [] };
   const r = await new Promise((resolve) => {
     let out = '';
+    let settled = false;
+    /* 【timer 必须先声明成 undefined，不能等 setTimeout 那行再 const】
+     * settle 里 clearTimeout(timer)，而 settle 会被 exit/error 调用 ——
+     * 若 spawn 同步抛（极少数情况下 ENOENT 的判定不在异步路径），
+     * 或 error 事件比下面那句 const timer 更早派发，就会命中 TDZ：
+     *   ReferenceError: Cannot access 'timer' before initialization
+     * 那会把「枚举失败」变成「主进程抛异常」，比原来的问题更糟。 */
+    let timer;
+    /* 收尾统一走这里：保证 resolve 只发生一次，且一定要清掉定时器
+     * （不清的话进程会因为还有一个 pending timer 而晚退出，测试里表现为「跑完不结束」）。 */
+    const settle = (val, proc) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      /* 只有「超时」这一档需要杀。正常 exit 时进程已经没了，
+       * 再 kill 一次会拿到 ESRCH —— 虽然被 catch 掉了，但没有意义。 */
+      if (val === null) {
+        killFfmpegTree(proc);
+        resolve('');
+        return;
+      }
+      resolve(val);
+    };
     const p = spawn(ffmpeg, ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], { windowsHide: true });
+    timer = setTimeout(() => settle(null, p), DSHOW_LIST_TIMEOUT_MS);
+    /* 定时器不该拖住进程退出：它只是兜底，不是常驻任务。 */
+    if (timer && typeof timer.unref === 'function') timer.unref();
     p.stderr.on('data', d => { out += String(d); });
-    p.on('exit', () => resolve(out));
-    p.on('error', () => resolve(''));
+    p.on('exit', () => settle(out, p));
+    p.on('error', () => settle('', p));
   });
   return parseDshowDevices(r);
 }

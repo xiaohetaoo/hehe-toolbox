@@ -263,8 +263,14 @@ t('换行不能被归一成空格（PowerShell 认换行当分隔符）', () => 
 
 t('不再对 norm 做「整条都是文本命令」的豁免', () => {
   const code = stripComments(read('lib/power-gate.js'));
+  /* 锁的是：把文本豁免判据从 raw 改回 norm。norm 是剥壳后的形态，
+   * 它的分段边界和真实语句边界不一致（换行就是例子），多判一次 norm
+   * 只会多出一条「看起来更宽松」的放行路径，没有对应的真实语义。 */
   assert.ok(!/allTextSegments\(norm\)/.test(code),
     '仍保留了 allTextSegments(norm) —— 那是一条没有真实语义的放行路径');
+  /* 锁的是：raw 的逐段判定被删。raw 才是真正交给 shell 执行的那串字符，
+   * 删掉它等于让「整条命令都是文本命令」这个豁免作用到链式命令上，
+   * `echo hi & shutdown /s` 会被整条放行。 */
   assert.ok(/allTextSegments\(raw\)/.test(code), 'raw 的逐段判定必须保留');
 });
 
@@ -422,6 +428,127 @@ t('30 超长命令 fail-closed 但不误伤正常长度', () => {
    * 正常电源命令行连同参数不到 200 字符，上限是它的几十倍。 */
   assert.strictEqual(PG.isPowerCommand('a'.repeat(8000)), false, '8000 字符仍在分析范围内');
   assert.strictEqual(PG.isPowerCommand('a'.repeat(9000)), true, '超过上限应 fail-closed');
+});
+
+/* ==================== PG-ENC：-EncodedCommand 的缩写形态 ====================
+/* 锁的是哪几个回归（v0.6.7）：
+ *
+ * 【漏洞本身】旧实现的编码参数判据是
+ *     /^(?:powershell|pwsh)\b[^\n]*\s(-e|-[a-z]*e)\b/i
+ * 它只覆盖 -e / -encodedcommand 两个极端，中间的缩写全部放行。
+ * 而 PowerShell 的参数是无歧义前缀匹配，这些缩写**真的会执行 base64 载荷**。
+ * 真机实测（spawnSync 直起 powershell.exe，载荷 Write-Output PWNED，
+ * 换第二段载荷 ZZZ-DISTINCT 复验结论一致）：
+ *   -e -ec -en -enc -enco -encoded -encodedc ... -encodedcommand  → 全部执行
+ *   -ea -ep -ex -eb -ed -ecc -ecm -ence -nco ...                 → 不执行
+ * 也就是说 -ec 会执行、但**它不是 "encodedcommand" 的前缀** ——
+ * 单靠前缀规则会漏掉它。所以判据是「ec 或 encodedcommand 的前缀」。
+ *
+ * 【连带修的假阳性】旧正则里的 `-[a-z]*e` 中 `*` 允许零长度，
+ * 于是任何以 e 结尾的开关都命中：
+ *   powershell -File a.ps1            → 被误判为需要门禁
+ *   powershell -ExecutionPolicy Bypass -File a.ps1 → 同样误判
+ * 这两条是日常写法，用户会看到「高危功能已关闭」而无从下手。
+ * 改成按开关名判定后自然消失（-file / -executionpolicy 都不是 ec 也不是前缀）。
+ *
+ * 下面的断言分两组：EN1-EN4 钉「必须拦」，EN5-EN7 钉「不能误拦」。
+ * 只钉其中一组都会退化 —— 只钉拦截会导致正则越写越宽，
+ * 只钉不误拦会导致门禁被悄悄放空。 */
+
+const ENC_B64 = Buffer.from('Write-Output PWNED', 'utf16le').toString('base64');
+
+t('PG-ENC-1 全部实测会执行的缩写必须拦下', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 逐个来自真机实测，不是拍脑袋列的 */
+  const must = ['-e', '-ec', '-en', '-enc', '-enco', '-encoded', '-encodedc',
+    '-encodedcomma', '-encodedcommand', '-E', '-EC', '-Enco', '-EncodedCommand'];
+  for (const abbr of must) {
+    const c = 'powershell ' + abbr + ' ' + ENC_B64;
+    assert.strictEqual(PG.isPowerCommand(c), true, '未拦下编码参数缩写：' + abbr);
+  }
+});
+
+t('PG-ENC-2 缩写不能只在外壳是第一段时生效', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 锁的是：判据写成「行首是 powershell 才检查」的话，
+   * 前面挂一个无害前缀（cmd /c、echo &）就能把缩写藏到后面去。 */
+  const must = [
+    'cmd /c powershell -ec ' + ENC_B64,
+    'echo hi & powershell -enc ' + ENC_B64,
+    'powershell.exe -ec ' + ENC_B64,
+  ];
+  for (const c of must) assert.strictEqual(PG.isPowerCommand(c), true, '未拦下：' + c);
+});
+
+t('PG-ENC-3 实测不执行的近似写法不能拦（否则是误伤）', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 这些在真机上都报 not recognized 或走帮助，不会执行载荷。
+   * 拦它们属于纯误伤，用户会莫名其妙看到「高危功能已关闭」。 */
+  const allow = ['-ea', '-ep', '-ex', '-eb', '-ed', '-ef', '-ez',
+    '-ecc', '-ecm', '-ecx', '-ecn', '-ence', '-nco', '-n', '-coded'];
+  for (const abbr of allow) {
+    const c = 'powershell ' + abbr + ' x';
+    assert.strictEqual(PG.isPowerCommand(c), false, '误拦了不执行的写法：' + abbr);
+  }
+});
+
+t('PG-ENC-4 以 e 结尾的普通开关不能被当成编码参数', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 锁的是旧正则 `-[a-z]*e\b` 的假阳性：`*` 允许零长度，
+   * 任何以 e 结尾的开关都会命中。下面这些全是正常用法。 */
+  const allow = [
+    'powershell -File a.ps1',
+    'powershell -ExecutionPolicy Bypass -File a.ps1',
+    'powershell -NoExit -Command Get-Date',
+    'powershell -WindowStyle Hidden -Command Get-Date',
+    'powershell -NonInteractive -Command Get-Process',
+  ];
+  for (const c of allow) assert.strictEqual(PG.isPowerCommand(c), false, '误拦了正常命令行：' + c);
+});
+
+t('PG-ENC-5 非 powershell 场景里的单字符 -e 不能误拦', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 锁的是：把单字符 -e 也当成编码参数来判，`node -e` 这种日常写法会被误拦。
+   * 单字符 -e 只在 powershell/pwsh 系命令行里才算编码参数。
+   *
+   * 【为什么这几个样本必须是「非文本命令」】
+   * `findstr -e foo *.txt` 也能通过，但它是从 allTextSegments 的文本豁免出去的，
+   * 还没走到本函数 —— 用它当断言等于守着空气（实测：去掉外壳判定后它照样 PASS）。
+   * node / perl 不是文本命令，会真的走到 hasEncodedFlag，才锁得住。 */
+  assert.strictEqual(PG.isPowerCommand('node -e "console.log(1)"'), false, 'node -e 被误拦');
+  assert.strictEqual(PG.isPowerCommand('perl -e print'), false, 'perl -e 被误拦');
+  /* 对照：-ec 在多字符前缀规则里，与解释器无关，必须拦。
+   * 这两条并排，才能证明「外壳限定只对单字符 -e 生效」。 */
+  assert.strictEqual(PG.isPowerCommand('node -ec x'), true, '多字符 -ec 应当按编码参数拦下');
+  assert.strictEqual(PG.isPowerCommand('cmd /e:on /c dir'), false, 'cmd 的 /e 扩展开关被误拦');
+});
+
+t('PG-ENC-6 判据本身要能被读出（防被改回只认字面量）', () => {
+  const code = stripComments(read('lib/power-gate.js'));
+  /* 锁的是：有人把 hasEncodedFlag 改回只匹配 -EncodedCommand 字面量。
+   * 这里不检查具体正则写法，只要求「有按名字判前缀的函数」这件事存在。 */
+  assert.ok(/function isEncodedFlagName/.test(code),
+    '缺少 isEncodedFlagName —— 缩写判定被删掉了');
+  /* 锁的是：前缀判定被换成别的判据（比如只认 === 'ec'），
+   * 那样 -en/-enc/-encoded 又会被放行 —— 它们是真机会执行的那一批。 */
+  assert.ok(/ENCODED_CMD_NAME\.startsWith|encodedcommand/i.test(code),
+    '没有按 encodedcommand 前缀判定');
+  /* 锁的是：`-[a-z]*e` 这个假阳性写法被写回来。它的 `*` 允许零长度匹配，
+   * 任何以 e 结尾的开关都会命中，powershell -File a.ps1 直接被误拦。 */
+  assert.ok(!/-\[a-z\]\*e\\b/.test(code),
+    '又出现了 -[a-z]*e 这个会误伤 -File/-NoExit 的写法');
+});
+
+t('PG-ENC-7 这次修的两种形态都要在源码注释里留下实测依据', () => {
+  const code = read('lib/power-gate.js');
+  /* 锁的是：以后有人「顺手清理注释」，把实测数据删了，
+   * 下一个改这段的人就只能靠猜 PowerShell 的缩写规则。 */
+  assert.ok(/不是 "encodedcommand" 的前缀|不是 .encodedcommand. 的前缀/.test(code),
+    '缺少「-ec 不是前缀但会执行」这条实测结论');
+  /* 锁的是：注释里那批「实测不执行」的名单被删。没有它，下一个改这段的人
+   * 会以为所有 -e 开头的都该拦，于是把 -ea/-ep/-ex 一起误拦。 */
+  assert.ok(/not recognized|不走|不执行/.test(code),
+    '缺少「哪些近似写法不执行」的记录');
 });
 
 /* ==================== 27. expr-eval 取余 vs 百分比 ==================== */
