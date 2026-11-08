@@ -43,6 +43,11 @@ const tempNames = require('./lib/temp-names');
  * 这个模块负责脱敏、截断、轮转，主进程这边只提供目录与时机。 */
 const crashLog = require('./lib/crash-log');
 const CH = require('./lib/channels').CHANNELS;   // IPC 通道名唯一来源（见文件头说明）
+/* 用户可调偏好的规格表（默认值/区间/类型）。**渲染层与主进程共用同一份** ——
+ * 主进程侧只有少数几项要用（标尺最小长度、崩溃日志份数、更新缓存时长），
+ * 但区间校验必须与设置页一致，否则"设置页夹到 20，主进程照收 999"。
+ * 文件在 js/ 下是因为它主要服务渲染层；这里 require 不会引入 electron 依赖。 */
+const prefsSpec = require('./lib/prefs-spec');
 const { OwnerJobMap } = require('./lib/job-owner');   // 任务归属（谁发起的、关窗时清账）
 const { pickSendTarget } = require('./lib/ipc-route'); // 推送发给谁（三档判据，纯函数）
 const toolNames = require('./lib/tool-names');      // 工具 id → 中英文名（独立窗口标题用）
@@ -154,6 +159,24 @@ function storeSet(key, val) {
   cur[parts[parts.length - 1]] = val;
   saveStore();
   return true;
+}
+
+/** 读一项用户偏好（带区间夹取），主进程侧用。
+ *
+ *  【为什么不像渲染层那样缓存】
+ *  主进程用到的地方只有三处（标尺最小长度、崩溃日志份数、更新缓存时长），
+ *  都是低频路径（开标尺、写日志、点检查更新）。每次现读 storeData 更简单，
+ *  也不会出现"渲染层改了、主进程缓存没更新"的不一致。
+ *
+ *  @param {string} key SPECS 里的键
+ *  @returns {number|boolean} 已夹到合法区间的值；键不存在时返回 undefined
+ */
+function prefsGet(key) {
+  const spec = prefsSpec.SPECS[key];
+  if (!spec) return undefined;
+  const all = storeGet('settings.prefs', null);
+  const raw = (all && typeof all === 'object' && all[key] !== undefined) ? all[key] : spec.def;
+  return prefsSpec.normalize(key, raw);
 }
 
 /* ---------------- helpers ---------------- */
@@ -2070,8 +2093,10 @@ handle(CH.APP.SET_ACCENT, (e, id) => {
  * 拖动时通过 RULER_RESIZE 精确设置尺寸。
  *
  * 长度下限：横向至少 160px（再短就只剩两个按钮），纵向同理；
- * 上限取当前显示器工作区，避免拉出屏幕外之后抓不回来。 */
-const RULER_MIN = 160;
+ * 上限取当前显示器工作区，避免拉出屏幕外之后抓不回来。
+ * 【下限现在可配置】设置 → 通用 → 标尺最小长度（20~800px）。
+ * 每次拖拽现读，改完立刻生效（这是低频路径，现读比加缓存省心）。 */
+const RULER_MIN_DEFAULT = 160;
 /* 标尺的"厚度"（横向标尺的高 / 纵向标尺的宽）是固定值。
  * 见 RULER_RESIZE 的注释：让它参与回读会带来 +1px/次的累积漂移。 */
 const RULER_THICK = { h: 56, v: 56 };
@@ -2155,7 +2180,10 @@ handle(CH.WIN.RULER_RESIZE, (e, w, h, anchor) => {
   let len = Math.round(horizontal
     ? (Number(w) || cur.width)
     : (Number(h) || cur.height));
-  len = Math.min(Math.max(len, RULER_MIN), maxLen);
+  /* 下限可配置：取不到时用规格默认值 160，保证极端时序下不会变成 NaN 夹出怪尺寸。 */
+  const minLenRaw = prefsGet('rulerMinLen');
+  const minLen = (typeof minLenRaw === 'number' && minLenRaw > 0) ? minLenRaw : RULER_MIN_DEFAULT;
+  len = Math.min(Math.max(len, minLen), maxLen);
 
   const next = horizontal
     ? { x: cur.x, y: cur.y, width: len, height: thick }
@@ -3791,7 +3819,15 @@ handle(CH.SNIP.PIN_CLIPBOARD, () => pinClipboardImage());
 
 /* ================= IPC: 检查更新（GitHub Releases；NSIS 安装版走 electron-updater） ================= */
 // ETag 条件请求 + 本地缓存：命中缓存/304 时不消耗匿名限流配额（60 次/时/IP）
-const UPDATE_TTL = 6 * 3600 * 1000; // 缓存有效期 6 小时
+/* 【缓存时长可配置】设置 → 通用 → 更新检查缓存（0~72 小时）。
+ * 0 表示不缓存（每次都真查），这是"我想第一时间拿到新版"的人要的。
+ * 现读而不是在模块加载时算一次：设置页改完立刻生效。
+ * 默认值来自 js/prefs-spec.js 的规格表，这里不再写第二份。 */
+function updateTtlMs() {
+  const h = prefsGet('updateTtlHours');
+  const hours = (typeof h === 'number' && h >= 0) ? h : 6;
+  return hours * 3600 * 1000;
+}
 const UPDATE_API = 'https://api.github.com/repos/xiaohetaoo/hehe-toolbox/releases/latest';
 function updateCacheGet() {
   const c = storeGet('updateCache', null);
@@ -3803,9 +3839,16 @@ function updateCacheSet(patch) {
 // force 节流：设置页连点「检查更新」不应连发请求（防止打满限流配额）
 const UPDATE_FORCE_MIN_GAP = 10 * 1000;
 let lastForceCheckAt = 0;
-handle(CH.UPDATE.CHECK, async (e, opts = {}) => {
+/* 【检查更新抽成函数，供 IPC handler 与「启动时自动检查」共用】
+ * 原来整段逻辑内联在 handle(CH.UPDATE.CHECK) 里；启动自动检查也要用同一套
+ * （缓存、ETag、节流、双引擎），复制一份必然会漂移。
+ * @param {{force?:boolean}} [opts]
+ * @returns {Promise<object>} 与 IPC 返回的数据同形
+ */
+async function updateCheckImpl(opts) {
+  const o = opts || {};
   const current = app.getVersion();
-  const force = !!(opts && opts.force);
+  const force = !!o.force;
   if (force) {
     const since = Date.now() - lastForceCheckAt;
     if (since < UPDATE_FORCE_MIN_GAP) {
@@ -3817,6 +3860,7 @@ handle(CH.UPDATE.CHECK, async (e, opts = {}) => {
     }
     lastForceCheckAt = Date.now();
   }
+
   // 安装版：electron-updater（可用则直接通知升级）
   try {
     if (process.env.HEHE_PORTABLE !== '1' && app.isPackaged && fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml'))) {
@@ -3829,7 +3873,7 @@ handle(CH.UPDATE.CHECK, async (e, opts = {}) => {
   } catch (e) { console.warn('[update] electron-updater 不可用，回退 GitHub API：', e.message); }
   // 缓存未过期且非强制刷新：直接返回，完全不发请求
   const cached = updateCacheGet();
-  if (cached && cached.payload && !force && Date.now() - (cached.checkedAt || 0) < UPDATE_TTL) {
+  if (cached && cached.payload && !force && Date.now() - (cached.checkedAt || 0) < updateTtlMs()) {
     return Object.assign({}, cached.payload, { cached: true, cacheAge: Math.round((Date.now() - cached.checkedAt) / 60000) });
   }
   // 便携版/兜底：查最新 Release（带 If-None-Match，304 时复用缓存）
@@ -3866,7 +3910,9 @@ handle(CH.UPDATE.CHECK, async (e, opts = {}) => {
     }
     throw new Error('检查更新失败（网络）：' + err.message);
   }
-});
+}
+
+handle(CH.UPDATE.CHECK, async (e, opts = {}) => updateCheckImpl(opts));
 // 便携版引导替换：下载好的新版 exe 覆盖当前 exe，随后自动重启
 // 便携版无静默自升级能力（electron-builder portable 每次启动都解压到临时目录），
 // 只能在进程退出后用外部脚本完成替换，因此走 PowerShell 脚本 + app.exit()。
@@ -4571,6 +4617,27 @@ if (!gotLock) {
     } else if (win) {
       win.webContents.once('did-finish-load', () => { try { armAllSchedules(); } catch (e) {} });
     }
+    /* 启动时自动检查更新（设置 → 通用 → 启动时自动检查更新，**默认关**）。
+     *
+     * 【为什么默认关】本项目一直把「检查更新」做成手动（设置→关于→检查更新）。
+     * 改成默认开会给所有用户增加一次后台网络请求，属于行为变更 ——
+     * 按本项目的规矩，行为变更要用户明确要求。所以做成开关，默认保持原样。
+     *
+     * 【为什么延迟 8 秒】启动瞬间窗口还在建、首帧还没画完。
+     * 这时候发网络请求会和 UI 抢资源；而且检查结果要推给渲染层，
+     * 渲染层此时可能还没订阅。8 秒足够首帧完成，用户也感觉不到延迟。
+     *
+     * 【静默失败】自动检查失败不弹任何提示 —— 用户没主动点，不该被打扰。
+     * 只在控制台留一行，排障时能查到。 */
+    if (prefsGet('updateCheckOnStart') === true) {
+      setTimeout(() => {
+        try {
+          updateCheckImpl({ force: false }).then((r) => {
+            if (r && r.hasUpdate) send('update:available', r);
+          }).catch((e) => { console.log('[update] 启动自动检查失败（静默）', e && e.message); });
+        } catch (e) { /* 不阻塞启动 */ }
+      }, 8000);
+    }
 // 冒烟测试：遍历全部工具页 + 非工具视图，捕获渲染异常 + 校验关键布局。
 // 注意：主窗启动时 show:false，隐藏窗口里 requestAnimationFrame 不触发，
 // 所以这里用 setTimeout(0) 让出事件循环（渲染同步完成，无需长等待）。
@@ -4831,7 +4898,11 @@ function recordCrash(kind, payload) {
       tempDir: os.tmpdir(),
       user: (() => { try { return os.userInfo().username; } catch (e) { return ''; } })()
     });
-    const ok = crashLog.append(crashLogDir(), entry);
+    /* 保留份数可配置（设置 → 通用 → 崩溃日志保留份数 1~20）。
+   * 【为什么要把它传给 crash-log 而不是让那个模块自己读】
+   * lib/crash-log.js 的约定是纯逻辑、不依赖全局状态（见其文件头），
+   * 否则测试要先 mock 一个 store 才能验轮转。 */
+  const ok = crashLog.append(crashLogDir(), entry, { keepMax: prefsGet('crashLogKeep') });
     // 写盘失败时至少退回 console —— 开发态（npm start）还看得见
     if (!ok) console.error('[crash-log]', kind, payload && payload.err);
     return ok;

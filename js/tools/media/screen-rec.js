@@ -11,8 +11,15 @@ register({
     desc: '录制全屏或框选区域为 MP4，可选麦克风与摄像头画中画、暂停恢复、直出 GIF', descEn: 'Record the screen or a region, optionally with microphone and camera overlay',
     keywords: ['录制', '录屏', '屏幕', 'video', 'capture', '区域', '摄像头', '画中画', 'camera', 'webcam'],
     render(page) {
+      /* 【默认帧率可配置】设置 → 通用 → 录屏默认帧率。
+       * 优先级：上次用的（settings.recPrefs，见下方 prefsP 恢复）> 本设置 > 30。
+       * 也就是说：用户在这个页面上手动选过就以那次为准，
+       * 全局设置只决定"第一次打开时默认是什么"。 */
+      const defFps = String((window.Prefs && window.Prefs.get('recFps')) || 30);
       const fpsSel = h('select', { class: 'select input-sm' },
-        h('option', { value: '15' }, '15 帧（文件小）'), h('option', { value: '30', selected: true }, '30 帧（流畅）'), h('option', { value: '60' }, '60 帧（高帧率）'));
+        h('option', { value: '15' }, '15 帧（文件小）'), h('option', { value: '30' }, '30 帧（流畅）'), h('option', { value: '60' }, '60 帧（高帧率）'));
+      /* 用 select 已有选项匹配，避免配置值不在列表里（例如 45）时变成空选中 */
+      fpsSel.value = [...fpsSel.options].some(o => o.value === defFps) ? defFps : '30';
       const audioSel = h('select', { class: 'select input-sm', style: { maxWidth: '220px' } },
         h('option', { value: '' }, '不录声音'));
       const camSel = h('select', { class: 'select input-sm', style: { maxWidth: '220px' } },

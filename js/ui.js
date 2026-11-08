@@ -329,6 +329,9 @@
     s.setAttribute('aria-checked', checked ? 'true' : 'false');
     if (label) s.setAttribute('aria-label', label);
     const toggle = () => {
+      /* 被 setDisabled 禁用时，点击/空格都不该有任何反应。
+       * 判据放在这里而不是摘监听器：反复禁用/启用后摘挂容易漏挂。 */
+      if (s.__disabled) return;
       s.classList.toggle('on');
       const nowOn = s.classList.contains('on');
       /* 【aria-checked 必须跟着状态走】否则读屏软件的播报与实际状态
@@ -348,6 +351,24 @@
     s.set = (v) => {
       s.classList.toggle('on', !!v);
       s.setAttribute('aria-checked', v ? 'true' : 'false');
+    };
+    /* 【setDisabled：禁用而不是隐藏】
+     * 用在「本机没有可用硬件编码器」这类场景：开关留着可见，用户能看出
+     * 这个功能存在、也能看出当前不可用；直接隐藏会让人以为功能不存在。
+     *
+     * 三个动作缺一不可：
+     *   · disabled 类（视觉变灰，CSS 里 pointer-events:none）
+     *   · tabindex=-1（键盘不能再 Tab 到它，否则读屏用户会读到"不可用"却仍能按）
+     *   · aria-disabled（读屏软件要能播报出禁用状态，只靠 disabled 类它读不到） */
+    s.setDisabled = (v) => {
+      const off = !!v;
+      s.classList.toggle('disabled', off);
+      s.setAttribute('tabindex', off ? '-1' : '0');
+      s.setAttribute('aria-disabled', off ? 'true' : 'false');
+      /* 事件监听不摘除，而是用标志位挡住：
+       * 摘了再挂容易在反复禁用/启用后漏挂（本项目有过这类回归）。
+       * toggle 里检查这个标志即可。 */
+      s.__disabled = off;
     };
     return s;
   }
@@ -369,22 +390,33 @@
    * @param {string[]} paths 拖入的原始路径
    * @returns {Promise<{files:string[], dirs:number}>} 展开后的文件列表 + 展开的目录数
    */
-  const EXPAND_MAX_FILES = 3000;
-  const EXPAND_MAX_DEPTH = 8;
+  /* 【两个上限都可配置】设置 → 通用 → 拖拽递归深度 / 拖拽文件数上限。
+   * 用函数而不是常量：用户在设置页改完就该立刻生效，不必重启。
+   * 取不到时用规格默认值（8 层 / 3000 个）—— Prefs.get 保证不返回 undefined。 */
+  function expandMaxFiles() {
+    const v = window.Prefs && window.Prefs.get('dragMaxFiles');
+    return (typeof v === 'number' && v > 0) ? v : 3000;
+  }
+  function expandMaxDepth() {
+    const v = window.Prefs && window.Prefs.get('dragMaxDepth');
+    return (typeof v === 'number' && v > 0) ? v : 8;
+  }
   async function expandDroppedPaths(paths) {
     const out = [];
     let dirs = 0;
+    const MAX_FILES = expandMaxFiles();
+    const MAX_DEPTH = expandMaxDepth();
     async function walk(p, depth) {
-      if (out.length >= EXPAND_MAX_FILES) return;
+      if (out.length >= MAX_FILES) return;
       let st = null;
       try { st = await invoke(Channels.CHANNELS.FS.STAT, p); } catch (e) { return; }
       if (!st || !st.isDir) { out.push(p); return; }
-      if (depth >= EXPAND_MAX_DEPTH) return;
+      if (depth >= MAX_DEPTH) return;
       dirs++;
       let items = [];
       try { items = await invoke(Channels.CHANNELS.FS.LIST, p); } catch (e) { return; }
       for (const it of items || []) {
-        if (out.length >= EXPAND_MAX_FILES) return;
+        if (out.length >= MAX_FILES) return;
         if (it && it.isDir) await walk(it.path, depth + 1);
         else if (it && it.path) out.push(it.path);
       }

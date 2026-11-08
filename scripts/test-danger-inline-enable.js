@@ -21,13 +21,29 @@ const OUT = JSON.stringify(path.join(tmp, 'r.json'));
 const PROBE_CODE = `
 (async () => {
   const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+  /* 【为什么要等条件而不是等固定时间】
+   * 原来这里写死 \`await tick(600)\` 然后查 .modal-mask。单跑时够用，
+   * 但在全量并发跑（158 个脚本抢 CPU）时，600ms 内确认框还没渲染出来，
+   * 于是 confirmModalShown=false，后面四条连带失败 ——
+   * 实测全量跑里偶发红、单跑 3/3 绿，就是这条。
+   * 改成"轮询到出现或超时"，超时上限给足，正常情况下会立刻返回。 */
+  const waitFor = async (fn, timeout) => {
+    const until = Date.now() + (timeout || 5000);
+    while (Date.now() < until) {
+      let v = null;
+      try { v = fn(); } catch (e) { v = null; }
+      if (v) return v;
+      await tick(50);
+    }
+    return null;
+  };
   const out = { steps: [] };
   const log = (k, v) => out.steps.push({ k: k, v: v });
 
   // 确保是关闭状态
   try { await window.api.invoke('dangerous:set', 'dir-move', false); } catch (e) {}
   window.App.openTool('dir-move');
-  await tick(800);
+  await waitFor(() => document.querySelector('.danger-locked'), 8000);
 
   const lockCard = document.querySelector('.danger-locked');
   log('hasLockCard', !!lockCard);
@@ -39,8 +55,7 @@ const PROBE_CODE = `
   if (!switches.length) return out;
 
   switches[0].click();
-  await tick(600);
-  const modal = document.querySelector('.modal-mask');
+  const modal = await waitFor(() => document.querySelector('.modal-mask'), 8000);
   log('confirmModalShown', !!modal);
   log('modalText', modal ? modal.textContent.slice(0, 150) : null);
   if (!modal) return out;
@@ -48,7 +63,9 @@ const PROBE_CODE = `
   const okBtn = [...modal.querySelectorAll('button')].find((b) => /开启|确认|Enable|OK/i.test(b.textContent));
   log('foundOkButton', !!okBtn);
   if (okBtn) okBtn.click();
-  await tick(1000);
+  /* 确认后要等"占位卡消失"这个结果真的发生，而不是等一个猜出来的时长 */
+  await waitFor(() => !document.querySelector('.danger-locked'), 8000);
+  await tick(200);
 
   let caps = null;
   try { caps = await window.api.invoke('dangerous:list'); } catch (e) {}

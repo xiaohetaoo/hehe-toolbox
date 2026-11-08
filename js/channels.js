@@ -120,6 +120,7 @@
       CONVERT: 'ffmpeg:convert',
       DOWNLOAD: 'ffmpeg:download',
       FRAMES: 'ffmpeg:frames',
+      HW_PROBE: 'ffmpeg:hw-probe',
       PICK: 'ffmpeg:pick',
       PRESS: 'ffmpeg:press',
       PROBE: 'ffmpeg:probe',
@@ -328,6 +329,7 @@
     /* ---- 自动更新 ---- */
     UPDATE: {
       APPLY: 'update:apply',
+      AVAILABLE: 'update:available',
       CHECK: 'update:check',
       CLEANUP: 'update:cleanup',
       MARK_PENDING: 'update:mark-pending',

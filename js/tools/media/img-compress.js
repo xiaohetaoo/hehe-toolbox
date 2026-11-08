@@ -17,7 +17,10 @@ register({
         h('option', { value: 'smart' }, '智能压缩（推荐）'),
         h('option', { value: 'target' }, '压到目标体积'),
         h('option', { value: 'quality' }, '指定质量'));
-      const qualityIn = h('input', { type: 'number', class: 'input input-sm', value: '80', min: '10', max: '100', style: { width: '70px' } });
+      /* 【默认质量可配置】设置 → 通用 → 图片压缩默认质量（10~100）。
+       * 取不到时用规格默认值 80 —— Prefs.get 保证不会返回 undefined。 */
+      const defQuality = (window.Prefs && window.Prefs.get('imgCompressQuality')) || 80;
+      const qualityIn = h('input', { type: 'number', class: 'input input-sm', value: String(defQuality), min: '10', max: '100', style: { width: '70px' } });
       const targetIn = h('input', { type: 'number', class: 'input input-sm', value: '200', min: '5', style: { width: '80px' }, title: '每张压到不超过该体积（KB），质量逐级自动降低' });
       const maxWIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '不限', style: { width: '70px' }, title: '最大宽度（px），超出等比缩小' });
       const fmtSel = h('select', { class: 'select input-sm' },
@@ -170,7 +173,7 @@ register({
                 du = dataUrlBytes(du60) < dataUrlBytes(du80) ? du60 : du80;
               }
             } else {
-              du = drawTo(img, mime, Math.min(100, Math.max(10, parseInt(qualityIn.value) || 80)) / 100, 1);
+              du = drawTo(img, mime, Math.min(100, Math.max(10, parseInt(qualityIn.value) || defQuality)) / 100, 1);
             }
             const ext = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png';
             // 同名不同扩展（a.png + a.jpg → 都是 a.jpg）时自动加序号，避免互相覆盖

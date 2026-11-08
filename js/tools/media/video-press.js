@@ -100,7 +100,25 @@ register({
             if (!row) return;
             const tag = row.querySelector('.av-tag');
             const bar = row.querySelector('.progress-fill');
-            if (j.stage === 'start') { if (tag) { tag.textContent = '压制中'; tag.className = 'tag tag-orange'; } return; }
+            if (j.stage === 'start') {
+              if (tag) {
+                /* 【把"这次用的哪个编码器"写进标签】
+                 * 用户开了硬件加速却没变快时，这一格是唯一能自证的地方：
+                 * 显示 h264_nvenc 说明显卡在跑，显示 libx264 说明已退回 CPU。
+                 * 不显示的话，那个开关就是个黑盒。 */
+                const hwName = j.hw ? (j.encoder || 'GPU') : null;
+                tag.textContent = hwName ? ('压制中 · ' + hwName) : '压制中';
+                tag.className = 'tag tag-orange';
+                tag.title = hwName ? ('正在用硬件编码器 ' + hwName) : '正在用 CPU 编码';
+              }
+              return;
+            }
+            /* 硬件编码中途失败、已自动改用 CPU：明确告诉用户，
+             * 否则他会以为"硬件加速这么慢"，而真相是它没生效。 */
+            if (j.notice === 'hw-fallback') {
+              if (tag) { tag.textContent = '压制中 · 已改用 CPU'; tag.className = 'tag tag-orange'; tag.title = '硬件编码失败，已自动改用 CPU，文件仍会正常完成'; }
+              return;
+            }
             if (j.pct != null && bar && !j.done) bar.style.width = (j.pct || 0) + '%';
             if (j.done && tag) { tag.textContent = j.ok ? '✓ 完成' : '✗ 失败'; tag.className = 'tag ' + (j.ok ? 'tag-green' : 'tag-red'); }
           } catch (e) {}
@@ -115,13 +133,15 @@ register({
               audio: audioSel.value, stripMeta: stripChk.checked
             }
           });
-          let okN = 0, saveB = 0;
+          let okN = 0, saveB = 0, hwN = 0, fallbackN = 0;
           r.results.forEach((res, i) => {
             const row = picker.list.rowAt(i);
             if (!row) return;
             const tag = row.querySelector('.av-tag'), errEl = row.querySelector('.av-err'), sizeEl = row.querySelector('.vp-size');
             if (res.ok) {
               okN++;
+              if (res.hw) hwN++;
+              if (res.fellBack) fallbackN++;
               saveB += Math.max(0, (res.inSize || 0) - (res.outSize || 0));
               if (sizeEl && res.inSize) {
                 const pct = Math.max(0, Math.round((1 - res.outSize / res.inSize) * 100));
@@ -132,7 +152,13 @@ register({
               if (errEl) errEl.textContent = res.err;
             }
           });
-          status.textContent = `完成：成功 ${okN} / ${r.results.length}${r.canceled ? '（已取消）' : ''}，共节省 ${fmtBytes(saveB)}，输出目录 ${outDir}`;
+          /* 【完成语要带上编码器统计】
+           * 「用了几个硬件的、几个退回 CPU 的」都写出来。用户据此判断
+           * 那个开关到底有没有生效，也让"回退"这件事实不被淹没在"成功 N 个"里。 */
+          const hwInfo = hwN || fallbackN
+            ? `，硬件编码 ${hwN} 个${fallbackN ? `，回退 CPU ${fallbackN} 个` : ''}`
+            : '';
+          status.textContent = `完成：成功 ${okN} / ${r.results.length}${r.canceled ? '（已取消）' : ''}${hwInfo}，共节省 ${fmtBytes(saveB)}，输出目录 ${outDir}`;
           toast(`压制完成（${okN}/${r.results.length}）`, okN ? 'success' : 'error');
         } catch (e) {
           status.textContent = '✗ ' + e.message;

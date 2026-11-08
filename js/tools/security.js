@@ -188,7 +188,14 @@
        * 却丢掉一半记录，而且这种缩水完全无声。
        * 另外文本那条没走 trimHistory，于是被挤出的图片条目对应的
        * clip-img/*.png 永远不会被回收，文件无限堆积。 */
-      const HISTORY_LIMIT = 200;
+      /* 【上限现在可配置】设置 → 通用 → 剪贴板历史条数（50~1000）。
+       * 用函数而不是常量：用户在设置页改完，回到这个工具页就该按新值裁剪，
+       * 而常量在模块加载时就定死了，改完必须重启才生效。
+       * 取不到（极端时序）时 Prefs.get 会返回规格里的默认值 200，不会 undefined。 */
+      function historyLimit() {
+        const v = window.Prefs && window.Prefs.get('clipHistoryLimit');
+        return (typeof v === 'number' && v > 0) ? v : 200;
+      }
       // 删除条目时连带删掉它落盘的图片文件（否则 clip-img 会无限堆积）
       async function dropImages(entries) {
         const files = (entries || []).filter(x => x && x.type === 'image' && x.file).map(x => x.file);
@@ -199,7 +206,7 @@
        * 再截断。这样「文本把图片挤出列表」时对应的 png 也会被回收。 */
       /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
       async function trimHistory(list) {
-        const cap = HISTORY_LIMIT;
+        const cap = historyLimit();
         if (list.length <= cap) return list;
         const dropped = list.slice(cap);
         await dropImages(dropped);
@@ -209,17 +216,23 @@
         history = await invoke(Channels.CHANNELS.STORE.GET, 'clipHistory', []);
         render();
       }
-      // 单条文本上限：200 条 × 每条约 100MB 的复制内容能把 hehe-data.json 撑到 GB 级，
-      // 而 store 是整文件 JSON.stringify + 同步写盘，卡死的不只是剪贴板功能。
-      // 超出部分只保留开头用于检索，并在界面上标注“已截断，复制的是完整原文”？
-      // 不——截断后复制会给用户错误内容，所以超长条目干脆不入库，只提示一次。
-      const CLIP_TEXT_LIMIT = 256 * 1024; // 256KB ≈ 25 万汉字
+      // 单条文本上限：条数 × 单条体积决定 hehe-data.json 的大小，而 store 是
+      // 整文件 JSON.stringify + 同步写盘，单条太大时卡死的不只是剪贴板功能。
+      // 超出部分只保留开头用于检索、并在界面上标注"已截断"？不——截断后复制
+      // 会给用户错误内容，所以超长条目干脆不入库，只提示一次。
+      // 【现在可配置】设置 → 通用 → 单条剪贴板上限（16~4096 KB）。
+      function textLimitBytes() {
+        const kb = window.Prefs && window.Prefs.get('clipTextLimitKB');
+        const n = (typeof kb === 'number' && kb > 0) ? kb : 256;
+        return n * 1024;
+      }
       let limitWarned = false;
       function admitText(text) {
-        if (text.length <= CLIP_TEXT_LIMIT) return text;
+        const limit = textLimitBytes();
+        if (text.length <= limit) return text;
         if (!limitWarned) {
           limitWarned = true;
-          try { toast(`单条文本超过 ${Math.round(CLIP_TEXT_LIMIT / 1024)}KB，已跳过记录（避免历史库撑爆）`, 'warn', 4000); } catch (e) {}
+          try { toast(`单条文本超过 ${Math.round(limit / 1024)}KB，已跳过记录（避免历史库撑爆）`, 'warn', 4000); } catch (e) {}
         }
         return null;
       }

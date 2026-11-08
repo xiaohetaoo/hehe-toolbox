@@ -953,6 +953,10 @@ textarea.input { resize: vertical; line-height: 1.6; }
 }
 .switch.on { background: var(--primary); }
 .switch.on::after { transform: translateX(20px); }
+/* 禁用态（本机没有可用硬件编码器等）：看起来不可点、也确实不可点。
+ * 用 opacity 而不是 display:none —— 开关要留在原位，用户才能看出
+ * "这个功能存在但当前不可用"，而不是以为它不存在。 */
+.switch.disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
 
 /* 标签 tag */
 .tag { display: inline-flex; align-items: center; padding: 1px 8px; font-size: 12px; border-radius: 3px; line-height: 20px; }

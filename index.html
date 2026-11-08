@@ -58,6 +58,10 @@
   <!-- IPC 通道名常量表：工具文件在定义时就会引用 window.Channels，
        所以必须排在 ui.js / registry.js / 各 tools/*.js 之前 -->
   <script src="js/channels.js"></script>
+  <!-- 偏好规格表：默认值/区间/类型的唯一定义源。
+       必须在 ui.js 与所有工具页之前加载 —— 它们渲染时要同步读 Prefs.get()，
+       而且 ui.js 的 expandDroppedPaths 会在拖拽时按它取上限。 -->
+  <script src="lib/prefs-spec.js"></script>
   <script src="js/ui.js"></script>
   <script src="js/registry.js"></script>
   <!-- 工具页文案的双语表（任务 4）：工具文件里用 TT('域', '中文原文') 取词。

@@ -48,6 +48,9 @@ const { spawnDetached } = require('../lib/spawn-detached');
  * 它是 Electron 主进程 API，必须在主进程侧 require。 */
 const { dialog } = require('electron');
 const CH = require('../lib/channels').CHANNELS;   // IPC 通道名唯一来源
+/* 硬件编码：探测本机可用的编码器并把 crf 换算成 cq。
+ * 全部逻辑在 lib/ 里（纯函数，可单测），这里只负责「探测一次 + 缓存 + 拼参数」。 */
+const hwEncode = require('../lib/hw-encode');
 
 /**
  * @param {object} ctx  见 ipc/ctx.js（win / jobs / isWin / send / nextJobSeq）
@@ -82,6 +85,151 @@ module.exports = function register(ctx, deps) {
   } = deps;
 
   const { jobs, isWin } = ctx;
+
+  /* ============ 硬件编码：探测一次，缓存到进程内存 ============
+   *
+   * 【为什么缓存在模块级变量而不是每次现探】
+   * 探测要真跑一次编码（实测 961ms：3 个编码器各跑 321ms）。转码一个批次
+   * 可能是几十个文件，每次现探等于把「加速」的收益吃掉。
+   *
+   * 【为什么缓存要跟着 ffmpeg 路径失效】
+   * 用户可能在设置里换一个 ffmpeg（比如从 essentials 换成 full build，
+   * 后者才有 QSV）。缓存里存了当时的 ffmpeg 路径，路径变了就重探。
+   *
+   * 【为什么用"已 promise"而不是"已结果"】
+   * 两个转码任务并发的场景下，第二个会在第一个探测完成前到达。
+   * 存 promise 让第二个直接 await 同一个探测，而不是再跑一遍 961ms。
+   */
+  let hwCache = { ffmpeg: null, promise: null };
+
+  /**
+   * 取硬件编码探测结果（带缓存）。
+   * @returns {Promise<{available:boolean,family:string|null,name:string|null,encoders:object}>}
+   */
+  function getHwProbe() {
+    const ffmpeg = findFfmpeg();
+    if (!ffmpeg) return Promise.resolve({ available: false, family: null, name: null, encoders: {}, probed: [] });
+    if (hwCache.ffmpeg === ffmpeg && hwCache.promise) return hwCache.promise;
+    const p = (async () => {
+      try {
+        const r = await runCmd(ffmpeg, ['-hide_banner', '-encoders'], { timeout: 15000 });
+        const cands = hwEncode.listCandidates(r.stdout);
+        if (!cands.length) return { available: false, family: null, name: null, encoders: {}, probed: [] };
+        return hwEncode.detectEncoder(ffmpeg, cands);
+      } catch (e) {
+        /* 【探测失败必须降级成「无硬件」，不能把异常抛给调用方】
+         * 探测只是个优化路径：它失败时转码应该退回 CPU 正常跑，
+         * 而不是让「转码」这个功能整个不可用。 */
+        console.error('[hw-encode] 探测失败，回退 CPU：', e && e.message);
+        return { available: false, family: null, name: null, encoders: {}, probed: [] };
+      }
+    })();
+    hwCache = { ffmpeg, promise: p };
+    return p;
+  }
+
+  /**
+   * 组装视频编码参数（CPU 或硬件）。
+   *
+   * 【这个函数是「为什么用户觉得加速没生效」的唯一答案】
+   * 三条回退路径都在这里显式返回 hw:false，调用方据此在进度里如实告知：
+   *   ① 用户没开开关            → 用 CPU
+   *   ② 本机没有可用硬件        → 用 CPU
+   *   ③ 探测到的是 h264 但用户要 hevc → 用 CPU（两个能力位独立）
+   *
+   * @param {object} o
+   * @param {string} o.vcodec 界面选的 vcodec（'' / 'libx265' / 'copy'）
+   * @param {number} o.crf
+   * @param {string} o.preset CPU preset（硬件走自己的 preset）
+   * @returns {Promise<{args:string[], hw:boolean, encoder:string, family:string|null}>}
+   */
+  async function videoEncodeArgs(o) {
+    const want = o && o.vcodec === 'libx265' ? 'hevc' : 'h264';
+    /* 【设置缺省值 = null 而不是 false，这个区别很重要】
+     * 用户的要求是「检测到可用硬件就默认开启」，所以"没设置过"要落到
+     * "探测完再定"，而不是直接 false：
+     *   · null（从没设置过）→ 探测到可用硬件就自动开
+     *   · true / false       → 用户显式选过，尊重它
+     * 如果这里写成 storeGet(..., false)，那台有 N 卡的机器永远默认走 CPU，
+     * 「默认开启」就形同虚设。 */
+    let pref = null;
+    try { pref = await storeGet('settings.hwAccel', null); } catch (e) { pref = null; }
+    let enabled;
+    let probe = { available: false, encoders: {} };
+    if (pref === null || pref === undefined) {
+      /* 没设置过：先探一次，能探到就默认用硬件（这就是用户要的"默认开启"） */
+      probe = await getHwProbe();
+      enabled = !!probe.available;
+    } else {
+      enabled = pref === true;
+      if (enabled) probe = await getHwProbe();
+    }
+    const pick = hwEncode.pickVideoEncoder({ enabled, probe, codec: want });
+    if (pick.hw) {
+      return {
+        args: ['-c:v', pick.name, ...hwEncode.hwQualityArgs(pick.family, o.crf)],
+        hw: true, encoder: pick.name, family: pick.family,
+      };
+    }
+    const name = want === 'hevc' ? 'libx265' : 'libx264';
+    return { args: ['-c:v', name, '-crf', String(o.crf || 23), '-preset', String(o.preset || 'veryfast')], hw: false, encoder: name, family: null };
+  }
+
+  /* ============ 硬件编码失败后自动退回 CPU ============
+   *
+   * 【为什么必须有这一层】
+   * 探测通过只说明"这一刻"能跑。实际用起来还有几种会让硬件编码失败的情况，
+   * 而它们发生时代价很大 —— 整批转码到了一个文件就停住，用户看到「转换失败」：
+   *   · 驱动在会话中途更新/重置（笔记本切换独显直连时最常见）
+   *   · 显卡被另一个程序吃满显存（游戏、另一个转码任务）
+   *   · 睡眠唤醒后 CUDA 上下文失效
+   *   · 某些奇特的分辨率/像素格式硬件不接（例如 4096 宽、10bit 源）
+   *
+   * 【为什么是"重跑一次"而不是"预检"】
+   * 上述情况无法在开始前可靠预测。唯一可靠的判据是"跑一遍看结果"。
+   * 代价是失败时要多花一次时间，但那只发生在少数情况下；
+   * 而"直接失败"是每次都会发生的用户体验灾难。
+   *
+   * 【为什么只回退一次】
+   * 回退到 CPU 后再失败，就是真失败了（源文件损坏、磁盘满等），
+   * 再重试只会让用户多等一遍。用 triedCpu 标志挡住二次回退。
+   *
+   * @param {object} o
+   * @param {string[]} o.args 已拼好的参数（含硬件编码参数）
+   * @param {boolean} o.hw 这批是不是走硬件
+   * @param {Function} o.rebuildCpu 硬件失败时，用它重建一份纯 CPU 的参数
+   * @returns {Promise<{code:number, errOut:string, usedHw:boolean, fellBack:boolean}>}
+   */
+  async function runEncodeWithFallback(o) {
+    const once = (args) => new Promise((resolve) => {
+      const proc = spawn(findFfmpeg(), args, { windowsHide: true });
+      o.onProc && o.onProc(proc);
+      let errOut = '', progBuf = '';
+      proc.stdout.on('data', (d) => {
+        progBuf += String(d);
+        const lines = progBuf.split('\n');
+        progBuf = lines.pop() || '';
+        for (const line of lines) o.onLine && o.onLine(line);
+      });
+      proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
+      proc.on('exit', (code) => resolve({ code, errOut }));
+      proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
+    });
+
+    const first = await once(o.args);
+    if (first.code === 0 || !o.hw) return { ...first, usedHw: !!o.hw, fellBack: false };
+    /* 【取消时不回退】
+     * 用户主动点了取消，这时不该"贴心地"再用 CPU 跑一遍 ——
+     * 那会让他点了取消却看到 CPU 风扇转起来。 */
+    if (o.isCancelled && o.isCancelled()) return { ...first, usedHw: true, fellBack: false };
+    try { await fsp.rm(o.out, { force: true }); } catch (e) {}
+    const cpuArgs = typeof o.rebuildCpu === 'function' ? o.rebuildCpu() : null;
+    if (!cpuArgs) return { ...first, usedHw: true, fellBack: false };
+    /* 告诉界面"硬件没成，正在改用 CPU" —— 否则用户会以为软件卡住了 */
+    if (o.notify) o.notify();
+    const second = await once(cpuArgs);
+    return { ...second, usedHw: false, fellBack: true };
+  }
 
   /* ============ ffmpeg 进程树的统一收尾 ============
    *
@@ -171,6 +319,21 @@ handle(CH.FFMPEG.STATUS, async () => {
     try { version = ((await runCmd(ffmpeg, ['-version'], { timeout: 8000 })).stdout || '').split(/\r?\n/)[0]; } catch (e) {}
   }
   return { ffmpeg, ffprobe, binDir: binDir(), version };
+});
+
+/* ============ 硬件编码能力探测 ============
+ * 设置页用它显示「你的机器能用什么」，转码页用它显示「这次会走哪个编码器」。
+ * 结果是真实跑出来的，不是读显卡型号猜的 —— 见 lib/hw-encode.js 顶部说明。 */
+handle(CH.FFMPEG.HW_PROBE, async () => {
+  const ffmpeg = findFfmpeg();
+  /* 【没有 ffmpeg 时不要报错】
+   * 「FFmpeg 环境」页在没装 ffmpeg 时也要能正常打开，设置页同理。
+   * 返回 available:false + 一句原因，界面按「未安装」展示即可。 */
+  if (!ffmpeg) return { available: false, family: null, name: null, encoders: {}, probed: [], reason: 'NO_FFMPEG' };
+  const probe = await getHwProbe();
+  let enabled = false;
+  try { enabled = (await storeGet('settings.hwAccel', false)) === true; } catch (e) {}
+  return { ...probe, enabled, ffmpeg };
 });
 handle(CH.FFMPEG.PICK, async (e) => {
   /* ctx.win 是 getter，每次读都是当前主窗（见上方解构处的说明） */
@@ -541,14 +704,32 @@ handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
         if (ac === 'libmp3lame') args.push('-q:a', '2');
         if (ac === 'libopus') args.push('-b:a', '128k');
       }
+      /* 【enc 要在循环内取，因为每个文件的编码族可能不同吗？不会——
+       * opts.vcodec 对整批相同。但 videoEncodeArgs 是 async（要读设置 + 探测缓存），
+       * 放在循环内只是 await 同一个已 resolve 的 promise，开销可忽略；
+       * 好处是不必把 enc 变量提到循环外，避免"忘了在批次开头初始化"这类错。 */
+      let enc = null;
       if (!isAudioOut) {
         if (opts.vcodec === 'copy') args.push('-c:v', 'copy');
         else if (opts.format === 'webm') { args.push('-c:v', 'libvpx-vp9', '-crf', String(opts.crf || 34), '-b:v', '0', '-row-mt', '1'); }
         else if (opts.format === 'gif') { args.push('-an', '-vf', `fps=${opts.fps || 12},scale=${opts.gifWidth || 480}:-2:flags=lanczos`); }
-        else { args.push('-c:v', opts.vcodec === 'libx265' ? 'libx265' : 'libx264', '-crf', String(opts.crf || 23), '-preset', 'veryfast'); if (opts.scale) args.push('-vf', `scale=${opts.scale}:-2`); if (opts.fps) args.push('-r', String(opts.fps)); if (opts.format === 'mp4') args.push('-movflags', '+faststart'); }
+        else {
+          enc = await videoEncodeArgs({ vcodec: opts.vcodec, crf: opts.crf, preset: 'veryfast' });
+          args.push(...enc.args);
+          if (opts.scale) args.push('-vf', `scale=${opts.scale}:-2`);
+          if (opts.fps) args.push('-r', String(opts.fps));
+          if (opts.format === 'mp4') args.push('-movflags', '+faststart');
+        }
       }
       args.push('-progress', 'pipe:1', out);
-      send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), stage: 'start' }) });
+      /* 【把实际用的编码器报给界面】
+       * 用户开了硬件加速却没看到速度变化时，这一行是唯一能自证的地方：
+       * 是他没开开关、还是本机没有可用硬件、还是这批文件走的是 copy/gif。 */
+      send('job:stream', { id, data: JSON.stringify({
+        i, name: path.basename(input), stage: 'start',
+        encoder: enc ? enc.encoder : (opts.vcodec === 'copy' ? 'copy' : null),
+        hw: enc ? enc.hw : false,
+      }) });
       const r = await new Promise((resolve) => {
         const proc = spawn(ffmpeg, args, { windowsHide: true });
         state.proc = proc;
@@ -605,46 +786,63 @@ handle(CH.FFMPEG.PRESS, async (e, { items, outDir, opts }) => {
           dur = parseFloat((JSON.parse(r.stdout).format || {}).duration) || 0;
         }
       } catch (err) {}
-      const args = ['-hide_banner', '-y', '-nostats', '-i', input,
-        '-c:v', opts.vcodec === 'libx265' ? 'libx265' : 'libx264',
-        '-crf', String(opts.crf || 23),
-        '-preset', String(opts.preset || 'veryfast'),
-        '-pix_fmt', 'yuv420p'];
-      if (opts.vcodec === 'libx265') args.push('-tag:v', 'hvc1');
-      if (opts.scale) args.push('-vf', `scale=${opts.scale}:-2`);
-      if (opts.fps) args.push('-r', String(opts.fps));
-      if (opts.stripMeta !== false) args.push('-map_metadata', '-1');
-      if (opts.audio === 'mute') args.push('-an');
-      else if (opts.audio === 'copy') args.push('-c:a', 'copy');
-      else args.push('-c:a', 'aac', '-b:a', opts.audio === '96k' ? '96k' : '128k');
-      args.push('-movflags', '+faststart', '-progress', 'pipe:1', out);
-      send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), stage: 'start' }) });
-      const r = await new Promise((resolve) => {
-        const proc = spawn(ffmpeg, args, { windowsHide: true });
-        state.proc = proc;
-        let lastPct = 0, errOut = '', progBuf = '';
-        proc.stdout.on('data', (d) => {
-          progBuf += String(d);
-          const lines = progBuf.split('\n');
-          progBuf = lines.pop() || '';
-          for (const line of lines) {
-            const m = line.match(/out_time_us=(\d+)/);
-            if (m && dur > 0) {
-              lastPct = Math.min(99, parseInt(m[1]) / 1e6 / dur * 100);
-              send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: lastPct }) });
-            }
+      /* 【CPU / 硬件两条路径由 videoEncodeArgs 统一决定】
+       * 这里原来写死 `libx264|libx265 + -crf + -preset`。改走统一入口后
+       * 硬件模式的参数（-cq/-global_quality 等）由 lib/hw-encode.js 产出，
+       * 且 crf 会被换算成等体积的 cq（不是照抄数值，见该文件顶部实测表）。 */
+      const pressEnc = await videoEncodeArgs({ vcodec: opts.vcodec, crf: opts.crf, preset: opts.preset || 'veryfast' });
+      /* 【参数拆成两段：视频编码部分单独拎出来】
+       * 因为硬件失败回退 CPU 时只该替换这一段（-c:v …），
+       * 音频/缩放/元数据那些参数要原样保留。整条重建容易漏项。 */
+      const buildArgs = (videoArgs) => {
+        const a = ['-hide_banner', '-y', '-nostats', '-i', input,
+          ...videoArgs,
+          '-pix_fmt', 'yuv420p'];
+        if (opts.vcodec === 'libx265') a.push('-tag:v', 'hvc1');
+        if (opts.scale) a.push('-vf', `scale=${opts.scale}:-2`);
+        if (opts.fps) a.push('-r', String(opts.fps));
+        if (opts.stripMeta !== false) a.push('-map_metadata', '-1');
+        if (opts.audio === 'mute') a.push('-an');
+        else if (opts.audio === 'copy') a.push('-c:a', 'copy');
+        else a.push('-c:a', 'aac', '-b:a', opts.audio === '96k' ? '96k' : '128k');
+        a.push('-movflags', '+faststart', '-progress', 'pipe:1', out);
+        return a;
+      };
+      const args = buildArgs(pressEnc.args);
+      send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), stage: 'start', encoder: pressEnc.encoder, hw: pressEnc.hw }) });
+      let lastPct = 0;
+      const r = await runEncodeWithFallback({
+        args,
+        hw: pressEnc.hw,
+        out,
+        isCancelled: () => state.cancel,
+        onProc: (proc) => { state.proc = proc; },
+        onLine: (line) => {
+          const m = line.match(/out_time_us=(\d+)/);
+          if (m && dur > 0) {
+            lastPct = Math.min(99, parseInt(m[1]) / 1e6 / dur * 100);
+            send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: lastPct }) });
           }
-        });
-        proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
-        proc.on('exit', (code) => resolve({ code, errOut }));
-        proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
+        },
+        rebuildCpu: () => {
+          const cpuName = opts.vcodec === 'libx265' ? 'libx265' : 'libx264';
+          const fallback = ['-c:v', cpuName, '-crf', String(opts.crf || 23), '-preset', String(opts.preset || 'veryfast')];
+          return buildArgs(fallback);
+        },
+        notify: () => send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), notice: 'hw-fallback' }) }),
       });
       if (state.cancel) { try { await fsp.rm(out, { force: true }); } catch (err) {} results.push({ input, out: null, ok: false, err: '已取消' }); break; }
       const ok = r.code === 0 && await pathExists(out);
       if (!ok) { try { await fsp.rm(out, { force: true }); } catch (err) {} } // 清理半成品
       let inSize = 0, outSize = 0;
       try { inSize = (await fsp.stat(input)).size; if (ok) outSize = (await fsp.stat(out)).size; } catch (err) {}
-      results.push({ input, out: ok ? out : null, ok, inSize, outSize, err: ok ? '' : (r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code)) });
+      results.push({
+        input, out: ok ? out : null, ok, inSize, outSize,
+        encoder: r.fellBack ? (opts.vcodec === 'libx265' ? 'libx265' : 'libx264') : pressEnc.encoder,
+        hw: r.usedHw && !r.fellBack,
+        fellBack: r.fellBack,
+        err: ok ? '' : (r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code)),
+      });
       send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok }) });
     }
   } finally { jobs.delete(id); }
@@ -768,10 +966,28 @@ handle(CH.FFMPEG.TRIM, async (e, { input, out, start, duration, mode }) => {
   args.push('-i', input);
   args.push('-t', du.toFixed(3));
 
+  /* 【已取消句柄必须在第一个 await 之前登记】
+   * 这里原本是"拼完 args → 再 jobs.set"。加入硬件加速后，
+   * `await videoEncodeArgs(...)` 成了本 handler 的第一个 await，
+   * 于是 job 句柄的登记被推到了 await 之后 —— 调用方拿到返回的 id 时
+   * （TRIM 是同步返回 id 的）句柄还不存在，`job:kill` 找不到任务。
+   * 表现是「点取消没反应」，而 test-video-trim 的取消用例直接红。
+   * 现在把 id/state/jobs.set 提到最前面：句柄先有，再做任何异步动作。 */
+  const id = 'vtr' + (ctx.nextJobSeq());
+  const state = { cancel: false, proc: null };
+  const killProc = () => killFfmpegTree(state.proc);
+  jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
+  setLatestCancelable(() => { state.cancel = true; killProc(); });
+
   if (encode) {
     /* 编码参数沿用视频压制页的"均衡"档，不提供界面旋钮 ——
-     * 「最简单的裁剪」不该让用户学 CRF 是什么。 */
-    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p');
+     * 「最简单的裁剪」不该让用户学 CRF 是什么。
+     * 【硬件加速开关同样作用于这里】用户开的是「视频编码用硬件」，
+     * 裁剪重编码也是视频编码；如果只给转码页加速而裁剪页不动，
+     * 用户会觉得那个开关时灵时不灵。 */
+    const trimEnc = await videoEncodeArgs({ vcodec: 'libx264', crf: 20, preset: 'veryfast' });
+    args.push(...trimEnc.args);
+    args.push('-pix_fmt', 'yuv420p');
     /* 音频：有音轨就重编码成 AAC。不选 copy —— 视频重编码时音频 copy 会
      * 因为时间戳对齐问题在某些源上产生"整段静音"或爆音。 */
     args.push('-c:a', 'aac', '-b:a', '160k');
@@ -803,12 +1019,6 @@ handle(CH.FFMPEG.TRIM, async (e, { input, out, start, duration, mode }) => {
   args.push('-stats_period', '0.2');
   args.push('-progress', 'pipe:1');
   args.push(out);
-
-  const id = 'vtr' + (ctx.nextJobSeq());
-  const state = { cancel: false, proc: null };
-  const killProc = () => killFfmpegTree(state.proc);
-  jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
-  setLatestCancelable(() => { state.cancel = true; killProc(); });
 
   try {
     const r = await new Promise((resolve) => {

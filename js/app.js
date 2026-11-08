@@ -176,6 +176,26 @@
       }
     });
   }
+  /* 【启动时自动检查更新发现新版 → 给一次不打扰的提示】
+   * 主进程在启动 8 秒后（且仅当用户开了「启动时自动检查更新」）才会发它，
+   * 所以这条订阅平时是静默的。
+   *
+   * 【为什么不弹对话框】用户没主动点「检查更新」，弹窗会打断他正在做的事。
+   * 用一条 6 秒自动消失的提示 + 可点的「前往设置」就够了。
+   * 【为什么订阅挂在模块级而不是 buildShell 里】与 bindUiPrefs 同理：
+   * 它要跨整壳重建存活，否则切一次语言就漏掉后续通知。 */
+  let updateAvailUnsub = null;
+  function bindUpdateAvailable() {
+    if (!isDesktop) return;
+    if (typeof updateAvailUnsub === 'function') { try { updateAvailUnsub(); } catch (e) {} }
+    updateAvailUnsub = on(Channels.CHANNELS.UPDATE.AVAILABLE, (p) => {
+      if (!p || !p.latest) return;
+      try {
+        toast(T('update.availableToast', { v: p.latest }), 'success', 6000);
+      } catch (e) { /* 提示失败不影响任何功能 */ }
+    });
+  }
+
   /* 切换主题；origin = {x, y} 时以该点为圆心做扩散揭示动画 */
   async function changeTheme(mode, origin) {
     const apply = async () => {
@@ -233,7 +253,11 @@
     else renderNav();
   }
   async function pushRecent(toolId) {
-    state.recents = [toolId, ...state.recents.filter(x => x !== toolId)].slice(0, 12);
+    /* 条数可配置（设置 → 通用 → 首页最近使用）；0 表示整块隐藏。
+     * 【为什么 slice 在 0 时也要走一遍】Prefs.get 返回 0 时 slice(0,0) 得空数组，
+     * 正好就是"关闭"的语义，不需要为 0 单开分支。 */
+    const limit = Prefs.get('recentLimit');
+    state.recents = [toolId, ...state.recents.filter(x => x !== toolId)].slice(0, limit);
     await invoke(Channels.CHANNELS.STORE.SET, 'recents', state.recents);
   }
 
@@ -610,6 +634,10 @@
 
   /* ============ 路由与渲染 ============ */
   function showView(view) {
+    /* 【记下"上一个视图"再切】
+     * 保活需要在切换时把旧页面的现场存回去，而那时 state.view 已经是新的了。
+     * 所以在赋值之前留一份。 */
+    prevView = state.view || null;
     state.view = view;
     render();
   }
@@ -623,6 +651,11 @@
   function closeTab(toolId) {
     const idx = state.tabs.indexOf(toolId);
     state.tabs = state.tabs.filter(x => x !== toolId);
+    /* 【关标签必须同时丢掉它的保活页】
+     * 不丢的话，用户关掉标签、再重新打开同一个工具，看到的会是上次残留的内容
+     * （包括旧输入与旧结果）—— 那不是"恢复"，是"幽灵"。
+     * 也会让保活表里堆着已经关掉的页，白白占内存。 */
+    keepAlive.delete('tool:' + toolId);
     if (state.view.type === 'tool' && state.view.toolId === toolId) {
       const next = state.tabs[Math.min(idx, state.tabs.length - 1)];
       showView(next ? { type: 'tool', toolId: next } : { type: 'home' });
@@ -1247,6 +1280,151 @@
   }
 
 
+  /* ============ 页面级保活（keep-alive）============
+   *
+   * 【为什么需要】
+   * 原实现每次切页都 `contentEl.innerHTML = ''` 然后整页重建。于是
+   * 「文本统计」里粘好的几千字、JSON 格式化后的结果、正则测试的匹配列表，
+   * 切到别的标签再切回来**全没了**，页面回到刚打开的样子。
+   * 用户的原话：「切换标签页再回到原标签页东西怎么全没了」。
+   *
+   * 【保活什么、不保活什么】
+   *   工具页 → 保活（用户真正会在里面输入内容、看结果的地方）
+   *   首页 / 收藏 / 模块页 / 设置 → 不保活（都是"重新生成也一样的"展示页，
+   *     保活只会让「主题换了颜色没跟着变」这类问题冒出来）
+   *
+   * 【为什么按 toolId 存，而不是只存"当前页"】
+   * 用户可能开着 5 个标签，来回切。只存一张会退化成 LRU=1：
+   * 切 A→B→C 回来，A 已经被冲掉了。按 toolId 存才能真的"各是各的"。
+   *
+   * 【上限与淘汰】
+   * 保活的页带着完整 DOM（含用户输入）。截图/OCR 这类工具一页可能几十 MB。
+   * 所以设 KEEPALIVE_MAX，超了就淘汰**最久没访问**的那个（LRU）。
+   * 淘汰时走与切页相同的清理流程，避免泄漏定时器/监听。
+   *
+   * 【关键设计决定：保 DOM，而不是"重建 + 回填值"】
+   * 第一版走的是"切回来时重新 render，再把表单值写回去"。实测不够 ——
+   * 用户看到的"东西"不只是输入框：
+   *   · JSON 格式化后的结果区（工具 append 的）
+   *   · 正则测试的匹配列表
+   *   · 已选好的文件列表、缩略图
+   * 这些是**运行时生成的结构**，回填表单值恢复不了。
+   * 所以改成保留整个 page 节点、切回来时原样贴回去。
+   *
+   * 【那切页清理怎么办 —— 这是最容易搞错的一点】
+   * 原逻辑：切页 → runPageCleanup() 把 onCleanup 登记的定时器/订阅拆掉。
+   * 保住 DOM 但不清理，那些页的定时器会在后台一直跑（本项目刻意修过
+   * 「长任务切页不停」，不能退回去）。
+   *
+   * 所以：**照常清理**（后台任务该停就停，这是既定设计），
+   * 同时保住 DOM（用户看到的输入与结果都还在）。
+   * 代价是"保活页里正在跑的任务会被停掉" —— 这是对的：
+   * 用户切走就意味着不在看它，任务该停。但**已经跑完的结果**会留在 DOM 里。
+   *
+   * 一句话：**保住"用户看到的"，不保"后台正在跑的"**。 */
+  /* 【保活上限：默认 6，可在设置里 1~10 调整】
+   * 为什么需要可调：保活页带着完整 DOM（截图/OCR 一页可能几十 MB）。
+   * 开得多的人希望别丢状态，用轻量工具的人希望别吃内存 —— 这是纯偏好，
+   * 没有"正确值"，所以交给用户。
+   * 写成 let 而不是 const，因为设置页保存后要立刻生效（不必重启）。 */
+  const KEEPALIVE_MIN = 1;
+  const KEEPALIVE_MAX_LIMIT = 10;
+  let KEEPALIVE_MAX = 6;
+  /** @type {Map<string, {el: Element, scrollTop: number, stamp: number}>} */
+  const keepAlive = new Map();
+  let keepAliveSeq = 0;
+  /* 上一个视图：showView 在切换前留一份，供 snapshotCurrentPage 用。
+   * 为什么需要：renderContent 执行时 state.view 已经是新页面了。 */
+  let prevView = null;
+
+  /** 把设置里的保活上限夹到合法区间并应用（超出就立刻淘汰）。 */
+  function applyKeepAliveLimit(v) {
+    let n = Number(v);
+    if (!Number.isFinite(n)) n = 6;
+    n = Math.round(n);
+    if (n < KEEPALIVE_MIN) n = KEEPALIVE_MIN;
+    if (n > KEEPALIVE_MAX_LIMIT) n = KEEPALIVE_MAX_LIMIT;
+    KEEPALIVE_MAX = n;
+    /* 【调小之后要立刻生效，不能等下次开新标签】
+     * 用户把上限从 10 改成 3，期望是"现在就只留 3 个"。
+     * 不立刻淘汰的话，内存占用要等下一次切页才降下来 —— 用户会以为没生效。 */
+    while (keepAlive.size > KEEPALIVE_MAX) evictOne();
+    return n;
+  }
+
+  /** 淘汰最久未访问的保活页。
+   *
+   *  【这里**不能**调 runPageCleanup()】
+   *  被淘汰那一页的定时器/订阅，在用户**切走它的时候**就已经清过了
+   *  （renderContent 里 snapshotCurrentPage 之后紧跟 runPageCleanup）。
+   *  而 pageCleanupFns 是**一个全局队列**，装的是"当前这一页"的清理函数。
+   *  在这里再调一次，清掉的是当前页 —— 于是出现两种坏结果：
+   *    · 开第 7 个标签触发淘汰 → 第 7 个工具刚注册的轮询/计时器立刻被拆，
+   *      用户看到的是一个"自己停住"的工具；
+   *    · 从设置把上限调小时，若当前页正好是最旧的，它还在屏幕上，
+   *      清理函数却被执行 —— 页面还在，后台任务没了。
+   *  第一版就是照抄了"淘汰前先清理"的直觉，KA-5 当时只断言字符串
+   *  `runPageCleanup()` 出现在函数体里，所以照样绿着。断言已改成锁"不许调"。 */
+  function evictOne() {
+    let oldest = null, oldestKey = null;
+    for (const [k, v] of keepAlive) {
+      if (!oldest || v.stamp < oldest.stamp) { oldest = v; oldestKey = k; }
+    }
+    if (oldestKey === null) return;
+    keepAlive.delete(oldestKey);
+  }
+
+  /* ============ 用户可调偏好（统一缓存）============
+   *
+   * 【为什么同步缓存】
+   * 这些值在渲染期就要用（pushRecent 要立刻截断数组、拖拽展开要立刻判上限）。
+   * 让每个使用点 await 会把一堆同步函数改成 async，扩散面太大。
+   * 所以启动时一次性拉全量到内存，之后同步读。
+   *
+   * 【规格表在哪】js/prefs-spec.js —— 默认值/区间/类型都定义在那儿，
+   * 设置页与使用点共用同一份，不会漂移。
+   *
+   * 【改动入口只有设置页】
+   * Prefs.set 由设置页调用（写 store + 更新内存）。工具页只读。
+   * 这是刻意保持的边界：不给工具页留第二个"偷偷改全局配置"的口子。
+   */
+  const Prefs = {
+    /** @type {Record<string, any>} */
+    _v: {},
+    get(key) {
+      const spec = window.PrefsSpec && window.PrefsSpec.SPECS[key];
+      if (!spec) return undefined;
+      const v = this._v[key];
+      return (v === undefined || v === null) ? spec.def : v;
+    },
+    async set(key, raw) {
+      if (!window.PrefsSpec) return undefined;
+      const n = window.PrefsSpec.normalize(key, raw);
+      if (n === undefined) return undefined;
+      this._v[key] = n;
+      try { await invoke(Channels.CHANNELS.STORE.SET, 'settings.prefs', this._v); } catch (e) { /* 落盘失败不阻塞界面 */ }
+      return n;
+    },
+    async load() {
+      if (!window.PrefsSpec) return;
+      let stored = {};
+      try {
+        const saved = await invoke(Channels.CHANNELS.STORE.GET, 'settings.prefs', null);
+        if (saved && typeof saved === 'object') stored = saved;
+      } catch (e) { /* 用默认值 */ }
+      const out = {};
+      for (const k of Object.keys(window.PrefsSpec.SPECS)) {
+        const raw = stored[k] !== undefined ? stored[k] : window.PrefsSpec.SPECS[k].def;
+        out[k] = window.PrefsSpec.normalize(k, raw);
+      }
+      this._v = out;
+    },
+  };
+  /* 把真实实现挂到 window.Prefs，供工具页同步读。
+   * 【为什么要覆盖】js/prefs-spec.js 里那份只是"永不返回 undefined"的兜底，
+   * 真实值只有 app.js 拿得到（它持有 invoke 与缓存）。 */
+  window.Prefs = Prefs;
+
   /* 页面级清理：切换页面时清理上一个工具页注册的定时器/监听，防止资源泄漏 */
   let pageCleanupFns = [];
   /* 注册页面卸载清理函数。
@@ -1265,13 +1443,70 @@
      所以用模块级标记而不是列在 class 上就完事。 */
   let firstPaintDone = false;
   function renderContent() {
+    const v = state.view;
+    const pageKey = v.type === 'tool' ? ('tool:' + v.toolId) : null;
+
+    /* 先把"离开当前页"该做的事做完：
+     *   ① 抓现场（滚动位置；DOM 本身会被保活引用着，不会丢）
+     *   ② 清理定时器/订阅（既定设计，不因保活而改变）
+     * ⚠️ 用 prevView 而不是 state.view —— 见 snapshotCurrentPage 的说明。 */
+    snapshotCurrentPage(prevView && prevView.type, prevView && prevView.toolId);
     runPageCleanup();
+    /* 【必须在清空 prevView 之前留一份】
+     * 下面"是不是原地重绘"的判据要看它。写成先清空再读，
+     * cameFrom 永远是 null，判据退化成"每次重绘都丢保活" ——
+     * 那样切走再切回来也会重建，保活等于没做。 */
+    const cameFrom = prevView;
+    prevView = null;
+
+    /* ===== 保活只对"真的换页"有效 =====
+     *
+     * 【问题】保活是"切走时把旧 DOM 存起来，切回来贴回去"。
+     * 但有一类重绘**不是换页**：用户人还在这一页上，只是数据变了要重画
+     * （例如在高危占位卡里直接开启能力后调 render()）。这时 keepAlive 里
+     * 仍然存着这一页的**旧 DOM**，复用路径会把它原样贴回来 —— 于是能力
+     * 明明已经开启，用户看到的还是那张"该工具未启用"的占位卡，点开关
+     * 等于没反应。实测 test-danger-inline-enable 的红就是这条：
+     * `stillLocked: true`。
+     *
+     * 【判据】prevView 只在 showView（真的换页）里赋值。
+     *   - prevView 为 null  → 本次不是换页，是原地重绘 → 必须丢掉旧页重建
+     *   - prevView 与当前视图相同 → 同上（showView 到同一个视图）
+     *   - prevView 是别的视图 → 这才是"切回来"，复用是对的
+     * 这条判据比"看 keepAlive 里有没有"更准：后者两种情况都会命中。 */
+    const isSamePageRerender = !cameFrom ||
+      (cameFrom.type === v.type && cameFrom.toolId === v.toolId);
+    if (isSamePageRerender && pageKey) keepAlive.delete(pageKey);
+
+    /* ===== 复用路径：这个工具页之前保活着，原样贴回去 =====
+     *
+     * 【为什么直接 append 旧节点就够了】
+     * 因为保活保的是**整个 page 元素**：输入框的值、运行结果、已选文件列表、
+     * 缩略图、滚动位置全在里面。贴回去就是用户离开时看到的那一屏。
+     *
+     * 【唯一不会恢复的是"后台任务"】
+     * 切页时 runPageCleanup 已经把定时器/轮询拆了。所以如果用户切走时某个工具
+     * 正在跑长任务，切回来会看到"停在中途"的画面 —— 那是对的：
+     * 用户切走就意味着不在看它，任务本来就该停（这条是既定设计，
+     * 见 v0.6.6 修的「长任务切页不停」）。
+     * 已经跑完的结果不受影响，仍然留在页面上。 */
+    if (pageKey && keepAlive.has(pageKey)) {
+      const rec = keepAlive.get(pageKey);
+      rec.stamp = ++keepAliveSeq;
+      contentEl.innerHTML = '';
+      contentEl.appendChild(rec.el);
+      /* 滚动位置要等浏览器算完布局才生效，所以放到下一帧。 */
+      const top = rec.scrollTop || 0;
+      contentEl.scrollTop = top;
+      requestAnimationFrame(() => { contentEl.scrollTop = top; });
+      return;
+    }
+
     contentEl.innerHTML = '';
     contentEl.scrollTop = 0;
     const page = div('page');
     if (!firstPaintDone) page.classList.add('page-enter');
     firstPaintDone = true;
-    const v = state.view;
     try {
       if (v.type === 'home') renderHome(page);
       else if (v.type === 'fav') renderFavPage(page);
@@ -1281,7 +1516,12 @@
          * 不能在这里 await：renderContent 被同步调用（切换视图、渲染循环），
          * 改成异步会把「先清空再填充」的顺序打乱，出现短暂白屏。
          * 所以让它在后台跑，异常单独兜底 —— 与这里原有的 try/catch 等价。 */
-        renderToolPage(page, v.toolId).catch((e) => {
+        renderToolPage(page, v.toolId).then(() => {
+          /* 渲染完才登记保活：否则拿到的是空壳。 */
+          if (state.view.type === 'tool' && state.view.toolId === v.toolId) {
+            keepAlivePage(page, v.toolId);
+          }
+        }).catch((e) => {
           console.error('工具页渲染失败', v.toolId, e);
           page.appendChild(window.ui.placeholder('alert', T('tool.renderFail'), e && e.message));
         });
@@ -1299,6 +1539,41 @@
       page.appendChild(div('card', div('', back)));
     }
     contentEl.appendChild(page);
+  }
+
+  /** 把一页登记进保活表（超上限先淘汰最旧的）。
+   *
+   *  【只记"这页存在"，不抓值】
+   *  第一版在这里抓表单快照，实测抓到的是用户输入**之前**的状态（`["2","",""]`），
+   *  于是切回来"恢复"成空页面，看起来跟没做保活一样。
+   *  现在保的是整个 DOM 节点，值本来就在里面，不需要额外抓。
+   *  滚动位置在离开时抓（见 snapshotCurrentPage）。 */
+  function keepAlivePage(page, toolId) {
+    const key = 'tool:' + toolId;
+    keepAlive.set(key, {
+      el: page,
+      scrollTop: 0,   // 由 snapshotCurrentPage 在离开时填
+      stamp: ++keepAliveSeq,
+    });
+    while (keepAlive.size > KEEPALIVE_MAX) evictOne();
+  }
+
+  /** 【离开当前页之前】记下滚动位置（DOM 本身已被 keepAlive 引用着，不会丢）。
+   *
+   *  【必须用"上一个视图"，不能用 state.view】
+   *  本函数由 renderContent 在**切换时**调用，而那时 state.view 已经被
+   *  showView 改成新页面了 —— 用 state.view 会把「旧页面的 DOM」存进
+   *  「新工具」的槽位，后果是切回工具时贴出来的是首页内容（实测踩过）。
+   *  所以这里用 renderContent 传入的上一个 key。 */
+  function snapshotCurrentPage(prevType, prevToolId) {
+    if (prevType !== 'tool' || !prevToolId) return;
+    const rec = keepAlive.get('tool:' + prevToolId);
+    if (!rec) return;
+    rec.scrollTop = contentEl.scrollTop || 0;
+    /* el 可能因为重新渲染而换代（例如高危工具先渲染占位卡再渲染正文），
+     * 以当前内容区里真实的 .page 为准。 */
+    const cur = contentEl.querySelector('.page');
+    if (cur) rec.el = cur;
   }
 
   /* ============ 首页 ============ */
@@ -1477,7 +1752,13 @@
     });
 
     /* ---- 浏览区（无搜索时显示）：最近使用 + 分类 ---- */
-    const recents = state.recents.map(id => R.get(id)).filter(Boolean);
+    /* 【这里也要按上限截断，不能只依赖 pushRecent】
+     * 用户把上限从 12 调到 3 时，store 里已经存着 12 条老记录；
+     * 只靠 pushRecent 的话要等下次打开工具才缩，界面上会先显示 12 个。
+     * 上限为 0 时 slice(0,0) 得空数组，整个区块自然隐藏。 */
+    const recentCap = Prefs.get('recentLimit');
+    const recents = (recentCap > 0 ? state.recents.slice(0, recentCap) : [])
+      .map(id => R.get(id)).filter(Boolean);
     if (recents.length) {
       const card = div('card home-recent');
       card.appendChild(div('card-title', icon('clock'), T('home.recent')));
@@ -1843,6 +2124,9 @@
     const body = div('settings-body');
     const sections = [
       { id: 'general', name: T('settings.general'), icon: 'settings' },
+      /* 图标用 settings（三横线 + 圆点，视觉上就是"滑杆"），
+       * 项目没有单独的 sliders 图标，也不许用 emoji 当图标。 */
+      { id: 'defaults', name: T('settings.defaults'), icon: 'settings' },
       { id: 'appearance', name: T('settings.appearance'), icon: 'sun' },
       { id: 'danger', name: T('settings.danger'), icon: 'alert' },
       { id: 'data', name: T('settings.data'), icon: 'shield' },
@@ -1854,6 +2138,7 @@
       body.innerHTML = '';
       nav.querySelectorAll('.settings-nav-item').forEach(el => el.classList.toggle('active', el.dataset.sid === current));
       if (current === 'general') drawGeneral(body, token);
+      else if (current === 'defaults') drawDefaults(body, token);
       else if (current === 'appearance') drawAppearance(body, token);
       else if (current === 'danger') drawDanger(body, token);
       else if (current === 'about') drawAbout(body, token);
@@ -1935,7 +2220,170 @@
 
     if (token !== undefined && token !== drawToken) return; // 分区已切换，丢弃过期绘制
     body.appendChild(row1); body.appendChild(row2); body.appendChild(row3);
+
+    /* ---- 硬件加速：视频编码用显卡 ---- */
+    /* 【三态：null = 从没设置过，按"检测到就用"处理】
+     * 用户的要求是「检测到可用硬件就默认开启」，所以没设置过时开关要显示为
+     * "开"（前提是探测到硬件），而不是显示"关"却偷偷在用硬件 ——
+     * 那种不一致比默认值本身更让人困惑。 */
+    let hwPref = null;
+    try { hwPref = await invoke(Channels.CHANNELS.STORE.GET, 'settings.hwAccel', null); }
+    catch (e) { console.error('读取硬件加速设置失败', e); }
+    const hwRow = div('set-row', div('',
+      div('set-label', T('settings.hwAccel')),
+      div('set-desc', T('settings.hwAccelDesc'))));
+    /* 【探测结果要显示出来，不能只有一个开关】
+     * 用户开了开关却发现没变快时，必须能在这儿看到原因：
+     * 是没装 ffmpeg、还是本机没有可用编码器。否则那个开关就是个黑盒。
+     * 探测约 1 秒（主进程内有缓存），所以先渲染"检测中"，回来再替换文本。 */
+    const hwStatus = div('field-hint', T('settings.hwDetect'));
+    const hwSwitch = switchEl(hwPref === true, async (v) => {
+      try {
+        await invoke(Channels.CHANNELS.STORE.SET, 'settings.hwAccel', v);
+        toast(v ? T('settings.hwAccelOn') : T('settings.hwAccelOff'), 'success');
+      } catch (e) { toast(e.message, 'error'); hwSwitch.set(!v); }
+    });
+    hwRow.appendChild(div('set-control', hwSwitch));
+    if (token !== undefined && token !== drawToken) return;
+    body.appendChild(hwRow);
+    body.appendChild(div('set-row', div('', hwStatus, div('set-desc', T('settings.hwWhy')))));
+
+    /* 探测是异步的，且失败不影响设置页 —— 出错就显示"未检测到"。 */
+    invoke(Channels.CHANNELS.FFMPEG.HW_PROBE).then((p) => {
+      if (token !== undefined && token !== drawToken) return; // 分区切走了，别写进已丢弃的 DOM
+      if (!p || p.reason === 'NO_FFMPEG') { hwStatus.textContent = T('settings.hwNoFfmpeg'); return; }
+      hwStatus.textContent = p.available
+        ? T('settings.hwFound', { name: p.name || p.family || 'GPU' })
+        : T('settings.hwNone');
+      /* 没设置过时，把开关同步成"实际会不会走硬件"，让显示与行为一致。 */
+      if (hwPref === null || hwPref === undefined) hwSwitch.set(!!p.available);
+      /* 本机没有可用硬件时把开关也禁掉：留着可点但永远不生效，
+       * 用户会反复点它试图"修好"，那是最糟的交互。 */
+      if (!p.available && hwSwitch && typeof hwSwitch.setDisabled === 'function') hwSwitch.setDisabled(true);
+    }).catch((e) => {
+      console.error('硬件编码探测失败', e);
+      if (token !== undefined && token !== drawToken) return;
+      hwStatus.textContent = T('settings.hwNone');
+    });
+
+    /* ---- 标签页保活上限 ---- */
+    /* 【为什么要让用户自己调】
+     * 保活页带着完整 DOM（截图/OCR 一页可能几十 MB）。
+     * 常开十几个标签的人希望切回来别丢状态；只用两三个轻量工具的人
+     * 希望别白占内存。这是纯偏好，没有"正确值"。 */
+    let kaLimit = 6;
+    try { kaLimit = await invoke(Channels.CHANNELS.STORE.GET, 'settings.keepAlive', 6); }
+    catch (e) { console.error('读取保活上限失败', e); }
+    if (token !== undefined && token !== drawToken) return;
+    const kaRow = div('set-row', div('',
+      div('set-label', T('settings.keepAlive')),
+      div('set-desc', T('settings.keepAliveDesc'))));
+    const kaSel = h('select', { class: 'select input-sm' });
+    for (let n = KEEPALIVE_MIN; n <= KEEPALIVE_MAX_LIMIT; n++) {
+      kaSel.appendChild(h('option', { value: String(n) }, T('settings.keepAliveUnit', { n })));
+    }
+    /* 存值越界时（手工改过配置文件）夹回合法区间再显示，
+     * 否则 select.value 会变成空字符串，界面看起来像"没选"。 */
+    kaSel.value = String(applyKeepAliveLimit(kaLimit));
+    kaSel.addEventListener('change', async () => {
+      const n = applyKeepAliveLimit(kaSel.value);
+      kaSel.value = String(n);
+      try {
+        await invoke(Channels.CHANNELS.STORE.SET, 'settings.keepAlive', n);
+        toast(T('settings.keepAliveOk', { n }), 'success', 1600);
+      } catch (e) { toast(e.message, 'error'); }
+    });
+    kaRow.appendChild(div('set-control', kaSel));
+    body.appendChild(kaRow);
   }
+  /* ============ 设置 → 工具默认值 ============
+   *
+   * 【为什么只写一份循环而不是逐个手写 11 个 set-row】
+   * 这些项的形状完全一样（一个标签 + 一句说明 + 一个控件），差异全在
+   * js/prefs-spec.js 的规格表里（默认值/区间/步长/单位）。
+   * 手写 11 遍等于把规格表抄第二份 —— 改一处忘一处，而那正是把常量
+   * 变成"统一的规格表"要避免的事。
+   *
+   * 分组只影响**显示顺序与标题**，不产生第二份数据源。 */
+  const PREF_GROUPS = [
+    {
+      title: 'settings.prefGroup.clip',
+      keys: ['clipHistoryLimit', 'clipTextLimitKB'],
+    },
+    {
+      title: 'settings.prefGroup.home',
+      keys: ['recentLimit'],
+    },
+    {
+      title: 'settings.prefGroup.toolDefaults',
+      keys: ['imgCompressQuality', 'recFps'],
+    },
+    {
+      title: 'settings.prefGroup.update',
+      keys: ['updateTtlHours', 'updateCheckOnStart'],
+    },
+    {
+      title: 'settings.prefGroup.advanced',
+      keys: ['dragMaxDepth', 'dragMaxFiles', 'rulerMinLen', 'crashLogKeep'],
+    },
+  ];
+
+  function drawDefaults(body, token) {
+    if (!window.PrefsSpec) {
+      body.appendChild(div('set-row', div('', div('set-desc', T('settings.prefGroup.unavailable')))));
+      return;
+    }
+    const SPECS = window.PrefsSpec.SPECS;
+    for (const g of PREF_GROUPS) {
+      const card = div('card');
+      card.appendChild(div('card-title', T(g.title)));
+      for (const key of g.keys) {
+        const spec = SPECS[key];
+        if (!spec) continue;   // 规格表改了名字时不会整页炸
+        const row = div('set-row', div('',
+          div('set-label', T('pref.' + key)),
+          div('set-desc', T('pref.' + key + '.desc'))));
+        const cur = Prefs.get(key);
+        let ctrl;
+        if (spec.type === 'bool') {
+          /* 布尔项用开关；回调里写 store 并提示。 */
+          ctrl = switchEl(cur === true, async (v) => {
+            try {
+              await Prefs.set(key, v);
+              toast(T('settings.prefSaved'), 'success', 1400);
+            } catch (e) { toast(e.message, 'error'); ctrl.set(!v); }
+          });
+        } else {
+          /* 数值项用下拉而不是输入框：
+           * ① 区间/步长已经在规格表里了，下拉天然不会越界；
+           * ② 数字框要额外处理滚轮、空值、非数字，而下拉没有这些问题。 */
+          ctrl = h('select', { class: 'select input-sm' });
+          for (let n = spec.min; n <= spec.max; n += spec.step) {
+            const label = spec.unit ? (n + ' ' + spec.unit) : String(n);
+            ctrl.appendChild(h('option', { value: String(n) }, label));
+          }
+          /* 【normalize 保证返回值一定落在网格上】
+           * 早期版本这里还要判"是否在选项里、否则回落到默认值"，
+           * 那是在补偿 normalize 没做步长对齐的缺陷 —— 结果就是
+           * 手工改配置文件写 80、界面显示成空选中（真机踩过）。
+           * 现在对齐逻辑在规格层统一做好了，这里直接赋即可。 */
+          ctrl.value = String(window.PrefsSpec.normalize(key, cur));
+          ctrl.addEventListener('change', async () => {
+            try {
+              const n = await Prefs.set(key, ctrl.value);
+              ctrl.value = String(n);
+              toast(T('settings.prefSaved'), 'success', 1400);
+            } catch (e) { toast(e.message, 'error'); }
+          });
+        }
+        row.appendChild(div('set-control', ctrl));
+        card.appendChild(row);
+      }
+      body.appendChild(card);
+    }
+    if (token !== undefined && token !== drawToken) return;
+  }
+
   function drawAppearance(body) {
     /* ---- 第一块：明暗模式 ---- */
     const row = div('set-row', div('', div('set-label', T('settings.mode')), div('set-desc', T('settings.appearanceDesc'))));
@@ -2417,6 +2865,17 @@
     // buildShell 里挂的 document 级监听必须退掉，否则 Ctrl+K、
     // 点空白关闭搜索每切换一次语言就多一份。
     if (typeof shellCleanup === 'function') { try { shellCleanup(); } catch (e) {} shellCleanup = null; }
+    /* 【切语言必须清空保活表】
+     * 保活表里存的是**已渲染好的 DOM 节点**，文案在渲染那一刻就定死了。
+     * 整壳重建（body.innerHTML=''）之后那些节点变成了游离节点，
+     * 切回工具页时原样贴回去 —— 结果是英文界面里冒出中文页面。
+     * 实测：test-tool-i18n-e2e 的「二维码」「哈希」两条直接红
+     * （`二维码页英文模式下仍有中文：["内容","二维码","保存 PNG",…]`）。
+     *
+     * 这些被清掉的页面用户看不到（壳刚重建过），所以直接丢弃即可，
+     * 不需要先 runPageCleanup —— 上面 themeListeners / shellCleanup 已经把
+     * 全局监听收口了。 */
+    keepAlive.clear();
     document.body.innerHTML = '';
     buildShell();
     applyTheme();
@@ -2476,7 +2935,18 @@
      * 放在 applyTheme 之后：先按本地缓存/存储把外观定下来，
      * 再开始接受"别处改了"的通知，不会出现先收到广播、又被本地值盖回去。 */
     bindUiPrefs();
+    bindUpdateAvailable();
     installNumberWheelGuard();
+    /* 保活上限要在第一次 render 之前读出来，否则首批打开的页会按默认 6 算。
+     * 读失败就用默认值 —— 这个设置纯属偏好，不该影响启动。 */
+    try {
+      const kaLimit = await invoke(Channels.CHANNELS.STORE.GET, 'settings.keepAlive', 6);
+      applyKeepAliveLimit(kaLimit);
+    } catch (e) { /* 用默认 6 */ }
+    /* 其余可调偏好（剪贴板条数、最近使用、拖拽深度…）一次性拉全量到内存。
+     * 【必须在第一次 render 之前】首页要按 recentLimit 决定显示几个，
+     * 拖拽上限也要在用户第一次拖东西时就是对的。 */
+    try { await Prefs.load(); } catch (e) { console.error('读取偏好失败，用默认值', e); }
     await loadUserData();
     await loadDangerousState();
     /* 独立窗口直接打开指定工具。

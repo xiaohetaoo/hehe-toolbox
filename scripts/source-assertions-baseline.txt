@@ -11,13 +11,14 @@
 #
 # 类别必须是元测试 CATEGORIES 里登记过的键，或者 `exact:<具体理由>`。
 
-scripts/check-assertion-count.js | A=4 | B=0 | exact:四处 readFileSync 读的都是数据文件不是源码 —— package.json、reports/test-output.log（上一步的测试输出）、scripts/assertions-baseline.json（本守卫自己的基线）（第 4 处是判定分支里再读一次基线，同样是数据文件）；无源码断言
+scripts/check-assertion-count.js | A=3 | B=0 | exact:四处 readFileSync 读的都是数据文件不是源码 —— package.json、reports/test-output.log（上一步的测试输出）、scripts/assertions-baseline.json（本守卫自己的基线）（第 4 处是判定分支里再读一次基线，同样是数据文件）；无源码断言
 scripts/check-installer-name.js | A=1 | B=8 | build-meta
 scripts/ensure-release-notes.js | A=1 | B=0 | build-meta
 scripts/fix-release-title.js | A=1 | B=0 | build-meta
 scripts/gen-lint-baseline.js | A=1 | B=3 | build-meta
 scripts/gen-source-assertions-baseline.js | A=1 | B=0 | meta-self
 scripts/pack-zip.js | A=1 | B=0 | build-meta
+scripts/run-tests.js | A=1 | B=0 | exact:这是测试运行器本身，必须读测试脚本的原始文本才能判断它是否依赖 Electron（分组依据）。它不做任何"断言实现形态"的事，因此不存在需要剥注释的问题；上面的 electronNeeded 三条匹配已写「锁的是」
 scripts/test-acl-diagnose-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-acl-gate-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-acl-repair.js | A=4 | B=26 | legacy-read
@@ -25,17 +26,13 @@ scripts/test-aux-csp.js | A=4 | B=0 | legacy-source-assertion
 scripts/test-aux-windows-csp.js | A=4 | B=8 | legacy-read
 scripts/test-channels-sync.js | A=2 | B=1 | legacy-read
 scripts/test-click-sweep.js | A=1 | B=0 | e2e-fixture
-scripts/test-ui-dpi-fixes.js | A=1 | B=0 | exact:那 1 处读的是本测试在 %TEMP% 里让 Electron 子进程写出的探测结果 JSON（运行时数据，不是项目源码，没有剥注释的语义）；对 ruler-2.js / main.js / convert.js / app.css 的 4 处源码读取已全部改用 readSrc
-scripts/test-crash-log.js | A=1 | B=0 | exact:那 1 处是 readFile() 助手，读的是测试自己在 %TEMP% 里刚写的 crash.log（运行时日志正文，不是项目源码，没有剥注释的语义）；另有 3 处直接调用已改成走这个助手；对 main.js 的 4 条接线断言走 readMain()，已写「锁的是」
-scripts/test-csp-wasm.js | A=3 | B=0 | exact:三处裸读都是为"原样检查文本"服务的 —— index.html 根本不是 JS，stripComments 对它没有意义（要验的是 CSP 属性原文）；两个 OCR 工具那两处只判"有没有调用 OcrGuard.withTimeout/failReason"，剥不剥注释结果相同（注释里也不该出现该调用）。真机 CSP 行为由本文件的 E1/E2 用 Electron 实测覆盖
-scripts/test-keyboard-a11y.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本的断言全部是真实渲染后的 DOM/样式探测，没有源码匹配断言
-scripts/test-improvements-a.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本全部是真实渲染后的事件/DOM 断言，没有源码匹配断言
-scripts/run-tests.js | A=1 | B=0 | exact:这是测试运行器本身，必须读测试脚本的原始文本才能判断它是否依赖 Electron（分组依据）。它不做任何"断言实现形态"的事，因此不存在需要剥注释的问题；上面的 electronNeeded 三条匹配已写「锁的是」
-scripts/test-pinyin.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本对 lib/pinyin.js 用 require 直接调用，对 index.html 的引入检查走 readSrc
 scripts/test-clip-history.js | A=1 | B=0 | exact:迁移自 round15 的 2 / 16a / 16b。倒计时分支与裁剪上限只能看源码形态（真跑要等 25 分钟倒计时 + 真实剪贴板事件）；16b 的「淘汰图片必须回收文件」有行为断言。
+scripts/test-crash-log.js | A=1 | B=0 | exact:那 1 处是 readFile() 助手，读的是测试自己在 %TEMP% 里刚写的 crash.log（运行时日志正文，不是项目源码，没有剥注释的语义）；另有 3 处直接调用已改成走这个助手；对 main.js 的 4 条接线断言走 readMain()，已写「锁的是」
 scripts/test-critical-dirs.js | A=1 | B=0 | legacy-source-assertion
 scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
+scripts/test-crypt-guard.js | A=1 | B=0 | exact:那 1 处 fs.readFileSync 读的是用例自己在 %TEMP% 里刚写的 a.txt / b.txt（CS5 用来实测「rename 到已存在目标会静默覆盖」这个前提），不是项目源码；换成 readSrc 无从谈起
 scripts/test-crypto-file.js | A=4 | B=0 | exact:迁移自 round13 的 1a/1b/1c。加密格式的边界只能用构造出的字节序列验证；A=4 是读取测试自己生成的临时密文文件（夹具，不是项目源码）
+scripts/test-csp-wasm.js | A=3 | B=0 | exact:三处裸读都是为"原样检查文本"服务的 —— index.html 根本不是 JS，stripComments 对它没有意义（要验的是 CSP 属性原文）；两个 OCR 工具那两处只判"有没有调用 OcrGuard.withTimeout/failReason"，剥不剥注释结果相同（注释里也不该出现该调用）。真机 CSP 行为由本文件的 E1/E2 用 Electron 实测覆盖
 scripts/test-danger-inline-enable.js | A=2 | B=0 | e2e-fixture
 scripts/test-destructive.js | A=1 | B=11 | legacy-source-assertion
 scripts/test-destructive2.js | A=0 | B=64 | legacy-source-assertion
@@ -54,6 +51,7 @@ scripts/test-hash-results.js | A=1 | B=1 | exact:迁移自 round15 的 3a。结�
 scripts/test-hosts-fallback.js | A=2 | B=0 | e2e-fixture
 scripts/test-hosts-restore.js | A=4 | B=0 | e2e-fixture
 scripts/test-i18n-coverage.js | A=10 | B=18 | legacy-source-assertion
+scripts/test-improvements-a.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本全部是真实渲染后的事件/DOM 断言，没有源码匹配断言
 scripts/test-ipc-channels.js | A=4 | B=0 | legacy-read
 scripts/test-ipc-ctx.js | A=2 | B=0 | legacy-source-assertion
 scripts/test-ipc-split.js | A=3 | B=0 | legacy-source-assertion
@@ -61,6 +59,7 @@ scripts/test-job-ownership.js | A=1 | B=0 | exact:那 1 处 readFileSync 读的�
 scripts/test-job-prefix-sync.js | A=5 | B=6 | legacy-source-assertion
 scripts/test-job-stream-isolation.js | A=2 | B=0 | legacy-read
 scripts/test-job-subscribe.js | A=2 | B=0 | legacy-read
+scripts/test-keyboard-a11y.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本的断言全部是真实渲染后的 DOM/样式探测，没有源码匹配断言
 scripts/test-lan-scan.js | A=1 | B=1 | exact:迁移来的 read() 助手用 fs.readFileSync 读 js/tools/lan-scan.js 源码（该文件整体形态是自建助手，改成 readSrc 会改变既有行为，属语义变更）
 scripts/test-lib.js | A=1 | B=0 | exact:A=1：readAny() 助手读项目源码遍历「全库」检查展开传参（Math.max(...arr) 这类）。
 scripts/test-links.js | A=2 | B=41 | exact:同上：迁移来的 read() 助手读 lib/links.js 与 js/tools/link-doctor.js 源码，与文件原有的助手风格一致
@@ -73,12 +72,13 @@ scripts/test-packaged-isdev.js | A=2 | B=0 | e2e-fixture
 scripts/test-path-guard.js | A=1 | B=0 | exact:A=1：迁移来的 25a 用例读 lib/path-guard.js 的源码（checkDeletable 的 recursive 分支）
 scripts/test-pick-point.js | A=1 | B=0 | exact:迁移自 round15 的 4a/4b/4c。取色坐标要真实鼠标事件与真实屏幕才测得到，所以断言 calcPickPoint 的形态与调用点传的是 screenX/screenY；4a 抽真函数跑行为。
 scripts/test-picker-func.js | A=1 | B=0 | e2e-fixture
+scripts/test-pinyin.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本对 lib/pinyin.js 用 require 直接调用，对 index.html 的引入检查走 readSrc
 scripts/test-pomodoro-target.js | A=1 | B=0 | exact:迁移自 round15 的 12a。这个缺陷的形态本身就是「countIn 创建后从未被读取」，由 no-unused-vars 直接指出；修好后要断言的仍是「它被读了」这个形态。
 scripts/test-powergate.js | A=2 | B=0 | legacy-source-assertion
 scripts/test-pwd-bias.js | A=1 | B=0 | legacy-source-assertion
 scripts/test-random-inputs.js | A=1 | B=0 | exact:迁移自 round15 的 11a/11b。两个 input 是否是不同元素、rangeA 是否只出现一次，属于 DOM 结构断言，要验行为得起渲染层。
 scripts/test-reentry-guard.js | A=7 | B=23 | legacy-read
-scripts/test-regressions.js | A=1 | B=59 | legacy-source-assertion
+scripts/test-regressions.js | A=1 | B=56 | legacy-source-assertion
 scripts/test-report-fixes.js | A=1 | B=35 | legacy-read
 scripts/test-runcmd.js | A=0 | B=1 | legacy-source-assertion
 scripts/test-schedule.js | A=0 | B=3 | legacy-source-assertion
@@ -86,6 +86,7 @@ scripts/test-shell-unsub.js | A=0 | B=1 | exact:shellCleanup 的 splice 形态�
 scripts/test-single-instance.js | A=2 | B=13 | legacy-read
 scripts/test-snip-temp.js | A=0 | B=3 | legacy-source-assertion
 scripts/test-source-assertions.js | A=1 | B=0 | meta-self
+scripts/test-spawn-detached.js | A=1 | B=0 | exact:那 1 处读的是**主进程树的每一个文件**（main.js + ipc/*.js，文件名在循环里动态拼出），要的是"这一批文件里还有没有裸 spawn"。readSrc/readMain 都不接受动态清单 —— readMain 只返回拼接后的一整串，行号与文件对不上；而这条断言报错时必须指出**是哪个文件**漏改（历史回归：只修 main.js、ipc/media-ffmpeg.js 的 6 处 taskkill 没动，断言却绿）。所以这里必须逐文件读，并自己 stripComments 后扫描
 scripts/test-startup-timing.js | A=7 | B=29 | legacy-source-assertion
 scripts/test-static-server.js | A=1 | B=0 | exact:迁移自 round15 的 5a/5b。server:status 是否存在、页面是否查一次并回填，要真起服务器才能验行为；这两条锁的是「通道确实存在且被调用」。
 scripts/test-stopwatch-resume.js | A=1 | B=5 | legacy-source-assertion
@@ -94,13 +95,11 @@ scripts/test-svc-action.js | A=0 | B=3 | legacy-source-assertion
 scripts/test-target-e2e.js | A=1 | B=0 | e2e-fixture
 scripts/test-tool-i18n.js | A=4 | B=4 | legacy-source-assertion
 scripts/test-tool-order.js | A=2 | B=2 | legacy-source-assertion
-scripts/test-tool-window-title.js | A=0 | B=0 | exact:本文件的断言全部改写成了行为断言（直接 require lib/tool-names.js 调 toolTitle()）；对注册表的对账走 readSrc（会剥注释），没有裸读
 scripts/test-tray-i18n.js | A=3 | B=1 | e2e-fixture
+scripts/test-ui-dpi-fixes.js | A=1 | B=0 | exact:那 1 处读的是本测试在 %TEMP% 里让 Electron 子进程写出的探测结果 JSON（运行时数据，不是项目源码，没有剥注释的语义）；对 ruler-2.js / main.js / convert.js / app.css 的 4 处源码读取已全部改用 readSrc
 scripts/test-ui-prefs-sync.js | A=1 | B=0 | exact:那 1 处用 fs.readFileSync 读 js/channels.js 是为了把它**原样求值**（在最小 window 桩里跑出 window.Channels 再比对，属于行为断言）。不能换成 readSrc：readSrc 会先剥注释，而这里要跑的就是项目里那份 IIFE 原文；剥过注释的文本虽语义等价，却让「求值的是项目里那份」这个前提不再直观。求值前也不需要剥注释 —— 注释本就不参与语义
 scripts/test-update-cleanup.js | A=0 | B=2 | legacy-source-assertion
+scripts/test-version.js | A=3 | B=0 | exact:三处读的都是用例自己在 %TEMP% 里生成的 package.json 副本（验证 --write 是否落盘、是否只改一行），不是项目源码
 scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
-scripts/test-version.js | A=3 | B=0 | exact:三处读的都是用例自己在 %TEMP% 里生成的 package.json 副本（验证 --write 是否落盘、是否只改一行），不是项目源码
 scripts/version.js | A=3 | B=0 | build-meta
-scripts/test-crypt-guard.js | A=1 | B=0 | exact:那 1 处 fs.readFileSync 读的是用例自己在 %TEMP% 里刚写的 a.txt / b.txt（CS5 用来实测「rename 到已存在目标会静默覆盖」这个前提），不是项目源码；换成 readSrc 无从谈起
-scripts/test-spawn-detached.js | A=1 | B=0 | exact:那 1 处读的是**主进程树的每一个文件**（main.js + ipc/*.js，文件名在循环里动态拼出），要的是"这一批文件里还有没有裸 spawn"。readSrc/readMain 都不接受动态清单 —— readMain 只返回拼接后的一整串，行号与文件对不上；而这条断言报错时必须指出**是哪个文件**漏改（历史回归：只修 main.js、ipc/media-ffmpeg.js 的 6 处 taskkill 没动，断言却绿）。所以这里必须逐文件读，并自己 stripComments 后扫描
