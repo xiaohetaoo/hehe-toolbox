@@ -167,7 +167,8 @@
             term.scrollTop = term.scrollHeight;
           }
           updateStats();
-          chart.draw(latencies, { max: Math.max(50, ...latencies) * 1.2 });
+          /* 同上：展开传参会在大数组上栈溢出，改 reduce（下限 50）。 */
+          chart.draw(latencies, { max: latencies.reduce((a, b) => (a > b ? a : b), 50) * 1.2 });
         });
         unsubExit = on('job:exit', (d) => { if (d.id === jobId) { running = false; startBtn.disabled = false; stopBtn.disabled = true; } });
       }
@@ -490,7 +491,15 @@
             const j = JSON.parse(d.data);
             if (j.samples && j.samples.length) {
               samples = j.samples.map(s => s.mbps);
-              chart.draw(samples, { max: Math.max(10, ...samples) * 1.3 });
+              /* 【不能用 Math.max(10, ...samples)】
+               * 展开传参在数组很大时会抛 RangeError: Maximum call stack size
+               * exceeded，而报错跟"测速失败"毫无关系，用户猜不到原因。
+               * 本项目已有一道守卫（test-lib 的断言 15）专门拦这种写法，
+               * 但它的正则只匹配「... 是第一个实参」，这一行 ... 在第二位，
+               * 一直漏检。守卫已改成配平括号判实参表（见该断言注释），
+               * 这里同步改成 reduce，语义不变（下限 10）。 */
+              const peak = samples.reduce((a, b) => (a > b ? a : b), 10);
+              chart.draw(samples, { max: peak * 1.3 });
             }
           } catch (e) {}
         });
@@ -500,7 +509,7 @@
           if (dir === 'down') downEl.textContent = mbps.toFixed(1);
           else upEl.textContent = mbps.toFixed(1);
           status.textContent = `完成：${fmtBytes(r.bytes)} / ${r.elapsed.toFixed(1)}s`;
-          if (r.samples && r.samples.length) { samples = r.samples.map(s => s.mbps); chart.draw(samples, { max: Math.max(10, ...samples) * 1.3 }); }
+          if (r.samples && r.samples.length) { samples = r.samples.map(s => s.mbps); chart.draw(samples, { max: samples.reduce((a, b) => (a > b ? a : b), 10) * 1.3 }); }
         } catch (e) {
           /* 测速走 fetch，失败时 e.message 是 "fetch failed" —— 换成中文归因 */
           status.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message);

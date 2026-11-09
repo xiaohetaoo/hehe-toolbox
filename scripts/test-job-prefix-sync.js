@@ -24,15 +24,25 @@ const ROOT = path.join(__dirname, '..');
 const libJobId = require('../lib/job-id');
 
 /* 从 js/job-prefixes.js 里解析出前缀表（它是 IIFE，不便 require，
- * 这里用正则读源码里的对象字面量，够用且不引入 DOM 依赖）。 */
-function readRendererPrefixes() {
+ * 这里用正则读源码里的对象字面量，够用且不引入 DOM 依赖）。
+ *
+ * 【同时收集值，不只是键】
+ * 原来这里只写 `out[k] = true`，于是下面的「两份表完全相同」断言
+ * 实际上只比对了键集合 —— 而 **描述文字** 已经漂移过：
+ *   lib/job-id.js      dl: '文件下载'        dlg: '下载（通用下载器）'
+ *   js/job-prefixes.js dl: '文件下载（FFmpeg 安装包）'  dlg: '文件下载（通用下载器）'
+ * 两边一直被这个测试判绿，因为值根本没参与比对。
+ * 现在收集 `键 -> 描述`，并新增一条比对值的断言。 */
+function readRendererPrefixes(withValues) {
   const src = fs.readFileSync(path.join(ROOT, 'js', 'job-prefixes.js'), 'utf8');
   const m = src.match(/const JOB_PREFIXES = \{([\s\S]*?)\n  \};/);
   assert.ok(m, '无法从 job-prefixes.js 解析出 JOB_PREFIXES');
   const out = {};
   for (const line of m[1].split('\n')) {
-    const km = line.match(/^\s*(\w+):\s*'/);
-    if (km) out[km[1]] = true;
+    /* 匹配 `dlg: '文件下载（通用下载器）',` —— 键与值都取。
+     * 值里可能含中文括号与空格，用非贪婪匹配到行尾的单引号。 */
+    const km = line.match(/^\s*(\w+):\s*'([^']*)'/);
+    if (km) out[km[1]] = withValues ? km[2] : true;
   }
   return out;
 }
@@ -46,6 +56,20 @@ t('两份前缀表完全相同（键集合一致）', () => {
   const r = Object.keys(readRendererPrefixes()).sort();
   const l = Object.keys(libJobId.JOB_PREFIXES).sort();
   assert.deepStrictEqual(r, l, '前缀键不一致\n渲染层: ' + r.join(',') + '\n主进程: ' + l.join(','));
+});
+
+t('两份前缀表的**描述文字**也一致', () => {
+  /* 锁的是：改动一边的描述却忘了另一边。
+   * 后果不是运行时故障，但会让「这张表到底以哪份为准」永远说不清；
+   * 更实际的问题是排查任务串号时，两份表对同一个前缀给出不同说法。
+   * （历史事实：这两条 dl/dlg 就这样漂移过很久，而上面的键比对一直绿。） */
+  const r = readRendererPrefixes(true);
+  const l = libJobId.JOB_PREFIXES;
+  const diff = [];
+  for (const k of Object.keys(r)) {
+    if (l[k] !== r[k]) diff.push(k + '：渲染层=' + JSON.stringify(r[k]) + ' 主进程=' + JSON.stringify(l[k]));
+  }
+  assert.deepStrictEqual(diff, [], '前缀描述不一致：\n  ' + diff.join('\n  '));
 });
 
 t('main.js 里所有 job id 前缀都在两份表里', () => {

@@ -207,7 +207,7 @@ register({
       async function start() {
         const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
-        const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: '录屏-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
+        const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: '录屏-' + window.TimeStamp.localStampDash() + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
         if (!p) return;
         try {
           // 摄像头是独占设备：录制前必须先释放预览流，否则 ffmpeg 打不开设备

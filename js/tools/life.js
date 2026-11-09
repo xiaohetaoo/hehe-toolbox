@@ -70,6 +70,24 @@
         display.textContent = fmt(remain);
         drawRing(remain / total);
       }
+      /* 【系统通知必须收口，而且绝不能抛到调用方】
+       * finishPhase() 由 setInterval(tick, 200) 调起。裸的 new Notification()
+       * 在通知权限被拒 / 平台不支持 / 构造参数异常时会抛，而这三处正好写在
+       * 状态推进语句**之前**：
+       *   · 倒计时分支：抛了之后 remain = total; resetDisplay(); 永远执行不到
+       *     —— 正好把「再点开始会立刻又结束」那个已修回归重新引回来；
+       *   · 番茄钟分支：phase / total / remain / start() 全被跳过，
+       *     状态机停在半途，界面不再走动。
+       * 全项目另外两处（app.js、sys-tools.js）本来就包了 try/catch，
+       * 只有这三处漏了 —— 收成一个助手，以后不会再漏。 */
+      function notify(body) {
+        try {
+          if (typeof Notification === 'undefined') return;
+          /* 权限未授予时构造会直接抛（或被静默丢弃），先判一次更稳。 */
+          if (Notification.permission === 'denied') return;
+          new Notification('核核工具箱', { body: body });
+        } catch (e) { /* 通知失败不影响计时 */ }
+      }
       async function finishPhase() {
         stop();
         if (mode === 'countdown') {
@@ -80,7 +98,7 @@
            * 用户可能正好复制了一段要粘贴的内容，倒计时一响就没了。
            * 提醒本身已经由 toast + Notification 完成，不需要碰剪贴板。 */
           toast('⏰ 倒计时结束！', 'success', 4000);
-          new Notification('核核工具箱', { body: '倒计时结束！' });
+          notify('倒计时结束！');
           /* 【结束后必须把 remain 复位，否则再点「开始计时」会立刻又结束】
            * remain 此刻已经是 <= 0。start() 按
            *   startAt = Date.now() - (total - remain) * 1000
@@ -98,13 +116,13 @@
           pomodoros++;
           paintDone();
           toast(`完成一个番茄！(${pomodoros}/${targetPomodoros})，休息一下`, 'success', 4000);
-          new Notification('核核工具箱', { body: `完成第 ${pomodoros} 个番茄，休息 ${restIn.value} 分钟` });
+          notify(`完成第 ${pomodoros} 个番茄，休息 ${restIn.value} 分钟`);
           phase = 'rest';
           total = (parseInt(restIn.value) || 5) * 60;
           statusText.textContent = `休息中 · ${restIn.value} 分钟`;
         } else {
           toast('休息结束，开始新番茄', 'success', 3000);
-          new Notification('核核工具箱', { body: '休息结束，开始新的专注！' });
+          notify('休息结束，开始新的专注！');
           phase = 'work';
           total = (parseInt(workIn.value) || 25) * 60;
           statusText.textContent = `专注模式 · 第 ${pomodoros + 1} 个番茄`;
@@ -213,14 +231,28 @@
         const thead = h('thead', null, h('tr', null, ...['日', '一', '二', '三', '四', '五', '六'].map(d => h('th', { style: { padding: '8px', color: 'var(--text-3)', fontWeight: 500 } }, d))));
         const tbody = h('tbody');
         let row = h('tr');
+        /* 【整月一次取，不要逐日 await】
+         * 原来每个格子都 await 一次 S2L —— 渲染一个月 = 28~31 次串行 IPC
+         * 往返。翻一次月就是 31 次，连续翻几个月会明显卡顿。
+         * 农历换算是纯计算，一次算完整月没有任何额外代价。 */
+        let monthData = null;
+        try {
+          const r = await invoke(Channels.CHANNELS.LUNAR.MONTH, viewYear, viewMonth + 1);
+          if (t !== drawSeq) return;
+          monthData = r && Array.isArray(r.items) ? r.items : null;
+        } catch (e) { monthData = null; }
+        /* 批量通道不可用（老版本主进程 / 通道异常）时退回逐日取，
+         * 保证功能不因此变空白 —— 只是慢一点。 */
         for (let i = 0; i < startWeek; i++) row.appendChild(h('td'));
         for (let d = 1; d <= days; d++) {
-          let lunarText = '';
-          try {
-            const l = await invoke(Channels.CHANNELS.LUNAR.S2L, viewYear, viewMonth + 1, d);
-            if (t !== drawSeq) return;
-            lunarText = l.isTerm ? l.term : (l.lDay === 1 ? l.monthCn : l.dayCn);
-          } catch (e) { lunarText = ''; }
+          let l = monthData ? monthData[d - 1] : null;
+          if (!l && !monthData) {
+            try {
+              l = await invoke(Channels.CHANNELS.LUNAR.S2L, viewYear, viewMonth + 1, d);
+              if (t !== drawSeq) return;
+            } catch (e) { l = null; }
+          }
+          const lunarText = !l ? '' : (l.isTerm ? l.term : (l.lDay === 1 ? l.monthCn : l.dayCn));
           const isToday = d === today.getDate() && viewMonth === today.getMonth() && viewYear === today.getFullYear();
           const td = h('td', { style: { padding: '8px 4px', borderRadius: '6px', cursor: 'pointer', background: isToday ? 'var(--primary)' : 'transparent', color: isToday ? '#fff' : 'var(--text-1)' } },
             h('div', { style: { fontWeight: isToday ? 600 : 400 } }, String(d)),

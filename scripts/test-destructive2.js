@@ -234,10 +234,24 @@ t('P1 svc:action 停止关键服务时拒绝', () => {
 
 /* ---------- P2-1：hosts 备份名精度 ---------- */
 t('P2 hosts 备份名精确到毫秒且带随机后缀', () => {
-  const count = (main.match(/hosts-\$\{new Date\(\)\.toISOString\(\)/g) || []).length;
-  assert.ok(count >= 2, '没找到备份名生成，实际 ' + count + ' 处');
-  assert.ok(main.includes("slice(0, 23)"), '没有精确到毫秒');
-  assert.ok(/hosts-\$\{new Date\(\)[\s\S]{0,120}crypto\.randomBytes\(2\)/.test(main), '没有随机后缀');
+  /* 【锁的是不变量：唯一性，不是具体的实现写法】
+   * 原来这里硬匹配 `hosts-${new Date().toISOString()` + `slice(0, 23)`。
+   * 而 toISOString() 是 **UTC** —— 用户在「恢复 hosts」列表里按时间挑备份
+   * 会差 8 小时（本轮修的缺陷之一）。改成走 lib/time-stamp.js 的
+   * localStampDashMs 之后，这条断言因为匹配不到实现形态而假红。
+   *
+   * 唯一性由两件事共同保证，两件都必须还在：
+   *   ① 时间戳精确到毫秒（localStampDashMs / 至少 3 位亚秒）
+   *   ② 附加随机后缀（同一毫秒内两次调用也不撞名） */
+  const count = (main.match(/hosts-\$\{timeStamp\.localStampDashMs\(|hosts-\$\{new Date\(\)\.toISOString\(\)/g) || []).length;
+  assert.ok(count >= 2, '备份名生成点少于 2 处，实际 ' + count);
+  /* ① 毫秒精度：要么走 localStampDashMs，要么仍用 slice(0, 23)（含毫秒） */
+  assert.ok(/localStampDashMs|slice\(0,\s*23\)/.test(main), '备份名没有精确到毫秒');
+  /* ② 随机后缀必须紧跟其后（120 字符内） */
+  assert.ok(/hosts-\$\{[^}]{0,80}\}[\s\S]{0,120}crypto\.randomBytes\(2\)/.test(main), '没有随机后缀');
+  /* 反面：不许退回 UTC 的 toISOString 来拼备份名（那正是本轮修掉的时间差） */
+  assert.ok(!/hosts-\$\{new Date\(\)\.toISOString\(\)/.test(main),
+    'hosts 备份名又用回了 UTC 的 toISOString（用户按本地时间挑备份会差几个小时）');
 });
 
 t('8a fs:rename 补了 checkOverwritable 闸门', () => {
@@ -254,6 +268,7 @@ t('8b fs:rename 在 file-delete 门禁里，且工具表同步', () => {
   const code = stripComments(mainSrc);
   assert.ok(/'fs:rename': 'file-delete'/.test(code), 'fs:rename 不在 CAP_GATED_CHANNELS');
   assert.ok(/'batch-rename': \['file-delete'\]/.test(code), '批量重命名没有登记依赖 file-delete');
+  /* 锁的是：批量改后缀漏登记 file-delete 门禁 —— 不开启高危能力也能批量改名 */
   assert.ok(/'batch-ext': \['file-delete'\]/.test(code), '批量改后缀没有登记依赖 file-delete');
 });
 

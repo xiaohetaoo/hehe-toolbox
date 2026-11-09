@@ -192,36 +192,38 @@
         }
         return '\\u' + cp.toString(16).padStart(4, '0');
       }
+      /* 【编码/解码只能有一份实现】
+       * 原来这里有两个 input 监听器：convertLayout(realtime:true) 自己注册的
+       * （会调 onConvert），以及下面又加的 ta.addEventListener('input', fire)。
+       * 两者的转义规则不一致 —— onConvert 会转义控制字符（\t \n \x00），
+       * fire 不会。后注册的覆盖先注册的，于是**控制字符转义成了死代码**，
+       * 永远不会出现在输出里，而且每次击键把整段文本转两遍。
+       * 现在：方向判断收进 onConvert，只留 convertLayout 那一个监听器；
+       * 切换方向时主动调 box.fire() 重算（输入没变但方向变了）。 */
+      function decodeUnicode(t) {
+        // 逐字符解析成 code point 再 fromCodePoint，代理对会自动重组
+        const s0 = String(t).replace(/\\\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+        return s0.replace(/[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]/g, (pair) =>
+          String.fromCodePoint((pair.charCodeAt(0) - 0xD800) * 0x400 + (pair.charCodeAt(1) - 0xDC00) + 0x10000));
+      }
+      const encodeUnicode = (t) => [...t].map((c) =>
+        (c.codePointAt(0) > 127 || /[\u0000-\u001f]/.test(c)) ? escOne(c) : c).join('');
+      let decode = false;
       const box = convertLayout({
         inputLabel: T('原文'), outputLabel: T('Unicode 转义'), realtime: true,
-        onConvert: (t) => [...t].map(c => c.codePointAt(0) > 127 || /[\u0000-\u001f]/.test(c) ? escOne(c) : c).join('')
+        onConvert: (t) => (decode ? decodeUnicode(t) : encodeUnicode(t))
       });
       page.appendChild(box.el);
-      const ta = box.input, out = box.output;
-      let decode = false;
       const swapBtn = window.ui.btn('解码', 'btn-secondary btn-sm', () => {
         decode = !decode;
         swapBtn.querySelector('.btn-label').textContent = decode ? '编码' : '解码';
         const heads = box.el.querySelectorAll('.pane-head');
         heads[0].firstChild.textContent = decode ? 'Unicode 转义' : '原文';
         heads[1].firstChild.textContent = decode ? '解码结果' : 'Unicode 转义';
-        fire();
+        box.fire();
       }, 'git-compare');
       page.insertBefore(div('form-row', swapBtn), box.el);
-      function fire() {
-        try {
-          if (decode) {
-            // 逐字符解析成 code point 再 fromCodePoint，代理对会自动重组
-            out.value = ta.value.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
-            out.value = out.value.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, (pair) =>
-              String.fromCodePoint((pair.charCodeAt(0) - 0xD800) * 0x400 + (pair.charCodeAt(1) - 0xDC00) + 0x10000));
-          } else {
-            out.value = [...ta.value].map(c => c.codePointAt(0) > 127 ? escOne(c) : c).join('');
-          }
-        } catch (e) { out.value = ''; }
-      }
-      ta.addEventListener('input', fire);
-      fire();
+      box.fire();
     }
   });
 

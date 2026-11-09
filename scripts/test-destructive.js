@@ -852,7 +852,14 @@ t('P2 音频剪辑输出名唯一化', () => {
 t('P2 notes:pdf 用原子写', () => {
   const s = read('main.js');
   const i = handlerIndex(s, 'notes:pdf');
-  const seg = s.slice(i, i + 1200);
+  /* 【按 handler 边界切片，不要按固定字符数】
+   * 原来是 s.slice(i, i + 1200) —— 而这条 handler 之后长到了 2000+ 字符
+   * （加了净化与等图片解码的逻辑），writeFileAtomic 被挤出了窗口，
+   * 断言于是报「没有用原子写」，其实写法一直是对的。
+   * 这种"按长度切"的断言会随实现增长而假红，不可靠。
+   * 改成切到下一个 handle( 注册为止，覆盖面只由结构决定。 */
+  const nextHandle = s.indexOf('\nhandle(', i + 1);
+  const seg = s.slice(i, nextHandle > i ? nextHandle : i + 4000);
   /* 锁的是：「P2 notes:pdf 用原子写」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */

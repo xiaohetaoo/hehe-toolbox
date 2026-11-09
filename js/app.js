@@ -170,6 +170,19 @@
        * 用户能看见一次闪色。 */
       if (p.accent) { prefsFromBroadcast.accent = true; applyAccent(p.accent); }
       if (p.theme) { prefsFromBroadcast.theme = true; setThemeAttr(p.theme); }
+      /* 【偏好值也要跟着广播走】
+       * 独立工具窗口的 Prefs 缓存是各自一份。主窗口改了「图片压缩默认质量」
+       * 之后，已开着的独立窗口仍用旧值 —— 用户会认为设置没生效。
+       * 收到广播就重跑 load()，把缓存对齐到 store 里的真实值。
+       *
+       * 注意：不在这里重绘页面。工具页里的本页输入框不该被"别人改了设置"
+       * 而刷掉（那是用户正在编辑的内容）；只在下次读 Prefs.get 时用新值。 */
+      if (p.prefs && typeof p.prefs === 'object' && window.Prefs && window.Prefs.applyFromStore) {
+        try { window.Prefs.applyFromStore(p.prefs); } catch (e) { /* 缓存对齐失败不影响外观 */ }
+        /* 独立窗口没有设置页，但主窗口有：设置页正处于「工具默认值」分区时
+         * 重新画一次，否则滑杆显示的还是旧位置。 */
+        if (state.view.type === 'settings') render();
+      }
       if (p.lang && window.i18n && window.i18n.normalize(p.lang) && p.lang !== lang) {
         applyLang(p.lang);
         applyLangLabels();
@@ -1381,7 +1394,7 @@
    * 让每个使用点 await 会把一堆同步函数改成 async，扩散面太大。
    * 所以启动时一次性拉全量到内存，之后同步读。
    *
-   * 【规格表在哪】js/prefs-spec.js —— 默认值/区间/类型都定义在那儿，
+   * 【规格表在哪】lib/prefs-spec.js —— 默认值/区间/类型都定义在那儿，
    * 设置页与使用点共用同一份，不会漂移。
    *
    * 【改动入口只有设置页】
@@ -1402,8 +1415,25 @@
       const n = window.PrefsSpec.normalize(key, raw);
       if (n === undefined) return undefined;
       this._v[key] = n;
-      try { await invoke(Channels.CHANNELS.STORE.SET, 'settings.prefs', this._v); } catch (e) { /* 落盘失败不阻塞界面 */ }
+      /* 【只写这一个键，不要整对象覆盖】
+       * 原来写的是 STORE.SET 'settings.prefs', this._v —— 整份缓存。
+       * 多窗口下这是数据回滚：独立工具窗口的缓存若比主窗口旧，
+       * 它一保存就把主窗口刚改的其它键**全部**覆盖回旧值，而且静默。
+       * 改成写 settings.prefs.<key> 之后，各窗口只动自己改的那一个键，
+       * 永远不会互相回滚。 */
+      try { await invoke(Channels.CHANNELS.STORE.SET, 'settings.prefs.' + key, n); }
+      catch (e) { /* 落盘失败不阻塞界面 */ }
       return n;
+    },
+    /** 收到广播时把缓存对齐到 store 里的值（不写盘、不重绘）。 */
+    applyFromStore(saved) {
+      if (!window.PrefsSpec || !saved || typeof saved !== 'object') return;
+      const out = {};
+      for (const k of Object.keys(window.PrefsSpec.SPECS)) {
+        const raw = saved[k] !== undefined ? saved[k] : window.PrefsSpec.SPECS[k].def;
+        out[k] = window.PrefsSpec.normalize(k, raw);
+      }
+      this._v = out;
     },
     async load() {
       if (!window.PrefsSpec) return;
@@ -1421,7 +1451,7 @@
     },
   };
   /* 把真实实现挂到 window.Prefs，供工具页同步读。
-   * 【为什么要覆盖】js/prefs-spec.js 里那份只是"永不返回 undefined"的兜底，
+   * 【为什么要覆盖】lib/prefs-spec.js 里那份只是"永不返回 undefined"的兜底，
    * 真实值只有 app.js 拿得到（它持有 invoke 与缓存）。 */
   window.Prefs = Prefs;
 
@@ -2300,7 +2330,7 @@
    *
    * 【为什么只写一份循环而不是逐个手写 11 个 set-row】
    * 这些项的形状完全一样（一个标签 + 一句说明 + 一个控件），差异全在
-   * js/prefs-spec.js 的规格表里（默认值/区间/步长/单位）。
+   * lib/prefs-spec.js 的规格表里（默认值/区间/步长/单位）。
    * 手写 11 遍等于把规格表抄第二份 —— 改一处忘一处，而那正是把常量
    * 变成"统一的规格表"要避免的事。
    *

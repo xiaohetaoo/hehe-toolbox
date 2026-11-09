@@ -213,6 +213,71 @@
         } catch (e) { toast('导出失败：' + e.message, 'error'); }
       }
 
+      /* ============ 冲突检测：三个来源都要查 ============
+       *
+       * 原来只做了「本次选中文件之间」这一半，而且只标**后出现**的那个：
+       *   if (names.has(nn)) tr.querySelector(...).innerHTML = '名称冲突';
+       *   names.set(nn, true);
+       * 三个问题：
+       *   ① 完全不查磁盘上已存在的文件 —— 把 a.txt 改成已存在的 b.txt，
+       *      预览显示绿色「就绪」，点确认后才逐条报错（FS.RENAME 的
+       *      overwrite=false 挡住了数据损失，但用户看到的是"部分成功"）；
+       *   ② 组内重名只标后一个，第一个仍显示「就绪」，而它同样会失败；
+       *   ③ 纯大小写改名（FILE.TXT → file.txt）在 Windows 上是合法的
+       *      （FS.RENAME 那边已经放宽），预览却会把它当成冲突。
+       *
+       * 判定口径必须与 FS.RENAME 一致：
+       *   · 目标与源忽略大小写相等 → 不是冲突（同一文件改大小写）
+       *   · 目标是本次列表里另一个文件的源路径 → 不是冲突（链式改名）
+       *   · 其余「目标已存在」→ 冲突
+       *
+       * 返回 Set<索引>，供预览标红与执行前拦截共用。
+       */
+      async function detectConflicts(list) {
+        const bad = new Set();
+        if (!list.length) return bad;
+        const targets = list.map((p, i) => newName(p, i));
+        /* ① 组内重名：**所有**成员都标，不是只标后出现的 */
+        const byLower = new Map();
+        for (let i = 0; i < targets.length; i++) {
+          const k = targets[i].toLowerCase();
+          if (!byLower.has(k)) byLower.set(k, []);
+          byLower.get(k).push(i);
+        }
+        for (const idxs of byLower.values()) {
+          if (idxs.length > 1) for (const i of idxs) bad.add(i);
+        }
+        /* ② 磁盘上已存在（排除"就是自己"与"是本次的源"两种情况） */
+        const srcLower = new Set(list.map((p) => p.toLowerCase()));
+        const probes = [];
+        for (let i = 0; i < targets.length; i++) {
+          if (targets[i].toLowerCase() === list[i].toLowerCase()) continue;  // 纯大小写改名
+          if (srcLower.has(targets[i].toLowerCase())) continue;              // 本次的源，会被腾出来
+          probes.push({ i, path: targets[i] });
+        }
+        if (probes.length) {
+          /* 一次批量 STAT_MULTI，不要把 N 次 IPC 串行发出去 */
+          let stats = [];
+          try { stats = await invoke(Channels.CHANNELS.FS.STAT_MULTI, probes.map((x) => x.path)); } catch (e) { stats = []; }
+          const arr = Array.isArray(stats) ? stats : [];
+          probes.forEach((x, k) => {
+            /* 取不到 stats（通道异常）时保守**不**标冲突，让 FS.RENAME 兜底报错，
+             * 避免权限/网络问题导致整批被误拦。 */
+            if (arr[k]) bad.add(x.i);
+          });
+        }
+        return bad;
+      }
+
+      let conflictIdx = new Set();
+      /* 【为什么用「注册回调」而不是直接读 applyBtn】
+       * buildPreview 定义在 applyBtn 之前，而 applyBtn 是 const
+       * （函数提升不适用于 const/let）。buildPreview 在第 388 行就被调用，
+       * 那时 applyBtn 还处在暂时性死区 —— 直接引用会抛
+       * "Cannot access 'applyBtn' before initialization"。
+       * 让 applyBtn 创建后把自己的同步函数注册进来，buildPreview 只调回调。 */
+      let syncApplyState = () => {};
+      function setConflictCount(n) { try { syncApplyState(n); } catch (e) {} }
       async function buildPreview() {
         previewBox.innerHTML = '';
         if (!files.length) { previewBox.appendChild(div('empty-tip', '请先添加文件')); return; }
@@ -221,6 +286,7 @@
           await ensureExifTimes();
           previewBox.innerHTML = '';
         }
+        conflictIdx = await detectConflicts(files);
         const table = renderTable({
           columns: [
             { key: 'old', title: '原文件名', render: r => div('mono', { style: { fontSize: '12px' } }, r.old.split(/[\\/]/).pop()) },
@@ -228,35 +294,79 @@
             { key: 'size', title: '大小', width: '90px', render: r => fmtBytes(r.size) },
             { key: 'conflict', title: '状态', width: '110px', render: r => r.conflict ? h('span', { class: 'tag tag-red' }, '名称冲突') : h('span', { class: 'tag tag-green' }, '就绪') }
           ],
-          rows: files.map((p, i) => ({ old: p, new: newName(p, i) })),
+          rows: files.map((p, i) => ({ old: p, new: newName(p, i), conflict: conflictIdx.has(i) })),
           rowKey: 'old'
         });
         previewBox.appendChild(table);
-        // conflict detect
-        const names = new Map();
-        const rows = table.querySelectorAll('tbody tr');
-        rows.forEach((tr, i) => {
-          const nn = files[i] && newName(files[i], i);
-          if (names.has(nn)) tr.querySelector('td:last-child').innerHTML = '<span class="tag tag-red">名称冲突</span>';
-          names.set(nn, true);
-        });
+        /* 冲突时把执行按钮禁掉：让问题在点下去之前就暴露，
+         * 而不是执行到一半弹一堆失败原因。 */
+        if (conflictIdx.size) {
+          previewBox.appendChild(div('field-err', { style: { padding: '6px 2px' } },
+            /* 用 SVG 图标而不是 ⚠：test-icon-consistency 的基线只允许往下走，
+             * 新增一个 emoji 当图标用就会红。这里本该一开始就用 window.ui.icon('alert')。 */
+            window.ui.icon('alert'),
+            h('span', null, conflictIdx.size + ' 个文件的目标名会冲突（同名或磁盘上已存在），请调整命名规则后再执行')));
+        }
+        /* 【执行按钮的禁用状态由冲突结果驱动】
+         * buildPreview 定义在 applyBtn 之前（函数提升不适用于 const），
+         * 所以不能直接读 applyBtn —— 首次调用 buildPreview 时它还处在
+         * 暂时性死区。用 typeof 探测拿不到（TDZ 里 typeof 也会抛），
+         * 改成把状态挂到闭包变量上，由按钮自己在渲染后同步。
+         * 只在这里更新标记，读的地方在 applyBtn 的 onclick 里（那时已就绪）。 */
+        setConflictCount(conflictIdx.size);
       }
-      const applyBtn = btn('执行重命名', 'btn-primary', async () => {
-        if (!files.length) return toast('请先添加文件', 'warn');
+      const applyBtn = btn('执行重命名', 'btn-primary', async () => {        if (!files.length) return toast('请先添加文件', 'warn');
         if (useExif.checked) await ensureExifTimes();
+        /* 【执行前重新算一次冲突】
+         * 预览是"上一次渲染时"的快照：用户可能在预览之后又改了命名规则、
+         * 或者外部程序恰好在这个间隙创建了同名文件。用这份新鲜结果兜底，
+         * 有冲突就不进循环 —— 否则会走到一半弹一堆失败原因。 */
+        const nowConflict = await detectConflicts(files);
+        if (nowConflict.size) {
+          await alertBox('有 ' + nowConflict.size + ' 个文件的目标名会冲突（同名或磁盘上已存在）。\n\n'
+            + '请调整命名规则（例如加序号、换前缀）后重试。\n'
+            + '为避免覆盖已存在的文件，本次没有执行任何重命名。', '无法执行重命名').catch(() => {});
+          await buildPreview();
+          return;
+        }
         if (!(await confirmBox({ title: '执行重命名', message: `将对 ${files.length} 个文件执行重命名，确定继续？` }))) return;
         let ok = 0;
         const failures = [];
+        /* 【两阶段执行，避免链式改名互相覆盖】
+         * a.txt→b.txt、b.txt→c.txt 这种规则在单遍顺序执行时会出问题：
+         * 先改 a→b 就把原本的 b 覆盖了（RENAME 默认拒绝覆盖，于是报错），
+         * 而正确的做法是把原先的 b 先挪到临时名。
+         * 这里改成：先把所有需要改名的源文件挪成临时名，再统一改成目标名。
+         * 任何一步失败都能回滚临时名，不会留下半改状态。 */
+        const plan = files.map((p, i) => ({ from: p, to: newName(p, i) })).filter((x) => x.from !== x.to);
+        const staged = [];   // { tmp, from, to }
+        let tmpSeq = 0;
         prog.show();
-        for (let i = 0; i < files.length; i++) {
-          const target = newName(files[i], i);
-          prog.set((i + 1) / files.length * 100);
-          try {
-            if (files[i] !== target) await invoke(Channels.CHANNELS.FS.RENAME, files[i], target);
-            ok++;
-          } catch (e) { failures.push({ from: files[i], to: target, err: e.message }); }
-        }
-        prog.hide();
+        try {
+          for (const item of plan) {
+            tmpSeq++;
+            const dir = item.from.replace(/[\\/][^\\/]*$/, '');
+            const tmp = dir + '/.hehe-ren-' + Date.now() + '-' + tmpSeq + (item.from.match(/\.[^.\\/]+$/)?.[0] || '');
+            try {
+              await invoke(Channels.CHANNELS.FS.RENAME, item.from, tmp, false);
+              staged.push({ tmp, from: item.from, to: item.to });
+            } catch (e) {
+              failures.push({ from: item.from, to: item.to, err: e.message });
+            }
+          }
+          for (let i = 0; i < staged.length; i++) {
+            const s = staged[i];
+            prog.set((i + 1) / Math.max(1, staged.length) * 100);
+            try {
+              await invoke(Channels.CHANNELS.FS.RENAME, s.tmp, s.to, false);
+              ok++;
+            } catch (e) {
+              /* 改名失败 → 把临时名还原回原名，别把文件留在 .hehe-ren- 下 */
+              try { await invoke(Channels.CHANNELS.FS.RENAME, s.tmp, s.from, false); } catch (e2) {}
+              failures.push({ from: s.from, to: s.to, err: e.message });
+            }
+          }
+        } finally { prog.hide(); }
         // 失败原因必须可见（原来只进 console.error），否则用户只看到「失败 1」，
         // 不知道是哪个文件、为什么，也无法判断批量操作后的半成功状态。
         if (failures.length) {
@@ -271,6 +381,16 @@
         }
         if (dirMode && dirInput.value) loadDirBtn.click(); else { picker.clear(); files = []; safePreview(); }
       });
+      /* 注册执行按钮的冲突同步（见 setConflictCount 的说明）。
+       * 建好之后再补一次：此时 buildPreview 可能已经跑过一次、
+       * 那次的 setConflictCount 因为没有回调而什么也没做。 */
+      syncApplyState = (n) => {
+        const busy = n > 0;
+        applyBtn.disabled = busy;
+        applyBtn.classList.toggle('btn-disabled', busy);
+        applyBtn.title = busy ? '存在名称冲突，请先调整命名规则' : '';
+      };
+      syncApplyState(conflictIdx.size);
 
       page.appendChild(div('card', div('card-title', '选择文件'), picker.el,
         div('form-row', dirInput, pickDirBtn, loadDirBtn)));

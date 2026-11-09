@@ -227,9 +227,29 @@
         return n * 1024;
       }
       let limitWarned = false;
+      /* 【上限必须按字节判，不能按字符串长度】
+       * 设置项与函数名都写着「KB（字节）」，而 String.length 是 UTF-16
+       * 码元数。中文场景下 1 个 length 单位 = 3 字节（UTF-8，且 JSON.stringify
+       * 不转义中文），所以 limit = kb*1024 与实际占用最多差 3 倍 ——
+       * 设 256KB 时历史库单条能涨到约 768KB，而这条上限存在的全部意义
+       * 就是「别让 store 的整文件 JSON.stringify 卡住」。
+       *
+       * 【先做廉价预筛，再精确测量】
+       * TextEncoder 要把整串走一遍；而这个函数在 1.2 秒一次的轮询里
+       * 每条新剪贴板内容都会调一次。UTF-8 每码元最多 3 字节
+       * （BMP 内 3 字节；星形平面按代理对算 2 个码元 / 4 字节，比值 2），
+       * 所以 length * 3 <= limit 时**必然**不超限，可以直接放行，
+       * 省掉绝大多数正常文本的编码开销。 */
+      function utf8Bytes(text) {
+        const s = String(text == null ? '' : text);
+        if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).length;
+        /* 极老环境兜底：按码元粗估，宁可多算不漏算。 */
+        return s.length * 3;
+      }
       function admitText(text) {
         const limit = textLimitBytes();
-        if (text.length <= limit) return text;
+        if (text.length * 3 <= limit) return text;   // 廉价预筛：必然不超
+        if (utf8Bytes(text) <= limit) return text;
         if (!limitWarned) {
           limitWarned = true;
           try { toast(`单条文本超过 ${Math.round(limit / 1024)}KB，已跳过记录（避免历史库撑爆）`, 'warn', 4000); } catch (e) {}

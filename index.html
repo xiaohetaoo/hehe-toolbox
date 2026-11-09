@@ -2,8 +2,25 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
+  <!-- ============ CSP ============
+       connect-src 原来是 `https: http:` —— 允许向**任意**主机发请求。
+       结合 script-src 里的 blob:，这是一条很宽的出口：任何内容注入
+       （Markdown 预览、笔记、OCR 结果、diff、日志渲染都是渲染用户可控文本
+       的地方）都能变成数据外泄通道。
+
+       现在收成白名单。每一个域名都是**实测确认过必须的**，不是猜的：
+         · cdn.jsdelivr.net    —— tesseract.js 的语言包（traineddata）默认从这里取。
+                                  本仓库**没有**本地 tessdata 目录，删掉这条 OCR 就不能用。
+                                 （worker/core 已由工具页指向 node_modules 本地路径，
+                                   见 screenshot-ocr.js / batch-ocr.js 的 workerPath/corePath，
+                                   但语言包没有本地替代品。）
+         · api.mymemory.translated.net —— PDF/文档翻译工具的外呼（office.js）。
+         · speed.cloudflare.com —— 网速测试的下载/上传端点（在主进程发，仍列出以便将来迁移）。
+       blob: 保留：OCR 的 wasm 与 tesseract 的 worker 用 blob URL 通信。
+
+       【不要为了省事加回裸 https:】要看新增了哪个外呼，就把域名加进来。 -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; child-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; font-src 'self' data:; connect-src 'self' https: http: blob:; media-src 'self' blob: file:">
+        content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; child-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; font-src 'self' data:; connect-src 'self' blob: https://cdn.jsdelivr.net https://api.mymemory.translated.net https://speed.cloudflare.com; media-src 'self' blob: file:">
   <title>核核工具箱</title>
   <link rel="stylesheet" href="css/app.css">
   <link rel="icon" href="assets/icon32.png">
@@ -50,6 +67,10 @@
        `o[表头] = 值` 改的是原型而不是加属性，那一列整个消失。
        必须排在 js/tools/text-tools.js 之前（那个工具在 fire() 里就要用它）。 -->
   <script src="lib/csv-table.js"></script>
+  <!-- lib/time-stamp.js：文件名用的**本地**时间戳（UMD，挂 window.TimeStamp）。
+       原来几处直接用 toISOString()，那是 UTC —— UTC+8 用户录屏文件名差 8 小时。
+       必须排在 js/tools/media/*.js 与 js/tools/office.js 之前。 -->
+  <script src="lib/time-stamp.js"></script>
   <!-- lib/net-error.js：网络失败中文归因（UMD 同上，挂 window.NetError）。
        为什么需要它：fetch 失败时 e.message 恒为 "fetch failed"（实测），
        DNS 错、端口没开、超时三种情况的原文**完全一样** ——

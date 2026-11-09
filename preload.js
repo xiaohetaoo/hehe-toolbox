@@ -21,9 +21,14 @@ try {
   const arg = process.argv.find((a) => a.startsWith('--hehe-packaged='));
   const packaged = arg ? arg.split('=')[1] === '1' : null;
   if (packaged === null) {
-    /* 没拿到注入参数（例如单独跑胶水脚本/测试桩）：保守按开发态，
-     * 但**只有**在确实能判断时才这么定，不要无条件放行。 */
-    isDev = true;
+    /* 【拿不到注入参数 → 按**生产态**处理】
+     * 原来这里写的是 isDev = true，注释还说"保守按开发态"—— 方向是反的：
+     * isDev=true 会让 __snipTest / __drawn 这些测试钩子在打包版里常驻，
+     * 而这正是本段注释上一句自述修过的缺陷（"打包版也认为自己是开发态"）。
+     * 触发条件是主进程的 additionalArguments 注入失效（改名、参数拼错、
+     * 某个窗口忘了传），那是一个回归，失败方向必须是关闭而不是开放。
+     * 与下面 catch 分支的「宁可少挂钩子，也不在包里留后门」保持一致。 */
+    isDev = false;
   } else {
     isDev = !packaged || process.env.HEHE_TEST_HOOKS === '1';
   }

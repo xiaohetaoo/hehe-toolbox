@@ -15,12 +15,11 @@ function toAll(val, from) {
   return { dec: big.toString(10), bin: big.toString(2), oct: big.toString(8), hex: big.toString(16).toUpperCase() };
 }
 const fs = require('fs');
-const { readTree } = require('./lib/harness');
-/* 读一个路径：是目录就拼整棵树，是文件就读原文。
- * 迁移来的 15 用例要「遍历全库」检查展开传参，所以要两种都能处理。 */
-function readAny(p) {
-  return p.endsWith('.js') ? fs.readFileSync(p, 'utf8') : readTree(p);
-}
+/* 【不再自带 readAny】
+ * 15 用例原来用 readAny（目录 → readTree 拼串、文件 → 读原文），
+ * 但它拿不到"哪一行属于哪个文件"，报错时只能指出目录名。
+ * 现在断言自己递归遍历并逐文件扫描（见该用例里的 walkJs），
+ * readAny 与 readTree 的引入都随之删掉 —— 留着就是死代码。 */
 
 t('十六进制负数 -FF -> -255', () => assert.strictEqual(toAll('-FF', 16).dec, '-255'));
 t('二进制负数 -101 -> -5', () => assert.strictEqual(toAll('-101', 2).dec, '-5'));
@@ -104,17 +103,61 @@ t('ping 超时行不误判为成功', () => {
   assert.ok(!('请求超时。'.match(RE1) || '请求超时。'.match(RE2)));
 });
 
-t('15 全库不再用展开传参求极值', () => {
-  const files = ['main.js', 'lib/target-size.js', 'lib/dir-move.js', 'lib/links.js',
-    'js/tools/net-tools.js', 'js/tools/dev.js'];
-  /* 任务 9 拆成 js/tools/media/*.js，这里补上整棵树 */
-  files.push('js/tools/media');
+t('15 源码树不再用展开传参求极值', () => {
+  /* 【覆盖范围：整棵生产代码树，不是手写的几个文件】
+   * 原来只列了 6 个文件 + js/tools/media，ipc/ 整个目录不在其中 ——
+   * 而这道检查声称守的是「全库」。改用 readTree 递归扫，
+   * 新增文件自动纳入，不会因为"忘了往列表里加"而漏检。 */
+  const roots = ['main.js', 'preload.js', 'ipc', 'lib', 'js'];
   const bad = [];
-  for (const f of files) {
-    const code = stripComments(readAny(f));
-    for (const m of code.matchAll(/Math\.(max|min)\s*\(\s*\.\.\./g)) bad.push(f + ' -> ' + m[0]);
+  /* 【正则必须匹配实参表里任意位置的展开】
+   * 原写法 /Math\.(max|min)\s*\(\s*\.\.\./g 只认「... 是第一个实参」。
+   * 于是 Math.max(10, ...arr) 这种（net-tools.js 里真实存在的写法）
+   * 匹配不到 —— 断言消息却写着「全库不再用」，是假绿。
+   *
+   * 现在按「找到 Math.max(/Math.min( 之后，配平括号取出整个实参表，
+   * 再检查里面有没有 ...」的方式判。用配平而不是正则贪心，
+   * 是为了避免跨语句误吞（例如 Math.max(a) + foo(...b) 这种）。 */
+  function scanSource(rel, code) {
+    const re = /Math\.(?:max|min)\s*\(/g;
+    let m;
+    while ((m = re.exec(code)) !== null) {
+      const open = code.indexOf('(', m.index + 4);
+      if (open < 0) continue;
+      let depth = 0, i = open;
+      for (; i < code.length; i++) {
+        if (code[i] === '(') depth++;
+        else if (code[i] === ')') { depth--; if (depth === 0) break; }
+      }
+      const args = code.slice(open + 1, i);
+      if (args.indexOf('...') >= 0) {
+        const line = code.slice(0, m.index).split('\n').length;
+        bad.push(rel + ':' + line);
+      }
+    }
   }
-  assert.deepStrictEqual(bad, [], '仍在用展开传参（数组一大就 RangeError: Maximum call stack size exceeded）');
+  /* 【遍历用 fs 递归，不用 readTree】
+   * readTree 把整目录拼成一个字符串（拿不到"哪一行属于哪个文件"），
+   * 而且只读一层 .js。这里需要逐文件的行号，所以自己走一遍。 */
+  const nodePath = require('path');
+  function walkJs(rel) {
+    const abs = nodePath.join(__dirname, '..', rel);
+    let st = null;
+    try { st = fs.statSync(abs); } catch (e) { return; }
+    if (st.isFile()) {
+      if (rel.endsWith('.js')) scanSource(rel.replace(/\\/g, '/'), stripComments(fs.readFileSync(abs, 'utf8')));
+      return;
+    }
+    let names = [];
+    try { names = fs.readdirSync(abs); } catch (e) { return; }
+    for (const n of names) {
+      if (n === 'node_modules' || n === '.git') continue;
+      walkJs(rel + '/' + n);
+    }
+  }
+  for (const root of roots) walkJs(root);
+  assert.deepStrictEqual(bad, [],
+    '仍在用展开传参求极值（数组一大就 RangeError: Maximum call stack size exceeded；改用 reduce）');
 });
 
 t('15b 行为：13 万个元素的极值不再抛错', () => {

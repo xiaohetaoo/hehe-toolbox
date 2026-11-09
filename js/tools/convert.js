@@ -83,16 +83,33 @@
         outGrid.innerHTML = '';
         if (!v) { tsOut.value = ''; return; }
         if (!/^-?\d+$/.test(v)) { outGrid.appendChild(div('field-err', '⚠ 时间戳必须是整数')); return; }
-        let ms = parseInt(v);
+        let ms = parseInt(v, 10);
         if (unit === 's') ms *= 1000;
         const d = new Date(ms);
         if (isNaN(d.getTime())) { outGrid.appendChild(div('field-err', '⚠ 无效时间戳')); return; }
-        /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-        const local = d.toLocaleString('zh-CN', { hour12: false });
+        /* 【「本地时间」这一行必须恒为本地时间】
+         * 原来写的是 fmtD(new Date(ms - (useUTC ? 0 : 0)))，而 fmtD 内部
+         * 已经按 useUTC 在 getUTC* / get* 之间切换 —— 两个时区偏移量都是 0，
+         * 于是勾上「使用 UTC 时区」之后：
+         *   · 「本地时间」行走 getUTC*  → 显示 UTC
+         *   · 「UTC 时间」行恒走 toISOString → 也是 UTC
+         * 两行一模一样，而用户真正的本地时间**在任何一行都看不到**。
+         * 那个恒零表达式说明当初想手动加时区偏移，写到一半改成 fmtD 内部分支，
+         * 留下了这个矛盾（旁边那个算了却没用的 local 变量是同一处改动的残留）。
+         * 现在：本地行用独立的本地格式化，不受开关影响。 */
+        const fmtLocal = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+        const diffSec = Math.floor((Date.now() - ms) / 1000);
+        /* 【未来时间不能显示成「-86400 秒前」】
+         * fmtNum 是 (n||0).toLocaleString()，不处理符号，于是输入明天的
+         * 时间戳会得到「-86,400 秒前」—— 一个带负号的「秒前」。
+         * 按差值正负分别说「秒前 / 秒后」。 */
+        const relText = diffSec >= 0
+          ? `${fmtNum(diffSec)} 秒前`
+          : `${fmtNum(-diffSec)} 秒后`;
         const rows = [
-          ['本地时间', fmtD(new Date(ms - (useUTC ? 0 : 0)))],
+          ['本地时间', fmtLocal(d)],
           ['UTC 时间', d.toISOString().replace('T', ' ').replace('Z', '')],
-          ['相对时间', `${fmtNum(Math.floor((Date.now() - ms) / 1000))} 秒前`]
+          ['相对时间', relText]
         ];
         tsOut.value = fmtD(d);
         for (const [k, val] of rows) outGrid.appendChild(div('form-row', h('span', { class: 'form-label' }, k), h('span', { class: 'mono', style: { userSelect: 'text' } }, val)));

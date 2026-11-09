@@ -170,9 +170,27 @@ t('打包版 + HEHE_TEST_HOOKS=1 可临时开钩子（打包态 E2E 的逃生口
   if (v !== true) throw new Error('期望 true，实际 ' + v);
 });
 
-t('没拿到注入参数时保守判为开发态（不误伤测试桩）', () => {
+t('没拿到注入参数时按生产态处理（失败关闭，不在包里留后门）', () => {
+  /* 【这条断言在 2026-11-09 反转了方向】
+   * 它原来叫「没拿到注入参数时保守判为开发态」，断言 evalIsDev(null,…) === true。
+   * 那个方向是**反的**：isDev=true 会让 __snipTest / __drawn 这些测试钩子
+   * 在打包版里常驻，而这正是本文件上一半用例在防的事（"打包版也认为
+   * 自己是开发态"）。触发条件是主进程的 additionalArguments 注入失效
+   * （参数改名、某个窗口忘了传）—— 那是一个回归，失败方向必须是关闭。
+   * 与 preload.js 里 catch 分支的注释「宁可少挂钩子，也不在包里留后门」一致。
+   *
+   * 开发体验不受影响：npm start 时主进程注入的是 --hehe-packaged=0，
+   * packaged 值是 '0' 而不是 null，走的是另一条分支（见上面的用例）。 */
   const v = evalIsDev(null, false);
-  if (v !== true) throw new Error('期望 true，实际 ' + v);
+  if (v !== false) throw new Error('期望 false（生产态），实际 ' + v);
+});
+
+t('没拿到注入参数时，即使设了 HEHE_TEST_HOOKS 也不开（不认环境变量逃生口）', () => {
+  /* 锁的是：把"拿不到参数"这条路径也接到 HEHE_TEST_HOOKS 上 ——
+   * 那等于给打包版留一个环境变量后门，谁设了谁就能开调试钩子。
+   * 逃生口只在**明确知道自己是打包版**（packaged==='1'）时才生效。 */
+  const v = evalIsDev(null, true);
+  if (v !== false) throw new Error('期望 false（生产态），实际 ' + v);
 });
 
 t('判定逻辑完全不引用 app（注入没有 app 的 electron 也不会抛）', () => {

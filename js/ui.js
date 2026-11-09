@@ -146,7 +146,40 @@
    * 所以重建前要主动把它们按「取消」收场。 */
   let openOverlays = new Set();
 
-  function modal({ title, body, foot, danger, width, onClose }) {
+  /* 【堆叠顺序：openOverlays 是插入有序的 Set，最后进来的就是最上层】
+   * Escape 只允许关掉最上面那一层。若所有层同时响应，用户按一次 Esc
+   * 会把底下的弹窗一起关掉 —— 那些弹窗背后的操作可能还没完成。 */
+  function topOverlay() {
+    let last = null;
+    for (const e of openOverlays) last = e;
+    return last;
+  }
+  /* 【Escape 必须能关弹窗】
+   * 原来 modal() 只注册了「点 ×」和「点遮罩」两种关闭方式。而项目里
+   * 每个辅助窗口（pin / ruler / snip）和主搜索框都处理了 Escape，
+   * 唯独弹窗没有 —— 破坏性操作的二次确认（删除文件、关机、目录搬家）
+   * 只能靠鼠标取消，键盘用户按下 Esc 毫无反应。
+   * 监听挂在 document 上：焦点可能在遮罩外的任意控件上。 */
+  function onModalKeydown(e) {
+    if (e.key !== 'Escape') return;
+    const top = topOverlay();
+    if (!top) return;
+    e.preventDefault();
+    e.stopPropagation();
+    top.close();
+  }
+  let modalKeyBound = false;
+  function bindModalKeys() {
+    if (modalKeyBound) return;
+    modalKeyBound = true;
+    document.addEventListener('keydown', onModalKeydown, true);
+  }
+
+  /* 【danger 参数已移除】
+   * 它曾经是个空分支（`if (danger) { // 主按钮标红由调用方构造 }`），
+   * 什么都不做却让读者以为漏了实现。真正决定按钮样式的是 confirmBox
+   * 自己（它给 ok 按钮加 btn-danger），modal 不需要知道危险与否。 */
+  function modal({ title, body, foot, width, onClose }) {
     const mask = div('modal-mask');
     const m = div('modal');
     if (width) m.style.width = typeof width === 'number' ? width + 'px' : width;
@@ -170,13 +203,11 @@
       const f = div('modal-foot');
       for (const b of foot) f.appendChild(b);
       m.appendChild(f);
-      if (danger) {
-        // 主按钮标红由调用方构造
-      }
     }
     m.tabIndex = -1;
     mask.appendChild(m);
     document.body.appendChild(mask);
+    bindModalKeys();
     const firstBtn = m.querySelector('button, input, textarea');
     if (firstBtn) firstBtn.focus();
     return { close, el: m, body: bodyEl };
@@ -220,7 +251,20 @@
     }
     /* pre-wrap：失败明细是多行的（每个文件一行的 原因：…），没有它整段会被
      * 压成一长条，横着读几十个文件根本对不上号。confirmBox 里同样的处理。 */
-    return modal({ title, body: (b) => b.appendChild(h('div', { style: { userSelect: 'text', whiteSpace: 'pre-wrap' } }, message)), foot: [h('button', { class: 'btn btn-primary', onclick: function () { this.closest('.modal-mask').remove(); } }, '知道了')] });
+    /* 【关闭必须走 modal 给的 close()，不能 closest('.modal-mask').remove()】
+     * 直接 remove 只把节点摘掉，openOverlays 里那条记录还留着 ——
+     * 于是它成了"幽灵遮罩"：之后按 Escape 时 topOverlay() 取到的是它，
+     * close() 里 mask.remove() 对已脱离文档的节点无害，但真正该关的
+     * 下一层弹窗要按两次 Esc 才轮得到。
+     * 用 foot 里注入的 md.close 保证两条路径收口到同一处。 */
+    let mdRef = null;
+    const box = modal({
+      title,
+      body: (b) => b.appendChild(h('div', { style: { userSelect: 'text', whiteSpace: 'pre-wrap' } }, message)),
+      foot: [h('button', { class: 'btn btn-primary', onclick: () => mdRef.close() }, '知道了')]
+    });
+    mdRef = box;
+    return box;
   }
   /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
   function promptBox({ title, label = '', value = '', placeholder = '', okText }) {
@@ -401,31 +445,71 @@
     const v = window.Prefs && window.Prefs.get('dragMaxDepth');
     return (typeof v === 'number' && v > 0) ? v : 8;
   }
+  /* ============ 拖拽展开 ============
+   * 【必须报告"被跳过多少"，不能静默截断】
+   * 原来达到 MAX_FILES / MAX_DEPTH 就 `return`，调用方只拿到 { files, dirs }。
+   * 用户拖一个几千文件的目录做批量压缩/重命名，工具处理的是一个**不完整的
+   * 子集**并报「完成」—— 少掉的文件没有任何提示。
+   *
+   * 【深度语义改成「可进入的目录层数」】
+   * 原判断 `if (depth >= MAX_DEPTH) return;` 在 FS.LIST **之前**，
+   * 于是位于第 MAX_DEPTH 层的目录连它自己的一级子文件都不会被收进来 ——
+   * 不是"少钻一层"，而是"整个目录贡献 0 个文件"。
+   * 用户把深度设成 8，直觉是"往下 8 层"，实际是"第 8 层的目录整个消失"。
+   * 现在把判断移到"要递归子目录"时：边界层目录里的**文件**照常收集。 */
   async function expandDroppedPaths(paths) {
     const out = [];
     let dirs = 0;
+    let skippedFiles = 0;
+    let hitFileCap = false;
+    let hitDepth = false;
     const MAX_FILES = expandMaxFiles();
     const MAX_DEPTH = expandMaxDepth();
     async function walk(p, depth) {
-      if (out.length >= MAX_FILES) return;
+      if (out.length >= MAX_FILES) { hitFileCap = true; return; }
       let st = null;
       try { st = await invoke(Channels.CHANNELS.FS.STAT, p); } catch (e) { return; }
       if (!st || !st.isDir) { out.push(p); return; }
-      if (depth >= MAX_DEPTH) return;
-      dirs++;
       let items = [];
       try { items = await invoke(Channels.CHANNELS.FS.LIST, p); } catch (e) { return; }
+      dirs++;
       for (const it of items || []) {
-        if (out.length >= MAX_FILES) return;
-        if (it && it.isDir) await walk(it.path, depth + 1);
-        else if (it && it.path) out.push(it.path);
+        if (out.length >= MAX_FILES) { hitFileCap = true; return; }
+        if (!it || !it.path) continue;
+        if (it.isDir) {
+          /* 只在"还要继续钻进这个子目录"时判断深度上限 */
+          if (depth + 1 >= MAX_DEPTH) { hitDepth = true; continue; }
+          await walk(it.path, depth + 1);
+        } else {
+          out.push(it.path);
+        }
       }
     }
     for (const p of paths || []) {
       // 顺序展开而不是并发：一次拖 20 个目录时并发会把主进程 IO 打满
       await walk(p, 0);
     }
-    return { files: out, dirs };
+    return { files: out, dirs, skippedFiles, hitFileCap, hitDepth };
+  }
+
+  /**
+   * 把展开结果渲染成一句给用户看的提示（没有触顶时返回空串）。
+   *
+   * 【为什么不返回精确的"还有多少个"】
+   * 那要求把剩余整棵树遍历完 —— 而触顶时立即停止正是为了避免那种代价。
+   * 用"是否触顶"这类布尔量 + 已知的部分计数，已经足够让用户知道
+   * "结果不完整、该去调大上限"。
+   */
+  function expandNotice(r, maxFiles, maxDepth) {
+    const parts = [];
+    if (r && r.hitFileCap) {
+      parts.push(`已达到 ${maxFiles} 个文件的上限，剩余文件未加入`);
+    }
+    if (r && r.hitDepth) {
+      parts.push(`目录层级超过 ${maxDepth} 层，更深的内容未加入`);
+    }
+    if (!parts.length) return '';
+    return parts.join('；') + '。可在「设置 → 工具默认值」里调大上限。';
   }
 
   function dropzone({ text = '点击选择或拖拽文件到此处', sub = '', multiple = true, accept, onFiles, pickProps, directory = false, filters }) {
@@ -525,6 +609,10 @@
         toast('文件夹里没有可处理的文件', 'warn');
         return;
       }
+      /* 【触顶必须告知】否则用户以为整批都进来了，实际只处理了一部分。
+       * 用 warn 级别的 toast 且停留更久 —— 这条信息比"展开了 N 个"重要得多。 */
+      const notice = expandNotice(expanded, expandMaxFiles(), expandMaxDepth());
+      if (notice) toast(notice, 'warn', 6000);
       onFiles(expanded.files);
     });
     return dz;
@@ -1127,5 +1215,5 @@
   window.h = h; // 全局 DOM 构建函数，供所有工具直接使用
   // 全局兜底：工具文件即使遗漏解构也能直接使用这些助手
   Object.assign(window, { h, div, icon, iconLg, btn, toast, copyText, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, convertLayout, kvGrid, placeholder, modal, confirmBox, alertBox, promptBox, nextId, guard });
-  window.ui = { h, div, icon, iconLg, makeButtonLike, focusable, expandDroppedPaths, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild, guard };
+  window.ui = { h, div, icon, iconLg, makeButtonLike, focusable, expandDroppedPaths, expandNotice, fmtBytes, fmtNum, fmtTime, fmtDate, pad2, debounce, escapeHtml, toast, modal, confirmBox, alertBox, promptBox, copyText, renderTable, switchEl, dropzone, fileList, filePicker, lineChart, progressEl, loadingBlock, fieldRow, btn, convertLayout, kvGrid, placeholder, nextId, resetShellForRebuild, guard };
 })();

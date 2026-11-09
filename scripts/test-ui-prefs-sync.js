@@ -127,8 +127,14 @@ function fakeWin(tag, opts) {
  *
  * 【这是"装进桩里跑"，不是源码断言】extractFn 只是取源码的手段；
  * 下面每个用例都真的执行这段代码，然后看桩上留下了什么痕迹。
- * 判据是运行结果（谁收到了、收到了什么），不是文本形态。 */
-function makeBroadcastSandbox(wins) {
+ * 判据是运行结果（谁收到了、收到了什么），不是文本形态。
+ *
+ * 【依赖列表必须跟实现同步】broadcastUiPrefs 本轮新增了 `prefs` 字段
+ * （取 store 里的实际值），它调用 storeGet —— 桩里不注入就会
+ * "storeGet is not defined"。新增依赖时同步加参数，否则这条测试
+ * 会在实现正确的情况下假红。 */
+function makeBroadcastSandbox(wins, opts) {
+  const o = opts || {};
   const fnSrc = srcScan.extractFn(mainSrc, 'function broadcastUiPrefs()', 'broadcastUiPrefs');
   const ctx = {
     uiLang: 'en',
@@ -138,12 +144,14 @@ function makeBroadcastSandbox(wins) {
     toolWindows: wins.tools || [],
     auxWindows: () => wins.aux || [],
     CH: { APP: { UI_PREFS_CHANGED: 'app:ui-prefs-changed' } },
+    /* 桩：返回 o.prefs 给的那份（默认 null 表示 store 里还没写过） */
+    storeGet: (key, def) => (o.prefs !== undefined ? o.prefs : def),
   };
   const f = new Function(
-    'uiLang', 'currentAccent', 'nativeTheme', 'win', 'toolWindows', 'auxWindows', 'CH',
+    'uiLang', 'currentAccent', 'nativeTheme', 'win', 'toolWindows', 'auxWindows', 'CH', 'storeGet',
     fnSrc + '\nreturn broadcastUiPrefs;');
   return f(ctx.uiLang, ctx.currentAccent, ctx.nativeTheme, ctx.win,
-    ctx.toolWindows, ctx.auxWindows, ctx.CH);
+    ctx.toolWindows, ctx.auxWindows, ctx.CH, ctx.storeGet);
 }
 
 t('U6 广播的目标列表包含独立工具窗口（不只是主窗与辅助窗）', () => {

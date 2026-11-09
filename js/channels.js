@@ -182,6 +182,7 @@
     LUNAR: {
       L2S: 'lunar:l2s',
       S2L: 'lunar:s2l',
+      MONTH: 'lunar:month',
     },
 
     /* ---- 网络诊断（接口/公网 IP/端口/测速/下载） ---- */
@@ -238,6 +239,9 @@
       ADD: 'sched:add',
       LIST: 'sched:list',
       REMOVE: 'sched:remove',
+      ONCE_ADD: 'sched:once-add',
+      ONCE_LIST: 'sched:once-list',
+      ONCE_REMOVE: 'sched:once-remove',
     },
 
     /* ---- 屏幕截图与取色 ---- */

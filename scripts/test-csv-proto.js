@@ -101,8 +101,12 @@ t('CV6 只有表头没有数据行时返回空数组（不是 [{}]）', () => {
 t('CV7 渲染层确实调用了这份实现（不是各写一份）', () => {
   const src = readSrc('js/tools/text-tools.js');
   /* 锁的是：工具页里又内联了一份自己的组装逻辑 —— 那样修这里等于没修。 */
-  assert.ok(/CsvTable\.rowsToObjects\(/.test(src),
-    'csv-json 工具没有调用 lib/csv-table 的实现');
+  /* 【报错信息必须说明两种入口都可接受】现在渲染层调的是 Detailed 版
+   * （它额外返回 renamed，供界面提示"已自动改名"），两者都是这份实现的
+   * 公开入口；只认一个名字会让「换用另一个入口」被误判成「没调用」。 */
+  /* 锁的是：工具页里又内联了一份组装逻辑 —— 那样修 lib 等于没修 */
+  assert.ok(/CsvTable\.rowsToObjects(?:Detailed)?\(/.test(src),
+    'csv-json 工具没有调用 lib/csv-table 的实现（rowsToObjects / rowsToObjectsDetailed 都算）');
   /* 锁的是：内联的 `o[hd…] = …` 又回来了（原型键陷阱的原形态）。 */
   assert.ok(!/header\.forEach\(\s*\(\s*hd\s*,\s*i\s*\)\s*=>\s*o\[/.test(src),
     '工具页里还留着内联的 o[表头]=值 组装');
@@ -116,6 +120,76 @@ t('CV8 index.html 引入了 lib/csv-table.js（且排在工具脚本之前）', 
   const iTool = html.indexOf('js/tools/text-tools.js');
   /* 锁的是：引入顺序反了 —— 工具脚本先执行，此时 CsvTable 还不存在。 */
   assert.ok(iTool > iLib, 'lib/csv-table.js 必须排在 js/tools/text-tools.js 之前');
+});
+
+t('CV9 表头重名时每一列都保留（不再静默覆盖）', () => {
+  /* 锁的是：`name,name` 这种表头下，defineProperty 第二次重定义同名属性，
+   * 第一列的值被**静默覆盖**：
+   *   rowsToObjects([['name','name'],['Alice','Bob']]) → [{"name":"Bob"}]
+   * "Alice" 整列没了，且不报错。与 __proto__ 是同一类"静默丢数据"。 */
+  const rows = csvTable.rowsToObjects([['name', 'name'], ['Alice', 'Bob']]);
+  assert.deepStrictEqual(Object.keys(rows[0]), ['name', 'name(2)'],
+    '重名列没被改名保住：' + JSON.stringify(Object.keys(rows[0])));
+  assert.strictEqual(rows[0].name, 'Alice');
+  assert.strictEqual(rows[0]['name(2)'], 'Bob');
+});
+
+t('CV10 三列同名也逐个编号，不是只处理两列', () => {
+  /* 锁的是：编号逻辑只写了"遇到重复加一次后缀" —— 三列同名时
+   * 第二列变 name(2)、第三列还得再撞一次。必须循环找空位。 */
+  const rows = csvTable.rowsToObjects([['a', 'a', 'a'], ['1', '2', '3']]);
+  assert.deepStrictEqual(Object.keys(rows[0]), ['a', 'a(2)', 'a(3)']);
+  assert.deepStrictEqual(Object.values(rows[0]), ['1', '2', '3']);
+});
+
+t('CV11 用户自己写的 name(2) 不会与自动编号撞车', () => {
+  /* 锁的是：自动改名只避开了"原始表头"，没避开"已经生成的名字"。
+   * 表头是 name / name / name(2) 时，第二列改成 name(2) 会与第三列撞上。 */
+  const rows = csvTable.rowsToObjects([['name', 'name', 'name(2)'], ['a', 'b', 'c']]);
+  const keys = Object.keys(rows[0]);
+  assert.strictEqual(keys.length, 3, '列数变了：' + JSON.stringify(keys));
+  assert.strictEqual(new Set(keys).size, 3, '仍存在重复键：' + JSON.stringify(keys));
+  assert.deepStrictEqual(Object.values(rows[0]).sort(), ['a', 'b', 'c']);
+});
+
+t('CV12 详情接口报告了哪些表头被改名', () => {
+  /* 锁的是：改了名却不说。静默改名与静默丢列一样坏 ——
+   * 用户拿到的表头和他粘贴的不一致，却不知道为什么。 */
+  const r = csvTable.rowsToObjectsDetailed([['name', 'name'], ['Alice', 'Bob']]);
+  assert.strictEqual(r.renamed.length, 1);
+  assert.deepStrictEqual(r.renamed[0], { from: 'name', to: 'name(2)' });
+  assert.deepStrictEqual(Object.keys(r.rows[0]), ['name', 'name(2)']);
+});
+
+t('CV13 没有重名时不报告任何改名（正常路径零噪音）', () => {
+  /* 锁的是：把"改名提示"写成了每次都触发 —— 正常转换也弹一条提示。 */
+  const r = csvTable.rowsToObjectsDetailed([['a', 'b'], ['1', '2']]);
+  assert.deepStrictEqual(r.renamed, []);
+  assert.deepStrictEqual(r.rows, [{ a: '1', b: '2' }]);
+});
+
+t('CV14 JSON→CSV：非对象数组必须报错，不能产出垃圾', () => {
+  /* 锁的是：`data.flatMap(o => Object.keys(o))` 对非对象的行为——
+   *   [1,2,3]     → Object.keys(1) 得 []      → 三行空白，无报错
+   *   ['x','y']   → Object.keys('x') 得 ['0'] → 表头变成字面量 "0"
+   *   [{a:1},2]   → 数字那行静默变成空行
+   * 全是"不报错但结果是错的"。这里用与工具页一致的判定复刻验证。 */
+  const validate = (data) => {
+    if (!Array.isArray(data) || !data.length) throw new Error('需要非空 JSON 数组');
+    const badIdx = data.findIndex((o) => o === null || typeof o !== 'object' || Array.isArray(o));
+    if (badIdx >= 0) {
+      const bad = data[badIdx];
+      const kind = bad === null ? 'null' : Array.isArray(bad) ? '数组' : typeof bad;
+      throw new Error('第 ' + (badIdx + 1) + ' 项不是对象（是 ' + kind + '）');
+    }
+  };
+  assert.throws(() => validate([1, 2, 3]), /第 1 项不是对象/);
+  assert.throws(() => validate(['x', 'y']), /第 1 项不是对象/);
+  assert.throws(() => validate([{ a: 1 }, 2]), /第 2 项不是对象/);
+  assert.throws(() => validate([null]), /null/);
+  assert.throws(() => validate([[1]]), /数组/);
+  /* 正常对象数组不报错 */
+  assert.doesNotThrow(() => validate([{ a: 1 }, { a: 2, b: 3 }]));
 });
 
 done();

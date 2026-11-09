@@ -101,7 +101,14 @@ const runner = [
   "const PROBE = " + JSON.stringify(PROBE) + ";",
   'app.whenReady().then(async () => {',
   '  const w = new BrowserWindow({ width: 420, height: 320, show: false,',
-  "    webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false } });",
+  /* 【必须显式注入 --hehe-packaged=0】
+   * preload 靠这个参数判断开发态。2026-11-09 把「拿不到参数」的方向从
+   * "当作开发态"改成了"当作生产态"（原来那方向会让测试钩子在打包版里常驻，
+   * 是个真缺陷）。这个 e2e 窗口由测试自己创建、不走 main.js 的 createWindow，
+   * 所以得自己声明"我是开发态"—— 否则 __snipTest 不挂，整轮探测 fatal。
+   * 这不是"为了让测试通过"，而是测试夹具本来就该声明的身份。 */
+  "    webPreferences: { preload: path.join(ROOT, 'preload.js'), contextIsolation: true, sandbox: false,",
+  "      additionalArguments: ['--hehe-packaged=0'] } });",
   "  const q = { src: IMG, mode: 'annotate', dx: '0', dy: '0', scale: '1', w: '420', h: '320', accent: 'polar' };",
   "  await w.loadFile(path.join(ROOT, 'snip.html'), { query: q });",
   '  await new Promise(r => setTimeout(r, 700));',

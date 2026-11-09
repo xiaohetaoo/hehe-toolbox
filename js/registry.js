@@ -255,8 +255,20 @@
       const kws = kwList.join(' ');
       const desc = norm((t.desc || '') + ' ' + (t.descEn || ''));
       const modDef = MODULES.find(m => m.id === t.module);
-      /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-      const modName = norm(modDef ? modDef.name : '');
+      /* 【模块名要中英文一起参与匹配】
+       * 原来只取 modDef.name（中文），于是英文界面下用户输 security 想找
+       * 「安全与密码」下的工具，模块这一档（30 分）永远拿不到 ——
+       * 而 MODULES 每项都有 nameEn，注释还专门写着「模块名会出现在五处、必须翻译」。
+       *
+       * 【注意：不要把 name/nameEn 的"精确/前缀分档"经验套过来】
+       * 上面 nameZh / nameEnNorm 之所以拆开，是因为精确匹配（100 分）
+       * 与前缀匹配（80 分）必须对**单个名称**判断，拼接串永远不可能全等。
+       * 模块名这里只有 includes 一档（30 分），拼起来比较语义不变，
+       * 不需要拆 —— 拆了反而会多出两个没人用的分值档。
+       *
+       * 【顺便去掉 no-shadow 压制】内层这个变量原来与外层 modName() 同名，
+       * 改叫 modKey 比挂压制注释干净（压制注释比问题活得久）。 */
+      const modKey = norm(modDef ? (modDef.name + ' ' + (modDef.nameEn || '')) : '');
       let total = 0;
       let ok = true;
       for (const tk of tokens) {
@@ -266,7 +278,7 @@
         else if (kwList.includes(tk)) s = 70;   // 关键词整词命中，优先于名称中段
         else if (name.includes(tk)) s = 60;
         else if (kws.includes(tk)) s = 40;
-        else if (modName.includes(tk)) s = 30;  // 「办公」「网络」这类按模块找
+        else if (modKey.includes(tk)) s = 30;  // 「办公」「网络」「security」这类按模块找
         else if (desc.includes(tk)) s = 20;
         /* 拼音首字母（打 yssc 找「压缩」）。
          * 【为什么排在最后】它是**补充通道**，不是主通道：

@@ -183,6 +183,9 @@
       const ta = h('textarea', { class: 'pane-ta', placeholder: mode === 'csv2json' ? '粘贴 CSV 文本（首行为表头）…' : '粘贴 JSON 数组…', style: { minHeight: '180px' } });
       const out = h('textarea', { class: 'pane-ta readonly', readonly: true, style: { minHeight: '180px' } });
       const sepSel = h('select', { class: 'select input-sm' }, h('option', { value: ',' }, '逗号 ,'), h('option', { value: '\t' }, 'Tab'), h('option', { value: ';' }, '分号 ;'), h('option', { value: '|' }, '竖线 |'));
+      /* 表头改名提示用。默认隐藏 —— 只在真的发生改名时出现，
+       * 不要在正常转换时留一条空行把版面撑开。 */
+      const hint = div('field-hint', { style: { display: 'none', color: 'var(--warning)' } }, '');
       function parseCSV(text, sep) {
         const rows = [];
         let row = [], field = '', inQ = false;
@@ -210,6 +213,8 @@
       }
       function fire() {
         out.value = '';
+        hint.textContent = '';
+        hint.style.display = 'none';
         if (!ta.value.trim()) return;
         try {
           if (mode === 'csv2json') {
@@ -219,11 +224,35 @@
              *   const o = {}; header.forEach((hd,i)=> o[hd.trim()||`列${i+1}`] = r[i] ?? '');
              * 表头里出现 __proto__ 时那一句改的是原型而不是加属性，
              * 「Alice」整列会静默消失（实测）。constructor/toString 同理。
-             * 抽出去之后主代码与测试共用一份实现，断言落在返回值上。 */
-            out.value = JSON.stringify(window.CsvTable.rowsToObjects(rows), null, 2);
+             * 抽出去之后主代码与测试共用一份实现，断言落在返回值上。
+             *
+             * 表头重名（name,name）同样会丢列 —— 现在自动改名成 name(2)。
+             * 必须把改名结果告诉用户：静默改名和静默丢列一样坏，
+             * 用户拿到的表头和他粘贴的不一致却不知道为什么。 */
+            const r = window.CsvTable.rowsToObjectsDetailed(rows);
+            out.value = JSON.stringify(r.rows, null, 2);
+            if (r.renamed.length) {
+              hint.textContent = '检测到 ' + r.renamed.length + ' 个重复表头，已自动改名：'
+                + r.renamed.map(x => x.from + ' → ' + x.to).join('、') + '（否则同名列会互相覆盖）';
+              hint.style.display = 'block';
+            }
           } else {
             const data = JSON.parse(ta.value);
+            /* 【每一项都必须是对象，否则输出的是垃圾】
+             * 原来是 `data.flatMap(o => Object.keys(o))`，于是：
+             *   [1,2,3]      → Object.keys(1) 得 []      → 三行空白
+             *   ['x','y']    → Object.keys('x') 得 ['0'] → 表头变成字面量 "0"
+             *   [{a:1},2]    → 数字那行静默变成空行
+             * 全是「不报错但结果是错的」。JSON→CSV 的语义就是「对象数组 → 表格」，
+             * 不是对象数组就该明确拒绝，而不是宽容地丢掉数据。 */
             if (!Array.isArray(data) || !data.length) throw new Error('需要非空 JSON 数组');
+            const badIdx = data.findIndex(o => o === null || typeof o !== 'object' || Array.isArray(o));
+            if (badIdx >= 0) {
+              const bad = data[badIdx];
+              const kind = bad === null ? 'null' : Array.isArray(bad) ? '数组' : typeof bad;
+              throw new Error('第 ' + (badIdx + 1) + ' 项不是对象（是 ' + kind + '）。'
+                + 'JSON 数组转 CSV 要求每一项都是对象，例如 [{"name":"a","age":1}]');
+            }
             const header = [...new Set(data.flatMap(o => Object.keys(o)))];
             const rows = [header, ...data.map(o => header.map(k => o[k]))];
             out.value = toCSV(rows, sepSel.value);
@@ -239,7 +268,7 @@
           btn('JSON → CSV', 'btn-sm ' + (mode === 'json2csv' ? 'btn-primary' : 'btn-secondary'), () => { mode = 'json2csv'; ta.placeholder = '粘贴 JSON 数组…'; refreshMode(); fire(); })),
         div('form-row', h('span', { class: 'form-label' }, '分隔符'), sepSel),
         ta));
-      page.appendChild(div('card', div('card-title', '结果'), out, div('form-row', btn('复制', 'btn-secondary btn-sm', () => copyText(out.value)))));
+      page.appendChild(div('card', div('card-title', '结果'), hint, out, div('form-row', btn('复制', 'btn-secondary btn-sm', () => copyText(out.value)))));
       function refreshMode() {
         const btns = page.querySelectorAll('.card-title .btn');
         btns.forEach(b => { b.classList.remove('btn-primary'); b.classList.add('btn-secondary'); });

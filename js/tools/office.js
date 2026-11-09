@@ -83,7 +83,7 @@
           const per = Math.max(1, parseInt(splitEvery.value) || 1);
           // 输出目录带时间戳：固定目录名会让第二次拆分（哪怕换了一个 PDF）
           // 把上一次的 part-001.pdf 静默覆盖，甚至把两个不同文档的分页混进同一目录。
-          const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+          const stamp = window.TimeStamp.localStampCompact();
           const dir = picker.paths[0].replace(/\.pdf$/i, '') + '-split-' + stamp;
           await invoke(Channels.CHANNELS.FS.MKDIR, dir);
           for (let i = 0; i < n; i += per) {
@@ -238,7 +238,7 @@
           const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
           // 输出目录带时间戳：固定目录名 + 固定 page-NNN.png 会让第二次渲染
           // 静默覆盖上一次的结果，不同 PDF 的输出还会混进同一目录。
-          const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+          const stamp = window.TimeStamp.localStampCompact();
           const outDir = pdfPath.replace(/\.pdf$/i, '') + '-images-' + stamp;
           await invoke(Channels.CHANNELS.FS.MKDIR, outDir);
           const scale = parseFloat(scaleIn.value) || 2;

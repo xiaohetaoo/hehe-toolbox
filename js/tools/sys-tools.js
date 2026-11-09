@@ -188,14 +188,17 @@
                 td.appendChild(btn('详情', 'btn-sm btn-text', async () => {
                   try {
                     const d = await invoke(Channels.CHANNELS.PROC.DETAIL, r.pid);
-                    window.ui.modal({
+                    const dlg = window.ui.modal({
                       title: `进程详情：${r.name} (${r.pid})`,
                       body: (b) => b.appendChild(window.ui.kvGrid([
                         ['进程名', r.name], ['PID', r.pid], ['内存', fmtBytes(r.memKB * 1024)],
                         ['累计 CPU 时间', r.cpu != null ? r.cpu.toFixed(2) + ' s' : '-'],
                         ['可执行路径', d.path || '-'], ['命令行', d.cmdline || '-']
                       ])),
-                      foot: [h('button', { class: 'btn btn-primary', onclick: function () { this.closest('.modal-mask').remove(); } }, '关闭')]
+                      /* 走 dlg.close() 而不是 closest('.modal-mask').remove()：
+                       * 后者只摘节点、不清 ui.js 里的 openOverlays 记录，
+                       * 会留下一个"幽灵遮罩"让下一次 Escape 落空。 */
+                      foot: [h('button', { class: 'btn btn-primary', onclick: () => dlg.close() }, '关闭')]
                     });
                   } catch (e) { toast(e.message, 'error'); }
                 }));
@@ -828,24 +831,76 @@
           status.textContent = `系统将在 ${mins} 分钟后${confirmMsg}（shutdown 计划，可点击取消）`;
         } else {
           if (!(await confirmBox({ title: '定时' + confirmMsg, message: `${mins} 分钟后执行「${confirmMsg}」？`, okText: '确定' }))) return;
-          arm(confirmMsg, mins * 60, async () => {
-            const cmd = m === 'sleep' ? 'rundll32.exe powrprof.dll,SetSuspendState 0,1,0' : 'rundll32.exe user32.dll,LockWorkStation';
-            invoke(Channels.CHANNELS.EXEC.RUN, { cmd, shellType: 'cmd' }).catch(() => {});
-          });
-          status.textContent = `将在 ${mins} 分钟后${confirmMsg}`;
+          /* 【睡眠/锁屏交给主进程，不用页面 setInterval】
+           * 原来这里是 arm(..., () => invoke(EXEC.RUN, ...)) —— 而 arm 的
+           * setInterval 会被 App.onCleanup 在切页时清掉。用户设了
+           * 「30 分钟后睡眠」，切到别的工具页待一会儿，倒计时没了、
+           * 睡眠也不会发生，界面那句承诺已经落空。
+           * 同一个卡片里关机/重启走系统 shutdown 计划（切页不影响），
+           * 两种行为不一致最容易让人不信任。
+           * 改走 SCHED.ONCE_ADD：主进程持久化计时，切页、关窗、重启都不影响。 */
+          try {
+            const r = await invoke(Channels.CHANNELS.SCHED.ONCE_ADD, { action: m === 'sleep' ? 'sleep' : 'lock', minutes: mins });
+            /* 界面仍显示倒计时，但它只是"展示"，真正的执行在主进程 */
+            arm(confirmMsg, mins * 60, () => {});
+            const at = new Date(r.item.fireAt);
+            status.textContent = `将在 ${minutesLaterText(at)}（${confirmMsg}）—— 已交给主进程，切换页面不影响`;
+            loadOnce();
+          } catch (e) {
+            return toast(e.message, 'error');
+          }
         }
+      }
+      /* 「还有多久」的人话表述：只给小时分钟，不给秒 —— 用户设的是分钟级 */
+      function minutesLaterText(at) {
+        const left = Math.max(0, Math.round((at.getTime() - Date.now()) / 60000));
+        const h = Math.floor(left / 60), mm = left % 60;
+        return (h ? h + ' 小时 ' : '') + mm + ' 分钟后执行';
       }
       async function cancel() {
         if (timer) { clearInterval(timer); timer = null; }
         try { await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: 'shutdown /a', shellType: 'cmd' }); } catch (e) {} // 取消系统的关机计划（如有）
+        /* 主进程里挂着的一次性睡眠/锁屏也要撤掉，否则"点了取消但到点还是睡了" */
+        try {
+          const list = await invoke(Channels.CHANNELS.SCHED.ONCE_LIST).catch(() => []);
+          for (const it of (list || [])) await invoke(Channels.CHANNELS.SCHED.ONCE_REMOVE, it.id).catch(() => {});
+        } catch (e) {}
         countdown.textContent = '已取消'; countdown.className = 'tag tag-gray';
         status.textContent = '已取消定时任务（含系统关机计划）';
+        loadOnce();
       }
+      /* 列出主进程里挂着的一次性定时，让用户看得见、能单独删 */
+      const onceList = div('');
+      async function loadOnce() {
+        const list = await invoke(Channels.CHANNELS.SCHED.ONCE_LIST).catch(() => []);
+        onceList.innerHTML = '';
+        if (!list || !list.length) { onceList.appendChild(div('empty-tip', '暂无挂起的一次性定时')); return; }
+        for (const it of list) {
+          const at = new Date(it.fireAt);
+          onceList.appendChild(div('form-row',
+            h('span', { class: 'tag tag-orange', style: { width: '48px', justifyContent: 'center' } }, it.action === 'lock' ? '锁屏' : '睡眠'),
+            h('span', { style: { flex: '1', fontSize: '12px' } }, `${minutesLaterText(at)}（${at.toLocaleTimeString('zh-CN', { hour12: false })}）`),
+            btn('删除', 'btn-sm btn-text', async () => {
+              await invoke(Channels.CHANNELS.SCHED.ONCE_REMOVE, it.id).catch(() => {});
+              loadOnce();
+            })));
+        }
+      }
+      /* 主进程到点执行时推一条，界面同步刷新列表（多个窗口都收到） */
+      const unsubOnce = window.api.on('sched:once-fired', () => { loadOnce(); });
+      window.App.onCleanup(() => { try { unsubOnce(); } catch (e) {} });
       page.appendChild(div('card', div('card-title', '一次性定时'),
         div('form-row', h('span', { class: 'form-label' }, '动作'), modeSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '分钟'), minIn, msgIn),
         div('form-row', btn('设置', 'btn-primary', apply, 'timer'), ' ', btn('取消', 'btn-danger-plain', cancel), countdown, status),
-        div('field-hint', '关机/重启走系统 shutdown 计划（关机前弹窗可跳过）；睡眠/锁屏/提醒在应用内计时')));
+        /* 【提示文案必须如实反映两种不同的持久性】
+         * 关机/重启走系统 shutdown 计划：切页、关程序都仍然会执行。
+         * 睡眠/锁屏走主进程持久化计时：切页不影响，重启后仍会恢复。
+         * 提醒是应用内的 toast + 系统通知，切页会停 —— 这条必须写出来。 */
+        div('field-hint', '关机/重启走系统 shutdown 计划（关机前弹窗可跳过）；睡眠/锁屏由主进程计时，切换页面、重开应用都仍然生效；提醒在应用内计时，离开页面会停止'),
+        div('field-hint', { style: { marginTop: '6px' } }, '挂起中的一次性定时：'),
+        onceList));
+      loadOnce();
 
       /* ---- 周期任务（主进程持久化调度，重启应用后依然生效） ---- */
       const rType = h('select', { class: 'select input-sm' },

@@ -39,6 +39,10 @@ const diskHealth = require('./lib/disk-health');      // 磁盘健康：诚实�
 /* 临时产物命名的**唯一来源**：生成函数与清理白名单在同一个模块里，
  * 避免"新增一种产物忘了登记白名单"（.hehe-7zx-* 那次残留事故的根因）。 */
 const tempNames = require('./lib/temp-names');
+/* 文件名用的**本地**时间戳。原来几处直接用 toISOString()，那是 UTC ——
+ * UTC+8 用户看到的 hosts 备份名会差 8 小时，在「恢复 hosts」列表里挑错备份。
+ * 内部诊断用的 .corrupt- 备份仍走 UTC（跨时区比对更方便），不在此列。 */
+const timeStamp = require('./lib/time-stamp');
 /* 崩溃日志：打包后的 exe 没有控制台，异常只写 console 等于没记。
  * 这个模块负责脱敏、截断、轮转，主进程这边只提供目录与时机。 */
 const crashLog = require('./lib/crash-log');
@@ -288,12 +292,23 @@ function send(ev, data) {
  * 而各个窗口自己 matchMedia 得到的答案可能因为时机不同而不一致。
  * 主进程这边解析一次，广播的就是确定的 dark / light。
  *
- * ev：{ lang, accent, theme } —— theme 是 'dark' | 'light'。 */
+ * ev：{ lang, accent, theme, prefs } —— theme 是 'dark' | 'light'。
+ *
+ * 【为什么把 prefs 也带上】
+ * Prefs 的内存缓存（js/app.js 的 Prefs._v）是**每个渲染进程各一份**。
+ * 主窗口改了「图片压缩默认质量」之后，已经开着的独立工具窗口仍然用旧值 ——
+ * 用户会认为设置没生效。更糟的是：如果独立窗口也调 Prefs.set，
+ * 它会用自己那份陈旧的 _v **整对象**覆盖 store，静默回滚主窗口刚改的值。
+ * 带上 prefs 之后，各窗口收到广播就重跑 Prefs.load()，缓存保持一致。
+ * （Prefs.set 也同步改成了只写单个键，见 js/app.js —— 双保险。） */
 function broadcastUiPrefs() {
   const payload = {
     lang: uiLang,
     accent: currentAccent,
     theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+    /* 取 store 里的实际值，而不是另存一份内存副本 ——
+     * 那份副本会因为「谁最后写的」而漂移。 */
+    prefs: storeGet('settings.prefs', null),
   };
   const targets = [win, ...toolWindows, ...auxWindows()];
   for (const w of targets) {
@@ -788,6 +803,7 @@ function createSplash() {
         additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')]
       }
     });
+    hardenWindow(splashWin);
     const self = splashWin;
     // 便携版：NSIS 在 ExecWait 前已经 BgImage::Destroy 拆掉了自己的解压画面，
     // 之后到主窗出现这一段是「什么都没画」的空档，所以启动窗要立刻显示，越早越好。
@@ -859,6 +875,71 @@ function showWindowAfterSplash() {
   setTimeout(destroySplash, 200);
 }
 
+/* ============================================================
+ * 窗口安全加固：每个 BrowserWindow 建好后都必须走一遍
+ *
+ * 【为什么必须有】Electron 的默认行为里有两件事是"全开"的：
+ *   ① 权限请求默认批准（官方文档：可以设置 handler 覆盖"默认全部授予"）
+ *   ② window.open() 默认新建一个继承 webPreferences 的 BrowserWindow
+ *
+ * 本项目的页面只加载本地 file://，但**渲染的是大量用户可控文本**
+ * （Markdown 预览、笔记、OCR 结果、diff、日志查看）。任何一处漏掉净化
+ * 都可能变成：开出一个不受控的新窗口，或者申请到地理位置/MIDI 这类
+ * 与本应用毫无关系的权限。
+ *
+ * 【为什么不逐个手写】主进程有 5 处以上 new BrowserWindow
+ * （主窗、独立工具窗、标尺、贴图、截图、离屏 PDF）。逐处写必然漏一处，
+ * 而漏的那处不会有任何提示。收成一个函数，新建窗口时照抄一行。
+ * ============================================================ */
+function hardenWindow(w) {
+  if (!w || w.isDestroyed()) return w;
+  try {
+    /* ① 一律拒绝新开窗口。需要"点链接开浏览器"的地方走 SHELL.OPEN_URL
+     *    （它只允许 http/https，见 ipc/fs-ops.js）。 */
+    w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    /* ② 拦住页面导航。除本地 file:// 与本进程内的 data:（PDF 导出用）
+     *    之外一律不跳转 —— 跳走之后那个页面就脱离了本应用的控制。 */
+    w.webContents.on('will-navigate', (ev, url) => {
+      const u = String(url || '');
+      const okLocal = u.startsWith('file://') || u.startsWith('data:text/html');
+      if (!okLocal) {
+        ev.preventDefault();
+        console.warn('[security] 已拦截页面导航：', u.slice(0, 120));
+      }
+    });
+    /* ③ 权限：白名单放行，其余拒绝。
+     *    · media            —— 录屏要麦克风/摄像头，OCR 要枚举设备 label
+     *    · notifications    —— 番茄钟、定时提醒
+     *    · clipboard-read   —— 剪贴板历史要读系统剪贴板
+     *    · clipboard-sanitized-write —— copyText 走的是渲染层 API，
+     *      不需要这条；留注释说明为什么没列它，避免以后乱加。
+     *    · fullscreen       —— 截图/贴图窗口进入全屏
+     *    其余（geolocation / midi / midiSysex / hid / serial / usb /
+     *    background-sync / accelerometer 等）一律拒绝并记一条日志。 */
+    const ALLOWED = new Set(['media', 'notifications', 'clipboard-read', 'fullscreen']);
+    const ses = w.webContents.session;
+    /* 【session 是共享的】主窗与各辅助窗用的是同一个 defaultSession，
+     * 所以这两个 handler 只需要装一次；重复装会覆盖，行为仍然一致。
+     * 用标记位避免每个窗口都重装一遍（重装本身无害，但会让"到底装了几次"
+     * 变得说不清）。 */
+    if (!ses.__hehePermBound) {
+      ses.__hehePermBound = true;
+      ses.setPermissionRequestHandler((wc, permission, callback) => {
+        const granted = ALLOWED.has(permission);
+        if (!granted) console.warn('[security] 拒绝权限请求：', permission);
+        callback(granted);
+      });
+      /* 【必须有 checkHandler，而且口径要与 requestHandler 一致】
+       * 只装 request 不装 check 会出现"请求被拒但检查通过"的矛盾状态
+       * （Chromium 有些路径先问 check 再决定要不要发 request）。 */
+      ses.setPermissionCheckHandler((wc, permission) => ALLOWED.has(permission));
+    }
+  } catch (e) {
+    console.warn('[security] 窗口加固失败：', fmtErr(e));
+  }
+  return w;
+}
+
 function createWindow() {
   bootMark('create-window-start');
   mainShown = false; // 窗口可能被销毁后重建（从托盘重新打开），需要重新走一次显示流程
@@ -880,6 +961,7 @@ function createWindow() {
       spellcheck: false
     }
   });
+  hardenWindow(win);
   Menu.setApplicationMenu(null);
   bootMark('window-created');
   win.loadFile('index.html');
@@ -1133,7 +1215,16 @@ handle(CH.APP.GET_INFO, () => ({
   username: os.userInfo().username
 }));
 handle(CH.STORE.GET, (e, key, def) => storeGet(key, def));
-handle(CH.STORE.SET, (e, key, val) => storeSet(key, val));
+handle(CH.STORE.SET, (e, key, val) => {
+  const r = storeSet(key, val);
+  /* 【偏好值改动要广播给所有窗口】
+   * 主窗口改 set，独立工具窗口的 Prefs 缓存不会自动更新 —— 用户会认为
+   * 「设置没生效」。广播一次，各窗口重跑 Prefs.applyFromStore。
+   * 只对 settings.prefs* 这一个命名空间广播：其它 store 键（笔记、
+   * 剪贴板历史、缓存）改动极其频繁，全广播会把 UI 打满。 */
+  if (typeof key === 'string' && key.startsWith('settings.prefs')) broadcastUiPrefs();
+  return r;
+});
 /* store:remove 已移除：全项目没有任何调用方（渲染层只删收藏/历史时用的是
  * store:set 置空）。js/api.js 的浏览器模拟分支曾保留它，也一并删掉。 */
 /* ============ 独立工具窗口（v0.6.0）============
@@ -1187,6 +1278,7 @@ function openToolWindow(toolId) {
       spellcheck: false,
     }
   });
+  hardenWindow(w);
   w.__heheToolId = toolId;
   /* 【窗口的 webContents id 要在创建时记下来】'closed' 触发时 webContents
    * 已经销毁，那时 getWebContents() 拿不到 id —— 而没有它就无法判断
@@ -1958,7 +2050,7 @@ handle(CH.HOSTS.WRITE, async (e, content) => {
     await fsp.mkdir(dir, { recursive: true });
     // 备份名精确到毫秒 + 随机后缀：只到秒的话，同一秒内连点两次保存会互相覆盖备份，
     // 第一次那份（可能才是正确的）就没了。
-    const name = `hosts-${new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23)}-${crypto.randomBytes(2).toString('hex')}.bak`;
+    const name = `hosts-${timeStamp.localStampDashMs(new Date())}-${crypto.randomBytes(2).toString('hex')}.bak`;
     await fsp.copyFile(HOSTS_PATH, path.join(dir, name));
     /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
     backedUp = true;
@@ -2005,7 +2097,7 @@ handle(CH.HOSTS.WRITE, async (e, content) => {
 handle(CH.HOSTS.BACKUP, async () => {
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
   await fsp.mkdir(dir, { recursive: true });
-  const name = `hosts-${new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23)}-${crypto.randomBytes(2).toString('hex')}.bak`;
+  const name = `hosts-${timeStamp.localStampDashMs(new Date())}-${crypto.randomBytes(2).toString('hex')}.bak`;
   await fsp.copyFile(HOSTS_PATH, path.join(dir, name));
   return { name };
 });
@@ -2027,7 +2119,7 @@ handle(CH.HOSTS.RESTORE, async (e, backupPath) => {
      原来直接 copyFile(备份 -> hosts)：用户选错备份时，当前的 hosts 当场被冲掉，
      而且没有任何副本可以退回 —— 等于「还原」变成了不可逆操作。
      另外用临时文件 + rename 原子替换，避免写到一半留下半截 hosts。 */
-  const stamp = new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23) + '-' + crypto.randomBytes(2).toString('hex');
+  const stamp = timeStamp.localStampDashMs(new Date()) + '-' + crypto.randomBytes(2).toString('hex');
   try {
     await fsp.copyFile(HOSTS_PATH, path.join(dir, `hosts-prerestore-${stamp}.bak`));
   } catch (err) {
@@ -2116,6 +2208,7 @@ handle(CH.WIN.RULER, (e, dir) => {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false,
       additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
+  hardenWindow(rulerWin);
   /* 记录创建时的几何（位置由窗口管理器决定，用回读补齐一次 —— 之后就不再回读）。 */
   try { rulerGeom = rulerWin.getBounds(); } catch (e) { rulerGeom = { x: 0, y: 0, width: w0, height: h0 }; }
   rulerWin.setAlwaysOnTop(true, 'screen-saver');
@@ -2231,6 +2324,25 @@ handle(CH.CLIP.READ_IMAGE, () => {
 
 /* lunar */
 handle(CH.LUNAR.S2L, (e, y, m, d) => solarlunar.solar2lunar(y, m, d));
+/* 【整月一次返回】日历页要点一次翻月就渲染 28~31 格，原来逐日 await
+ * 31 次串行 IPC。农历换算是纯计算，一次算完整月没有任何额外代价，
+ * 却把 31 次往返压成 1 次。
+ * 返回数组下标记为「日 - 1」（第 1 天在 [0]），空位由调用方按星期补。
+ * 单日算失败时该位置为 null 而不是整体抛错 —— 一个月里某天出问题
+ * 不该让整张日历变空白。 */
+handle(CH.LUNAR.MONTH, (e, y, m) => {
+  const yy = Number(y), mm = Number(m);
+  if (!Number.isInteger(yy) || !Number.isInteger(mm) || mm < 1 || mm > 12) {
+    throw new Error('月份参数不合法');
+  }
+  /* 该月有多少天：下个月第 0 天 = 本月最后一天 */
+  const days = new Date(yy, mm, 0).getDate();
+  const out = [];
+  for (let d = 1; d <= days; d++) {
+    try { out.push(solarlunar.solar2lunar(yy, mm, d)); } catch (err) { out.push(null); }
+  }
+  return { year: yy, month: mm, days, items: out };
+});
 handle(CH.LUNAR.L2S, (e, y, m, d, leap) => solarlunar.lunar2solar(y, m, d, !!leap));
 
 /* qrcode (main side, lib is CJS) */
@@ -2848,6 +2960,7 @@ async function createPinWindow(srcPath) {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false,
       additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
+  hardenWindow(bw);
   bw.setAlwaysOnTop(true, 'screen-saver');
   pinWins.set(pinKey(bw.id), bw);
   bw.on('closed', () => pinWins.delete(pinKey(bw.id)));
@@ -3732,6 +3845,7 @@ async function snipStart(mode) {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: false,
       additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')] }
   });
+  hardenWindow(snipWin);
   snipWin.setAlwaysOnTop(true, 'screen-saver');
   /* 用 setContentBounds 而不是 setBounds：用户看的是内容区，
    * 而 setBounds 管的是"含边框的外框"——frame:false 时两者理论上相等，
@@ -3822,7 +3936,7 @@ handle(CH.SNIP.PIN_CLIPBOARD, () => pinClipboardImage());
 /* 【缓存时长可配置】设置 → 通用 → 更新检查缓存（0~72 小时）。
  * 0 表示不缓存（每次都真查），这是"我想第一时间拿到新版"的人要的。
  * 现读而不是在模块加载时算一次：设置页改完立刻生效。
- * 默认值来自 js/prefs-spec.js 的规格表，这里不再写第二份。 */
+ * 默认值来自 lib/prefs-spec.js 的规格表，这里不再写第二份。 */
 function updateTtlMs() {
   const h = prefsGet('updateTtlHours');
   const hours = (typeof h === 'number' && h >= 0) ? h : 6;
@@ -4315,6 +4429,104 @@ handle(CH.SCHED.REMOVE, (e, id) => {
   return list;
 });
 
+/* ================= 一次性定时（睡眠 / 锁屏）=================
+ *
+ * 【为什么放主进程而不是渲染层】
+ * 原来睡眠/锁屏靠页面的 setInterval 计时，而 App.onCleanup 在切页时会清掉它：
+ * 用户设了「30 分钟后睡眠」→ 切到别的工具页 → 回来发现倒计时没了、
+ * 睡眠也不会发生。同一个卡片里关机/重启走系统 shutdown 计划（切页不影响），
+ * 两种行为不一致最容易让用户不信任。
+ *
+ * 【存什么】{ id, action: 'sleep'|'lock', fireAt: <ms>, label }
+ * 持久化到 settings.schedulesOnce，重启应用后依然生效（与周期任务一致）。
+ * 【恢复时怎么处理过期项】启动时若 fireAt 已过去（应用关着的时候到点了），
+ * 直接执行一次并移除 —— 用户的意图是"到那个时刻做这件事"，
+ * 悄悄跳过比晚一点执行更让人困惑。但超过 12 小时的不再补执行
+ * （昨天设的睡眠，今天启动时突然把电脑睡掉是惊吓，不是服务）。 */
+const ONCE_CATCHUP_MS = 12 * 3600 * 1000;
+const schedOnceTimers = new Map(); // id -> timeout
+
+function onceActionLabel(a) { return a === 'lock' ? '锁屏' : '睡眠'; }
+
+function runOnceAction(action) {
+  try {
+    if (action === 'lock') {
+      spawnDetached('rundll32.exe', ['user32.dll,LockWorkStation']);
+    } else {
+      spawnDetached('rundll32.exe', ['powrprof.dll,SetSuspendState', '0,1,0']);
+    }
+  } catch (e) { console.warn('[sched] 一次性定时执行失败：', fmtErr(e)); }
+}
+
+function armOnce(item) {
+  const old = schedOnceTimers.get(item.id);
+  if (old) clearTimeout(old);
+  const delay = Math.max(0, Number(item.fireAt) - Date.now());
+  /* setTimeout 的上限是 2^31-1 ms（约 24.8 天）。超过就分段重挂，
+   * 否则 Node 会把它当成 1ms 立刻触发 —— 那是灾难性误触发。 */
+  const MAX = 2147483647;
+  const step = Math.min(delay, MAX);
+  const t = setTimeout(() => {
+    if (Date.now() < Number(item.fireAt)) { armOnce(item); return; }
+    runOnceAction(item.action);
+    /* 执行完就从表里清掉：一次性任务不该留在列表里 */
+    const list = storeGet('settings.schedulesOnce', []).filter((x) => x.id !== item.id);
+    storeSet('settings.schedulesOnce', list);
+    schedOnceTimers.delete(item.id);
+    /* 事件名直接用字面量：它是**推送**（send），不需要注册 handle，
+     * 所以不进 CH 通道表（表里只登记可调用的 handle 通道）。
+     * 渲染层用 window.api.on('sched:once-fired', …) 订阅。 */
+    send('sched:once-fired', { id: item.id, action: item.action });
+  }, step);
+  schedOnceTimers.set(item.id, t);
+}
+
+/** 启动/新增后统一挂一遍，并处理"应用关着的时候到点了"的过期项。 */
+function armOnceAll() {
+  const list = storeGet('settings.schedulesOnce', []);
+  const keep = [];
+  const now = Date.now();
+  for (const item of Array.isArray(list) ? list : []) {
+    if (!item || !item.id || !item.fireAt) continue;
+    if (Number(item.fireAt) <= now) {
+      if (now - Number(item.fireAt) <= ONCE_CATCHUP_MS) runOnceAction(item.action);
+      continue;   // 已过期：补执行（或放弃）后不再挂
+    }
+    keep.push(item);
+    armOnce(item);
+  }
+  if (keep.length !== list.length) storeSet('settings.schedulesOnce', keep);
+  return keep;
+}
+
+handle(CH.SCHED.ONCE_LIST, () => storeGet('settings.schedulesOnce', []));
+handle(CH.SCHED.ONCE_ADD, (e, payload) => {
+  const p = payload || {};
+  const action = p.action === 'lock' ? 'lock' : 'sleep';
+  const mins = Number(p.minutes);
+  if (!Number.isFinite(mins) || mins < 1 || mins > 60 * 24 * 7) {
+    throw new Error('定时时长不合法（1 ~ 10080 分钟）');
+  }
+  const item = {
+    id: nextLocalId('so'),
+    action,
+    fireAt: Date.now() + Math.round(mins * 60000),
+    label: onceActionLabel(action),
+  };
+  const list = storeGet('settings.schedulesOnce', []);
+  list.push(item);
+  storeSet('settings.schedulesOnce', list);
+  armOnce(item);
+  return { item, list };
+});
+handle(CH.SCHED.ONCE_REMOVE, (e, id) => {
+  const t = schedOnceTimers.get(id);
+  if (t) { clearTimeout(t); schedOnceTimers.delete(id); }
+  const list = storeGet('settings.schedulesOnce', []).filter((x) => x.id !== id);
+  storeSet('settings.schedulesOnce', list);
+  return list;
+});
+
 /* ================= IPC: 7z 压缩包内容预览 ================= */
 handle(CH.SEVEN.LIST, async (e, { archive, password }) => {
   const bin = findSevenFull() || sevenZa;
@@ -4337,7 +4549,46 @@ handle(CH.SEVEN.LIST, async (e, { archive, password }) => {
   return { entries: rows.filter(x => x.path), total: rows.length };
 });
 
-/* ================= IPC: 笔记导出 PDF（离屏渲染 printToPDF） ================= */
+/* ================= IPC: 笔记导出 PDF（离屏渲染 printToPDF） =================
+ *
+ * 【三个必须处理的点】
+ * ① 离屏窗口要关掉 JS。它渲染的是用户笔记正文，不该执行脚本；
+ *    printToPDF 本身不需要 JS（布局是纯 CSS）。
+ * ② 不能靠固定 300ms 等"渲染完成"。笔记里带本地图片时，300ms 内图片
+ *    可能还没解码完，导出的 PDF 里图片是空白 —— 慢机器更容易命中。
+ *    改成等 did-finish-load + 所有 <img> 解码完成，再设一个硬超时兜底。
+ * ③ 原始 html 直接拼进 data: URL 等于让任意脚本进入这个文档。
+ *    净化放在主进程：剥掉 <script>、事件属性、javascript: 协议。
+ *    不能假设上游（渲染层）一定净化过 —— 那是另一个进程的承诺。 */
+function sanitizeNoteHtml(html) {
+  let s = String(html == null ? '' : html);
+  /* 剥 script/style 整块（style 里可能有 expression() 之类的老 IE 手法，
+   * 现代 Chromium 不认，但剥掉更省心；保留 style 的属性写法不影响排版）。 */
+  s = s.replace(/<script\b[\s\S]*?<\/script\s*>/gi, '');
+  s = s.replace(/<script\b[^>]*\/?>/gi, '');
+  s = s.replace(/<iframe\b[\s\S]*?<\/iframe\s*>/gi, '');
+  s = s.replace(/<object\b[\s\S]*?<\/object\s*>/gi, '');
+  s = s.replace(/<embed\b[^>]*\/?>/gi, '');
+  /* 事件属性：onclick / onerror / onload …（引号可以是单/双/无） */
+  s = s.replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  /* javascript: / vbscript: / data:text/html 协议。
+   * 【回调必须按 (whole, attr, offset, str) 取值，不要取 val】
+   * 上面那条正则只有 **两个捕获组**：(href|src|action) 与……没有第二个 ——
+   * 引号部分写的是 `"[^"]*"|'[^']*'|[^\s>]+` 的**交替**，整体在外层非捕获
+   * 结构里。于是回调的第三个参数是 match offset（一个数字），
+   * 不是属性值 —— 之前误当成 val 来判，`v` 恒为 "3"，永远不命中，
+   * javascript: 就一路放行（实测抓到的）。
+   * 现在统一从 whole 里再切一次值，不依赖回调参数个数。 */
+  s = s.replace(/\b(href|src|action)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, function (whole, attr) {
+    const eq = whole.indexOf('=');
+    const raw = eq >= 0 ? whole.slice(eq + 1) : '';
+    const v = raw.replace(/^["']|["']$/g, '').trim().toLowerCase();
+    if (/^(?:javascript|vbscript)\s*:/.test(v) || /^data\s*:\s*text\/html/.test(v)) return attr + '="#"';
+    return whole;
+  });
+  return s;
+}
+
 handle(CH.NOTES.PDF, async (e, { title, html, outPath }) => {
   let outFile = outPath || '';
   if (!outFile) {
@@ -4345,13 +4596,34 @@ handle(CH.NOTES.PDF, async (e, { title, html, outPath }) => {
     if (out.canceled || !out.filePath) return null;
     outFile = out.filePath;
   }
-  const bw = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  /* sandbox:true + javascript:false + 无 preload —— 这个窗口只是排版器，
+   * 不需要任何脚本能力。加上之后即使净化漏掉一处，也没有执行面。 */
+  const bw = hardenWindow(new BrowserWindow({
+    show: false,
+    webPreferences: { offscreen: true, javascript: false, sandbox: true, contextIsolation: true, nodeIntegration: false }
+  }));
   try {
+    const safeHtml = sanitizeNoteHtml(html);
+    const safeTitle = String(title || '').replace(/[<>]/g, '');
     await bw.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
-      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${(title || '').replace(/</g, '')}</title></head>` +
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${safeTitle}</title></head>` +
       `<body style="max-width:720px;margin:32px auto;font-family:'Microsoft YaHei',sans-serif;line-height:1.75;font-size:14px;color:#222">` +
-      `${html}</body></html>`));
-    await new Promise(r => setTimeout(r, 300));
+      `${safeHtml}</body></html>`));
+    /* 【等图片解码完，不要睡 300ms】
+     * javascript:false 之后 executeJavaScript 还能不能用？
+     * 能 —— 关的是页面自己的脚本，主进程通过调试协议注入仍然有效。
+     * 这里注入的是一段"等所有图 decode() 完成"的 Promise，最多等 8 秒；
+     * 失败/超时都不阻断导出（宁可少一张图，也不要整次导出失败）。 */
+    await bw.webContents.executeJavaScript(
+      `Promise.race([
+        Promise.all(Array.from(document.images).map(function (i) {
+          return i.decode ? i.decode().catch(function () {}) : Promise.resolve();
+        })),
+        new Promise(function (r) { setTimeout(r, 8000); })
+      ]).then(function () { return true; })`
+    ).catch(() => {});
+    /* 再等一帧让布局稳定（比固定 300ms 短得多，而且有确定依据） */
+    await new Promise(r => setTimeout(r, 80));
     const buf = await bw.webContents.printToPDF({ printBackground: true, margins: { marginType: 'default' } });
     // 用原子写：writeFileSync 是 O_TRUNC 覆盖，导出中途磁盘满/进程被杀
     // 会把用户原有的那份 PDF 截断成半截甚至空文件。
@@ -4617,6 +4889,10 @@ if (!gotLock) {
     } else if (win) {
       win.webContents.once('did-finish-load', () => { try { armAllSchedules(); } catch (e) {} });
     }
+    /* 【一次性定时（睡眠/锁屏）不等渲染层】
+     * 它执行的是主进程动作（rundll32），不依赖 toast 订阅 ——
+     * 所以立刻武装，包括处理"应用关着的时候到点了"的过期项。 */
+    try { armOnceAll(); } catch (e) { console.warn('[sched] 一次性定时恢复失败：', fmtErr(e)); }
     /* 启动时自动检查更新（设置 → 通用 → 启动时自动检查更新，**默认关**）。
      *
      * 【为什么默认关】本项目一直把「检查更新」做成手动（设置→关于→检查更新）。
@@ -4764,7 +5040,7 @@ if (process.env.HEHE_SMOKE) {
       for (const f of ['snip.html', 'pin.html', 'ruler.html']) {
         let aux = null;
         try {
-          aux = new BrowserWindow({ show: false, width: 640, height: 480, webPreferences: { offscreen: false } });
+          aux = hardenWindow(new BrowserWindow({ show: false, width: 640, height: 480, webPreferences: { offscreen: false } }));
           await aux.loadFile(f);
           await new Promise((res) => setTimeout(res, 300));
           const info = await aux.webContents.executeJavaScript(
