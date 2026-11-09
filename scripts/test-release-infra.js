@@ -216,6 +216,16 @@ t('EE5 两个 workflow 都缓存 electron 二进制（下载反复不可用）',
     assert.ok(/electron\/Cache/.test(seg), f + ' 的缓存路径没有覆盖 electron 下载目录');
     assert.ok(/hashFiles\('package-lock\.json'\)/.test(seg),
       f + ' 的缓存键没有绑定 package-lock（版本变了不会换缓存）');
+    /* 锁的是：pathBlock 为空 —— 说明 workflow 的 path:/key: 结构变了，
+     * 下面那条"不含表达式"的断言就变成了空字符串比较、永远通过。 */
+    const pathBlock = (seg.match(/path:\s*\|([\s\S]*?)\n\s*key:/) || [])[1] || '';
+    /* 锁的是：path 块解析失败 —— 后续断言会静默失去判别力 */
+    assert.ok(pathBlock, f + ' 找不到 path 块');
+    /* 锁的是：缓存路径写成 GitHub 表达式 —— save 时静默匹配为空。 */
+    /* 实测踩过 ${{ runner.os == 'Windows' && env.LOCALAPPDATA }}：
+     * actions/cache 报 success，实际什么都没存，下次还要重下。 */
+    assert.ok(!/\$\{\{/.test(pathBlock),
+      f + ' 的缓存路径里含 GitHub 表达式（save 时会静默匹配为空）');
   }
 });
 
