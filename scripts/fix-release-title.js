@@ -49,7 +49,15 @@ function fail(msg) {
 }
 
 function resolveTag() {
-  const argvTag = process.argv[2];
+  /* 【位置参数里要跳过 --开头的开关】
+   * 调用形态有两种：
+   *   node fix-release-title.js v0.6.9
+   *   node fix-release-title.js --if-exists v0.6.9   ← workflow 用这个
+   * 原来直接取 argv[2]，第二种形态会把 '--if-exists' 当成 tag，
+   * 于是卡在 /^v?\d+\.\d+\.\d+$/ 校验上报"tag 格式可疑"。
+   * 取第一个不以 -- 开头的参数。 */
+  const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+  const argvTag = positional[0];
   if (argvTag && argvTag.trim()) return argvTag.trim();
   if (process.env.TAG && process.env.TAG.trim()) return process.env.TAG.trim();
   // 兜底：读仓库里的目标文件，方便在没有 workflow_dispatch 输入的情况下触发
@@ -100,6 +108,20 @@ async function apiCall(repo, token, method, urlPath, body) {
 
 async function main() {
   const argvAll = process.argv.slice(2).includes('--all');
+  /* 【--if-exists：Release 不存在时正常退出，不算失败】
+   *
+   * 为什么需要它：workflow 里这一步挂了 `if: always()` —— 它必须在前面的
+   * 步骤失败时也执行（那些失败可能是"发布了但标题没改"）。但另一种情形是
+   * **Release 根本没创建**（Publish 被 skip，v0.6.9 就是这样）：
+   * 那时这里会重试 10 次、等 20 秒，然后 fail() 挂红。
+   *
+   * 后果是错误信息被淹没：真正的问题是"没有产物"，而日志最后一条红的是
+   * "标题未统一" —— 看日志的人会去查标题逻辑，方向完全错了。
+   *
+   * 加了这个开关之后：不存在就打印一行说明并退出 0，
+   * 由专门的 verify-release.js 去判定"没有 Release = 真失败"。
+   * 职责分开：本脚本只管改标题，不负责判断发布是否成功。 */
+  const ifExists = process.argv.slice(2).includes('--if-exists');
   const token = resolveToken();
   const repo = resolveRepo();
 
@@ -115,6 +137,15 @@ async function main() {
   const wantTag = tag.startsWith('v') ? tag : 'v' + tag;
   log(`repo=${repo} tag=${wantTag}`);
   log(`期望标题：${want}`);
+
+  /* --if-exists 模式下先探一次，不存在就直接收工，不进 10 次重试 */
+  if (ifExists) {
+    const probe = await apiCall(repo, token, 'GET', `/releases/tags/${encodeURIComponent(wantTag)}`);
+    if (probe.status === 404) {
+      log(`${wantTag} 没有对应的 Release —— 跳过标题归一化（发布是否成功由 verify-release 判定）`);
+      return 0;
+    }
+  }
 
   let got = '';
   for (let i = 1; i <= MAX_ATTEMPTS; i++) {

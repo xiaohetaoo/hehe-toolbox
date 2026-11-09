@@ -145,7 +145,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -e
-          node scripts/fix-release-title.js "$TAG"
+          node scripts/fix-release-title.js --if-exists "$TAG"
 
       # 兜底：确保 Release 正文非空。
       #

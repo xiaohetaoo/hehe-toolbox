@@ -149,4 +149,46 @@ t('VR5 两个脚本在缺少参数时给出用法并退出非零（不会静默�
   }
 });
 
+t('VR6 兜底脚本在 Release 不存在时不该挂红（由 verify-release 判）', () => {
+  /* 锁的是：workflow 里那两步 `if: always()` 在"Release 根本没创建"时
+   * 也去执行，然后因为找不到 Release 而 exit 1 —— 于是日志最后一条红是
+   * 「找不到 release / 标题未统一」，真正的失败（没有产物）被盖住，
+   * 看日志的人会去查标题逻辑，方向完全错了。
+   *
+   * 职责划分：
+   *   · fix-release-title / ensure-release-notes —— 只改内容，
+   *     Release 不存在时安静跳过（退出 0）
+   *   · verify-release —— 唯一有权判"发布失败"的地方
+   * 三者都要有这个分工，否则又回到"到处报红但没人说清原因"。 */
+  const title = readSrc('scripts/fix-release-title.js');
+  /* 锁的是：兜底脚本在 Release 不存在时也 exit 1 —— 把真正失败盖住 */
+  assert.ok(/--if-exists/.test(title), 'fix-release-title 没有 --if-exists 模式');
+  assert.ok(/if \(probe\.status === 404\)/.test(title), '--if-exists 没有 404 探测分支');
+
+  const notes = readSrc('scripts/ensure-release-notes.js');
+  const seg = notes.slice(notes.indexOf('if (!rel)'), notes.indexOf('const cur ='));
+  /* 锁的是：ensure-release-notes 在 Release 不存在时仍 exit 1 */
+  assert.ok(/没有对应的 Release/.test(seg), 'ensure-release-notes 没有"Release 不存在就跳过"的分支');
+  assert.ok(!/process\.exit\(1\)/.test(seg), 'Release 不存在时仍然 exit 1');
+});
+
+t('VR7 workflow 调用时传了 --if-exists', () => {
+  /* 锁的是：脚本加了开关但 workflow 没传 —— 等于没加。 */
+  const s = readSrc('.github/workflows/release.yml', { raw: true });
+  assert.ok(/fix-release-title\.js --if-exists/.test(s),
+    'workflow 调 fix-release-title 时没有传 --if-exists');
+});
+
+t('VR8 --if-exists 不会把开头的开关当成 tag', () => {
+  /* 锁的是：resolveTag 直接取 argv[2]。
+   * 调用 `--if-exists v0.6.9` 时 argv[2] 是 '--if-exists'，
+   * 会卡在 tag 格式校验上报"格式可疑"，而真正的问题是不该报错。 */
+  const s = readSrc('scripts/fix-release-title.js');
+  /* 锁的是：resolveTag 直接取 argv[2] —— 会把 --if-exists 当成 tag */
+  assert.ok(/filter\(\(a\) => !a\.startsWith\('--'\)\)/.test(s),
+    'resolveTag 没有跳过 --开头的开关');
+  assert.ok(!/const argvTag = process\.argv\[2\]/.test(s),
+    'resolveTag 仍直接取 argv[2]');
+});
+
 done();

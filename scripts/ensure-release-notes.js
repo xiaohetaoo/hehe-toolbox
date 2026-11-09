@@ -124,7 +124,23 @@ async function main() {
   if (!repo) { console.error('缺少 GITHUB_REPOSITORY'); process.exit(1); }
 
   const rel = await findRelease(repo, token, tag);
-  if (!rel) { console.error('找不到 release：' + tag); process.exit(1); }
+  if (!rel) {
+    /* 【Release 不存在不是本脚本该判的失败】
+     * 这一步在 workflow 里挂了 `if: always()`：必须在前面的步骤失败时也跑
+     * （典型情形是"发了但正文空"）。但另一种情形是 Release 根本没创建
+     * （Publish 被 skip，v0.6.9 就是这样）—— 那时这里 exit 1 会让日志最后
+     * 一条红是"找不到 release"，把真正的失败（没有产物）盖在后面。
+     *
+     * 改成打印一行说明并正常退出。"没有 Release = 发布失败"由
+     * scripts/verify-release.js 负责判：它会把「tag 有、Release 无」
+     * 明确报成 ::error:: 并挂红。职责分开，日志才读得懂。
+     *
+     * 注意只影响"Release 不存在"这一种：Release 在但正文写不进去时，
+     * 本脚本仍打 WARN 且不挂红（见下方说明）。 */
+    console.log('[release-notes] ' + tag + ' 没有对应的 Release —— 跳过正文检查'
+      + '（发布是否成功由 verify-release 判定）');
+    return;
+  }
 
   const cur = String(rel.body || '');
   if (isMeaningful(cur)) {
