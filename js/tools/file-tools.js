@@ -771,7 +771,21 @@
           let out = zipName.value.trim();
           if (!out) {
             const first = cPaths[0];
-            const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/')) : first.slice(0, first.lastIndexOf('\\'));
+            /* 【取目录必须同时看两种分隔符，且要处理"没有分隔符"的情况】
+             * 原写法：
+             *   const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/'))
+             *                                   : first.slice(0, first.lastIndexOf('\\'));
+             * 三处不对：
+             *   ① 混用分隔符的路径（D:/foo\bar.txt）里 includes('/') 为真，
+             *      但 lastIndexOf('/') 停在中间，切出来的 dir 丢掉了后半段目录；
+             *   ② **没有任何分隔符**时 lastIndexOf 返回 -1，
+             *      slice(0, -1) 不是"空串"而是"去掉最后一个字符"——
+             *      于是 D 盘根下的 a.txt 会得到 "a.t" 当目录；
+             *   ③ 结果直接拼 '/archive.zip'，在没有目录时变成相对路径，
+             *      落到主进程的默认 cwd（可能是安装目录），用户找不到产物。
+             * 现在：取两种分隔符里更靠后的那个；找不到就回落到盘符根/当前目录。 */
+            const iSlash = Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\'));
+            const dir = iSlash > 0 ? first.slice(0, iSlash) : '.';
             out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, dir + '/archive.zip');
           } else {
             out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, out.endsWith('.zip') ? out : out + '.zip');
@@ -1133,7 +1147,11 @@
           let out = zipName.value.trim();
           if (!out) {
             const first = cPaths[0];
-            const dir = first.includes('/') ? first.slice(0, first.lastIndexOf('/')) : first.slice(0, first.lastIndexOf('\\'));
+            /* 【与上面 ZIP 那处同一个缺陷】取目录必须同时看 '/' 与 '\\'，
+             * 且 lastIndexOf 返回 -1 时 slice(0, -1) 会吃掉最后一个字符。
+             * 详见 zip-tool 里那段说明。 */
+            const iSlash = Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\'));
+            const dir = iSlash > 0 ? first.slice(0, iSlash) : '.';
             out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, dir + '/archive.7z');
           } else out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, out.endsWith('.7z') ? out : out + '.7z');
           const r = await invoke(Channels.CHANNELS.SEVEN.COMPRESS, { files: cPaths, out, password: pwdIn.value || '', volumeMB: volIn.value ? +volIn.value : 0 });
@@ -1191,7 +1209,7 @@
           pvBox.appendChild(renderTable({
             columns: [
               { key: 'attr', title: '类型', width: '56px', render: x => h('span', { class: 'tag ' + (String(x.attr).includes('D') ? 'tag-blue' : 'tag-gray') }, String(x.attr).includes('D') ? '目录' : '文件') },
-              { key: 'size', title: '大小', width: '110px', render: x => x.attr.includes('D') ? '—' : fmtBytes(x.size) },
+              { key: 'size', title: '大小', width: '110px', render: x => String(x.attr).includes('D') ? '—' : fmtBytes(x.size) },
               { key: 'path', title: '路径', render: x => h('span', { class: 'mono', style: { wordBreak: 'break-all', fontSize: '11px' } }, x.path) }
             ],
             rows

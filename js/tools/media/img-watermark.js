@@ -38,6 +38,8 @@ register({
         const outDir = firstDir + '/hehe-watermark';
         try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
         let ok = 0;
+        let fail = 0;
+        const errs = [];
         try {
         for (let i = 0; i < paths.length; i++) {
           prog.set((i + 1) / paths.length * 100);
@@ -66,7 +68,21 @@ register({
             ctx.strokeText(textIn.value, x, y);
             ctx.fillText(textIn.value, x, y);
             const ext = p.split('.').pop().toLowerCase();
-            const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
+            /* 【扩展名必须跟着真实编码走，不能照抄原扩展名】
+             * 原来只分 png / 其它两种情况（其它一律按 JPEG 编码），
+             * 但输出名却照抄原扩展名。WebP 输入于是得到：
+             *   · 内容是 JPEG（toDataURL('image/jpeg')）
+             *   · 文件名是 xxx_wm.webp
+             * 这是一个**扩展名说谎**的文件：资源管理器按 .webp 显示缩略图、
+             * 部分程序按扩展名选解码器，都会打不开或显示错误。
+             * 而本工具的图片白名单里就包含 webp/bmp/gif（见 shared.js），
+             * 所以这条路径不是理论上的边角。
+             *
+             * 现在：能原样保持的只有 png / jpg / jpeg / webp 四种（canvas 都支持编码）；
+             * 其余（bmp / gif）统一按 JPEG 输出，扩展名同步改成 .jpg ——
+             * 宁可改扩展名，也不让文件内容与名字对不上。 */
+            const ENCODABLE = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
+            const mime = ENCODABLE[ext] || 'image/jpeg';
             const dataUrl = canvas.toDataURL(mime, 0.92);
             const rawName = p.split(/[\\/]/).pop();
             // 原来用 name.replace(/\.(\w+)$/, '_wm.$1')：文件名**没有扩展名**时
@@ -75,7 +91,7 @@ register({
             const dot = rawName.lastIndexOf('.');
             const hasExt = dot > 0; // 0 表示以点开头（隐藏文件），负数表示无扩展名
             const stem = hasExt ? rawName.slice(0, dot) : rawName;
-            const extPart = hasExt ? rawName.slice(dot + 1) : 'jpg';
+            const extPart = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
             const outName = stem + '_wm.' + extPart;
             // 一律取唯一名：既防覆盖原图，也防覆盖目录里已存在的同名输出
             const outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, outDir.replace(/[\\/]$/, '') + '/' + outName);
@@ -85,9 +101,27 @@ register({
               preview.innerHTML = '';
               preview.appendChild(h('img', { src: dataUrl, style: { maxWidth: '100%', maxHeight: '300px', borderRadius: '8px', border: '1px solid var(--border)' } }));
             }
-          } catch (e) { console.error(e); }
+          } catch (e) {
+            /* 【单张失败必须计数并说出来】
+             * 原来只有一句 console.error(e) —— 而打包后的 exe 没有控制台，
+             * 等于什么都不留。用户看到的是「完成，成功 N 张」，
+             * 而队列里其实有几张是失败的：他只会以为工具少处理了。
+             * 收集起来在末尾如实报出（与 img-batch / target-size 同一口径）。 */
+            fail++;
+            if (errs.length < 5) {
+              /* 【这里不能用 p】p 是 try 块内的 const，catch 里已经在作用域外，
+               * 写 String(p) 会抛 `ReferenceError: p is not defined` ——
+               * 而这句本身就在错误处理里，于是"报失败"变成了"报失败时又崩一次"，
+               * 整轮处理中断（test-img-watermark 直接抓到 reject: p is not defined）。
+               * 用循环外的 paths[i] 取同一个值，它在整个 for 体内都可见。 */
+              const nm = String(paths[i]).split(/[\\/]/).pop() || String(paths[i]);
+              errs.push(nm + '：' + ((e && e.message) || String(e)));
+            }
+          }
         }
-        toast(`完成，成功 ${ok} 张，输出：${outDir}`, 'success');
+        toast(`完成，成功 ${ok} 张${fail ? '，失败 ' + fail + ' 张' : ''}，输出：${outDir}`,
+          fail ? 'warn' : 'success');
+        if (fail) toast('失败明细：' + errs.join('；') + (fail > errs.length ? ' …' : ''), 'error', 6000);
         } finally {
           // 异常也必须解锁，否则一次失败就让本页永久不可用
           running = false; prog.hide(); picker.setLocked(false);

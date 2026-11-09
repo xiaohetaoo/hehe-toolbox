@@ -154,7 +154,20 @@
       }
 
       async function run() {
-        const files = picker.files();
+        /* 【必须用 picker.paths，picker 上没有 files() 这个方法】
+         * 原来写的是 `picker.files()` —— 而 filePicker() 返回的 api 只有
+         * paths / count / add / clear / setLocked / move / sortBy / list / el / dz
+         * 这几个成员（见 js/ui.js 的 filePicker 尾部）。调用一个不存在的方法
+         * 会当场抛 `TypeError: picker.files is not a function`，
+         * 而这个异常发生在**函数体的第一行**：勾好图、填好密钥、选好输出目录，
+         * 点「开始处理」永远没有任何反应（连 toast 都没有，因为抛错早于所有分支）。
+         * 也就是说这个工具从写下来起就是 100% 不可用的。
+         *
+         * 【为什么测试没抓到】test-img-scramble 只验算法可逆性与两句文案，
+         * 全项目另外 88 处调用都写的是 picker.paths —— 只有这一处写错，
+         * 而 IIFE 包裹 + 无导出让"点一下"成为唯一能暴露它的方式。
+         * 已在 test-img-scramble 里补了断言（锁的是"必须叫 paths"）。 */
+        const files = picker.paths.slice();
         if (!files.length) return toast('请先添加图片', 'warn');
         const key = keyIn.value;
         if (!key) return toast('请填写密钥', 'warn');
@@ -162,6 +175,7 @@
         const outDir = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (!outDir || !outDir[0]) return;
         prog.show();
+        picker.setLocked(true);
         let ok = 0;
         const errs = [];
         try {
@@ -185,6 +199,12 @@
           if (errs.length) toast('失败 ' + errs.length + ' 张：' + errs.slice(0, 3).join('；'), 'error', 6000);
         } finally {
           prog.hide();
+          /* 【必须解锁列表】picker.setLocked(true) 之后文件增删全被 ui.js 的
+           * 守卫拦住（见 fileList 的 locked 分支）。只 prog.hide() 不解锁的话，
+           * 一次异常（解码失败、磁盘满、图片过大）就让用户卡在
+           * 「加不了文件、也删不掉列表」的页面上，只能切页重开。
+           * 与 img-batch / target-size 的 finally 保持同一形态。 */
+          try { picker.setLocked(false); } catch (e) {}
         }
       }
 

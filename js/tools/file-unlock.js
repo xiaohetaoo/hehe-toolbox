@@ -38,7 +38,20 @@
       const picker = filePicker({
         text: '选择或拖入被占用的文件 / 目录',
         multiple: true,
-        directory: true,
+        /* 【不要用 directory: true —— 它会把对话框锁成"只能选一个目录"】
+         * dropzone 里 props 的取法是：
+         *   pickProps || (directory ? ['openDirectory'] : (multiple ? ['openFile','multiSelections'] : ['openFile']))
+         * 也就是说 directory:true 时 **multiple 完全不生效**，props 恒为
+         * ['openDirectory']。后果有两条，都对不上界面文案：
+         *   ① 点「选择目标」只能选**目录**，选不了单个文件 ——
+         *      而"删不掉某个文件"正是这个工具最主流的用法；
+         *   ② 只能选**一个**目录，没法一次查多个。
+         * 用户会把文件拖进来绕过去（拖拽走的是另一条路径，不经过这个 props），
+         * 于是"拖能用、点不能用"——这种半坏最难被发现，也最容易让人以为软件坏了。
+         *
+         * 正确写法与本项目 zip-tool 一致：显式给 pickProps，让文件与目录
+         * 都能选、且支持多选。 */
+        pickProps: ['openFile', 'openDirectory', 'multiSelections'],
         onChange: (items) => {
           /* 【保留 isDir：它就是「目录还是文件」的唯一真实来源】
            * fileList 的字段名是 isDir（不是 dir），而且在 add() 里初始是 false，

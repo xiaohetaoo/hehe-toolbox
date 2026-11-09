@@ -36,12 +36,34 @@ register({
         const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
         if (!st.ffmpeg) { running = false; toast('未安装 FFmpeg', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
         const src = picker.paths[0];
-        /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-        const base = src.split(/[\\/]/).pop().replace(/\.\w+$/, '');
-        const outDir = src.replace(/[\\/][^\\/]+$/, '') + '/hehe-frames';
-        try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) {}
-        const r = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] }).catch(() => null);
-        const finalDir = (r && r[0]) ? r[0] : outDir;
+        /* 【用户点「取消」必须真的取消，不能当成"用默认目录"】
+         * 原来写的是 `.catch(() => null)` 然后 `(r && r[0]) ? r[0] : outDir`，
+         * 于是两种完全不同的情况被合并成同一条路径：
+         *   · 用户在选择框里点了**取消**（r === null）      → 继续用 outDir 截帧
+         *   · 通道本身失败（catch 吞成 null）              → 也继续
+         * 用户按了取消，界面却显示「处理中…」然后弹出「截帧完成」——
+         * 白等一轮，还往磁盘里写了一堆他没要的帧。
+         *
+         * 【另一个副作用：取消也会留下空目录】
+         * 原来在选择**之前**就先 mkdir 了一个默认目录
+         * （<源目录>/hehe-frames）：用户一旦取消，那个空目录已经建出来了，
+         * 而它不属于任何一次实际操作。
+         * 现在先问目录，拿到非空结果才往下走；mkdir 由主进程在真正开始
+         * 截帧时按 outDir 参数创建（FFMPEG.FRAMES handler 里已有 mkdir）。
+         *
+         * 真正抛错时如实报错并中止；返回 null（取消）时静默中止 ——
+         * 这两者是不同的事，不能都当成"用默认目录"。 */
+        let picked;
+        try {
+          picked = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
+        } catch (e) {
+          running = false;
+          outLabel.textContent = '✗ 打开目录选择框失败：' + ((e && e.message) || String(e));
+          toast('打开目录选择框失败', 'error');
+          return;
+        }
+        if (!picked || !picked[0]) { running = false; return; }   // 用户取消：什么都不做
+        const finalDir = picked[0];
         goBtn.disabled = true; outLabel.textContent = '处理中…';
         try {
           /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */

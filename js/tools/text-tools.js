@@ -208,7 +208,22 @@
         return rows;
       }
       function toCSV(arr, sep) {
-        const esc = (v) => { const s = v == null ? '' : String(v); return new RegExp(`["\n\r${sep === '\t' ? '\\t' : sep === '|' ? '\\|' : sep === ';' ? ';' : ','}]`).test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+        /* 【转义判据不能用字符串拼正则 —— 制表符会被拼成字面量 "\t"】
+         * 原实现把分隔符拼进 new RegExp(...)：走 Tab 分支时插进正则的是
+         * **两个字符**（反斜杠 + 字母 t），于是字符类匹配的是引号、换行、
+         * 回车、反斜杠和字母 t，**唯独不匹配真正的制表符**。
+         * 后果：选 Tab 分隔导出时，字段里只要含制表符就不会被加引号，
+         * 那一行被多切一列，整张表错位（而用户选的正是 Tab 分隔，
+         * 内容里带 Tab 是极常见的）。
+         *
+         * 现在不用正则：直接判断「字段里是否含分隔符 / 引号 / 换行」，
+         * 全部用字符串的 indexOf，天然没有转义问题。 */
+        const esc = (v) => {
+          const s = v == null ? '' : String(v);
+          const need = s.indexOf(sep) >= 0 || s.indexOf('"') >= 0
+            || s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0;
+          return need ? '"' + s.replace(/"/g, '""') + '"' : s;
+        };
         return arr.map(r => r.map(esc).join(sep)).join('\n');
       }
       function fire() {

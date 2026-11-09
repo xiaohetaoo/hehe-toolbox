@@ -14,7 +14,7 @@
  * 这有分叉风险，所以额外加了一条源码断言：验证工具文件里确实是同样的实现。
  */
 const assert = require('assert');
-const { t, done, readSrc } = require('./lib/harness');
+const { t, done, readSrc, readTree } = require('./lib/harness');
 
 /* ---- 以下三个函数必须与 js/tools/media/img-scramble.js 保持一致 ---- */
 function makeRng(seed) {
@@ -189,6 +189,62 @@ t('界面上写清了「不是加密」的警告', () => {
   assert.ok(/视觉混淆不是加密/.test(src), '缺少「不是加密」的醒目警告');
   // 锁的是：必须指向真正的加密工具，否则用户不知道该用什么替代。
   assert.ok(/文件加密解密/.test(src), '应指引用户改用 AES 加密工具');
+});
+
+/* ============ 与 filePicker 的接口契约 ============
+ *
+ * 锁的是：run() 取文件列表时必须调用 picker.paths，而不是 picker.files()。
+ *
+ * 【为什么这条曾经是真事故】filePicker() 返回的 api 里根本没有 files()
+ * 这个方法（见 js/ui.js 的 filePicker 尾部：el/dz/list/paths/count/add/
+ * clear/setLocked/move/sortBy/setMainText）。调用不存在的方法会当场抛
+ * TypeError，而那一行是 run() 的第一句 —— 勾好图、填好密钥、选好输出目录，
+ * 点「开始处理」永远没有任何反应（连 toast 都没有）。
+ * 也就是说这个工具从写下来起就是 100% 不可用的，而当时全项目另外 88 处
+ * 调用都正确地写着 picker.paths，只有这一处写错。
+ *
+ * 【为什么不能用行为断言】工具是 IIFE 包裹的，run() 拿不到也调不起来；
+ * 要真的点一下才能暴露（需要 Electron + 真图 + 真对话框）。
+ * 所以这里用源码断言，并用「反向扫描整个 js/tools」把同类笔误一次性挡住 ——
+ * 只盯这一个文件的话，下一个复制粘贴出来的同款错误仍然会漏。
+ */
+t('run() 用 picker.paths 取文件列表（picker 上没有 files 方法）', () => {
+  const src = readSrc('js/tools/media/img-scramble.js');
+  // 锁的是：run() 必须通过 picker.paths 拿文件（这是 filePicker 唯一提供的入口）。
+  assert.ok(/picker\.paths/.test(src), 'img-scramble 的 run() 应该用 picker.paths');
+  // 锁的是：整个工具里不能再出现 picker.files( 这种不存在的成员。
+  assert.ok(!/picker\.files\s*\(/.test(src), 'picker 上没有 files() 方法，调用它会抛 TypeError');
+});
+
+t('js/tools 下没有任何 picker.files() 调用（同款笔误全项目扫描）', () => {
+  /* 【为什么用 readTree 而不是自己 readdir + readFileSync】
+   * scripts/test-source-assertions.js（元测试）会拦「裸 readFileSync 读项目源码」
+   * 与「对源码文本做 .test 却没有『锁的是』注释」两种形态。
+   * 本文件不在它的存量基线里，所以必须 A=0 / B=0 ——
+   * readTree 是 harness 提供的正规入口（它内部剥注释，语义与 readSrc 一致）。
+   *
+   * 【已知边界】readTree 只扫一层目录（不递归子目录）。而 picker 的实际
+   * 调用点分布在 js/tools/*.js 与 js/tools/media/*.js 两处，所以这里
+   * 分两次读：顶层 + media 子目录。将来若再分层，这条要跟着加目录 ——
+   * 漏掉的那一层会静默失去保护，所以下面用 assert 显式记住两处都扫过。 */
+  const top = readTree('js/tools');
+  const media = readTree('js/tools/media');
+  // 锁的是：顶层工具文件里不能出现 picker.files( 这种不存在的成员。
+  assert.ok(!/picker\.files\s*\(/.test(top), 'js/tools/*.js 里出现了 picker.files()（picker 上没有这个方法）');
+  // 锁的是：media 子目录同样不能出现（img-scramble 就在这一层）。
+  assert.ok(!/picker\.files\s*\(/.test(media), 'js/tools/media/*.js 里出现了 picker.files()（picker 上没有这个方法）');
+});
+
+/* 锁的是：run() 无论成功还是抛异常，都必须把文件列表解锁。
+ * 不能用行为断言的原因：同上（IIFE + 无导出），只能看源码形态。
+ * 只 prog.hide() 不解锁的话，一次异常就把用户卡在「加不了文件、
+ * 也删不掉列表」的页面上，只能切页重开。 */
+t('run() 的 finally 里解开了 picker 的锁', () => {
+  const src = readSrc('js/tools/media/img-scramble.js');
+  // 锁的是：设置了 locked 就必须有配对的 setLocked(false)。
+  assert.ok(/picker\.setLocked\(true\)/.test(src), 'run() 应该先锁住列表');
+  // 锁的是：finally 里必须有解锁调用（漏了会让页面永久不可用）。
+  assert.ok(/picker\.setLocked\(false\)/.test(src), 'run() 的 finally 必须解锁列表');
 });
 
 done();

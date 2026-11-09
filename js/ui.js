@@ -901,7 +901,22 @@
     const {
       text = '点击选择或拖拽文件到此处', textMore, sub = '', multiple = true,
       directory = false, filters, filter, onReject, onChange, single = false,
-      beforeRemove, rowStart, rowEnd, emptyText, onBlob
+      beforeRemove, rowStart, rowEnd, emptyText, onBlob,
+      /* 【pickProps 必须解构出来再传下去 —— 曾经漏了，两个工具因此半坏】
+       * dropzone() 里 props 的取法是
+       *   pickProps || (directory ? ['openDirectory'] : (multiple ? [...] : ['openFile']))
+       * 也就是说 pickProps 是"绕过默认组合"的唯一途径。
+       * 而 filePicker 只是把 opts 里**自己列出的**字段转给 dropzone ——
+       * 早期这一行的解构里没有 pickProps，第 915 行也没传，
+       * 于是调用方写的 pickProps 被**静默丢弃**，退回默认组合：
+       *   · zip-tool     想要 ['openFile','openDirectory','multiSelections']（要能选文件夹压缩），
+       *                  实际拿到 ['openFile','multiSelections'] —— 选不到文件夹；
+       *   · archive-7z   同理。
+       * 两者的界面文案都写着「拖入或选择要压缩的文件夹」，而拖拽走的是另一条
+       * 路径（drop 事件自己展开目录），所以"拖能用、点不能用"—— 这种半坏
+       * 状态最容易被当成"软件坏了"而不是"少传了一个字段"。
+       * 修法：解构出来，并在下面 dropzone({...}) 里显式传下去。 */
+      pickProps
     } = opts;
     const fl = fileList({
       single, beforeRemove, rowStart, rowEnd, emptyText: emptyText || '还没有添加文件',
@@ -913,7 +928,9 @@
       }
     });
     const dz = dropzone({
-      text, sub, multiple: multiple && !single, directory, filters,
+      /* pickProps 必须在这一行传下去，否则调用方写的它会被静默丢弃 ——
+       * 见 filePicker 解构处那段说明（zip-tool / archive-7z 因此选不到文件夹）。 */
+      text, sub, multiple: multiple && !single, directory, filters, pickProps,
       onFiles: (paths, files) => {
         const list = (paths || []).filter((p) => typeof p === 'string' && p);
         // 拖拽时拿不到真实路径（如从浏览器拖来的图片）：交给调用方走 blob 分支
