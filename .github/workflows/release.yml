@@ -22,20 +22,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # electron 45 的 package.json 没有 postinstall 钩子（33 有），
-      # npm ci 之后 dist/ 是空的。不补这一步，electron-builder 打包会立刻失败。
+      # electron 43 的 package.json **没有 postinstall 钩子**（33 有），
+      # 所以 npm ci 之后 node_modules/electron/dist/ 是空的、path.txt 也不存在。
+      # 打包和冒烟都要用到里面的 electron.exe，必须显式补跑一次下载。
+      #
+      # 【为什么不在这里内联 bash】
+      # 这段逻辑原来 ci.yml 与 release.yml 各写一遍，且**没有重试**。
+      # 实测连续两次发版都栽在下载上（v0.6.8 的 CI 是 120 秒超时、
+      # v0.6.9 的 Release 是 11 秒快速失败），两次都让后续 9~12 个步骤
+      # 全部 skipped —— 代码一行都没被执行到，流水线却红了。
+      # 现在收口到 scripts/ensure-electron.js：有限重试 + 每次重试前清半成品
+      # （install.js 看到残缺的 dist/ 会以为"已下载"直接跳过）。
       - name: Ensure electron binary is downloaded
-        shell: bash
-        run: |
-          set -e
-          if [ -f node_modules/electron/dist/electron.exe ]; then
-            echo "electron binary already present"
-          else
-            echo "electron binary missing, running install.js"
-            node node_modules/electron/install.js
-          fi
-          test -f node_modules/electron/dist/electron.exe
-          echo "electron.exe OK"
+        run: node scripts/ensure-electron.js
 
       - name: Syntax check
         shell: bash
@@ -174,3 +173,24 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           node scripts/ensure-release-notes.js "$TAG"
+
+      # ============ 发布结果的最终校验（这一步挂红是对的）============
+      #
+      # v0.6.9 暴露了一条很难察觉的失败路径：tag 推成功了，但 CI 在更早
+      # 的步骤失败，导致 Publish 被 skipped —— **Release 根本不存在**。
+      # 而上面两个兜底步骤都是 if: always()，照样执行、照样 WARN 退出 0，
+      # 看日志的人会以为「流程跑完了，只是有点警告」。
+      #
+      # 这里改用 GitHub 的最终状态反查，不信中间步骤的退出码：
+      #   ① tag 有 Release  ② 不是 draft  ③ 挂了 exe 与 zip 且不是 0 字节
+      # 与上面两步的分工：正文/标题不完美是「说明不完整」，不挂红；
+      # 而「Release 不存在 / 没产物」是用户拿不到东西，必须挂红。
+      - name: Verify release result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/verify-release.js "$TAG"
