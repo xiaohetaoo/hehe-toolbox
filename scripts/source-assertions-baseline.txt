@@ -13,6 +13,7 @@
 
 scripts/check-assertion-count.js | A=3 | B=0 | exact:四处 readFileSync 读的都是数据文件不是源码 —— package.json、reports/test-output.log（上一步的测试输出）、scripts/assertions-baseline.json（本守卫自己的基线）（第 4 处是判定分支里再读一次基线，同样是数据文件）；无源码断言
 scripts/check-installer-name.js | A=1 | B=8 | build-meta
+scripts/ensure-electron.js | A=2 | B=0 | legacy-source-assertion
 scripts/ensure-release-notes.js | A=1 | B=0 | build-meta
 scripts/fix-release-title.js | A=1 | B=0 | build-meta
 scripts/gen-lint-baseline.js | A=1 | B=3 | build-meta

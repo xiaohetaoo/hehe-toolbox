@@ -191,4 +191,66 @@ t('VR8 --if-exists 不会把开头的开关当成 tag', () => {
     'resolveTag 仍直接取 argv[2]');
 });
 
+t('EE5 两个 workflow 都缓存 electron 二进制（下载反复不可用）', () => {
+  /* 锁的是：只加重试、不加缓存。
+   * 实测 v0.7.0 的 CI 在**有 4 次重试**的情况下仍然 4 次全失败（47 秒）——
+   * 说明 objects.githubusercontent.com 在这批 runner 上是持续不可达，
+   * 不是偶发抖动。重试治不了它，只有"下过一次就不用再下"能绕过。
+   *
+   * 缓存键必须带 package-lock.json 的 hash：electron 版本变了要换缓存，
+   * 否则会解出旧版本二进制，打包出版本号与实际运行时不符的应用。
+   *
+   * 【判据必须锁到"电子缓存路径"这一处，不能只查用了 actions/cache】
+   * 第一版只断言 `uses: actions/cache@v4` 存在 —— 而把整个 step 改名禁用
+   * （name 改掉、uses 保留）仍然通过。现在要求同一段里出现
+   * electron/Cache 路径，且键绑定 package-lock。 */
+  for (const f of ['.github/workflows/ci.yml', '.github/workflows/release.yml']) {
+    const s = readSrc(f, { raw: true });
+    /* 定位到"缓存 electron"那个 step 的块（从 name 到下一个 - name: 之前） */
+    const i = s.indexOf('Cache electron binary');
+    assert.ok(i > 0, f + ' 没有 Cache electron binary 步骤');
+    const nextStep = s.indexOf('\n      - name:', i);
+    const seg = s.slice(i, nextStep > i ? nextStep : i + 700);
+    /* 锁的是：缓存步骤没有真正覆盖 electron 下载目录 —— 等于没缓存 */
+    assert.ok(/uses: actions\/cache@v4/.test(seg), f + ' 的缓存步骤没有用 actions/cache@v4');
+    assert.ok(/electron\/Cache/.test(seg), f + ' 的缓存路径没有覆盖 electron 下载目录');
+    assert.ok(/hashFiles\('package-lock\.json'\)/.test(seg),
+      f + ' 的缓存键没有绑定 package-lock（版本变了不会换缓存）');
+  }
+});
+
+t('EE7 下载完成后要校验版本（不只是看 exe 存在）', () => {
+  /* 锁的是：install.js 退出码 0 + electron.exe 够大 就认为成功。
+   * 这会漏掉两种错配：
+   *   · 缓存里是旧版本 → 解出旧 electron → 安装包版本号新、运行时旧
+   *   · dist/version 缺失 → install.js 会重下，而 hasExe() 认为已就绪
+   * install.js 自己的 isInstalled() 就是读 dist/version + path.txt 的，
+   * 这里要与它同一套判据。
+   *
+   * 【判据：verifyVersion 必须出现 ≥2 次】
+   * 两个检查点各一次 —— ① 开工前判"已就绪"  ② 每次下载成功后判"这次下的对不对"。
+   * 第一版只断言"main 里出现过 verifyVersion"，而把它从下载成功分支里删掉
+   * 仍然通过（① 还在），变异测试抓到了这个洞。 */
+  const s = readSrc('scripts/ensure-electron.js');
+    /* 锁的是：没有版本校验 —— 旧缓存会解出旧二进制，安装包版本号骗人 */
+  assert.ok(/function verifyVersion\(/.test(s), '没有 verifyVersion');
+  assert.ok(/'version'/.test(s) || /dist.*version/.test(s), '没有读 dist/version');
+  const mainBody = s.slice(s.indexOf('function main()'));
+  /* 锁的是：verifyVersion 只在"已就绪"分支调一次 —— 下载后不校验这一批二进制 */
+  const calls = (mainBody.match(/verifyVersion\(\)/g) || []).length;
+  assert.ok(calls >= 2,
+    'main 里只调用了 ' + calls + ' 次 verifyVersion（应在"已就绪"与"下载后"各一次）');
+});
+
+t('EE8 清理要覆盖 install.js 依赖的三个路径', () => {
+  /* 锁的是：cleanPartial 只删 dist 目录、漏了 path.txt。
+   * install.js 的 isInstalled() 要求 dist/version **和** path.txt 都对；
+   * 只删一半时它可能直接 exit 0（认为已装），而我们判定失败 → 重试白跑。 */
+  const s = readSrc('scripts/ensure-electron.js');
+  const fn = s.slice(s.indexOf('function cleanPartial()'), s.indexOf('function run()'));
+    /* 锁的是：cleanPartial 漏清 path.txt —— install.js 会误判已装、重试白跑 */
+  assert.ok(/DIST/.test(fn), 'cleanPartial 没有清 dist 目录');
+  assert.ok(/path\.txt/.test(fn), 'cleanPartial 没有清 path.txt');
+});
+
 done();

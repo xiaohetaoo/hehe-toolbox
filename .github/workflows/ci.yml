@@ -18,6 +18,34 @@ jobs:
           node-version: 22
           cache: npm
 
+      # ============ 缓存 electron 二进制 ============
+      #
+      # 【为什么需要】electron 的二进制（约 314MB）不在 npm 包里，
+      # 由 @electron/get 从 objects.githubusercontent.com 单独下载。
+      # 那个域名在 runner 上反复不可用：
+      #   · v0.6.8 的 CI     —— 120 秒超时
+      #   · v0.6.9 的 Release —— 11 秒快速失败
+      #   · v0.7.0 的 CI      —— 加了 4 次重试仍然 4 次全失败（47 秒）
+      # 说明这不是偶发抖动，而是该 runner 池对这个域名的持续不可达。
+      # 重试治不了它，只能让"下载过的东西不用再下"。
+      #
+      # 【缓存键要带 electron 版本】版本变了必须换缓存，
+      # 否则会拿到旧版本的二进制、打包出与 package.json 不符的东西。
+      # 从 package-lock.json 里取锁定版本，而不是 package.json 的 ^ 范围。
+      #
+      # 【路径覆盖两个平台】CI 跑在 windows-latest，缓存目录是
+      # %LOCALAPPDATA%\electron\Cache；写 ~/.cache/electron 是为了
+      # 将来换 ubuntu runner 时不用改这段。
+      - name: Cache electron binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.os == 'Windows' && env.LOCALAPPDATA || '~/.cache' }}/electron/Cache
+            ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
+
       - name: Install dependencies
         run: npm ci
 

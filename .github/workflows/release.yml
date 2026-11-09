@@ -19,6 +19,20 @@ jobs:
           node-version: 22
           cache: npm
 
+      # ============ 缓存 electron 二进制 ============
+      # 与 ci.yml 同一段逻辑，原因见那边的说明。
+      # 这个 workflow 尤其需要它：Release 失败意味着用户拿不到安装包，
+      # 而失败点已经连续三次都是 electron 下载。
+      - name: Cache electron binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.os == 'Windows' && env.LOCALAPPDATA || '~/.cache' }}/electron/Cache
+            ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
+
       - name: Install dependencies
         run: npm ci
 
