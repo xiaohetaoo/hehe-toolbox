@@ -294,11 +294,15 @@ t('1d createPinWindow 登记与删除都用同一个归一键', () => {
 
 /* ==================== 2. finally 不能引用 try 内的 let ==================== */
 
-t('4a 截图导出：源矩形必须乘 dpr，目标尺寸用逻辑像素', () => {
+t('4a 截图导出：源矩形与目标矩形都用物理像素，且 1:1 不缩放', () => {
   const raw = read('js/auxwin/snip-2.js');
   const code = stripComments(raw);
-  const i = code.indexOf('const dpr = devicePixelRatio');
-  assert.ok(i > 0, '找不到导出裁剪那段');
+  /* 【锚点随实现改过一次】原来是 'const dpr = devicePixelRatio'；
+   * 修「框选变形」时导出段改成了复用顶层的 `const dpr = DPR`。
+   * 锚点变了不代表这条断言失效 —— 它要验的语义没变：
+   * 「源矩形乘 dpr、且不能二次缩放」。 */
+  const i = code.indexOf('const dpr = DPR');
+  assert.ok(i > 0, '找不到导出裁剪那段（锚点常量已再次变化，请同步更新本用例）');
   /* 取到 payload.dataUrl 之前，即整段「算坐标 → 建 canvas → drawImage」 */
   const seg = code.slice(i, code.indexOf('payload.dataUrl', i));
   assert.ok(seg.indexOf('drawImage') > 0, '取到的片段里没有 drawImage，抽取边界已失效');
@@ -311,7 +315,7 @@ t('4a 截图导出：源矩形必须乘 dpr，目标尺寸用逻辑像素', () =
    * （非 100% 缩放下截图横向错位），6 个 drawImage 断言仍然全绿。
    *
    * 现在改成：把 seg 里真实那段塞进函数执行，只注入它需要的外部量
-   * （devicePixelRatio / canvas / document / sel / payload）。
+   * （DPR / canvas / document / sel / payload）。
    * document.createElement 返回一个会记录调用的假 canvas。 */
   const calls = [];
   const fakeOctx = {
@@ -329,8 +333,9 @@ t('4a 截图导出：源矩形必须乘 dpr，目标尺寸用逻辑像素', () =
   const dpr = 1.5;
   const sel = { x: 100, y: 50, w: 200, h: 120 };
   const payload = {};
-  /* 真实源码片段里引用的外部量全部由形参注入，片段本身不改一字 */
-  const run = new Function('devicePixelRatio', 'canvas', 'document', 'sel', 'payload',
+  /* 真实源码片段里引用的外部量全部由形参注入，片段本身不改一字。
+   * 【形参名必须与源码里用的一致】源码里用的是 DPR（大写），不是 devicePixelRatio。 */
+  const run = new Function('DPR', 'canvas', 'document', 'sel', 'payload',
     `return (function () {
        ${seg}
        return { out: out, octx: octx, sx: sx, sy: sy, sw: sw, sh: sh };
@@ -339,18 +344,31 @@ t('4a 截图导出：源矩形必须乘 dpr，目标尺寸用逻辑像素', () =
 
   const draw = calls.find((c) => c.op === 'drawImage');
   assert.ok(draw, '源码片段没有调用 drawImage（抽取的代码段可能已不完整）');
-  assert.strictEqual(draw.sx, sel.x * dpr, '源矩形 x 没乘 dpr（只截到左上角 1/dpr 那块再拉满，内容会错位）');
-  assert.strictEqual(draw.sy, sel.y * dpr, '源矩形 y 没乘 dpr');
-  assert.strictEqual(draw.sw, sel.w * dpr, '源矩形宽没乘 dpr');
-  assert.strictEqual(draw.sh, sel.h * dpr, '源矩形高没乘 dpr');
-  // 目标矩形保持逻辑尺寸（由 octx.scale 放大）
-  assert.strictEqual(draw.dw, sel.w, '目标宽应当保持逻辑尺寸（缩放交给 octx.scale）');
-  assert.strictEqual(draw.dh, sel.h, '目标高应当保持逻辑尺寸');
+  /* 源矩形乘 dpr —— 这条语义从未变过，是防"只截到左上角 1/dpr 那块"的核心。 */
+  assert.strictEqual(draw.sx, Math.round(sel.x * dpr), '源矩形 x 没乘 dpr（只截到左上角 1/dpr 那块再拉满，内容会错位）');
+  assert.strictEqual(draw.sy, Math.round(sel.y * dpr), '源矩形 y 没乘 dpr');
+  assert.strictEqual(draw.sw, Math.round(sel.w * dpr), '源矩形宽没乘 dpr');
+  assert.strictEqual(draw.sh, Math.round(sel.h * dpr), '源矩形高没乘 dpr');
+
+  /* 【契约已变更：目标矩形现在也用物理像素，源与目标尺寸相同】
+   * 旧实现靠 octx.scale(dpr) 把逻辑尺寸放大到 dpr 倍；
+   * 修「框选变形」时为了让"画布坐标 = 物理像素"这条语义唯一，
+   * 去掉了 octx.scale，目标矩形直接写 sw/sh（与源完全相同）——
+   * 这才是严格的 1:1 拷贝。
+   * 所以这里断言"目标尺寸 == 源尺寸"，而不是"目标尺寸 == 逻辑尺寸"。 */
+  assert.strictEqual(draw.dw, draw.sw, '目标宽必须等于源宽（1:1 拷贝，不能再缩放）');
+  assert.strictEqual(draw.dh, draw.sh, '目标高必须等于源高（1:1 拷贝，不能再缩放）');
+  assert.strictEqual(draw.dx, 0, '目标起点应为 0');
+  assert.strictEqual(draw.dy, 0, '目标起点应为 0');
+
+  /* 锁的是：导出路径不能再出现 octx.scale —— 有了它，目标矩形就是逻辑单位，
+   * 与"源是物理像素"冲突，输出会被再缩一次（变成 1/dpr 大）。 */
   const sc = calls.find((c) => c.op === 'scale');
-  assert.ok(sc && sc.x === dpr, 'octx.scale 没有按 dpr 缩放');
-  /* 输出画布也必须是位图尺寸（逻辑 × dpr），否则高清屏导出会糊 */
-  assert.strictEqual(got.out.width, sel.w * dpr, '输出画布宽没用位图尺寸');
-  assert.strictEqual(got.out.height, sel.h * dpr, '输出画布高没用位图尺寸');
+  assert.ok(!sc, '导出路径仍有 octx.scale —— 会二次缩放（新契约下画布坐标已是物理像素）');
+
+  /* 输出画布也必须是物理像素尺寸，否则高清屏导出会糊。 */
+  assert.strictEqual(got.out.width, Math.round(sel.w * dpr), '输出画布宽没用物理像素尺寸');
+  assert.strictEqual(got.out.height, Math.round(sel.h * dpr), '输出画布高没用物理像素尺寸');
 });
 
 /* 【4b 已删除 —— 它是 4a 的源码断言副本，且覆盖更窄】
