@@ -38,19 +38,24 @@
       const picker = filePicker({
         text: '选择或拖入被占用的文件 / 目录',
         multiple: true,
-        /* 【不要用 directory: true —— 它会把对话框锁成"只能选一个目录"】
+        /* 【requestBoth：真的能选文件、也能选文件夹】
          * dropzone 里 props 的取法是：
          *   pickProps || (directory ? ['openDirectory'] : (multiple ? ['openFile','multiSelections'] : ['openFile']))
-         * 也就是说 directory:true 时 **multiple 完全不生效**，props 恒为
-         * ['openDirectory']。后果有两条，都对不上界面文案：
-         *   ① 点「选择目标」只能选**目录**，选不了单个文件 ——
-         *      而"删不掉某个文件"正是这个工具最主流的用法；
-         *   ② 只能选**一个**目录，没法一次查多个。
-         * 用户会把文件拖进来绕过去（拖拽走的是另一条路径，不经过这个 props），
-         * 于是"拖能用、点不能用"——这种半坏最难被发现，也最容易让人以为软件坏了。
+         * 早期这里写的是 directory:true，于是 props 恒为 ['openDirectory']、
+         * multiple 完全不生效：只能选**一个目录**，选不了单个文件 ——
+         * 而「删不掉某个文件」正是这个工具最主流的用法。
          *
-         * 正确写法与本项目 zip-tool 一致：显式给 pickProps，让文件与目录
-         * 都能选、且支持多选。 */
+         * 【只把它改成 pickProps: ['openFile','openDirectory'] 是不够的】
+         * Electron 在 Windows 上明确不支持双模对话框（见 electron.d.ts）：
+         *   > an open dialog can not be both a file selector and a directory
+         *   > selector, so if you set properties to ['openFile','openDirectory']
+         *   > on these platforms, a directory selector will be shown.
+         * 实测确认：标题变成「选择文件夹」、列表里只有文件夹、选不到文件。
+         *
+         * 所以现在由 ui.js 的 dropzone 统一处理：检测到这个组合时，
+         * 先弹一个「选择文件 / 选择文件夹」的二选一，再按用户的选择
+         * 打开对应的对话框。这是 Windows 上唯一能真正同时支持两者的做法。
+         * 三个需要双模的工具（zip-tool / archive-7z / 本工具）共用这条路径。 */
         pickProps: ['openFile', 'openDirectory', 'multiSelections'],
         onChange: (items) => {
           /* 【保留 isDir：它就是「目录还是文件」的唯一真实来源】

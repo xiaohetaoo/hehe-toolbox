@@ -500,6 +500,64 @@
    * 用"是否触顶"这类布尔量 + 已知的部分计数，已经足够让用户知道
    * "结果不完整、该去调大上限"。
    */
+  /**
+   * 问用户「要选文件还是选文件夹」，返回对应的 dialog properties；取消返回 null。
+   *
+   * ============ 为什么需要这一步 ============
+   * Electron 在 Windows/Linux 上**不可能**给出一个同时能选文件和文件夹的对话框：
+   * `properties: ['openFile','openDirectory']` 会被静默退化成纯目录选择器。
+   * 依据是 electron.d.ts 里 showOpenDialog 的 properties 说明：
+   *   > On Windows and Linux an open dialog can not be both a file selector
+   *   > and a directory selector, so if you set `properties` to
+   *   > ['openFile', 'openDirectory'] on these platforms,
+   *   > a directory selector will be shown.
+   * 实测确认：标题变成「选择文件夹」、列表里只有文件夹、没有「文件类型」下拉。
+   *
+   * 而项目里有三个工具确实需要"两者都能选"：
+   *   · zip-tool / archive-7z —— 压缩对象可能是若干文件，也可能是一个目录
+   *   · file-unlock          —— 删不掉的可能是文件，也可能是目录
+   * 它们原来直接传那个组合，于是在 Windows 上永远只能选目录，
+   * 属于"界面承诺了两者、实际只有一半能用"。
+   *
+   * 既然系统不给双模对话框，就在上层**先问类型、再开对应对话框**。
+   * 这是唯一能在 Windows 上真正同时支持两者的做法。
+   *
+   * 【为什么用 modal 而不是系统菜单】
+   * modal 的取消语义干净（点 × 或「取消」都 resolve(null)），
+   * 且键盘可达、Esc 关闭已由 modal 统一处理。
+   *
+   * @param {boolean} multiple 是否允许多选
+   * @returns {Promise<string[]|null>} 可直接用作 properties；取消为 null
+   */
+  function pickFileOrFolder(multiple) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; md.close(); resolve(v); };
+      const fileBtn = h('button', { class: 'btn btn-primary', onclick: () => finish(multiple ? ['openFile', 'multiSelections'] : ['openFile']) }, '选择文件');
+      const dirBtn = h('button', { class: 'btn btn-secondary', onclick: () => finish(multiple ? ['openDirectory', 'multiSelections'] : ['openDirectory']) }, '选择文件夹');
+      const cancelBtn = h('button', { class: 'btn btn-text', onclick: () => finish(null) }, '取消');
+      const md = modal({
+        title: '选择文件还是文件夹？',
+        /* 不 resolve 的话，用户点 × 或按 Esc 会让这个 Promise 永远挂着，
+         * 于是「点击拖拽区」这条链路静默卡死。modal 的 onClose 覆盖了所有关闭方式。 */
+        onClose: () => { if (!done) { done = true; resolve(null); } },
+        body: (b) => {
+          b.appendChild(div('field-hint',
+            'Windows 的文件对话框不能同时选择文件和文件夹，请先指定一种。'));
+        },
+        foot: [cancelBtn, dirBtn, fileBtn],
+      });
+    });
+  }
+
+  /**
+   * 展开拖入的目录后，把「触顶」这件事说清楚。
+   *
+   * 【为什么不返回精确的"还有多少个"】
+   * 那要求把剩余整棵树遍历完 —— 而触顶时立即停止正是为了避免那种代价。
+   * 用"是否触顶"这类布尔量 + 已知的部分计数，已经足够让用户知道
+   * "结果不完整、该去调大上限"。
+   */
   function expandNotice(r, maxFiles, maxDepth) {
     const parts = [];
     if (r && r.hitFileCap) {
@@ -528,7 +586,31 @@
     dz.setMain = (t) => setMainText(t);
     const getFiles = async () => {
       try {
-        const props = pickProps || (directory ? ['openDirectory'] : (multiple ? ['openFile', 'multiSelections'] : ['openFile']));
+        let props = pickProps || (directory ? ['openDirectory'] : (multiple ? ['openFile', 'multiSelections'] : ['openFile']));
+        /* 【Windows 上 openFile + openDirectory 不可能同时生效】
+         * Electron 官方文档（electron.d.ts 里 dialog.showOpenDialog 的 properties 说明）写得很明确：
+         *   > On Windows and Linux an open dialog can not be both a file selector
+         *   > and a directory selector, so if you set `properties` to
+         *   > `['openFile', 'openDirectory']` on these platforms,
+         *   > a directory selector will be shown.
+         * 也就是说这个组合**静默退化成纯目录选择器** —— 用户永远选不到文件。
+         * 实测确认过：界面标题是「选择文件夹」，列表里只显示文件夹，没有「文件类型」下拉框。
+         *
+         * 受影响的是三个"要能选文件、也要能选文件夹"的工具：
+         *   zip-tool / archive-7z（压缩对象可能是目录）、file-unlock（被占用的可能是文件）
+         * 它们原来写的都是这个组合，于是「拖能用、点只能用一半」。
+         *
+         * 正确做法：**问一次，然后按选择打开对应的对话框**。
+         * 这是唯一能在 Windows 上真正同时支持两者的方案 ——
+         * 系统不给我们一个双模对话框，我们就在上层分两次问。
+         * 用 modal 而不是原生对话框，是因为这一步不该阻塞主线程太久，
+         * 而且用户点「取消」时应当直接结束、不再弹第二个框。 */
+        const wantsBoth = props.includes('openFile') && props.includes('openDirectory');
+        if (wantsBoth) {
+          const pick = await pickFileOrFolder(multiple);
+          if (!pick) return;                       // 用户取消：什么都不做
+          props = pick;
+        }
         const paths = await invoke(Channels.CHANNELS.DIALOG.OPEN, filters ? { properties: props, filters } : { properties: props });
         if (paths && paths.length) onFiles(paths);
       } catch (e) { toast(e.message, 'error'); }
@@ -907,15 +989,17 @@
        *   pickProps || (directory ? ['openDirectory'] : (multiple ? [...] : ['openFile']))
        * 也就是说 pickProps 是"绕过默认组合"的唯一途径。
        * 而 filePicker 只是把 opts 里**自己列出的**字段转给 dropzone ——
-       * 早期这一行的解构里没有 pickProps，第 915 行也没传，
+       * 早期这一行的解构里没有 pickProps，下面 dropzone({...}) 也没传，
        * 于是调用方写的 pickProps 被**静默丢弃**，退回默认组合：
-       *   · zip-tool     想要 ['openFile','openDirectory','multiSelections']（要能选文件夹压缩），
+       *   · zip-tool     想要 openFile + openDirectory（要能选文件夹压缩），
        *                  实际拿到 ['openFile','multiSelections'] —— 选不到文件夹；
        *   · archive-7z   同理。
-       * 两者的界面文案都写着「拖入或选择要压缩的文件夹」，而拖拽走的是另一条
-       * 路径（drop 事件自己展开目录），所以"拖能用、点不能用"—— 这种半坏
-       * 状态最容易被当成"软件坏了"而不是"少传了一个字段"。
-       * 修法：解构出来，并在下面 dropzone({...}) 里显式传下去。 */
+       *
+       * 【但只修这一处还不够】那两个工具传的组合本身在 Windows 上就无效 ——
+       * Electron 明确不支持双模对话框，会静默退化成纯目录选择器。
+       * 所以 dropzone 里另有一层处理：检测到 openFile + openDirectory 同时出现时，
+       * 先弹「选择文件 / 选择文件夹」二选一，再开对应的对话框。
+       * 详见 pickFileOrFolder 的说明。 */
       pickProps
     } = opts;
     const fl = fileList({

@@ -73,6 +73,49 @@ t('dropzone 仍然按 pickProps 优先决定对话框属性', () => {
     'dropzone 的 props 取值不再以 pickProps 优先 —— 文件夹选择会再次失效');
 });
 
+/* ============ 双模选择（openFile + openDirectory）============
+ *
+ * 锁的是：「要能选文件、也要能选文件夹」这个需求在 Windows 上必须走二选一。
+ *
+ * 【为什么这条是真事故】Electron 官方文档（electron.d.ts 里 showOpenDialog
+ * 的 properties 说明）明确写着：Windows/Linux 的打开对话框不可能是
+ * 文件选择器 + 目录选择器，传 ['openFile','openDirectory'] 会**静默**
+ * 退化成一个目录选择器。实测确认：标题变成「选择文件夹」、列表只显示文件夹、
+ * 没有「文件类型」下拉框 —— 用户永远选不到文件。
+ * 而 zip-tool / archive-7z / file-unlock 三个工具传的正是这个组合，
+ * 于是它们的「点选」入口只有一半能用（拖拽走另一条路径，所以拖是好的）。
+ *
+ * 【为什么不能用行为断言】需要真的弹系统对话框才能观察到退化行为，
+ * 而系统对话框无法在纯 Node 里驱动。所以锁住"实现采用了二选一"这个形态，
+ * 真正的端到端由 test-click-sweep 与人工真机验证兜底。
+ */
+t('dropzone 检测到双模组合时会先问一次，而不是直接交给系统', () => {
+  const body = funcBody(UI(), 'dropzone');
+  // 锁的是：必须先判断 openFile 与 openDirectory 同时出现。
+  assert.ok(/includes\('openFile'\)\s*&&\s*.*includes\('openDirectory'\)/.test(body),
+    'dropzone 没有检测 openFile + openDirectory 的双模组合 —— Windows 上会退化成只能选目录');
+  // 锁的是：检测到之后必须调用二选一，而不是继续直接用那个组合。
+  assert.ok(/pickFileOrFolder\(/.test(body),
+    'dropzone 没有调用 pickFileOrFolder —— 双模请求仍然会退化');
+  // 锁的是：用户取消时必须提前 return，不能继续弹第二个对话框。
+  assert.ok(/if\s*\(!pick\)\s*return/.test(body),
+    '用户取消二选一时没有提前结束 —— 会继续弹出对话框');
+});
+
+t('pickFileOrFolder 为两种选择各返回正确的 properties', () => {
+  const src = UI();
+  const body = funcBody(src, 'pickFileOrFolder');
+  // 锁的是：选文件时返回 openFile（多选时还要 multiSelections）。
+  assert.ok(/\[?'openFile'/.test(body), 'pickFileOrFolder 没有返回 openFile');
+  // 锁的是：选文件夹时返回 openDirectory。
+  assert.ok(/\[?'openDirectory'/.test(body), 'pickFileOrFolder 没有返回 openDirectory');
+  // 锁的是：取消必须 resolve(null)，否则调用方的 `if (!pick) return` 永远不会命中，
+  // Promise 也永远挂着（点击拖拽区静默卡死）。
+  assert.ok(/resolve\(null\)/.test(body), 'pickFileOrFolder 取消时没有 resolve(null)');
+  // 锁的是：onClose 必须也 resolve，覆盖点 × 与 Esc 两种关闭方式。
+  assert.ok(/onClose:/.test(body), 'pickFileOrFolder 没处理 onClose —— 点 × 或 Esc 会让 Promise 永久挂起');
+});
+
 /* ---------------- ② 不许调用 picker 上不存在的方法 ---------------- */
 
 t('filePicker 暴露的成员与工具里的用法一致（picker.files 不存在）', () => {
