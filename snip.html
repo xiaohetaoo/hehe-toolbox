@@ -23,8 +23,27 @@
     /* 辅助窗口都是浅底浮层，统一用浅色主色 */
     :root { --aux-primary: var(--l-primary); --aux-primary-hover: var(--l-primary-hover); --aux-on: #fff; }
     html, body { margin: 0; width: 100vw; height: 100vh; background: transparent; overflow: hidden; user-select: none; font-family: 'Microsoft YaHei', sans-serif; }
+    /* 【canvas 必须显式给 CSS 尺寸，否则会被按位图尺寸放大显示】
+     *
+     * canvas 有两套尺寸，缺一不可：
+     *   · canvas.width / height  —— 位图（后备存储）像素数
+     *   · CSS width / height     —— 它在页面上占多少 CSS 像素
+     * 两者不一致时，浏览器把位图**缩放**到 CSS 尺寸显示。
+     *
+     * 本工具的位图必须是物理像素（innerWidth × dpr），才能在 Retina /
+     * 187.5% 缩放屏上做到 1:1 清晰；而页面布局是 CSS 像素。
+     * 所以必须显式写 width:100% / height:100% 把它显示回逻辑尺寸。
+     *
+     * 【实测：漏了这一行的后果】本机 dpr=1.875、窗口 1367×855 CSS，
+     * 位图建成 2563×1603。不给 CSS 尺寸时浏览器把 2563 当作 2563 CSS 像素，
+     * 于是画面整体放大 1.875 倍、只露出左上角一块 —— 用户看到的就是
+     * 「框选时屏幕上的东西都变大了」。这个放大是无条件的，
+     * 与源图有没有被拉伸无关，是两回事：
+     *   · 画面放大  ← 缺 CSS 尺寸（本条要修）
+     *   · 各向异性  ← 源图被非等比拉伸（v0.7.3 已修）
+     * 典型表现是两者叠加：又大又轻微变形。 */
     #stage { position: fixed; inset: 0; cursor: crosshair; }
-    canvas { position: absolute; left: 0; top: 0; }
+    canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
     #bar { position: fixed; display: none; background: #1F2430; border-radius: 10px; padding: 8px 10px;
       box-shadow: 0 6px 24px rgba(0,0,0,.45); z-index: 99; align-items: center; gap: 6px; }
     .tbtn { min-width: 34px; height: 32px; border: none; border-radius: 7px; background: transparent; color: #C9D1E0;

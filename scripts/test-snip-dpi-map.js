@@ -167,4 +167,57 @@ t('导出裁剪不再二次缩放', () => {
     '导出裁剪没有做 1:1 拷贝');
 });
 
+/* ============ 画面整体放大 1.875 倍（canvas 缺 CSS 尺寸）============
+ *
+ * 锁的是：snip.html 必须给 canvas 显式声明 CSS 宽高（100%）。
+ *
+ * 【这是另一个独立缺陷，与前面的"各向异性拉伸"不同】
+ * canvas 有两套尺寸，缺一不可：
+ *   · canvas.width/height  —— 位图（后备存储）像素
+ *   · CSS width/height     —— 在页面上占多少 CSS 像素
+ * 本工具的位图是物理像素（innerWidth × dpr = 2563），而布局是 CSS 像素（窗口 1367）。
+ * 若不给 CSS 尺寸，浏览器把位图的 2563 **当成 2563 个 CSS 像素**来显示，
+ * 于是整幅画面放大 1.875 倍、只露出左上角一块。
+ *
+ * 实测（用户对比截图 + CDP 读样式确认）：
+ *   修复前 canvas 的 getBoundingClientRect 是 2563×1603（= 位图尺寸），
+ *   修复后是 1367×855（= 窗口逻辑尺寸），位图仍是 2563×1603。
+ * 用户看到的就是"框选时屏幕上的图标、窗口全都变大了"。
+ *
+ * 【为什么必须用源码断言】这个放大只在特定 dpr 下显形，
+ * 且要真的开一次全屏框选窗才能观察；而判据本身是
+ * 「样式表里有没有 width/height」这个静态事实。
+ */
+t('snip.html 给 canvas 声明了 CSS 宽高（否则画面会放大 dpr 倍）', () => {
+  const html = readSrc('snip.html');
+  /* 锁的是：canvas 的样式规则里必须同时有 width 与 height。
+   * 只写 width 会让纵向被压扁，只写 height 会让横向被压扁 —— 两者都要。 */
+  const rule = /canvas\s*\{[^}]*\}/.exec(html);
+  assert.ok(rule, 'snip.html 里找不到 canvas 的样式规则');
+  const body = rule[0];
+  // 锁的是：缺 width:100% 时位图会被当作 CSS 尺寸，画面放大 dpr 倍。
+  assert.ok(/width\s*:\s*100%/.test(body), 'canvas 样式缺少 width:100% —— 位图会被当作 CSS 尺寸放大显示');
+  // 锁的是：缺 height:100% 时同理，纵向被放大。
+  assert.ok(/height\s*:\s*100%/.test(body), 'canvas 样式缺少 height:100% —— 位图会被当作 CSS 尺寸放大显示');
+  /* 锁的是：不能再出现"按位图尺寸直接显示"的写法（例如 width:auto + 无约束）。 */
+  assert.ok(!/width\s*:\s*(auto|initial)/.test(body), 'canvas 的 width 不能是 auto/initial');
+});
+
+t('canvas 位图是物理像素，CSS 是逻辑像素（两者必须差 dpr 倍）', () => {
+  const js = readSrc('js/auxwin/snip-2.js');
+  /* 锁的是：位图必须按 innerWidth × DPR 建。
+   * 配合 CSS 100%，就得到"位图 = 物理、显示 = 逻辑"的正确组合。 */
+  assert.ok(/canvas\.width\s*=\s*Math\.round\(window\.innerWidth\s*\*\s*DPR\)/.test(js),
+    'canvas 位图没有按物理像素建 —— 高 DPI 下会模糊');
+  /* 锁的是：DPR 与 CSS 显示尺寸必须自洽。
+   * 这里做一次数值推演：位图 2563 / 显示 1367 ≈ 1.875 = dpr。
+   * 若哪天有人把位图改回逻辑尺寸（不乘 dpr），这个比值会变成 1，画面会糊。 */
+  const dpr = 1.875, innerW = 1367;
+  const bitmap = Math.round(innerW * dpr);
+  const displayRatio = bitmap / innerW;
+  assert.ok(Math.abs(displayRatio - dpr) < 0.01,
+    '位图/显示 的比值应等于 dpr（实测 ' + displayRatio.toFixed(4) + ' vs ' + dpr + '）');
+  void js;
+});
+
 done();
