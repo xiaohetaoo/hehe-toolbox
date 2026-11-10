@@ -106,7 +106,7 @@ t('10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有�
   /* 锁的是：「10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  const vnLine = seg.match(/if \((isAudioOut \|\| opts\.mute|opts\.format === 'mp3'[^\n]*)\) args\.push\('-vn'\)/);
+  const vnLine = seg.match(/if \((isAudioOut)\) args\.push\('-vn'\)/);
   assert.ok(vnLine, '找不到 -vn 的判定行');
   const cond = vnLine[1];
   /* 锁的是：「10 音视频转换：所有纯音频容器都必须加 -vn（判据只能有一份）」这一组回归。

@@ -22,7 +22,7 @@ scripts/pack-zip.js | A=1 | B=0 | build-meta
 scripts/run-tests.js | A=1 | B=0 | exact:这是测试运行器本身，必须读测试脚本的原始文本才能判断它是否依赖 Electron（分组依据）。它不做任何"断言实现形态"的事，因此不存在需要剥注释的问题；上面的 electronNeeded 三条匹配已写「锁的是」
 scripts/test-acl-diagnose-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-acl-gate-e2e.js | A=2 | B=0 | e2e-fixture
-scripts/test-acl-repair.js | A=4 | B=26 | legacy-read
+scripts/test-acl-repair.js | A=4 | B=25 | legacy-read
 scripts/test-aux-csp.js | A=4 | B=0 | legacy-source-assertion
 scripts/test-aux-windows-csp.js | A=4 | B=8 | legacy-read
 scripts/test-channels-sync.js | A=2 | B=1 | legacy-read
@@ -40,7 +40,7 @@ scripts/test-destructive2.js | A=0 | B=64 | legacy-source-assertion
 scripts/test-dir-move-e2e.js | A=4 | B=0 | e2e-fixture
 scripts/test-dir-move-impl.js | A=3 | B=14 | exact:这 9 条锁的是内部链接改写 / 悬空链接 stat 判据 / PS_PATH_BATCH 分块 / innerLinkCount 同源，都只能看源码形态（真搬家要完整目录树与真实链接）；2 处 readFileSync 是 read() 助手与 8.3 短名测试读 %TEMP% 夹具
 scripts/test-disk-health-e2e.js | A=2 | B=0 | e2e-fixture
-scripts/test-download.js | A=0 | B=5 | legacy-source-assertion
+scripts/test-download.js | A=0 | B=0 | legacy-source-assertion
 scripts/test-dz-el.js | A=2 | B=13 | legacy-source-assertion
 scripts/test-expr-eval.js | A=1 | B=2 | legacy-source-assertion
 scripts/test-extract-safety.js | A=2 | B=0 | e2e-fixture

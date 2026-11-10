@@ -74,6 +74,18 @@ t('package.json 当前版本合规', () => {
   const v = require('../package.json').version;
   assert.ok(isValid(parse(v)), `package.json version=${v} 不合规，应按规则进位`);
 });
+t('数字修订后缀能够解析、校验与格式化，核心版本进位不变', () => {
+  assert.deepStrictEqual(parse('0.8.0-1'), [0, 8, 0, 1]);
+  for (const version of ['0.8.0-0', '0.8.0-1', '0.8.0-10']) {
+    assert.ok(isValid(parse(version)));
+    assert.strictEqual(fmt(parse(version)), version);
+  }
+  assert.strictEqual(fmt(bump(parse('0.8.0-1'))), '0.8.1');
+  assert.strictEqual(isValid(parse('0.10.0-1')), false);
+  for (const version of ['0.8.0-', '0.8.0--1', '0.8.0-01', '0.8.0-beta', '0.8.0-9007199254740992']) {
+    assert.strictEqual(parse(version), null, version);
+  }
+});
 
 t('5a cmpVer：带 -beta / -rc1 后缀的版本号不能被判成「更旧」', () => {
   const cmpVer = loadCmpVer();

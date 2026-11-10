@@ -632,6 +632,7 @@ handle(CH.FS.HASH_TEXT_MULTI, (e, text, algos = ['md5', 'sha1', 'sha256']) => {
 });
 
 const ENC_MAGIC = Buffer.from('HEHEENC1');
+const ENC_MAGIC_V2 = Buffer.from('HEHEENC2');
 function deriveKey(password, salt) { return crypto.scryptSync(password, salt, 32, { N: 16384, r: 8, p: 1 }); }
 async function cryptStream(p, outPath, password, decrypt) {
   const st = await fsp.stat(p);
@@ -662,19 +663,16 @@ async function cryptStream(p, outPath, password, decrypt) {
     sameFile = pathGuard.canonical(p) === pathGuard.canonical(outPath);
   } catch (e) { /* 输出目录尚不存在等情况按字符串比较兜底 */ }
   if (sameFile) throw new Error('输出路径不能与源文件相同');
-  let srcStart = 0, cipher, header = null;
+  let srcStart = 0, srcEnd = st.size - 1, cipher, header = null, authenticated = true;
   if (!decrypt) {
     const salt = crypto.randomBytes(16), iv = crypto.randomBytes(16);
-    header = Buffer.concat([ENC_MAGIC, salt, iv]);
-    cipher = crypto.createCipheriv('aes-256-cbc', deriveKey(password, salt), iv);
+    header = Buffer.concat([ENC_MAGIC_V2, salt, iv]);
+    cipher = crypto.createCipheriv('aes-256-gcm', deriveKey(password, salt), iv);
+    cipher.setAAD(header);
   } else {
     // 先读取 40 字节文件头，再从第 40 字节起进入解密管道
-    /* 【最小合法长度是 40 + 16 = 56，不是 64】
-     * 文件头固定 40 字节（8 魔数 + 16 salt + 16 iv），其后是一个 AES-CBC 密文。
-     * PKCS#7 一定会补齐，所以哪怕原文是空文件（0 字节）也会产出整整一个 16 字节块。
-     * 早期这里写死 64，于是「加密 0~15 字节的文件」得到的 56 字节密文被判成
-     * 「文件不完整，可能下载时被截断」—— 加密是成功的，解密却永远拒绝，
-     * 用户会以为文件坏了、转而去找别的工具重下。实测 15 字节以内全部复现。 */
+    /* 两版最小长度均为 56：40 字节头 + V1 的最小 CBC 块，
+     * 或 40 字节头 + V2 的 16 字节认证标签（空明文也有标签）。 */
     const MIN_ENC_SIZE = 40 + 16;
     if (st.size < MIN_ENC_SIZE) throw new Error('文件不完整：加密文件至少应有 ' + MIN_ENC_SIZE + ' 字节（当前 ' + st.size + ' 字节），可能下载或复制时被截断');
     const fh = await fsp.open(p, 'r');
@@ -682,33 +680,48 @@ async function cryptStream(p, outPath, password, decrypt) {
     try {
       const { bytesRead } = await fh.read(head, 0, 40, 0);
       if (bytesRead < 40) throw new Error('文件不完整：无法读取完整的加密文件头（只读到 ' + bytesRead + ' 字节）');
+      authenticated = head.subarray(0, 8).equals(ENC_MAGIC_V2);
+      if (authenticated) {
+        const tag = Buffer.alloc(16);
+        const tail = await fh.read(tag, 0, 16, st.size - 16);
+        if (tail.bytesRead !== 16) throw new Error('文件不完整：缺少认证标签');
+        cipher = crypto.createDecipheriv('aes-256-gcm', deriveKey(password, head.subarray(8, 24)), head.subarray(24, 40));
+        cipher.setAAD(head);
+        cipher.setAuthTag(tag);
+        srcEnd = st.size - 17;
+      } else {
+        if (!head.subarray(0, 8).equals(ENC_MAGIC)) throw new Error('不是有效的核核加密文件（缺少文件头）');
+        cipher = crypto.createDecipheriv('aes-256-cbc', deriveKey(password, head.subarray(8, 24)), head.subarray(24, 40));
+      }
     } finally { await fh.close().catch(() => {}); }
-    if (!head.subarray(0, 8).equals(ENC_MAGIC)) throw new Error('不是有效的核核加密文件（缺少文件头）');
-    cipher = crypto.createDecipheriv('aes-256-cbc', deriveKey(password, head.subarray(8, 24)), head.subarray(24, 40));
     srcStart = 40;
   }
-  const rs = fs.createReadStream(p, { highWaterMark: 1 << 20, start: srcStart });
+  const rs = srcEnd < srcStart ? require('stream').Readable.from([])
+    : fs.createReadStream(p, { highWaterMark: 1 << 20, start: srcStart, end: srcEnd });
   // 先写同目录临时文件，成功后才改名到 outPath。
   // 原来直接写 outPath：失败时 catch 里 rmSync(outPath) 会把**用户原本就存在**的
   // 同名文件一起删掉（探测脚本 t7 复现过：解密失败后用户的重要文件消失）。
   const cryptTmp = tempNames.cryptTmp(outPath);
-  const ws = fs.createWriteStream(cryptTmp);
+  const ws = fs.createWriteStream(cryptTmp, { flags: 'wx' });
+  let cryptOwned = false;
+  ws.once('open', () => { cryptOwned = true; });
   if (header) ws.write(header);
   let done = 0;
-  const total = Math.max(1, st.size - srcStart);
+  const total = Math.max(1, srcEnd - srcStart + 1);
   rs.on('data', (chunk) => { done += chunk.length; send('job:progress', { id: p, kind: 'crypt', done, total }); });
   try {
     await new Promise((resolve, reject) => {
       require('stream').pipeline(rs, cipher, ws, (err) => (err ? reject(err) : resolve()));
     });
+    if (!decrypt) await fsp.appendFile(cryptTmp, cipher.getAuthTag());
     await fsp.rename(cryptTmp, outPath);
   } catch (err) {
     // 只清理我们自己的临时文件；目标位置的原有文件保持不动
-    try { fs.rmSync(cryptTmp, { force: true }); } catch (e) {}
-    if (decrypt && /bad decrypt|BAD_DECRYPT|wrong final block/.test(String(err.message))) throw new Error('解密失败：密码错误或文件已损坏');
+    try { if (cryptOwned) fs.rmSync(cryptTmp, { force: true }); } catch (e) {}
+    if (decrypt && /bad decrypt|BAD_DECRYPT|wrong final block|authenticate/i.test(String(err.message))) throw new Error('解密失败：密码错误或文件已损坏');
     throw err;
   }
-  return { outPath, size: (await fsp.stat(outPath)).size };
+  return { outPath, size: (await fsp.stat(outPath)).size, authenticated, legacy: decrypt && !authenticated };
 }
 handle(CH.FS.ENCRYPT_FILE, async (e, p, outPath, password) => {
   if (!password) throw new Error('请输入密码');
@@ -1101,11 +1114,8 @@ handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
         归档内容就混进了用户已有目录。
     所以：目录条目一律复用（不编号），只有文件在冲突时加序号。
      3) 中途失败要回滚，不能留半成品（与 seven:extract 行为一致） */
-  const dirSet = new Set();
   const dirFor = async (rel) => {
-    const abs = pathGuard.resolveInside(outDir, rel);
-    if (!dirSet.has(abs)) { await fsp.mkdir(abs, { recursive: true }); dirSet.add(abs); }
-    return abs;
+    return pathGuard.ensureDirectoryInside(outDir, rel);
   };
   const writtenPaths = [];
   try {
@@ -1115,11 +1125,25 @@ handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
       if (!name || name === '.' || name === './') continue;
       if (en.isDirectory) { await dirFor(name); continue; }
       const parentRel = path.dirname(name);
-      const parentAbs = parentRel && parentRel !== '.' ? await dirFor(parentRel) : path.resolve(outDir);
-      const target = await uniqueTarget(parentAbs, path.basename(name));
+      const parentAbs = await dirFor(parentRel || '.');
       const data = en.getData();   // 可能抛 CRC 错，此刻尚未落盘
-      await fsp.writeFile(target, data);
+      if (data.length !== en.header.size) throw new Error('解压数据大小与条目声明不一致：' + name);
+      let target, file, attempts = 0, candidateName = path.basename(name);
+      // Exclusive creation owns the path before it enters the rollback list.
+      // A concurrent creator gets a new name instead of being overwritten/deleted.
+      while (!file && attempts < 10000) {
+        target = await uniqueTarget(parentAbs, candidateName);
+        try { file = await fsp.open(target, 'wx'); }
+        catch (e) {
+          if (e.code !== 'EEXIST') throw e;
+          const ext = path.extname(name), stem = path.basename(name, ext);
+          candidateName = `${stem}(${++attempts})${ext}`;
+        }
+      }
+      if (!file) throw new Error('无法创建不重名的解压文件：' + name);
       writtenPaths.push(target);
+      try { await file.writeFile(data); }
+      finally { await file.close(); }
       written++;
     }
     return { outDir, entries: written };

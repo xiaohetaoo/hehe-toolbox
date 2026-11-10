@@ -2812,7 +2812,7 @@
             updActions.appendChild(btn(T('update.confirmOk'), 'btn-sm btn-primary', async () => {
               if (!(await confirmBox({ title: T('update.confirmTitle'), message: T('update.confirmMsg', { v: r.latest }), okText: T('update.confirmOk') }))) return;
               try {
-                const ap = await invoke(Channels.CHANNELS.UPDATE.APPLY, { newExe: out, expectSha256: r.assetSha256 || null });
+                const ap = await invoke(Channels.CHANNELS.UPDATE.APPLY, { newExe: out });
                 updLine.textContent = T('update.applying');
                 if (ap && ap.rollbackScript) updActions.appendChild(div('field-hint', T('update.rollbackScript', { path: ap.rollbackScript })));
               } catch (e) { updLine.textContent = T('update.applyFail', { err: e.message }); }

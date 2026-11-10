@@ -1,7 +1,7 @@
 {
   "name": "hehe-toolbox",
   "productName": "核核工具箱",
-  "version": "0.8.0",
+  "version": "0.8.0-1",
   "description": "核核工具箱 —— 本地优先、轻量聚合的桌面效率工具箱",
   "main": "main.js",
   "author": "hehe",
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",
-    "adm-zip": "^0.5.16",
+    "adm-zip": "^0.6.1",
     "dompurify": "^3.4.17",
     "electron-updater": "^6.8.11",
     "jsqr": "^1.4.0",

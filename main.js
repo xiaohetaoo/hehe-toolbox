@@ -22,9 +22,13 @@ const http = require('http');
 const AdmZip = require('adm-zip');
 const solarlunar = require('solarlunar');
 const archiveGuard = require('./lib/archive-guard'); // 解压安全预检（路径穿越/ADS/设备名/限额）
+const archiveProcess = require('./lib/archive-process');
 const targetSize = require('./lib/target-size');     // 目标体积压缩的多轮逼近算法
 const errorInfo = require('./lib/errors');           // 结构化错误（稳定错误码 + 建议操作）
 const pathGuard = require('./lib/path-guard');       // 破坏性操作的路径安全网（删/写/覆盖）
+const windowSecurity = require('./lib/window-security');
+const updateFile = require('./lib/update-file');
+const downloadLib = require('./lib/download');
 const powerGate = require('./lib/power-gate');       // 电源命令识别 + 门禁判定（与测试共享同一实现）
 /* lib/job-id 只在**渲染层一侧**用（js/job-prefixes.js 与它对齐）。
  * 主进程从来不读这张表：事件过滤是渲染层 claimJobId 做的。
@@ -319,6 +323,9 @@ function broadcastUiPrefs() {
 
 function fmtErr(e) { return (e && e.message) || String(e); }
 const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
+  if (!windowSecurity.isTrustedSender(e, __dirname)) {
+    return { ok: false, code: 'UNTRUSTED_SENDER', error: '拒绝非应用页面调用桌面功能', advice: '请从应用窗口使用该功能' };
+  }
   // 高危能力门禁：未在设置里开启的能力，其 IPC 一律拒绝。
   // 放在统一包装里而不是逐个 handler 里，避免以后新增 handler 时忘了加。
   // sys:power / svc:action 由各自 handler 按 action 精细判定（锁屏、启动服务无害）。
@@ -631,6 +638,7 @@ const CAP_GATED_CHANNELS = {
   'fs:clean-junk': 'junk-clean',
   'sys:recycle-empty': 'recycle-empty',
   'proc:kill': 'process-kill',
+  'file:unlock': 'process-kill',
   'svc:action': 'service-stop',
   'hosts:write': 'hosts-edit',
   'hosts:restore': 'hosts-edit',
@@ -709,6 +717,7 @@ const TOOL_DANGEROUS_CAPS = {
   'local-notes': ['file-delete'],
   'clipboard-history': ['file-delete'],
   'process-manager': ['process-kill'],
+  'file-unlock': ['process-kill'],
   'port-occupy': ['process-kill'],
   'services-power': ['service-stop'],
   'quick-ops': ['system-power', 'recycle-empty'],
@@ -897,16 +906,10 @@ function hardenWindow(w) {
     /* ① 一律拒绝新开窗口。需要"点链接开浏览器"的地方走 SHELL.OPEN_URL
      *    （它只允许 http/https，见 ipc/fs-ops.js）。 */
     w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    /* ② 拦住页面导航。除本地 file:// 与本进程内的 data:（PDF 导出用）
-     *    之外一律不跳转 —— 跳走之后那个页面就脱离了本应用的控制。 */
-    w.webContents.on('will-navigate', (ev, url) => {
-      const u = String(url || '');
-      const okLocal = u.startsWith('file://') || u.startsWith('data:text/html');
-      if (!okLocal) {
-        ev.preventDefault();
-        console.warn('[security] 已拦截页面导航：', u.slice(0, 120));
-      }
-    });
+    // Only main-process loadFile/loadURL may replace a document. Local file://
+    // links are untrusted too; a new document would inherit this window's preload.
+    w.webContents.on('will-navigate', ev => ev.preventDefault());
+    w.webContents.on('will-frame-navigate', ev => ev.preventDefault());
     /* ③ 权限：白名单放行，其余拒绝。
      *    · media            —— 录屏要麦克风/摄像头，OCR 要枚举设备 label
      *    · notifications    —— 番茄钟、定时提醒
@@ -925,14 +928,14 @@ function hardenWindow(w) {
     if (!ses.__hehePermBound) {
       ses.__hehePermBound = true;
       ses.setPermissionRequestHandler((wc, permission, callback) => {
-        const granted = ALLOWED.has(permission);
+        const granted = !!wc && windowSecurity.isTrustedPage(wc.getURL(), __dirname) && ALLOWED.has(permission);
         if (!granted) console.warn('[security] 拒绝权限请求：', permission);
         callback(granted);
       });
       /* 【必须有 checkHandler，而且口径要与 requestHandler 一致】
        * 只装 request 不装 check 会出现"请求被拒但检查通过"的矛盾状态
        * （Chromium 有些路径先问 check 再决定要不要发 request）。 */
-      ses.setPermissionCheckHandler((wc, permission) => ALLOWED.has(permission));
+      ses.setPermissionCheckHandler((wc, permission) => !!wc && windowSecurity.isTrustedPage(wc.getURL(), __dirname) && ALLOWED.has(permission));
     }
   } catch (e) {
     console.warn('[security] 窗口加固失败：', fmtErr(e));
@@ -1216,6 +1219,10 @@ handle(CH.APP.GET_INFO, () => ({
 }));
 handle(CH.STORE.GET, (e, key, def) => storeGet(key, def));
 handle(CH.STORE.SET, (e, key, val) => {
+  const parts = String(key).split('.');
+  if (parts[0] === 'updateCache' || parts.some(part => ['__proto__', 'constructor', 'prototype'].includes(part))) {
+    throw new Error('该存储路径由主进程管理，不能从页面修改');
+  }
   const r = storeSet(key, val);
   /* 【偏好值改动要广播给所有窗口】
    * 主窗口改 set，独立工具窗口的 Prefs 缓存不会自动更新 —— 用户会认为
@@ -3355,8 +3362,13 @@ const ARCHIVE_JOB_LIMITS = {
 async function runSeven(bin, args, opts = {}) {
   const { password, timeout = 600000 } = opts;
   const realArgs = args.slice();
-  realArgs.push(password ? sevenPwdArg(password) : '-p');
+  // Password switches must precede `--`, which ends 7z switch parsing.
+  const stopSwitches = realArgs.indexOf('--');
+  realArgs.splice(stopSwitches < 0 ? realArgs.length : stopSwitches, 0, password ? sevenPwdArg(password) : '-p');
   try {
+    if (opts.outputDir) {
+      return await archiveProcess.extractLimited(bin, realArgs, { root: opts.outputDir, timeout });
+    }
     return await runCmd(bin, realArgs, { timeout });
   } catch (err) {
     /* 密码脱敏：execFile 失败时 err.message 是**完整命令行**，
@@ -3417,6 +3429,9 @@ handle(CH.SEVEN.COMPRESS, async (e, { files, out, password, volumeMB }) => {
 handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
+  const listing = await runSeven(bin, ['l', '-slt', '-ba', '-sccUTF-8', '--', archive], { password });
+  if (listing.code !== 0) throw new Error('无法读取压缩包目录：' + (listing.stderr || listing.stdout));
+  const declared = archiveGuard.inspectSevenListing(listing.stdout, (await fsp.stat(archive)).size);
   await fsp.mkdir(outDir, { recursive: true });
 
   /* 先解到任务专属临时目录，全部成功后再合并到 outDir。
@@ -3432,12 +3447,17 @@ handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
   const movedTo = [];   // 已搬到 outDir 的目标路径，用于失败回滚
   try {
     const args = ['x', '-y', '-bd', '-o' + staging, archive];
-    const r = await runSeven(bin, args, { password });
+    const r = await runSeven(bin, args, { password, outputDir: staging });
     if (r.code !== 0) throw new Error('解压失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
 
     // 预检：解出来的条目也要过一遍安全判定（防 7z 里藏的穿越/设备名条目）
     const scanned = await scanDirForGuard(staging);
     const verdict = archiveGuard.inspectEntries(scanned);
+    const declaredFiles = new Map(declared.entries.filter(entry => !entry.isDir).map(entry => [entry.name.replace(/\\/g, '/'), entry.size]));
+    const actualFiles = verdict.entries.filter(entry => !entry.isDir);
+    if (actualFiles.length !== declaredFiles.size || actualFiles.some(entry => declaredFiles.get(entry.name) !== entry.size)) {
+      throw new Error('解压后的文件清单或大小与预检不一致，已拒绝提交');
+    }
     // 同 1314 行：inspectEntries 只 return ok:true 或 throw，此处为防御性死代码
     if (!verdict.ok) throw new Error('解压内容预检未通过');
 
@@ -3445,18 +3465,15 @@ handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
        若目录 sub/ 因冲突改名为 sub(1)/，而文件 sub/b.txt 仍写进原来的 sub/，
        归档内容就会混进用户已有目录（zip:extract 那边踩过同样的坑）。
        所以：目录条目一律不改名（已存在就复用），只有文件冲突才编号。 */
-    const dirSet = new Set();
     const dirFor = async (rel) => {
-      const abs = pathGuard.resolveInside(outDir, rel);
-      if (!dirSet.has(abs)) { await fsp.mkdir(abs, { recursive: true }); dirSet.add(abs); }
-      return abs;
+      return pathGuard.ensureDirectoryInside(outDir, rel);
     };
     let moved = 0;
     for (const ent of verdict.entries) {
       const src = archiveGuard.resolveTarget(staging, ent.name);
       if (ent.isDir) { await dirFor(ent.name); continue; }
       const parentRel = path.dirname(ent.name);
-      const parentAbs = parentRel && parentRel !== '.' ? await dirFor(parentRel) : path.resolve(outDir);
+      const parentAbs = await dirFor(parentRel || '.');
       // 只有文件需要唯一化；目录层已确定，文件落进对应目录
       const dst = await uniqueTarget(parentAbs, path.basename(ent.name));
       await fsp.rename(src, dst);
@@ -3637,115 +3654,7 @@ handle(CH.POWER.SET, async (e, guid) => {
  * 任务 6 一开始把它整段搬进了媒体域，net:download 立刻变成 ReferenceError ——
  * 语法检查完全看不见（运行时才炸），是 ESLint 的 no-undef 抓到的。 */
 function downloadToFile(url, dest, id, ctrl, label) {
-  /* eslint-disable-next-line no-async-promise-executor -- 历史写法：async 作 Promise executor。改成非 async 会变更异常传播路径，属行为改动，本轮不动 */
-  return new Promise(async (resolve, reject) => {
-    const MAX_RETRY = 6;
-    /* 先写任务专属临时文件，校验通过后才原子改名为最终名。
-       原实现直接写 dest：下载中断或重试耗尽时，dest 会留下体积不足的残缺文件，
-       用户以为下好了（尤其 .exe），要等运行才发现损坏。
-       现在失败/取消一律删临时文件，dest 要么不存在、要么是完整内容。 */
-    const tmp = tempNames.downloadPart(dest);
-    /* 【取消路径上删除可能失败，必须重试】
-     * 取消时 `ws.destroy()` 是异步的，写流句柄还没释放就调 rmSync ——
-     * Windows 上会抛 EPERM。原实现 catch 里什么都不做，于是每次取消下载
-     * （59MB 的 ffmpeg 包很常见）都在 %TEMP% 留一个几十 MB 的 .part 文件；
-     * 而且它有 dest 前缀（不是 hehe- 开头），不在本应用临时产物白名单里，
-     * 自动清理永远扫不到 —— 只能用户自己去 %TEMP% 挖。
-     * 现在：先等一小会再删，失败则登记到一个延迟清理队列，进程退出前再试一次。 */
-    const cleanup = () => {
-      try { fs.rmSync(tmp, { force: true }); return; } catch (e) { /* 句柄可能还没释放 */ }
-      const tryLater = (left) => {
-        setTimeout(() => {
-          try { fs.rmSync(tmp, { force: true }); }
-          catch (e2) { if (left > 1) tryLater(left - 1); }
-        }, 200);
-      };
-      tryLater(5);
-    };
-    let attempt = 0, got = 0, total = 0, lastEmit = 0;
-    const emit = (force) => {
-      const now = Date.now();
-      if (force || now - lastEmit > 400) {
-        lastEmit = now;
-        // 进度封顶 99%：只有提交成功才算 100%
-        const pct = total ? Math.min(99, got / total * 100) : 0;
-        send('job:stream', { id, data: JSON.stringify({ pct, mb: got / 1048576, totalMB: total / 1048576, label }) });
-      }
-    };
-    const tryOnce = () => new Promise((res, rej) => {
-      const headers = {};
-      if (got > 0 && total > 0) headers.Range = 'bytes=' + got + '-';
-      fetch(url, { signal: ctrl.signal, redirect: 'follow', headers }).then(async (r) => {
-        /* 416 = 请求的 Range 超出资源范围。原实现直接 res() 当成「已下载完整」，
-         * 但如果本地文件其实比 got/total 记的少（写流被截断过），下一轮体积校验
-         * 必然失败 → attempt++ 重试 → got 仍是旧值、header 仍是非法 Range →
-         * 又 416 → 每一轮都失败，直到耗尽 6 次重试报「下载校验失败」。
-         * 一个「重头下就能好」的故障被拖成必定失败。
-         * 正确做法：把断点清零，下一轮从头下。 */
-        if (r.status === 416) {
-          got = 0; total = 0;
-          rej(new Error('服务器拒绝续传（416），将从零重新下载'));
-          return;
-        }
-        if (!r.ok) { rej(new Error('下载源响应 ' + r.status)); return; }
-        if (r.status === 200) got = 0; // 服务器不支持续传，重头下
-        if (r.headers.get('content-length')) total = got + (Number(r.headers.get('content-length')) || 0);
-        const reader = r.body.getReader();
-        const ws = fs.createWriteStream(tmp, { flags: got > 0 && r.status === 206 ? 'a' : 'w' });
-        ws.on('error', rej);
-        while (true) {
-          const { done, value } = await reader.read();
-          if (ctrl.signal.aborted) { try { reader.cancel(); } catch (err) {} ws.destroy(); rej(new Error('ABORTED')); return; }
-          if (done) { ws.end(() => res()); return; }
-          got += value.length;
-          if (!ws.write(Buffer.from(value))) {
-            await new Promise((res2, rej2) => { ws.once('drain', res2); ws.once('error', rej2); });
-          }
-          emit();
-        }
-      }).catch(rej);
-    });
-    (async () => {
-      while (true) {
-        try {
-          await tryOnce(); emit(true);
-          // 提交前校验：体积必须与服务器声明的 content-length 一致，且不能为空
-          let ok = true, why = '';
-          try {
-            const st = await fsp.stat(tmp);   // 异步，避免下载收尾时卡住事件循环
-            if (st.size === 0) { ok = false; why = '下载内容为空'; }
-            else if (total > 0 && st.size !== total) { ok = false; why = `体积不符（${st.size}/${total} 字节）`; }
-          } catch (e) { ok = false; why = e.message; }
-          if (!ok) {
-            /* 【体积不符必须重试，不能直接 reject】
-             * 传输中途被截断（代理断流、连接被掐）会得到 got < total 的临时文件。
-             * 旧实现在这里直接 reject 退出整个循环 —— MAX_RETRY 那套重试对
-             * 「下载成功但长度不对」这个最常见的中断形态完全无效。
-             * 现在把它当作一次可重试的失败：保留已下载字节（Range 续传），
-             * 下一轮从断点继续。 */
-            attempt++;
-            if (attempt >= MAX_RETRY) {
-              cleanup();
-              reject(new Error('下载校验失败（已重试 ' + MAX_RETRY + ' 次）：' + why));
-              return;
-            }
-            send('job:stream', { id, data: JSON.stringify({ stage: 'retry', attempt, label, reason: why }) });
-            await new Promise(r2 => setTimeout(r2, 1500));
-            continue;
-          }
-          await fsp.rename(tmp, dest); // 原子改名：不会出现"半个文件"
-          resolve({ size: got });
-          return;
-        } catch (err) {
-          if (ctrl.signal.aborted || err.message === 'ABORTED') { cleanup(); reject(new Error('下载已取消')); return; }
-          attempt++;
-          if (attempt >= MAX_RETRY) { cleanup(); reject(new Error('下载失败（已重试 ' + MAX_RETRY + ' 次）：' + err.message)); return; }
-          send('job:stream', { id, data: JSON.stringify({ stage: 'retry', attempt, label }) });
-          await new Promise(r2 => setTimeout(r2, 1500));
-        }
-      }
-    })();
-  });
+  return downloadLib.download(url, dest, id, ctrl, label, { send });
 }
 /* ================= IPC: 通用文件下载（断点续传） ================= */
 handle(CH.NET.DOWNLOAD, (e, { url, out }) => {
@@ -4006,7 +3915,7 @@ async function updateCheckImpl(opts) {
     /* GitHub 现在会给每个 Release 资产带上 digest 字段（形如 "sha256:<hex>"）。
      * 拿它做下载后完整性校验：体积相同但内容被替换（中间人、CDN 缓存污染、
      * 上传时截断）都能被发现。拿不到时 assetSha256 为 null，
-     * 应用阶段会退回「只比体积」并在日志里注明，不阻断流程。 */
+     * 应用阶段仍校验可信体积与 PE 头，并固定本次文件的摘要供替换前复查。 */
     const rawDigest = (asset && asset.digest) || '';
     const mDigest = /^sha256:([0-9a-f]{64})$/.exec(rawDigest);
     const assetSha256 = mDigest ? mDigest[1] : null;
@@ -4056,28 +3965,14 @@ handle(CH.UPDATE.APPLY, async (e, opts = {}) => {
 async function updateApplyImpl(opts = {}) {
   const newExe = opts && opts.newExe;
   if (!newExe || !fs.existsSync(newExe)) throw new Error('新版文件不存在，请先完成下载');
-  /* 完整性校验：update:check 从 Release 资产里取到的 sha256 记在这里。
-   * 下载包来自 GitHub HTTPS，风险不高，但「只比体积」挡不住内容被替换
-   * （体积相同即可蒙混）。拿不到 digest 时退回体积校验并在日志里注明，
-   * 不阻断升级 —— 老版本 Release 没有 digest 字段，不能因此让用户升不了级。 */
-  const expectSha = typeof opts.expectSha256 === 'string' ? opts.expectSha256.toLowerCase() : null;
-  if (expectSha) {
-    if (!/^[0-9a-f]{64}$/.test(expectSha)) throw new Error('更新校验值格式无效，拒绝替换');
-    const actual = await new Promise((resolve, reject) => {
-      const h = crypto.createHash('sha256');
-      const rs = fs.createReadStream(newExe);
-      rs.on('data', (c) => h.update(c));
-      rs.on('end', () => resolve(h.digest('hex')));
-      rs.on('error', reject);
-    });
-    if (actual !== expectSha) {
-      throw new Error('新版文件校验失败（SHA-256 不符），已拒绝替换。\n期望：' + expectSha + '\n实际：' + actual +
-        '\n请删除该下载包后重新检查更新。');
-    }
-    console.log('[update] SHA-256 校验通过：' + actual.slice(0, 16) + '…');
-  } else {
-    console.warn('[update] 本次更新没有可用的 SHA-256（Release 未提供 digest），仅做体积校验 —— 已知取舍');
+  const metadata = (updateCacheGet() || {}).payload;
+  const updateDir = path.join(app.getPath('userData'), 'update');
+  if (!metadata || path.basename(newExe) !== metadata.assetName ||
+      pathGuard.canonical(path.dirname(newExe)) !== pathGuard.canonical(updateDir)) {
+    throw new Error('更新包与检查结果不匹配，请重新检查并下载更新');
   }
+  // Trust metadata held by the main process, not a digest supplied by a renderer.
+  const verified = await updateFile.verifyUpdateFile(newExe, metadata);
   // 便携版启动时 electron-builder 注入 PORTABLE_EXECUTABLE_FILE 指向原始 exe
   const target = process.env.PORTABLE_EXECUTABLE_FILE || (opts && opts.target) || app.getPath('exe');
   if (!/\.exe$/i.test(target)) throw new Error('目标不是可执行文件，无法自动替换：' + target);
@@ -4097,11 +3992,15 @@ async function updateApplyImpl(opts = {}) {
     '$newExe = ' + psSingleQuote(newExe),
     '$target = ' + psSingleQuote(target),
     '$backup = ' + psSingleQuote(backup),
+    '$expectedSha256 = ' + psSingleQuote(verified.sha256),
+    '$expectedSize = ' + verified.size,
+    '$replacing = $false',
     '$log = Join-Path $env:TEMP ("hehe-update-" + [DateTime]::Now.ToString("yyyyMMdd-HHmmss") + ".log")',
     'try {',
     '  $deadline = [DateTime]::Now.AddSeconds(90)',
     '  while ((Get-Process -Id $targetPid -ErrorAction SilentlyContinue) -and ([DateTime]::Now -lt $deadline)) { Start-Sleep -Milliseconds 300 }',
     '  Start-Sleep -Milliseconds 600',
+    '  if ((Get-Item -LiteralPath $newExe).Length -ne $expectedSize -or (Get-FileHash -LiteralPath $newExe -Algorithm SHA256).Hash -ne $expectedSha256) { throw "更新包在校验后发生变化，已拒绝替换" }',
     // 1) 备份旧版，但**不要覆盖上一份备份**：
     //    原实现是 Copy-Item -Force 直接盖掉 .bak，用户连续升级两次后，
     //    更早的那个版本就永久丢了（回滚只能回到上一个版本）。
@@ -4114,14 +4013,16 @@ async function updateApplyImpl(opts = {}) {
     // 2) 记录源文件大小，替换后校验：Copy-Item 中途失败会留下半个 exe，
     //    而 target.exe 正是用户唯一的启动入口
     '  $srcLen = (Get-Item -LiteralPath $newExe).Length',
+    '  $replacing = $true',
     '  Copy-Item -LiteralPath $newExe -Destination $target -Force',
     '  $dstLen = (Get-Item -LiteralPath $target).Length',
     '  if ($dstLen -ne $srcLen) { throw ("替换后大小不符：" + $dstLen + " != " + $srcLen) }',
+    '  if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $expectedSha256) { throw "替换后摘要不符" }',
     '  Add-Content -LiteralPath $log -Value ("replaced: " + $target)',
     '} catch {',
     '  Add-Content -LiteralPath $log -Value ("failed: " + $_.Exception.Message)',
     // 替换失败则把备份还原回去
-    '  try { if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $target -Force; Add-Content -LiteralPath $log -Value "restored-from-backup" } } catch {}',
+    '  try { if ($replacing -and (Test-Path -LiteralPath $backup)) { Copy-Item -LiteralPath $backup -Destination $target -Force; Add-Content -LiteralPath $log -Value "restored-from-backup" } } catch {}',
     '  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue',
     '  exit 1',
     '}',

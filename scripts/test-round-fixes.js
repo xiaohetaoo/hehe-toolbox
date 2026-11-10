@@ -157,8 +157,11 @@ t('SC4 hardenWindow 拒绝新开窗口并拦截外链导航', () => {
   assert.ok(fn, '找不到 hardenWindow 函数体');
   /* 锁的是：窗口未拦截新开窗口 / 未拦截外链导航 */
   assert.ok(/preventDefault\(\)/.test(fn[0]), '导航拦截没有 preventDefault');
-  /* 锁的是：窗口未拦截新开窗口 / 未拦截外链导航 */
-  assert.ok(/file:\/\//.test(fn[0]), '导航白名单里没有 file://（会把本地页面也拦掉）');
+  // Main-process loadFile is unaffected by will-navigate; only exact app URLs get IPC.
+  const security = require('../lib/window-security');
+  const root = require('path').resolve(__dirname, '..');
+  const url = require('url').pathToFileURL(require('path').join(root, 'index.html')).href;
+  assert.strictEqual(security.isTrustedPage(url, root), true);
 });
 
 /* ============ preload 的 isDev 不能失败开放 ============ */

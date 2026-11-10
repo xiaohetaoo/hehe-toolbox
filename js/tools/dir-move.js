@@ -288,7 +288,8 @@
           title: '确认开始搬家',
           message:
             '源目录：' + state.src + '\n新位置：' + state.dst + '\n\n' +
-            '流程：复制 → 校验 → 源目录改名 .bak → 原位置建链接 → 验证链接 → 删备份。\n' +
+            '流程：复制 → 完整校验 → 源目录改名 .bak → 原位置建链接 → 验证链接 → 保留源备份。\n' +
+            '请关闭相关程序；完成后核对数据，再手动删除源备份以释放空间。\n' +
             '中途任何一步失败都会自动回退，最终保证原路径能打开东西。\n\n' +
             '搬家期间请不要操作这两个目录。',
           danger: true, okText: '开始',
@@ -338,7 +339,8 @@
           const status = j.ok === null ? 'running' : (j.ok ? 'ok' : 'fail');
           let note = '';
           if (j.error) note = '失败：' + j.error;
-          if (j.files != null) note = '校验通过：' + j.files + ' 个文件，抽样哈希 ' + (j.hashed || 0) + ' 个';
+          if (j.files != null) note = '校验通过：' + j.files + ' 个文件，完整哈希 ' + (j.hashed || 0) + ' 个';
+          if (j.retained) note = '源备份已保留：' + j.bakPath + '；核对后手动删除以释放空间';
           if (j.sampled != null) note = '链接可读，抽查 ' + j.sampled + ' 个文件';
           if (j.restored === false) note = '⚠ 回退也失败了，请按提示手动恢复';
           /* 链接重建：说清「改写了多少个目标」，这件事对用户是有后果的 ——
@@ -376,9 +378,9 @@
           const r = await invoke(Channels.CHANNELS.DIR_MOVE.MOVE, { src: state.src, dst: state.dst });
           done = true;
           toast('搬家完成', 'success');
-          stepsBox.appendChild(div('field-hint', { style: { padding: '8px 6px' } }, r.advice || ''));
           for (const s of state.steps) if (s.status === 'running') s.status = 'ok';
           renderSteps();
+          stepsBox.appendChild(div('field-hint', { style: { padding: '8px 6px' } }, r.advice || ''));
 
           /* 【搬完之后必须作废校验结论】
            * 源路径此刻已经变成「指向新位置的联接」，不可能再搬一次 —— 主进程

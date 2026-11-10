@@ -20,9 +20,7 @@
       function sortKey(v) {
         if (Array.isArray(v)) return v.map(sortKey);
         if (v && typeof v === 'object') {
-          const o = {};
-          for (const k of Object.keys(v).sort()) o[k] = sortKey(v[k]);
-          return o;
+          return Object.fromEntries(Object.keys(v).sort().map(k => [k, sortKey(v[k])]));
         }
         return v;
       }

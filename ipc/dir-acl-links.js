@@ -783,11 +783,8 @@ async function dirMoveRun(opts) {
     throw new Error('复制失败（源目录未受影响）：' + err.message);
   }
 
-  /* ---------- 2) 逐文件校验：大小 + 抽样哈希 ----------
-   * 【为什么不能只比字节数】复制工具/文件系统可能截断或粘贴出等长的坏块，
-   * 大小相同但内容不同是真实存在的（尤其跨盘 + 压缩/加密卷）。
-   * 全量哈希对大目录太慢，所以：**每个文件都比大小**，
-   * 再对其中若干文件（按大小排序取头尾 + 随机）做 SHA-256 抽样。 */
+  /* ---------- 2) 逐文件校验：大小 + 完整 SHA-256 ----------
+   * 同尺寸修改也必须发现，包括超过 512MB 的文件。 */
   try {
     emit('verify', { ok: null, started: true });
     const vr = await verifyCopy(srcAbs, dstAbs);
@@ -879,23 +876,17 @@ async function dirMoveRun(opts) {
       '：' + err.message);
   }
 
-  /* ---------- 6) 最后才删 .bak ---------- */
-  let dropped = false;
-  try {
-    emit('dropbak', { ok: null, started: true });
-    await fsp.rm(bakPath, { recursive: true, force: true });
-    dropped = true;
-    emit('dropbak', { ok: true });
-  } catch (err) {
-    // 删不掉备份不影响可用性，只是多占空间，如实提示即可
-    emit('dropbak', { ok: false, error: err.message });
-  }
+  /* ---------- 6) 保留源备份 ----------
+   * 校验与切换之间没有文件系统快照/排他写锁。即便全量哈希通过，
+   * 原有句柄仍可能向改名后的源写入，因此不能自动删除最后一份源数据。
+   * 保留旧的阶段 id，兼容已有进度订阅者。 */
+  emit('dropbak', { ok: true, retained: true, bakPath });
 
   emit('done', { ok: true });
   return {
-    ok: true, src: srcAbs, dst: dstAbs, bakRemoved: dropped,
+    ok: true, src: srcAbs, dst: dstAbs, bakRemoved: false, bakRetained: true, bakPath,
     advice: '搬家完成：原路径现在是指向新位置的目录联接，打开它看到的就是新位置的内容。' +
-      (dropped ? '备份已清理。' : '（备份 .bak 未能删除，可在确认无误后手动删除）'),
+      '源备份已保留在 ' + bakPath + '，用于保护搬家期间的修改。请关闭相关程序并核对数据，确认无误后手动删除备份以释放源盘空间。',
   };
 }
 
@@ -970,8 +961,6 @@ async function verifyCopy(srcDir, dstDir) {
   const stack = [[path.resolve(srcDir), path.resolve(dstDir)]];
   let files = 0, bytes = 0, hashed = 0;
   const toHash = [];
-  const SIZE_LIMIT = 512 * 1024 * 1024;   // 单个文件超过 512MB 不做全量哈希（太慢）
-  const HASH_BUDGET = 12;                 // 最多抽样 12 个不同大小的文件
 
   /* 【源侧条目在复制与校验之间消失，必须与我刚加的容忍策略一致】
    * copyTreeExcludingLinks 已经允许「readdir 之后文件被删」并记进
@@ -1006,7 +995,11 @@ async function verifyCopy(srcDir, dstDir) {
       const sp = path.join(s, ent.name);
       const dp = path.join(d, ent.name);
       if (ent.isSymbolicLink()) continue;   // 不跟随链接（目标内容不在这次复制里）
-      if (ent.isDirectory()) { stack.push([sp, dp]); continue; }
+      if (ent.isDirectory()) {
+        const dstStat = await fsp.stat(dp).catch(() => null);
+        if (!dstStat || !dstStat.isDirectory()) throw new Error('目标缺少目录：' + dp);
+        stack.push([sp, dp]); continue;
+      }
       if (!ent.isFile()) continue;
 
       const stDst = await fsp.stat(dp).catch(() => null);
@@ -1023,26 +1016,11 @@ async function verifyCopy(srcDir, dstDir) {
         throw new Error('大小不一致：' + path.basename(sp) + '（源 ' + sst.size + ' / 目标 ' + stDst.size + '）');
       }
       files++; bytes += sst.size;
-      /* 抽样哈希前再 stat 一次会更准，但这里有竞态：源可能正好在此时被删。
-       * hashFile 失败会被下面的 catch 归到「已消失」，不误判成内容不一致。 */
-      if (sst.size > 0 && sst.size <= SIZE_LIMIT) toHash.push({ sp, dp, size: sst.size });
+      toHash.push({ sp, dp });
     }
   }
 
-  /* 抽样策略：按大小排序后取「最大几个 + 中间均匀取样」，
-   * 这样既能覆盖大文件（最容易复制出问题），也覆盖中小文件。 */
-  toHash.sort((a, b) => b.size - a.size);
-  const pick = [];
-  const seenSize = new Set();
   for (const it of toHash) {
-    if (pick.length >= HASH_BUDGET) break;
-    // 尽量从不同大小里取，避免 12 个都是同尺寸的日志文件
-    const bucket = Math.floor(Math.log2(it.size + 1));
-    if (seenSize.has(bucket) && pick.length >= 4) continue;
-    seenSize.add(bucket);
-    pick.push(it);
-  }
-  for (const it of pick) {
     let a, b;
     try { a = await hashFile(it.sp); }
     catch (e) {
