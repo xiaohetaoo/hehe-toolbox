@@ -499,7 +499,7 @@
   /* ---------- 文件加密解密 ---------- */
   register({
     id: 'file-crypt', name: '文件加密解密', nameEn: 'Encrypt / Decrypt', module: MOD, icon: 'lock',
-    desc: 'AES-256-CBC 本地加密，密码经 scrypt 派生，离线安全', descEn: 'Encrypt files with a password using AES, and decrypt them back',
+    desc: 'AES-256-GCM 本地认证加密，密码经 scrypt 派生，兼容旧版文件解密', descEn: 'Authenticated AES-256-GCM encryption with legacy file decryption',
     keywords: ['加密', '解密', 'aes', '密码'],
     render(page) {
       let mode = 'encrypt';
@@ -527,6 +527,7 @@
           const ch = mode === 'encrypt' ? Channels.CHANNELS.FS.ENCRYPT_FILE : Channels.CHANNELS.FS.DECRYPT_FILE;
           const r = await invoke(ch, filePath, out, pwdIn.value);
           status.innerHTML = `<span class="status-ok">✓ 完成</span> 输出：${escapeHtml(r.outPath)}（${fmtBytes(r.size)}）`;
+          if (r.legacy) status.appendChild(div('field-hint', '旧版文件未提供完整性认证，请核对解密结果；重新加密可升级为认证加密格式。'));
           toast(mode === 'encrypt' ? '加密完成' : '解密完成', 'success');
         } catch (e) {
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;

@@ -66,7 +66,6 @@ register({
         const finalDir = picked[0];
         goBtn.disabled = true; outLabel.textContent = '处理中…';
         try {
-          /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
           const r = await invoke(Channels.CHANNELS.FFMPEG.FRAMES, {
             input: src, outDir: finalDir, mode: modeSel.value,
             ss: timeIn.value.trim(), every: Math.max(1, +everyIn.value || 1),

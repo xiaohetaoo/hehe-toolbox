@@ -183,10 +183,11 @@ t('非递归模式不带 /R 与 /T（只动选中的那一个）', () => {
   assert.ok(!/\/T/.test(r.steps[1].args.join(' ')), '不该带 /T');
 });
 
-t('icacls 授予带继承标记 (OI)(CI)', () => {
+t('仅递归目录授权带继承标记，非递归不影响子项', () => {
   const r = A.buildRepairCommands({ path: 'C:\\tmp\\d', isDir: true, user: 'me', recursive: false });
-  const g = r.steps[1].args.join(' ');
-  assert.ok(/\(OI\)\(CI\)F/.test(g), '应含 (OI)(CI)F 继承标记，实际 ' + g);
+  assert.strictEqual(r.steps[1].args[2], 'me:F');
+  const recursive = A.buildRepairCommands({ path: 'C:\\tmp\\d', isDir: true, user: 'me', recursive: true });
+  assert.strictEqual(recursive.steps[1].args[2], 'me:(OI)(CI)F');
 });
 
 t('没有路径 / 用户时明确报错', () => {

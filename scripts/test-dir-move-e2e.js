@@ -6,7 +6,7 @@ const { t, done } = require('./lib/harness');
  * 所以必须用真实 IO 验证，不能只靠纯逻辑单测：
  *   1) 搬完后原路径是链接、能打开、内容正确
  *   2) 新位置数据完整（含中文文件名、嵌套子目录）
- *   3) .bak 已删除
+ *   3) .bak 已保留，核对后由用户手动删除
  *   4) 危险中间态（已改名、链接未建成）能回退
  *
  * 跨盘才能搬家（同卷会被拒），所以源放系统临时目录、目标放第二块盘。
@@ -90,7 +90,7 @@ t('同盘校验被拒（同盘搬家没意义）', () => {
 });
 
 /* ---------- 完整搬家 ---------- */
-t('完整搬家：复制 → 校验 → 改名 → 建链 → 验链 → 删备份', async () => {
+t('完整搬家：复制 → 校验 → 改名 → 建链 → 验链 → 保留备份', async () => {
   const srcRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-full-'));
   const dst = path.join(otherDrive, 'hehe-mv-' + Date.now());
   const bakPath = srcRoot + '.hehe-bak';
@@ -125,9 +125,8 @@ t('完整搬家：复制 → 校验 → 改名 → 建链 → 验链 → 删备�
     assert.strictEqual(fs.readFileSync(path.join(srcRoot, '中文名.txt'), 'utf8'), '中文内容');
     assert.strictEqual(fs.readFileSync(path.join(srcRoot, 'sub', 'deep.txt'), 'utf8'), 'DEEP');
 
-    // 5) 删备份
-    await fs.promises.rm(bakPath, { recursive: true, force: true });
-    assert.ok(!fs.existsSync(bakPath), '.bak 应已删除');
+    // 5) 保留源备份；生产 handler 的并发写入保护由 test-file-safety 验证。
+    assert.strictEqual(await fs.promises.readFile(path.join(bakPath, 'a.txt'), 'utf8'), 'AAA');
     assert.ok(fs.existsSync(srcRoot), '原路径仍可访问');
   } finally {
     await safeCleanup(srcRoot);

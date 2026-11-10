@@ -694,7 +694,7 @@ handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
        * 用户只看到「转换失败」，看不到真正原因。
        * 统一用同一个判据，避免两份列表各写各的。 */
       const isAudioOut = ['mp3', 'm4a', 'wav', 'flac'].includes(opts.format);
-      if (isAudioOut || opts.mute) args.push('-vn');
+      if (isAudioOut) args.push('-vn');
       if (opts.mute) { args.push('-an'); }
       else {
         // 音频编码按容器选择：wav→PCM、flac→无损 flac（aac 进这两个容器会被拒绝/非标）
@@ -1118,6 +1118,15 @@ handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, ga
 });
 /* ================= IPC: 屏幕录制（ffmpeg gdigrab，区域/声音/暂停分段/GIF） ================= */
 let recProc = null, recOut = null, recSegs = [], recSegDir = null, recOpts = null;
+let recBusy = false, recOwner = null;
+function recordingOwner(e) { return e && e.sender ? e.sender.id : null; }
+async function withRecordingOperation(e, operation) {
+  if (recBusy) throw new Error('录制操作正在进行，请稍候');
+  if (recOpts && recOwner !== recordingOwner(e)) throw new Error('该录制会话属于另一个窗口');
+  recBusy = true;
+  try { return await operation(); }
+  finally { recBusy = false; }
+}
 // 分段数量（拼接降级提示用）
 function fmtDur(segs) { return (segs || []).length + ' 段'; }
 // 解析 ffmpeg -list_devices 输出。兼容三种格式：
@@ -1262,6 +1271,9 @@ function recSpawnSeg(segPath) {
   return { proc, args };
 }
 handle(CH.REC.START, async (e, { outPath, fps, rect, audio, camera, camPos, camScale, overwrite }) => {
+  if (recBusy || recOpts || (recProc && recProc.exitCode === null)) throw new Error('已有录制会话进行中（包括暂停的会话），请先停止');
+  recBusy = true;
+  try {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
   if (recProc && recProc.exitCode === null) throw new Error('已有录制进行中');
@@ -1291,18 +1303,20 @@ handle(CH.REC.START, async (e, { outPath, fps, rect, audio, camera, camPos, camS
       w: Math.max(64, Math.round(rect.w)) & ~1, h: Math.max(64, Math.round(rect.h)) & ~1 };
   } else rect = null;
   recOpts = { fps: fps || 30, rect, audio: audio || null, camera: camera || null, camPos: camPos || 'rb', camScale: camScale || 0.25 };
+  recOwner = recordingOwner(e);
   recSegs = [];
   recSegDir = tempNames.recSegDir({ tempDir: tempDir() });
-  await fsp.mkdir(recSegDir, { recursive: true });
   try {
+    await fsp.mkdir(recSegDir, { recursive: true });
     return await recStartSeg();
   } catch (err) {
     // 启动失败必须回滚状态：否则临时目录泄漏，且下次 resume 会误判会话仍在
     const dir = recSegDir;
-    recOpts = null; recSegs = []; recSegDir = null; recProc = null;
+    recOpts = null; recSegs = []; recSegDir = null; recProc = null; recOwner = null;
     if (dir) await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
+  } finally { recBusy = false; }
 });
 async function recStartSeg() {
   const seg = path.join(recSegDir, `seg-${recSegs.length + 1}.mp4`);
@@ -1343,19 +1357,24 @@ async function recStopSeg() {
   recProc = null;
   if (!proc || proc.exitCode !== null) return;
   await new Promise((resolve) => {
-    proc.once('exit', resolve);
+    const timer = setTimeout(() => {
+      if (proc.exitCode === null) {
+        try { spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']); } catch (err) {}
+      }
+    }, 5000);
+    proc.once('exit', () => { clearTimeout(timer); resolve(); });
     try { proc.stdin.write('q'); } catch (e) {}
-    setTimeout(() => { try { spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']); } catch (err) {} }, 5000);
   });
   await new Promise(r => setTimeout(r, 300));
 }
-handle(CH.REC.PAUSE, async () => { await recStopSeg(); return { ok: true, paused: true }; });
-handle(CH.REC.RESUME, async () => {
+handle(CH.REC.PAUSE, (e) => withRecordingOperation(e, async () => { await recStopSeg(); return { ok: true, paused: true }; }));
+handle(CH.REC.RESUME, (e) => withRecordingOperation(e, async () => {
   // rec:stop 的 finally 会把 recOpts/recSegDir 置空；只检查 recOpts 会漏掉 recSegDir 已失效的情况
   if (!recOpts || !recSegDir) throw new Error('没有进行中的录制会话');
+  if (recProc && recProc.exitCode === null) throw new Error('当前已经在录制');
   return await recStartSeg();
-});
-handle(CH.REC.STOP, async (e, makeGif) => {
+}));
+handle(CH.REC.STOP, (e, makeGif) => withRecordingOperation(e, async () => {
   await recStopSeg();
   if (!recSegs.length) return { ok: true, size: 0, outPath: recOut };
   // 拼接失败时的降级标记：必须如实告诉用户只拿到了第一段，
@@ -1441,7 +1460,7 @@ handle(CH.REC.STOP, async (e, makeGif) => {
     } else {
       console.warn('[rec] 保留分段目录以便手工恢复：' + recSegDir);
     }
-    recOpts = null; recSegs = []; recSegDir = null;
+    recOpts = null; recSegs = []; recSegDir = null; recOwner = null;
   }
-});
+}));
 };

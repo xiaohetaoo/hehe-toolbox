@@ -13,6 +13,7 @@
  *
  * 用法：
  *   node scripts/version.js                 # 校验当前 package.json
+ *   node scripts/version.js 0.8.0-1         # 支持数字修订后缀（SemVer 预发布版本）
  *   node scripts/version.js 0.0.14          # 校验指定版本号
  *   node scripts/version.js --bump 0.0.14   # 按规则进位（输出 0.1.4）
  *   node scripts/version.js --next          # 当前版本 +1 并规范化
@@ -59,17 +60,24 @@ function normalize(parts) {
 }
 
 function isValid(parts) {
-  if (!Array.isArray(parts) || parts.length !== 3) return false;
-  return parts.every((x) => Number.isInteger(x) && x >= 0 && x <= 9);
+  if (!Array.isArray(parts) || ![3, 4].includes(parts.length)) return false;
+  return parts.slice(0, 3).every((x) => Number.isInteger(x) && x >= 0 && x <= 9)
+    && (parts.length === 3 || (Number.isSafeInteger(parts[3]) && parts[3] >= 0));
 }
 
 function parse(v) {
-  const m = String(v || '').trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
+  const m = String(v || '').trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-(0|[1-9]\d*))?$/);
   if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
+  const parts = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (m[4] !== undefined) {
+    const revision = Number(m[4]);
+    if (!Number.isSafeInteger(revision)) return null;
+    parts.push(revision);
+  }
+  return parts;
 }
 
-function fmt(p) { return p.join('.'); }
+function fmt(p) { return p.slice(0, 3).join('.') + (p.length === 4 ? '-' + p[3] : ''); }
 
 /* 版本 +1：末位加一，然后按规则进位规范化 */
 function bump(parts) {
@@ -127,7 +135,7 @@ function main() {
     catch (e) { console.error('读不到 package.json'); process.exit(1); }
   }
   const parts = parse(ver);
-  if (!parts) { console.error(`✗ 版本号格式不对（应为 x.y.z）：${ver}`); process.exit(1); }
+  if (!parts) { console.error(`✗ 版本号格式不对（应为 x.y.z 或 x.y.z-n）：${ver}`); process.exit(1); }
   if (isValid(parts)) {
     console.log(`✓ 版本号合规：${ver}`);
     return;
