@@ -149,14 +149,15 @@ t('PP6 扫描件（无文字层）必须给出 OCR 指引', () => {
 
 t('PP7 页码「跳过前几页」的语义是排版惯例（跳过页不计数）', () => {
   const src = readSrc('js/tools/pdf-plus.js');
-  /* 锁的是：页码按物理页算（跳 2 页后第 3 页显示 3）——
-   * 那与界面提示「封面/目录通常不计页码」矛盾：书籍排版的预期是
-   * 正文第 1 页显示「1」。修复于审查轮（自审抓到）。
-   * 判据：页码计算必须是 i + 1 - skip，且 n-of-total 的分母要扣除 skip。 */
+  /* 背景：页码按物理页算（跳 2 页后第 3 页显示 3）与界面提示
+   * 「封面/目录通常不计页码」矛盾；书籍排版预期正文第 1 页显示「1」。
+   * 修复于审查轮（自审抓到）。 */
+  /* 锁的是：页码回退成按物理页算 —— 文案与行为重新矛盾。 */
   assert.ok(/const n = i \+ 1 - skip;/.test(src),
     '页码应扣除跳过的页数（i + 1 - skip），不是 i + 1');
+  /* 锁的是：分母没扣 skip —— 「1 / 300」出现在 298 页正文的书里。 */
   assert.ok(/total - skip/.test(src),
-    'n-of-total 的分母应扣除跳过页数（否则 1/300 出现在 298 页正文的书里）');
+    'n-of-total 的分母应扣除跳过页数');
   /* 锁的是：skip 后页码变成 0 或负数 —— skip ≥ total 时没有正文页可标。 */
   assert.ok(/Math\.max\(1, total - skip\)/.test(src), '分母必须夹到至少 1');
 });
@@ -168,6 +169,7 @@ t('PP8 平铺水印的循环必须覆盖整页（含旋转出界）', () => {
    * 正确范围是 -size..2*size（三倍覆盖）。 */
   const i = src.indexOf("wmMode.value === 'tile'");
   const seg = src.slice(i, i + 900);
+  /* 锁的是：平铺起点回退到 0 —— 旋转后基线原点在页外，边缘留三角区。 */
   assert.ok(/y = -height/.test(seg) && /x = -width/.test(seg),
     '平铺起点应从负半页开始（覆盖旋转出界）');
   assert.ok(/y < height \* 2/.test(seg) && /x < width \* 2/.test(seg),

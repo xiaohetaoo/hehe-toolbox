@@ -116,6 +116,7 @@ t('KA8 全局监听的 bind 必须幂等（切语言重建外壳不重复挂）'
    * document 级监听器翻倍：一次拖拽弹 N 个选择面板。
    * 本次审查（v0.8.3 收尾后第二轮）发现的缺陷。 */
   const drop = readSrc('js/drop-open.js');
+  /* 锁的是：幂等标记被删 —— 切语言重建外壳后 document 监听器翻倍。 */
   assert.ok(/__dropOpenBound/.test(drop), 'DropOpen.bind 缺少幂等标记 __dropOpenBound');
   /* 锁的是：两处 bind 的幂等策略不一致 —— 一处有标记一处没有，
    * 修好一处漏另一处正是要防的。 */
