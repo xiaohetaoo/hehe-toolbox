@@ -120,65 +120,59 @@ const PROBE = `(async function(){
    *   a) 每个标签保住可读下限 min-width:44px；
    *   b) 超出栏宽转入 overflow-x 滚动（滚动条全局隐藏）；
    *   c) 溢出的一侧做 18px 渐隐 mask，提示「另一侧还有标签」。
-   * 所以「没有标签被挤出可视区」这条旧断言的语义被三段取代：
-   *   F10a 下限不被击穿 —— 每个标签至少 44px，文字最少露 1~2 个字；
-   *   F10b 图标仍完整 —— 旧 F12 保留（下限策略下更应成立）；
-   *   F10c 溢出可感知 —— 溢出时 tabbar 必须挂 overflow-right（或 overflow-left）
-   *        方向类，CSS 据此画渐隐；没有类 = 用户不知道还有标签。
-   *   F10d 总宽可超栏宽（允许滚动），但超出量必须有限：不能比「下限总和」
-   *        还宽出离谱的量（说明压缩完全没生效）。 */
+   *
+   * 【本段断言条数必须与窗口宽度无关 —— 这里踩过一次真坑】
+   * 最初写成 if (overflowing) { 5 条 } else { 2 条 }：本机窗口窄、必然溢出，
+   * 数到 18 条；CI 上窗口/字体不同、可能不溢出，只数到 15 条。
+   * 同一个文件在两台机器上条数不同，于是 scripts/check-assertion-count.js
+   * 把它判成「悄悄删掉 3 条测试」而挂红 —— v0.8.1 首次 CI 正是这样红的，
+   * 而代码其实一条没删。
+   *
+   * 现在改成：五条断言**无条件全发**，判据自身随溢出状态取值。
+   * 这样无论窗口多宽都是恒定条数，守卫只对「真的少测了」报警。 */
   const minW = parseFloat(getComputedStyle(tabs[0]).minWidth);
+  const widths = tabs.map(t => t.getBoundingClientRect().width);
+  /* 锁的是：可读下限被击穿（min-width:44px 失效）→ 又回到「一排死图标」。 */
   chk('F10a 每个标签保住可读下限（min-width 44px 生效）',
-    tabs.every(t => t.getBoundingClientRect().width >= 43.5) && minW >= 43.5,
-    'minWidth=' + minW + ' 最窄=' + Math.round(Math.min(...tabs.map(t => t.getBoundingClientRect().width))));
+    widths.every(w => w >= 43.5) && minW >= 43.5,
+    'minWidth=' + minW + ' 最窄=' + Math.round(Math.min(...widths)));
 
   const barRect = bar.getBoundingClientRect();
   const sw = bar.scrollWidth, cw = bar.clientWidth;
   const overflowing = sw > cw + 1;
   const cls = bar.className;
-  if (overflowing) {
-    /* 锁的是：溢出时方向类必须出现 —— 渐隐提示是隐藏滚动条下唯一的
-     * 「还有标签」信号；类没挂上 = 用户不知道右边还有标签。 */
-    chk('F10c 溢出时挂上渐隐方向类（overflow-right/left）',
-      /overflow-(left|right)/.test(cls), 'cls=' + cls + ' sw=' + sw + ' cw=' + cw);
-    /* 锁的是：可读下限策略下总宽允许超出栏宽（转入滚动），但标签本身
-     * 必须仍在按 flex 压缩 —— 判据：单个标签不得宽于「内容自然宽度的上限
-     * max-width:200px」，且总宽不得等于「全部按内容宽度展开」的量级。
-     * 实测 10 个标签总宽 481px（压缩后），完全不压缩时约 800px+；
-     * 取 600px 作为「压缩仍然生效」的上界（10 标签 × 44px 下限 = 440，
-     * 加上长名标签按内容撑到 max-width 的合理余量）。 */
-    const overW = tabs.filter(t => t.getBoundingClientRect().width > 200.5);
-    chk('F10d 压缩仍然生效（没有标签超过 max-width 200px）',
-      sw <= 600 && overW.length === 0, 'sw=' + sw + ' 超宽标签=' + overW.length);
-    /* 锁的是：溢出时必须有渐隐方向类（mask 是隐藏滚动条下唯一的溢出提示）。
-     * 至少挂 overflow-right 或 overflow-left 之一；方向由 scrollIntoView
-     * （活跃标签滚入可视区）之后的滚动位置决定 ——
-     *   · 滚动位置在起点        → 只挂 overflow-right
-     *   · 活跃标签被滚到可视区  → overflow-left + overflow-right（两侧都有内容）
-     * 两种都是正确形态，不再锁死「必须只有 right」—— 那是 active-scroll
-     * 修复之前的旧行为，修复后活跃标签默认被滚进来，两侧渐隐才对。 */
-    chk('F10e 溢出时挂上渐隐方向类（overflow-right/left 至少其一）',
-      /overflow-(left|right)/.test(cls), 'cls=' + cls);
-    /* 锁的是：方向类与实际滚动位置必须自洽 —— 左类成立当且仅当 scrollLeft>0。
-     * 这条防止「类挂上了但 mask 方向画错」的静默失效。 */
-    const slNow = bar.scrollLeft;
-    chk('F10f 方向类与滚动位置自洽（left ⟺ scrollLeft>0）',
-      bar.classList.contains('overflow-left') === (slNow > 1),
-      'cls=' + cls + ' scrollLeft=' + Math.round(slNow));
-  } else {
-    /* 锁的是：不溢出时不得挂任何方向类 —— 空挂会让 mask 常驻裁掉边缘标签。 */
-    chk('F10c 不溢出时不挂渐隐类', !/overflow-(left|right)/.test(cls), 'cls=' + cls);
-  }
+  const slNow = bar.scrollLeft;
 
-  /* 【压缩的样子（新策略）：总宽可以超出栏宽转入滚动，但要有限度】
-   * 允许 1px 误差（亚像素舍入）。滚动策略下这一条只在「未溢出」时有意义，
-   * 溢出场景由上面 F10d 锁「下限总和」上限。 */
-  if (!(sw > cw + 1)) {
-    const totalW = tabs.reduce((n, t) => n + t.getBoundingClientRect().width, 0);
-    const availW = barRect.width - 32;  // 减去左右 padding
-    chk('F11 标签总宽不超过标签栏宽度', totalW <= availW + 2,
-      '总宽=' + Math.round(totalW) + ' 可用=' + Math.round(availW));
-  }
+  /* 锁的是：单个标签吃掉半个标签栏 —— CSS 的 max-width:200px 失效时，
+   * 只开两三个工具也会把后面的标签全挤出去。 */
+  chk('F10b 没有标签超过 max-width 200px（压缩上限生效）',
+    widths.every(w => w <= 200.5), '最宽=' + Math.round(Math.max(...widths)));
+
+  /* 锁的是：方向类与实际滚动位置脱节（mask 画在没内容的那一侧，
+   * 或溢出却没有提示）。判据与 js/app.js 的 updateTabOverflowHint 逐字对应：
+   *   left  ⟺ scrollLeft > 1
+   *   right ⟺ scrollLeft + clientWidth < scrollWidth - 1
+   * 不溢出时两者都应为 false —— 空挂会让 mask 常驻裁掉边缘标签。 */
+  const wantLeft = slNow > 1;
+  const wantRight = slNow + cw < sw - 1;
+  chk('F10c 方向类与滚动位置自洽（left ⟺ scrollLeft>0，right ⟺ 右侧仍有内容）',
+    bar.classList.contains('overflow-left') === wantLeft
+    && bar.classList.contains('overflow-right') === wantRight,
+    'cls=' + cls + ' scrollLeft=' + Math.round(slNow) + ' sw=' + sw + ' cw=' + cw);
+
+  /* 锁的是：用户拿不到「还有标签」的信号 —— 滚动条全局隐藏（本项目
+   * 的通配规则写了 scrollbar-width: none），渐隐方向类是没有提示时的唯一线索。
+   * 判据：有方向类 ⟺ 确实还有内容在可视区外。 */
+  chk('F10d 渐隐方向类按「是否还有内容」出现/缺席',
+    /overflow-(left|right)/.test(cls) === (wantLeft || wantRight),
+    'cls=' + cls + ' 期望=' + (wantLeft || wantRight));
+
+  /* 锁的是：有标签脱离了 flex 的 max-width 约束（总宽逼近「按内容自然宽度
+   * 全部展开」的量级，说明压缩完全没生效）。上界取「标签数 × max-width +
+   * 标签间距」，与窗口宽度无关，因此本机与 CI 都能成立。 */
+  chk('F10e 总宽未突破「标签数 × max-width」上限（压缩仍在生效）',
+    sw <= widths.length * 200.5 + widths.length * 2,
+    'sw=' + sw + ' 上限=' + Math.round(widths.length * 200.5 + widths.length * 2) + ' 溢出=' + overflowing);
 
   /* 【判据是「图标仍完整可见」，不是「够宽」】
    * 窄窗口下宽度的下限和"绝不溢出"必然冲突（实测：327px 放 10 个标签，
