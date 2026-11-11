@@ -214,66 +214,66 @@ t('真正的电源命令仍然拦得住', () => {
 
 /* ============ ④b 托盘/通知跟随语言 ============ */
 
-t('纯文本命令的豁免不能作用在整条命令上（链式命令必须被拦）', () => {
-  const P = require('../lib/power-gate.js');
-  for (const cmd of ['echo hi & shutdown /s /t 0', 'type nul & shutdown /s', 'dir > x.txt && shutdown /s',
-    'cmd /c echo hi & shutdown /s', 'foo.exe\r\nshutdown /s']) {
-    assert.strictEqual(P.isPowerCommand(cmd), true, '穿透了：' + cmd);
-  }
-  /* 真·纯文本仍要放行，否则日常命令会被误拦 */
-  for (const cmd of ['echo shutdown', 'type shutdown.txt', 'dir shutdown.log', 'tasklist | findstr shutdown',
-    'echo a; echo b', 'echo shutdown & echo ok']) {
-    assert.strictEqual(P.isPowerCommand(cmd), false, '被误拦：' + cmd);
-  }
-});
+t('纯文本命令的豁免不能作用在整条命令上（链式命令必须被拦）', () => {
+  const P = require('../lib/power-gate.js');
+  for (const cmd of ['echo hi & shutdown /s /t 0', 'type nul & shutdown /s', 'dir > x.txt && shutdown /s',
+    'cmd /c echo hi & shutdown /s', 'foo.exe\r\nshutdown /s']) {
+    assert.strictEqual(P.isPowerCommand(cmd), true, '穿透了：' + cmd);
+  }
+  /* 真·纯文本仍要放行，否则日常命令会被误拦 */
+  for (const cmd of ['echo shutdown', 'type shutdown.txt', 'dir shutdown.log', 'tasklist | findstr shutdown',
+    'echo a; echo b', 'echo shutdown & echo ok']) {
+    assert.strictEqual(P.isPowerCommand(cmd), false, '被误拦：' + cmd);
+  }
+});
 
-t('分段要认引号：参数里的 & 不该被当成命令分隔符（PG-4）', () => {
-  const P = require('../lib/power-gate.js');
-  assert.strictEqual(P.isPowerCommand('app.exe --msg "hello & shutdown now"'), false,
-    '引号内的 & 被当成了分隔符（普通参数被误判成电源操作）');
-  assert.strictEqual(P.isPowerCommand("app.exe --msg 'x; shutdown /s'"), false);
-  assert.strictEqual(P.isPowerCommand('echo hi & shutdown /s'), true, '引号外的真命令仍要拦');
-});
-
+t('分段要认引号：参数里的 & 不该被当成命令分隔符（PG-4）', () => {
+  const P = require('../lib/power-gate.js');
+  assert.strictEqual(P.isPowerCommand('app.exe --msg "hello & shutdown now"'), false,
+    '引号内的 & 被当成了分隔符（普通参数被误判成电源操作）');
+  assert.strictEqual(P.isPowerCommand("app.exe --msg 'x; shutdown /s'"), false);
+  assert.strictEqual(P.isPowerCommand('echo hi & shutdown /s'), true, '引号外的真命令仍要拦');
+});
+
 /* ================= ⑤ 链接体检 ================= */
 
-t('/a 豁免必须逐段判：混着真关机命令时要拦', () => {
-  const P = require('../lib/power-gate.js');
-  for (const cmd of ['shutdown /a & shutdown /s', 'shutdown /s /t 0 & shutdown /a',
-    'shutdown /? & shutdown /s']) {
-    assert.strictEqual(P.isPowerCommand(cmd), true, '穿透了：' + cmd);
-  }
-  /* 真·取消/帮助仍要放行 */
-  for (const cmd of ['shutdown /a', 'shutdown /?', 'cmd /c shutdown /a', 'shutdown /a /t 0']) {
-    assert.strictEqual(P.isPowerCommand(cmd), false, '被误拦：' + cmd);
-  }
-});
+t('/a 豁免必须逐段判：混着真关机命令时要拦', () => {
+  const P = require('../lib/power-gate.js');
+  for (const cmd of ['shutdown /a & shutdown /s', 'shutdown /s /t 0 & shutdown /a',
+    'shutdown /? & shutdown /s']) {
+    assert.strictEqual(P.isPowerCommand(cmd), true, '穿透了：' + cmd);
+  }
+  /* 真·取消/帮助仍要放行 */
+  for (const cmd of ['shutdown /a', 'shutdown /?', 'cmd /c shutdown /a', 'shutdown /a /t 0']) {
+    assert.strictEqual(P.isPowerCommand(cmd), false, '被误拦：' + cmd);
+  }
+});
 
-t('换行不能被归一成空格（PowerShell 认换行当分隔符）', () => {
-  const P = require('../lib/power-gate.js');
-  assert.ok(P.normalizeCommand('echo hi\nshutdown /s').indexOf('\n') !== -1,
-    'normalizeCommand 把换行吃掉了：' + JSON.stringify(P.normalizeCommand('echo hi\nshutdown /s')));
-  for (const cmd of ['echo hi\nshutdown /s', 'echo shutdown\nshutdown /s', 'exit\nshutdown /s /t 0']) {
-    assert.strictEqual(P.isPowerCommand(cmd), true, '换行绕过了门禁：' + JSON.stringify(cmd));
-  }
-  /* 真文本仍放行 */
-  assert.strictEqual(P.isPowerCommand('echo shutdown'), false);
-  assert.strictEqual(P.isPowerCommand('type shutdown.txt'), false);
-});
+t('换行不能被归一成空格（PowerShell 认换行当分隔符）', () => {
+  const P = require('../lib/power-gate.js');
+  assert.ok(P.normalizeCommand('echo hi\nshutdown /s').indexOf('\n') !== -1,
+    'normalizeCommand 把换行吃掉了：' + JSON.stringify(P.normalizeCommand('echo hi\nshutdown /s')));
+  for (const cmd of ['echo hi\nshutdown /s', 'echo shutdown\nshutdown /s', 'exit\nshutdown /s /t 0']) {
+    assert.strictEqual(P.isPowerCommand(cmd), true, '换行绕过了门禁：' + JSON.stringify(cmd));
+  }
+  /* 真文本仍放行 */
+  assert.strictEqual(P.isPowerCommand('echo shutdown'), false);
+  assert.strictEqual(P.isPowerCommand('type shutdown.txt'), false);
+});
 
-t('不再对 norm 做「整条都是文本命令」的豁免', () => {
-  const code = stripComments(read('lib/power-gate.js'));
+t('不再对 norm 做「整条都是文本命令」的豁免', () => {
+  const code = stripComments(read('lib/power-gate.js'));
   /* 锁的是：把文本豁免判据从 raw 改回 norm。norm 是剥壳后的形态，
    * 它的分段边界和真实语句边界不一致（换行就是例子），多判一次 norm
    * 只会多出一条「看起来更宽松」的放行路径，没有对应的真实语义。 */
-  assert.ok(!/allTextSegments\(norm\)/.test(code),
-    '仍保留了 allTextSegments(norm) —— 那是一条没有真实语义的放行路径');
+  assert.ok(!/allTextSegments\(norm\)/.test(code),
+    '仍保留了 allTextSegments(norm) —— 那是一条没有真实语义的放行路径');
   /* 锁的是：raw 的逐段判定被删。raw 才是真正交给 shell 执行的那串字符，
    * 删掉它等于让「整条命令都是文本命令」这个豁免作用到链式命令上，
    * `echo hi & shutdown /s` 会被整条放行。 */
-  assert.ok(/allTextSegments\(raw\)/.test(code), 'raw 的逐段判定必须保留');
-});
-
+  assert.ok(/allTextSegments\(raw\)/.test(code), 'raw 的逐段判定必须保留');
+});
+
 /* ================= ③ 分批 ================= */
 
 t('6a 三种新绕过必须全部拦下', () => {
@@ -319,60 +319,60 @@ t('6d 未展开的变量 fail-closed，已知变量要能展开', () => {
 
 /* ==================== 7. clean-junk 来源校验 ==================== */
 
-t('8a 电源门禁：cmd 与 args 必须拼成整条再判（分开判会漏掉 cmd.exe /c shutdown）', () => {
-  const i = handlerIndex(mainSrc, 'exec:run');
-  const j = handlerIndex(mainSrc, 'exec:stream');
-  assertPowerArgIsWholeCommand(mainSrc.slice(i, j), 'exec:run');
-
-  /* 行为验证：证明「分开判」确实会让这些命令通过（否则这条测试守的是空气） */
-  const c1 = PG.isPowerCommand('cmd.exe');
-  const a1 = PG.isPowerCommand('/c shutdown /s /t 0');
-  const whole1 = PG.isPowerCommand('cmd.exe /c shutdown /s /t 0');
-  assert.strictEqual(c1, false, '前置：cmd.exe 单独不是危险命令');
-  assert.strictEqual(a1, false, '前置：参数串单独被剥壳后也不命中');
-  assert.strictEqual(whole1, true, '前置：拼起来必须被识别为电源命令');
-  /* 结论：只要实现是分开判的，c1/a1 都为 false，就放行了 whole1 —— 正是缺陷形态 */
-});
+t('8a 电源门禁：cmd 与 args 必须拼成整条再判（分开判会漏掉 cmd.exe /c shutdown）', () => {
+  const i = handlerIndex(mainSrc, 'exec:run');
+  const j = handlerIndex(mainSrc, 'exec:stream');
+  assertPowerArgIsWholeCommand(mainSrc.slice(i, j), 'exec:run');
 
-t('8b 电源门禁：powershell -Command Stop-Computer 同样要被整条判住', () => {
-  const body = mainSrc.slice(handlerIndex(mainSrc, 'exec:stream'), handlerIndex(mainSrc, 'job:kill'));
-  assertPowerArgIsWholeCommand(body, 'exec:stream');
-  assert.strictEqual(PG.isPowerCommand('powershell.exe'), false);
-  assert.strictEqual(PG.isPowerCommand('-NoProfile -Command Stop-Computer'), false);
-  assert.strictEqual(PG.isPowerCommand('powershell.exe -NoProfile -Command Stop-Computer'), true,
-    '前置：整条拼接必须命中');
-});
+  /* 行为验证：证明「分开判」确实会让这些命令通过（否则这条测试守的是空气） */
+  const c1 = PG.isPowerCommand('cmd.exe');
+  const a1 = PG.isPowerCommand('/c shutdown /s /t 0');
+  const whole1 = PG.isPowerCommand('cmd.exe /c shutdown /s /t 0');
+  assert.strictEqual(c1, false, '前置：cmd.exe 单独不是危险命令');
+  assert.strictEqual(a1, false, '前置：参数串单独被剥壳后也不命中');
+  assert.strictEqual(whole1, true, '前置：拼起来必须被识别为电源命令');
+  /* 结论：只要实现是分开判的，c1/a1 都为 false，就放行了 whole1 —— 正是缺陷形态 */
+});
 
-t('8c 电源门禁：无害命令与 shutdown /a 仍要放行（别矫枉过正）', () => {
-  assert.strictEqual(PG.isPowerCommand('cmd.exe /c dir'), false);
-  assert.strictEqual(PG.isPowerCommand('cmd.exe /c shutdown /a'), false, '取消关机必须放行');
-  assert.strictEqual(PG.isPowerCommand('powershell.exe -Command Get-Date'), false);
-  assert.strictEqual(PG.isPowerCommand('notepad.exe shutdown.log'), false, '文件名里带 shutdown 不算');
-});
-
-/* ==================== 9. 跨盘提交不能裸 rename ==================== */
+t('8b 电源门禁：powershell -Command Stop-Computer 同样要被整条判住', () => {
+  const body = mainSrc.slice(handlerIndex(mainSrc, 'exec:stream'), handlerIndex(mainSrc, 'job:kill'));
+  assertPowerArgIsWholeCommand(body, 'exec:stream');
+  assert.strictEqual(PG.isPowerCommand('powershell.exe'), false);
+  assert.strictEqual(PG.isPowerCommand('-NoProfile -Command Stop-Computer'), false);
+  assert.strictEqual(PG.isPowerCommand('powershell.exe -NoProfile -Command Stop-Computer'), true,
+    '前置：整条拼接必须命中');
+});
 
-t('26 power-gate：cmd 开关形（/d /c）与解释器包装不能绕过', () => {
-  const PGg = require(path.join(ROOT, 'lib', 'power-gate'));
-  /* 这些都是「没开系统电源操作」时也必须被认出来的写法 */
-  const mustBlock = [
-    'shutdown /s /t 0',
-    'cmd /c shutdown /s',
-    'cmd /d /c shutdown /s',
-    'cmd /e:on /c shutdown /s',
-    'powershell -Command Stop-Computer',
-    'powershell -NoProfile -Command Restart-Computer',
-  ];
-  for (const c of mustBlock) {
-    assert.ok(PGg.isPowerCommand(c), '应被识别为电源命令：' + c);
-  }
-  /* 而无害的必须放行 */
-  for (const c of ['cmd /c dir', 'cmd /d /c ver', 'powershell -Command Get-Date',
-    'shutdown /a', 'cmd /c shutdown /a', 'notepad shutdown.log']) {
-    assert.ok(!PGg.isPowerCommand(c), '不该被当成电源命令：' + c);
-  }
-});
-
+t('8c 电源门禁：无害命令与 shutdown /a 仍要放行（别矫枉过正）', () => {
+  assert.strictEqual(PG.isPowerCommand('cmd.exe /c dir'), false);
+  assert.strictEqual(PG.isPowerCommand('cmd.exe /c shutdown /a'), false, '取消关机必须放行');
+  assert.strictEqual(PG.isPowerCommand('powershell.exe -Command Get-Date'), false);
+  assert.strictEqual(PG.isPowerCommand('notepad.exe shutdown.log'), false, '文件名里带 shutdown 不算');
+});
+
+/* ==================== 9. 跨盘提交不能裸 rename ==================== */
+
+t('26 power-gate：cmd 开关形（/d /c）与解释器包装不能绕过', () => {
+  const PGg = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 这些都是「没开系统电源操作」时也必须被认出来的写法 */
+  const mustBlock = [
+    'shutdown /s /t 0',
+    'cmd /c shutdown /s',
+    'cmd /d /c shutdown /s',
+    'cmd /e:on /c shutdown /s',
+    'powershell -Command Stop-Computer',
+    'powershell -NoProfile -Command Restart-Computer',
+  ];
+  for (const c of mustBlock) {
+    assert.ok(PGg.isPowerCommand(c), '应被识别为电源命令：' + c);
+  }
+  /* 而无害的必须放行 */
+  for (const c of ['cmd /c dir', 'cmd /d /c ver', 'powershell -Command Get-Date',
+    'shutdown /a', 'cmd /c shutdown /a', 'notepad shutdown.log']) {
+    assert.ok(!PGg.isPowerCommand(c), '不该被当成电源命令：' + c);
+  }
+});
+
 t('27 不带空格的 cmd 壳形态不能绕过（cmd/c、cmd.exe/c、带引号变体）', () => {
   /* 锁的是：normalizeCommand 只认「cmd 与 /c 之间有空白」的写法，
    * 于是 cmd/c 这类真实可执行的写法整条被放行。 */
@@ -408,6 +408,25 @@ t('28 shutdown 段内混入其它开关时不能靠 /a 蒙混放行', () => {
   for (const c of ['shutdown /a', 'shutdown /?', 'shutdown /a /?', 'shutdown /a /t 0']) {
     assert.strictEqual(PG.isPowerCommand(c), false, '纯取消/帮助必须放行：' + c);
   }
+});
+
+t('28b 横杠写法与斜杠完全等价（shutdown -a 放行、-s 拦下）', () => {
+  /* 锁的是：SAFE_ARGS_RE / UNSAFE_SWITCH_RE 只认斜杠 ——
+   * Windows 的 shutdown.exe 对 /x 与 -x 完全等价（微软文档两种形式都列）。
+   * 后果双向：① `shutdown -a`（用户想取消误设的关机）被门禁误拦；
+   * ② 更糟的是 `shutdown -s /t 0` 直接穿透门禁 —— 那是真关机。
+   * 审查轮黑盒实测抓到（v0.8.3 收尾后）。 */
+  const mustAllow = ['shutdown -a', 'shutdown -?', 'shutdown -a /t 0', 'shutdown -a -t 0', 'cmd /c shutdown -a'];
+  for (const c of mustAllow) {
+    assert.strictEqual(PG.isPowerCommand(c), false, '横杠纯取消/帮助必须放行：' + c);
+  }
+  const mustDeny = ['shutdown -s', 'shutdown -r /t 0', 'shutdown -s /t 0', 'shutdown -g', 'shutdown -h', 'cmd /c shutdown -s'];
+  for (const c of mustDeny) {
+    assert.strictEqual(PG.isPowerCommand(c), true, '横杠真关机必须拦截：' + c);
+  }
+  /* 锁的是：多段混合（横杠取消 + 斜杠关机）不能因前段安全而放行。 */
+  assert.strictEqual(PG.isPowerCommand('shutdown -a & shutdown /s'), true,
+    '「取消 & 真关机」必须整体拦截');
 });
 
 t('29 长命令判定不再近似 O(n^2)（40000 字符必须快速返回）', () => {
@@ -551,7 +570,7 @@ t('PG-ENC-7 这次修的两种形态都要在源码注释里留下实测依据',
     '缺少「哪些近似写法不执行」的记录');
 });
 
-/* ==================== 27. expr-eval 取余 vs 百分比 ==================== */
+/* ==================== 27. expr-eval 取余 vs 百分比 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);
