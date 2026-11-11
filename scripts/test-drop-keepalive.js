@@ -111,4 +111,16 @@ t('KA7 面板送的图片走 __pendingDrop 通道并立即通知消费', () => {
     '放入 __pendingDrop 后应立即通知本页 picker 消费');
 });
 
+t('KA8 全局监听的 bind 必须幂等（切语言重建外壳不重复挂）', () => {
+  /* 锁的是：bind() 去掉幂等标记 —— 切语言整壳重建时 app.js 再次调用它，
+   * document 级监听器翻倍：一次拖拽弹 N 个选择面板。
+   * 本次审查（v0.8.3 收尾后第二轮）发现的缺陷。 */
+  const drop = readSrc('js/drop-open.js');
+  assert.ok(/__dropOpenBound/.test(drop), 'DropOpen.bind 缺少幂等标记 __dropOpenBound');
+  /* 锁的是：两处 bind 的幂等策略不一致 —— 一处有标记一处没有，
+   * 修好一处漏另一处正是要防的。 */
+  const clip = readSrc('js/clip-actions.js');
+  assert.ok(/__clipActionsBound/.test(clip), 'ClipActions.bind 缺少幂等标记 __clipActionsBound');
+});
+
 done();

@@ -67,6 +67,12 @@
    * 所以 dragover 只显示「松开以打开」，真正的路由在 drop 时算。 */
 
   function bind() {
+    /* 【幂等保护】切换界面语言会整壳重建，app.js 会再次调 bind()。
+     * document 级监听器挂一次就要一份：不加这个标记，切 N 次语言后
+     * 一次拖拽会触发 N 次路由 —— 弹出 N 个选择面板。
+     * （clip-actions.js 的 bind 有同样的标记，两处必须一致。） */
+    if (window.__dropOpenBound) return;
+    window.__dropOpenBound = true;
     /* 【dragover 必须 preventDefault，否则 drop 根本不触发】
      * 这是 HTML5 拖放的既定行为：不阻止默认动作的 dragover 会让元素
      * 变成"不接受拖放"，drop 事件永远不会来。 */
