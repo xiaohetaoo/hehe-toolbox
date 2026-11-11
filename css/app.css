@@ -1239,7 +1239,10 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
   display: flex; flex-direction: column; align-items: center; gap: 10px;
   padding: 40px 64px; border-radius: 16px;
   border: 2px dashed var(--primary);
-  background: var(--bg-1);
+  /* 【必须用 --card-bg】项目里没有 --bg-1 这个变量（那是写的时候想当然了），
+   * 背景会退化为透明 —— 暗色主题下遮罩里只剩虚线框和文字浮在半透明黑上，
+   * 卡片本身"消失"。面板分组标题 sticky 底色同理。 */
+  background: var(--card-bg);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
 }
 .drop-overlay-icon {
@@ -1267,7 +1270,9 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
 .drop-pick-list { max-height: 340px; overflow-y: auto; margin: 6px -4px; }
 .drop-pick-group {
   font-size: 12px; color: var(--text-3); padding: 8px 6px 4px;
-  position: sticky; top: 0; background: var(--bg-1); z-index: 1;
+  /* sticky 分组标题必须有不透明底色，否则滚动时穿帮（行从字底下透出来）。
+     用 modal 同款 --card-bg；再看一层 color-mix 的 --bg-2 语义不符。 */
+  position: sticky; top: 0; background: var(--card-bg); z-index: 1;
 }
 .drop-pick-row {
   display: flex; align-items: center; gap: 10px;
