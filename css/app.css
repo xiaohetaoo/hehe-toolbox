@@ -433,15 +433,22 @@ body {
 
 /* 标签栏
  *
- * 【溢出时必须压缩标签，而不是把它推出可视区】
- * 原来只有 `overflow-x: auto` + 标签的 `white-space: nowrap`：
- * 标签一多，后面的标签被挤出右边界，用户看不到、也点不到，
- * 而滚动条在本项目里是全局隐藏的（见 `* { scrollbar-width: none }`）——
- * 于是**完全没有任何线索**表明右边还有标签。
+ * 【溢出策略：压缩到可读下限后允许滚动，而不是无限压缩】
+ * 历史方案是纯压缩（flex: 0 1 auto + min-width: 0）：
+ * 标签一多确实全部「可见」，但实测 13 个标签时每个 tab-label 只剩
+ * 0~6px —— 一个汉字都放不下，视觉上是一排无法分辨的图标占位符，
+ * 用户只能悬停 title 逐个确认，比切换窗口还慢。「全部可见」变成
+ * 「全部不可读」，压缩失去了意义。
  *
- * 现在改成压缩式：标签本身可收缩（flex: 0 1 auto + min-width: 0），
- * 文字超长时省略号截断。这样开到十几个标签仍能全部看见。
- * 保留 overflow-x: auto 作为最后兜底（极端窄窗口下仍可滚）。 */
+ * 现在分两段：
+ *   1) 先压缩：标签按内容比例分摊，文字超长省略号截断（不换行）；
+ *   2) 压到可读下限（min-width: 44px，能放下图标 + 1~2 个字）后
+ *      不再压，改为横向滚动。滚动条全局隐藏看不见 —— 由两侧渐隐
+ *      mask 提示「另一侧还有标签」（.overflow-left / .overflow-right，
+ *      方向类由 app.js 的 updateTabOverflowHint 依据滚动位置维护）。
+ * 44px 的依据：图标 16 + gap 6 + 2 个汉字 26 ≈ 48，再紧就只剩图标；
+ * 同时它允许 13 个标签在 777px 栏宽内平均分到 ~59px，文字至少露出 1~2 字，
+ * 剩余部分靠滚动，比 0px 的死图标信息量大得多。 */
 .tabbar {
   display: flex; align-items: flex-end; gap: 2px; background: transparent;
   padding: 0 16px; overflow-x: auto; min-height: 36px;
@@ -450,16 +457,18 @@ body {
 }
 .tabbar:empty { display: none; }
 .tab {
-  display: flex; align-items: center; gap: 6px; padding: 6px 12px 8px; font-size: 13px; color: var(--text-2);
+  display: flex; align-items: center; gap: 4px; padding: 6px 12px 8px; font-size: 13px; color: var(--text-2);
   cursor: pointer; border-radius: 8px 8px 0 0; white-space: nowrap; border-bottom: 2px solid transparent;
   transition: color 0.15s, background 0.15s;
   /* 【压缩三件套】
    *   flex: 0 1 auto  —— 可收缩（第一个 0 是不放大，避免少数几个标签时被拉满）
-   *   min-width: 0     —— 关键：flex 子项默认 min-width:auto，等于内容宽度，
-   *                       不设 0 的话压缩根本不生效（这是最容易漏的一条）
+   *   min-width: 44px —— 可读下限：图标 + 1~2 个字。之前是 0（无限压缩），
+   *                      实测 13 标签时文字全部消失；有下限后多余部分转入滚动，
+   *                      渐隐提示补上「还有标签」的感知（此前否决固定下限的原因
+   *                      是滚动条不可见，提示问题已由 mask 解决）
    *   overflow: hidden —— 配合下面 .tab-label 的省略号 */
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: 44px;
   overflow: hidden;
   /* 单个标签不该吃掉半个标签栏：只开两个工具时，没有上限它们会各自
      按内容宽度展开、把标签栏撑得很松散。 */
@@ -480,17 +489,51 @@ body {
  * 窄到一定程度文字就只余省略号，但**始终全部可见**。
  * 图标是 flex:none 的 16px，不会被压缩，所以再窄也能认出是哪个标签，
  * 配合 title 悬停提示读全名。 */
-.tab { min-width: 0; }
-/* 窄标签时把左右内边距收掉一部分：默认 12px×2 = 24px 的留白，
-   在 35px 宽的标签里占掉七成，图标和文字挤不下。
-   用 clamp 让 padding 跟随可用宽度自动收缩。 */
-.tab { padding-left: clamp(4px, 1.2vw, 12px); padding-right: clamp(4px, 1.2vw, 12px); }
+/* 【min-width: 0 已被撤销，改回可读下限 44px】
+ * 「完全弹性」的前提是滚动提示可用 —— 旧方案在隐藏滚动条下确实做不到，
+ * 但实测 13 个标签时 tab-label 只剩 0~6px，图标之外没有任何信息。
+ * 见上方 .tab 基础规则里的 min-width: 44px 与溢出策略注释。 */
+.tab { min-width: 44px; }
 /* 图标不参与压缩：它是"这是哪个工具"的唯一线索，必须始终完整。 */
 .tab .icon { flex: none; }
+/* 【挤压段内边距收紧：给文字让出空间】
+ * 基础 padding 12px×2、gap 2px 在十几个标签时合计吃掉 ~290px 留白。
+ * 收紧到 clamp(3px, 0.9vw, 10px)、gap 1px：少标签时 clamp 落到上限、
+ * 观感与原来几乎一致；多标签时是白赚的 ~100px 文字空间。
+ * （注意这条必须出现在上面 .tab 的基础 padding 之后 —— 同特异性时后者胜。） */
+.tab { padding-left: clamp(3px, 0.9vw, 10px); padding-right: clamp(3px, 0.9vw, 10px); }
+.tabbar { gap: 1px; }
+
+/* 【溢出提示：两侧渐隐边缘】
+ * 滚动条全局隐藏（* { scrollbar-width: none }），overflow-x 兜底滚动时
+ * 用户完全看不出「右边还有标签」。有溢出的一侧做 18px 渐隐，
+ * 是「没显示完」的直觉信号；两侧都到达边缘时不裁剪。
+ * 方向类由 JS 依据 scrollLeft/scrollWidth 动态维护（app.js renderTabs）：
+ *   overflow-left  = 左侧还有内容（scrollLeft > 0）
+ *   overflow-right = 右侧还有内容（scrollLeft + clientWidth < scrollWidth） */
+.tabbar.overflow-left {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 18px);
+  mask-image: linear-gradient(to right, transparent 0, #000 18px);
+}
+.tabbar.overflow-right {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 18px);
+  mask-image: linear-gradient(to left, transparent 0, #000 18px);
+}
+.tabbar.overflow-left.overflow-right {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+}
+
 .tab:hover { color: var(--primary); background: var(--nav-hover); }
 .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 500; background: var(--hover-fill); }
-.tab .tab-close { width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; border-radius: 3px; color: var(--text-3); visibility: hidden; }
-.tab:hover .tab-close { visibility: visible; }
+/* 【关闭按钮用 display:none，不能用 visibility:hidden】
+ * visibility:hidden 不参与绘制但**仍然参与布局**：每个未悬停的标签都白占
+ * 14px 宽 + 一个 4px gap，13 个标签合计浪费 ~230px —— 挤压段里文字空间
+ * 正是被它吃光的（实测 52px 的 tab 里 label 只剩 0px）。
+ * display:none 才真正从布局摘除；键盘用户仍可到达（hover 或 :focus-within 时显示）。
+ * 触屏/键盘路径用 :focus-within 兜底：Tab 聚焦到标签时关闭按钮同样出现。 */
+.tab .tab-close { width: 14px; height: 14px; display: none; align-items: center; justify-content: center; border-radius: 3px; color: var(--text-3); flex: none; }
+.tab:hover .tab-close, .tab:focus-within .tab-close { display: flex; }
 .tab .tab-close:hover { background: var(--border); color: var(--text-1); }
 
 /* 标签被拖出标签栏时的反馈（v0.6.0）。

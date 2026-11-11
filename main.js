@@ -1365,8 +1365,16 @@ handle(CH.APP.CRASH_CLEAR, () => {
 });
 
 /* ================= IPC: dialog ================= */
+/* 【对话框必须归属「发起调用的那个窗口」】
+ * 原来写死 dialog.showOpenDialog(win, …)：独立工具窗口里点「选择文件/保存文件」
+ * 时，对话框挂在主窗上 —— 不居中于发起它的窗口、不是它的模态子窗口，
+ * 用户还能继续点独立窗，容易连点出好几个对话框。
+ * 这与 WIN.MINIMIZE/MAXIMIZE/CLOSE 的 senderWindow() 修复是同一类问题
+ * （窗口控制按发起者路由、dialog 漏了），也与 ipc/media-ffmpeg.js 的
+ * ffmpeg:pick 用的 ctx.win getter 同理。
+ * 优先按 ALS 上下文取发起窗口；托盘/定时这类无调用者的路径退回主窗。 */
 handle(CH.DIALOG.OPEN, async (e, opts = {}) => {
-  const r = await dialog.showOpenDialog(win, {
+  const r = await dialog.showOpenDialog(senderWindow(), {
     title: opts.title, defaultPath: opts.defaultPath,
     properties: opts.properties || ['openFile'],
     filters: opts.filters
@@ -1374,7 +1382,7 @@ handle(CH.DIALOG.OPEN, async (e, opts = {}) => {
   return r.canceled ? null : r.filePaths;
 });
 handle(CH.DIALOG.SAVE, async (e, opts = {}) => {
-  const r = await dialog.showSaveDialog(win, { title: opts.title, defaultPath: opts.defaultPath, filters: opts.filters });
+  const r = await dialog.showSaveDialog(senderWindow(), { title: opts.title, defaultPath: opts.defaultPath, filters: opts.filters });
   return r.canceled ? null : r.filePath;
 });
 /* dialog:message 已移除：全项目无调用方（需要确认时用渲染层的 confirmBox，

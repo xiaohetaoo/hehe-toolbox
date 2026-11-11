@@ -840,6 +840,46 @@
       });
       tabbarEl.appendChild(tab);
     }
+    /* 【活跃标签必须滚入可视区】
+     * 标签多到溢出（转入横向滚动）后，新打开/切到的工具其标签可能停在
+     * 滚动区外 —— 用户从搜索打开一个工具，界面切过去了，标签栏却看不到
+     * 它，只有右缘的渐隐暗示「右边还有标签」。浏览器（Chrome/Edge）的
+     * 标准行为都是把活跃标签滚进来。
+     * 用 inline:'nearest'：已经可见时是 no-op，不会在重排/普通重绘时跳动；
+     * 不可见时滚到刚好贴边的位置，不做居中（居中反而让人找不到参照）。 */
+    const activeTab = tabbarEl.querySelector('.tab.active');
+    if (activeTab && typeof activeTab.scrollIntoView === 'function') {
+      try { activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) { /* 老内核无参数形式，忽略 */ }
+    }
+    updateTabOverflowHint();
+  }
+  /* 【溢出渐隐提示的方向类维护】
+   * 滚动条全局隐藏，overflow-x 兜底滚动时用户看不出「另一侧还有标签」。
+   * 依据 scrollLeft / scrollWidth 给 .tabbar 挂 overflow-left / overflow-right
+   * 两个类（CSS 侧按类做 18px 渐隐 mask，见 app.css）。
+   * 监听 scroll + resize：滚动时方向会变，窗口伸缩会从溢出变不溢出。
+   * 监听只挂一次（用 tabbarEl 上的标记做幂等），壳重建后新元素重新挂。 */
+  function updateTabOverflowHint() {
+    if (!tabbarEl) return;
+    const el = tabbarEl;
+    const apply = () => {
+      /* clientWidth 含 padding，scrollWidth 只在有溢出时大于它； tolerate 1px 舍入 */
+      const left = el.scrollLeft > 1;
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+      el.classList.toggle('overflow-left', left);
+      el.classList.toggle('overflow-right', right);
+    };
+    apply();
+    if (!el.__heheOverflowBound) {
+      el.__heheOverflowBound = true;
+      el.addEventListener('scroll', apply, { passive: true });
+      /* ResizeObserver 在测试环境（jsdom）可能不存在，做能力探测 */
+      if (typeof ResizeObserver === 'function') {
+        new ResizeObserver(apply).observe(el);
+      } else {
+        window.addEventListener('resize', apply);
+      }
+    }
   }
   /* ============ 标签拖拽：重排 + 拖出成独立窗口 ============
    *
