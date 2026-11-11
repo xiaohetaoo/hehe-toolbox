@@ -200,9 +200,16 @@
             if (wantNum) {
               const skip = numSkip.checked ? Math.max(0, Number(numSkipN.value) || 0) : 0;
               if (i >= skip) {
-                const n = i + 1;
+                /* 【跳过页不计数】"跳过前几页"的语义是排版惯例：封面/目录
+                 * 不计入页码，正文第 1 页显示的是「1」—— 而不是"前 2 页
+                 * 不画、第 3 页仍显示 3"。原实现是后者，与界面提示
+                 * 「封面/目录通常不计页码」直接矛盾（本轮自审抓到）。
+                 * 'n-of-total' 的分母同样用正文页数（total - skip），
+                 * 否则「1 / 300」会出现在只有 298 页正文的书里。 */
+                const n = i + 1 - skip;
+                const totalBody = Math.max(1, total - skip);
                 let label;
-                if (numFmt.value === 'n-of-total') label = n + ' / ' + total;
+                if (numFmt.value === 'n-of-total') label = n + ' / ' + totalBody;
                 else if (numFmt.value === 'page-n') label = 'Page ' + n;   // 中文页码受同一字体限制，用英文
                 else label = String(n);
                 const ns = Math.max(6, Math.min(24, Number(numSize.value) || 10));
