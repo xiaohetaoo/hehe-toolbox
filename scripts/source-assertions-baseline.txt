@@ -34,13 +34,14 @@ scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
 scripts/test-crypt-guard.js | A=1 | B=0 | exact:那 1 处 fs.readFileSync 读的是用例自己在 %TEMP% 里刚写的 a.txt / b.txt（CS5 用来实测「rename 到已存在目标会静默覆盖」这个前提），不是项目源码；换成 readSrc 无从谈起
 scripts/test-crypto-file.js | A=4 | B=0 | exact:迁移自 round13 的 1a/1b/1c。加密格式的边界只能用构造出的字节序列验证；A=4 是读取测试自己生成的临时密文文件（夹具，不是项目源码）
 scripts/test-csp-wasm.js | A=3 | B=0 | exact:三处裸读都是为"原样检查文本"服务的 —— index.html 根本不是 JS，stripComments 对它没有意义（要验的是 CSP 属性原文）；两个 OCR 工具那两处只判"有没有调用 OcrGuard.withTimeout/failReason"，剥不剥注释结果相同（注释里也不该出现该调用）。真机 CSP 行为由本文件的 E1/E2 用 Electron 实测覆盖
+scripts/test-css-vars.js | A=3 | B=0 | exact:扫 css/app.css 与 snip/pin/ruler.html 的文本找 CSS 变量定义与 var() 引用。必须读原始文本：readSrc 是给 js 用的（按 js 注释规则剥 // 与 /* */），对 CSS/HTML 不适用——CSS 的注释是 /* */，而这里的 var() 引用横跨选择器体与值，剥注释会同时吞掉合法内容。读的是变量名字面量，不做形态断言。
 scripts/test-danger-inline-enable.js | A=2 | B=0 | e2e-fixture
 scripts/test-destructive.js | A=1 | B=11 | legacy-source-assertion
 scripts/test-destructive2.js | A=0 | B=64 | legacy-source-assertion
 scripts/test-dir-move-e2e.js | A=4 | B=0 | e2e-fixture
 scripts/test-dir-move-impl.js | A=3 | B=14 | exact:这 9 条锁的是内部链接改写 / 悬空链接 stat 判据 / PS_PATH_BATCH 分块 / innerLinkCount 同源，都只能看源码形态（真搬家要完整目录树与真实链接）；2 处 readFileSync 是 read() 助手与 8.3 短名测试读 %TEMP% 夹具
 scripts/test-disk-health-e2e.js | A=2 | B=0 | e2e-fixture
-scripts/test-download.js | A=0 | B=0 | legacy-source-assertion
+scripts/test-drop-route.js | A=1 | B=0 | exact:扫 js/tools 下所有工具文件提取真实的 register id，用来校验路由表没有引用不存在的工具。这里必须读原始文本而不能用 readSrc —— readSrc 默认剥注释，被注释掉的 register 块也要把 id 算进来，否则会误报「路由表引用了不存在的工具」。读的是 id 字面量，不做形态断言。
 scripts/test-dz-el.js | A=2 | B=13 | legacy-source-assertion
 scripts/test-expr-eval.js | A=1 | B=2 | legacy-source-assertion
 scripts/test-extract-safety.js | A=2 | B=0 | e2e-fixture
@@ -52,6 +53,7 @@ scripts/test-hash-results.js | A=1 | B=1 | exact:迁移自 round15 的 3a。结�
 scripts/test-hosts-fallback.js | A=2 | B=0 | e2e-fixture
 scripts/test-hosts-restore.js | A=4 | B=0 | e2e-fixture
 scripts/test-i18n-coverage.js | A=10 | B=18 | legacy-source-assertion
+scripts/test-i18n-dict.js | A=1 | B=0 | exact:那 1 处读的是 js/i18n.js 原文并用 new Function 加载真实 DICT —— 必须拿原始文本（要的是字面量数据，不是剥注释后的形态）；A=1 是它唯一的读取
 scripts/test-improvements-a.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本全部是真实渲染后的事件/DOM 断言，没有源码匹配断言
 scripts/test-ipc-channels.js | A=4 | B=0 | legacy-read
 scripts/test-ipc-ctx.js | A=2 | B=0 | legacy-source-assertion
@@ -75,7 +77,7 @@ scripts/test-pick-point.js | A=1 | B=0 | exact:迁移自 round15 的 4a/4b/4c。
 scripts/test-picker-func.js | A=1 | B=0 | e2e-fixture
 scripts/test-pinyin.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本对 lib/pinyin.js 用 require 直接调用，对 index.html 的引入检查走 readSrc
 scripts/test-pomodoro-target.js | A=1 | B=0 | exact:迁移自 round15 的 12a。这个缺陷的形态本身就是「countIn 创建后从未被读取」，由 no-unused-vars 直接指出；修好后要断言的仍是「它被读了」这个形态。
-scripts/test-powergate.js | A=2 | B=0 | legacy-source-assertion
+scripts/test-powergate.js | A=2 | B=3 | legacy-source-assertion
 scripts/test-pwd-bias.js | A=1 | B=0 | legacy-source-assertion
 scripts/test-random-inputs.js | A=1 | B=0 | exact:迁移自 round15 的 11a/11b。两个 input 是否是不同元素、rangeA 是否只出现一次，属于 DOM 结构断言，要验行为得起渲染层。
 scripts/test-reentry-guard.js | A=7 | B=23 | legacy-read
@@ -104,5 +106,3 @@ scripts/test-version.js | A=3 | B=0 | exact:三处读的都是用例自己在 %T
 scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
 scripts/version.js | A=3 | B=0 | build-meta
-scripts/test-drop-route.js | A=1 | B=0 | exact:扫 js/tools 下所有工具文件提取真实的 register id，用来校验路由表没有引用不存在的工具。这里必须读原始文本而不能用 readSrc —— readSrc 默认剥注释，被注释掉的 register 块也要把 id 算进来，否则会误报「路由表引用了不存在的工具」。读的是 id 字面量，不做形态断言。
-scripts/test-css-vars.js | A=3 | B=0 | exact:扫 css/app.css 与 snip/pin/ruler.html 的文本找 CSS 变量定义与 var() 引用。必须读原始文本：readSrc 是给 js 用的（按 js 注释规则剥 // 与 /* */），对 CSS/HTML 不适用——CSS 的注释是 /* */，而这里的 var() 引用横跨选择器体与值，剥注释会同时吞掉合法内容。读的是变量名字面量，不做形态断言。

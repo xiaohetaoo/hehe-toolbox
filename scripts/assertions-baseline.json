@@ -1,8 +1,8 @@
 {
   "_comment": "断言总数基线。由 scripts/check-assertion-count.js --write 生成，不要手改。",
   "_why": "防止「某个测试文件里悄悄删掉一堆用例，剩下的仍然全绿」。只允许往上走。\n注意：本基线是在**这台机器**上拍的。换一台机器（缺第二块盘、无交互桌面）时，依赖环境的脚本会走 SKIP 分支、PASS 数偏少 —— 那种情况由 skipped 判定放行并打印，不判红。",
-  "generatedAt": "2026-11-11T17:34:50.242Z",
-  "total": 2101,
+  "generatedAt": "2026-11-11T18:04:12.144Z",
+  "total": 2105,
   "files": {
     "scripts/test-acl-repair.js": 51,
     "scripts/test-archive-guard.js": 30,
@@ -62,6 +62,7 @@
     "scripts/test-hw-encode.js": 11,
     "scripts/test-hw-fallback.js": 6,
     "scripts/test-i18n-coverage.js": 17,
+    "scripts/test-i18n-dict.js": 3,
     "scripts/test-icon-consistency.js": 2,
     "scripts/test-img-scramble.js": 15,
     "scripts/test-ipc-channels.js": 9,
@@ -97,7 +98,7 @@
     "scripts/test-pickone.js": 2,
     "scripts/test-pomodoro-target.js": 1,
     "scripts/test-powergate-ps.js": 6,
-    "scripts/test-powergate.js": 64,
+    "scripts/test-powergate.js": 65,
     "scripts/test-prefs.js": 9,
     "scripts/test-proc-kill.js": 1,
     "scripts/test-pwd-bias.js": 5,
