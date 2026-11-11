@@ -90,6 +90,15 @@
        中文模式下 TT 直接返回字面量、不查表，所以「中文零行为改动」
        是结构上保证的；英文表漏翻时回退中文，不会出现空白或键名。 -->
   <script src="js/tools/i18n.js"></script>
+  <!-- 拖拽路由表（纯数据+纯函数，无 UI）：扩展名 → 能处理的工具。
+       必须在 js/drop-open.js 与各工具页之前 —— 两边都要查它。 -->
+  <script src="lib/drop-route.js"></script>
+  <!-- 剪贴板内容分析（纯函数，无 UI）：内容 → 类型 → 建议动作。
+       必须早于 js/clip-actions.js —— 后者只负责把结果画出来。 -->
+  <script src="lib/clip-analyze.js"></script>
+  <!-- 敏感内容识别（纯函数）：剪贴板历史的「敏感内容自动清理」用它判定。
+       抽到 lib 是为了能在 Node 里单测 —— 写在工具页里就只能靠 E2E。 -->
+  <script src="lib/sensitive.js"></script>
 
   <!-- 工具模块 -->
   <script src="js/tools/text-codec.js"></script>
@@ -135,8 +144,19 @@
   <script src="js/tools/media/audio-cut.js"></script>
   <script src="js/tools/target-size.js"></script>
   <script src="js/tools/office.js"></script>
+  <!-- PDF 增强三件套（水印页码 / 提取文字 / 瘦身）。
+       单开一个文件而不是塞进 office.js：那里已有 4 个 PDF/Office 工具，
+       再塞会让文件超 500 行；而且这三项的实现方式各不相同。 -->
+  <script src="js/tools/pdf-plus.js"></script>
   <script src="js/tools/launch.js"></script>
   <script src="js/tools/life.js"></script>
+
+  <!-- 全局拖拽：把文件拖到窗口任意位置 → 路由到能处理的工具。
+       排在 app.js 之前（它要用 App.openTool / ui.modal，这些在运行时才有，
+       加载顺序只要不早于 ui.js / registry.js 即可）。 -->
+  <script src="js/drop-open.js"></script>
+  <!-- 剪贴板动作面板（Ctrl+Shift+V）。依赖 lib/clip-analyze.js 与 ui.modal。 -->
+  <script src="js/clip-actions.js"></script>
 
   <!-- 外壳（最后加载） -->
   <script src="js/app.js"></script>

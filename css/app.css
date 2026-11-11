@@ -1220,3 +1220,143 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
 .placeholder-box .icon { color: var(--primary); opacity: 0.5; }
 .placeholder-box h3 { color: var(--text-2); font-weight: 500; margin: 12px 0 6px; }
 .placeholder-box p { font-size: 13px; max-width: 420px; margin: 0 auto; line-height: 1.7; }
+
+/* ============ 全局拖拽：全屏提示层 ============
+ * 拖文件到窗口任意位置时出现的蒙层。三个要点：
+ *   · 固定定位铺满窗口、pointer-events: none —— 它只是视觉反馈，
+ *     不能拦住 drop 事件（drop 要落在 document 上）；
+ *   · 只在 .on 时可见，切 class 而不是频繁改 style，让 transition 生效；
+ *   · 边框用 var(--primary)，跟随 9 套配色自动变色。 */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 9000; display: flex;
+  align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--primary) 10%, rgba(0, 0, 0, 0.35));
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity 0.12s, visibility 0.12s;
+}
+.drop-overlay.on { opacity: 1; visibility: visible; }
+.drop-overlay-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 40px 64px; border-radius: 16px;
+  border: 2px dashed var(--primary);
+  background: var(--bg-1);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.drop-overlay-icon {
+  width: 40px; height: 40px; border-radius: 50%;
+  border: 2px solid var(--primary);
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+}
+/* 圆圈中间那个下载箭头：纯 CSS 画，避免依赖 js/icons.js 的加载时机 */
+.drop-overlay-icon::after {
+  content: ""; width: 2px; height: 15px; background: var(--primary);
+  position: absolute; top: 9px;
+}
+.drop-overlay-icon::before {
+  content: ""; position: absolute; top: 19px;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 7px solid var(--primary);
+}
+.drop-overlay-title { font-size: 16px; font-weight: 600; color: var(--text-1); }
+.drop-overlay-sub { font-size: 13px; color: var(--text-3); min-height: 18px; }
+
+/* ============ 全局拖拽：歧义选择面板 ============
+ * 候选工具 ≥2 时弹出。不猜是刻意的：猜错要「退回上一页重来」，
+ * 比让用户点一下更贵。只有唯一候选时才直接打开。 */
+.drop-pick-list { max-height: 340px; overflow-y: auto; margin: 6px -4px; }
+.drop-pick-group {
+  font-size: 12px; color: var(--text-3); padding: 8px 6px 4px;
+  position: sticky; top: 0; background: var(--bg-1); z-index: 1;
+}
+.drop-pick-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.drop-pick-row:hover { background: var(--hover-fill); }
+.drop-pick-row.on {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  border-color: var(--primary);
+}
+.drop-pick-row-icon {
+  width: 30px; height: 30px; border-radius: 8px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--hover-fill); color: var(--primary);
+}
+.drop-pick-row-info { min-width: 0; flex: 1; }
+.drop-pick-row-name { font-size: 13px; color: var(--text-1); font-weight: 500; }
+.drop-pick-row-desc {
+  font-size: 12px; color: var(--text-3); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ============ 剪贴板动作面板 ============
+ * Ctrl+Shift+V 弹出：先看剪贴板是什么，再给能对它做什么。
+ * 布局是「内容预览卡 → 动作按钮网格」，因为用户的第一需求是确认
+ * "它认对了没有"（认错类型会导致动作全都不对）。 */
+.clip-act-head { padding: 4px 0 10px; border-bottom: 1px solid var(--border-light); margin-bottom: 12px; }
+.clip-act-kind { font-size: 15px; font-weight: 600; color: var(--text-1); }
+.clip-act-detail {
+  font-size: 12px; color: var(--text-3); margin-top: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.clip-act-thumb {
+  display: block; max-width: 100%; max-height: 200px; margin: 0 auto 14px;
+  border-radius: 8px; border: 1px solid var(--border-light);
+}
+.clip-act-preview {
+  font-size: 12px; color: var(--text-2); background: var(--bg-2);
+  border: 1px solid var(--border-light); border-radius: 8px;
+  padding: 10px; max-height: 140px; overflow: auto; margin-bottom: 14px;
+  white-space: pre-wrap; word-break: break-all; user-select: text;
+}
+.clip-act-color {
+  width: 100%; height: 64px; border-radius: 10px; margin-bottom: 14px;
+  border: 1px solid var(--border-light);
+}
+/* 动作按钮：一行两列起步，窄屏自动降一列 */
+.clip-act-list {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.clip-act-btn { justify-content: flex-start; text-align: left; }
+.clip-act-hint { font-size: 12px; color: var(--text-3); margin: 10px 0 2px; }
+
+/* ============ 三栏对比的「合并模式」 ============
+ * 每个差异行一组单选（A / 基准 / B / 删除），选完实时拼出结果。
+ * 布局用 flex 而不是 grid：三个选项的文本长短差异很大，
+ * grid 会把它们拉成等宽，短选项浪费大量留白、长选项挤成多行。 */
+.merge-list {
+  max-height: 46vh; overflow-y: auto; margin: 8px 0;
+  border: 1px solid var(--border-light); border-radius: 8px;
+}
+.merge-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 8px; border-bottom: 1px solid var(--border-light);
+}
+.merge-row:last-child { border-bottom: none; }
+/* 行号：与对比表格的 44px 列对齐，两处行号一眼能对上 */
+.merge-num {
+  width: 34px; flex: none; text-align: right; color: var(--text-3);
+  font: 12px Consolas, monospace; padding-top: 3px;
+}
+.merge-opts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* 单个选项：radio + 标签 + 内容。内容用 pre-wrap 保留原始空格缩进 ——
+ * 合并代码时缩进错了等于结果错了。 */
+.merge-opt {
+  display: flex; align-items: flex-start; gap: 6px;
+  cursor: pointer; padding: 2px 4px; border-radius: 4px;
+}
+.merge-opt:hover { background: var(--hover-fill); }
+.merge-opt input[type=radio] { margin-top: 3px; flex: none; }
+.merge-tag {
+  flex: none; font-size: 11px; color: var(--text-3);
+  min-width: 34px; padding-top: 1px;
+}
+.merge-opt input:checked ~ .merge-tag { color: var(--primary); font-weight: 600; }
+.merge-text {
+  font: 12.5px Consolas, monospace; color: var(--text-1);
+  white-space: pre-wrap; word-break: break-all; min-width: 0;
+}
+.merge-conflict { flex: none; margin-top: 3px; }

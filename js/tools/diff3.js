@@ -174,7 +174,160 @@
               .map((r) => T('第 {n} 行：\n  A: {a}\n  基准: {base}\n  B: {b}', { n: r.i + 1, a: r.a, base: r.base, b: r.b })).join('\n\n');
             if (!txt) return toast(T('没有冲突行'), 'info');
             copyText(txt);
+          }),
+          /* 【可编辑合并】上面的表格只能"看"，看完用户还得手动去第三份文件里
+           * 一行行敲。这里给一条出路：进入合并模式，每个差异行给 A/B/基准
+           * 三个单选，选完直接导出结果。
+           *
+           * 【为什么不做三路自动合并】
+           * 那个问题（git merge 那种）的边界情况极多：一边删一边改、
+           * 增删行交错、两处改动重叠……**自动合并错了比不合并更糟**，
+           * 因为用户会以为结果可信。这里是"人做决定、工具只负责拼装"，
+           * 每个决定都由用户点出来，责任边界清楚。 */
+          btn(T('进入合并模式'), 'btn-sm btn-primary', () => enterMerge(rows), 'merge')));
+      }
+
+      /* ============ 合并模式 ============
+       *
+       * 三段式：
+       *   ① 每个差异行（kind !== 'same'）给 A / 基准 / B 三个单选；
+       *   ② 结果区实时显示拼好的全文；
+       *   ③ 可复制、可另存。
+       *
+       * 【默认选谁】
+       * 按"最少惊讶"原则：
+       *   · both-same（两边改成一样）→ 默认选 A（两边内容相同，选谁都一样）
+       *   · a（只有 A 改）           → 默认选 A
+       *   · b（只有 B 改）           → 默认选 B
+       *   · both（冲突）             → 默认选**基准**，并标红提醒"这里必须人工决定"
+       *   · base-only（两边都删）    → 默认删除（选"删除"而不是留空行）
+       *   · miss（行数不一致）       → 默认选基准（有就用，没有就空）
+       * 只有"只有一方改"才自动采信 —— 那是无争议的。冲突一律不替用户决定。 */
+      function enterMerge(rows) {
+        const wrap = div('');
+        /* 每行当前选择：'a' | 'base' | 'b' | 'none' */
+        const choice = new Map();
+        for (const r of rows) {
+          if (r.kind === 'same') { choice.set(r.i, 'base'); continue; }
+          if (r.kind === 'a') choice.set(r.i, 'a');
+          else if (r.kind === 'b') choice.set(r.i, 'b');
+          else if (r.kind === 'both-same') choice.set(r.i, 'a');
+          else if (r.kind === 'base-only') choice.set(r.i, 'none');
+          else choice.set(r.i, 'base');   // both / miss → 基准，且界面上标"待定"
+        }
+
+        const out = h('textarea', { class: 'pane-ta mono readonly', readonly: true, style: { minHeight: '200px' } });
+
+        function buildText() {
+          const outLines = [];
+          for (const r of rows) {
+            const c = choice.get(r.i);
+            if (c === 'none') continue;
+            const v = c === 'a' ? r.a : (c === 'b' ? r.b : r.base);
+            /* null 表示那一方没有这一行 —— 跳过，不要塞空字符串
+             * （否则结果里会出现凭空的空行，与原文不符）。 */
+            if (v == null) continue;
+            outLines.push(v);
+          }
+          return outLines.join('\n');
+        }
+        function refresh() {
+          out.value = buildText();
+          /* 剩余待定冲突数：both 且还停在 base 的 */
+          const pending = rows.filter((r) => r.kind === 'both' && choice.get(r.i) === 'base'
+            && r.a !== r.base && r.b !== r.base).length;
+          const badge = wrap.querySelector('.merge-pending');
+          if (badge) {
+            badge.textContent = pending ? T('还有 {n} 行冲突未决定', { n: pending }) : T('所有冲突已决定');
+            badge.className = 'tag ' + (pending ? 'tag-red' : 'tag-green') + ' merge-pending';
+          }
+        }
+
+        const listWrap = div('merge-list');
+        for (const r of rows) {
+          if (r.kind === 'same') continue;
+          const st = KIND_STYLE[r.kind] || KIND_STYLE.same;
+          const row = div('merge-row');
+          row.style.background = st.bg;
+
+          const num = div('merge-num', String(r.i + 1));
+          row.appendChild(num);
+
+          const opts = div('merge-opts');
+          const mkChoice = (val, label, text) => {
+            const id = 'mg' + r.i + '_' + val;
+            const input = h('input', { type: 'radio', name: 'mg' + r.i, id, class: 'radio' });
+            input.checked = choice.get(r.i) === val;
+            input.addEventListener('change', () => { choice.set(r.i, val); refresh(); });
+            /* 【不显示 null】那一方没有这一行时，选项要写"（无此行）"
+             * 而不是显示空白 —— 空白和"这一行是空字符串"看起来一样，
+             * 用户没法判断自己选的是什么。 */
+            const shown = text == null ? T('（无此行）') : text;
+            const lab = h('label', { for: id, class: 'merge-opt' },
+              input, h('span', { class: 'merge-tag' }, label),
+              h('span', { class: 'merge-text' }, shown));
+            return lab;
+          };
+          opts.appendChild(mkChoice('a', 'A', r.a));
+          opts.appendChild(mkChoice('base', T('基准'), r.base));
+          opts.appendChild(mkChoice('b', 'B', r.b));
+          /* "删除这一行"只对能删的行有意义（两边都没这行时没得删） */
+          if (r.a != null || r.base != null || r.b != null) {
+            opts.appendChild(mkChoice('none', T('删除'), ''));
+          }
+          row.appendChild(opts);
+
+          /* 冲突行额外标红，并把"必须人工决定"说清楚 */
+          if (r.kind === 'both') {
+            row.appendChild(h('span', { class: 'tag tag-red merge-conflict' }, T('冲突')));
+          } else if (r.kind === 'miss') {
+            row.appendChild(h('span', { class: 'tag tag-orange merge-conflict' }, T('行数不一致')));
+          }
+          listWrap.appendChild(row);
+        }
+
+        const pendingBadge = h('span', { class: 'tag merge-pending' }, '');
+        wrap.appendChild(div('form-row',
+          h('span', { class: 'form-label' }, T('合并结果')),
+          pendingBadge,
+          btn(T('全部采用 A'), 'btn-sm btn-secondary', () => {
+            for (const r of rows) if (r.kind !== 'same' && r.a != null) choice.set(r.i, 'a');
+            /* 重新勾一遍界面上的单选，否则选择与实际状态脱节 */
+            syncRadios();
+            refresh();
+          }),
+          btn(T('全部采用 B'), 'btn-sm btn-secondary', () => {
+            for (const r of rows) if (r.kind !== 'same' && r.b != null) choice.set(r.i, 'b');
+            syncRadios();
+            refresh();
           })));
+        wrap.appendChild(listWrap);
+        wrap.appendChild(div('form-row', { style: { marginTop: '10px' } },
+          h('span', { class: 'form-label' }, T('合并结果')),
+          btn(T('复制'), 'btn-sm btn-secondary', () => { copyText(out.value); }, 'copy'),
+          btn(T('另存为'), 'btn-sm btn-primary', async () => {
+            try {
+              const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { title: T('保存合并结果'), defaultPath: 'merged.txt' });
+              if (!p) return;
+              await invoke(Channels.CHANNELS.FS.WRITE_TEXT, p, out.value);
+              toast(T('已保存：{p}', { p }), 'success');
+            } catch (e) { toast(T('保存失败：{e}', { e: e.message }), 'error'); }
+          }, 'save')));
+        wrap.appendChild(out);
+
+        function syncRadios() {
+          for (const r of rows) {
+            if (r.kind === 'same') continue;
+            const v = choice.get(r.i);
+            const el = wrap.querySelector('#mg' + r.i + '_' + v);
+            if (el) el.checked = true;
+          }
+        }
+
+        result.innerHTML = '';
+        result.appendChild(wrap);
+        refresh();
+        out.value = buildText();
       }
 
       page.appendChild(div('card', div('card-title', T('基准版本（两边共同的原稿）'), btn(T('打开文件'), 'btn-sm btn-secondary', openTo(taBase))), taBase));

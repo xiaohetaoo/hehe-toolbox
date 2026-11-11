@@ -164,10 +164,36 @@
     render(page) {
       const list = div('');
       const searchIn = h('input', { class: 'input input-sm', placeholder: '搜索历史…', style: { flex: '1' } });
-      /* 类型筛选。搜索框只能按内容找，但用户常常是「我想找上次复制的那张图」
-       * —— 这时内容搜索帮不上忙（图片没有可搜的文本）。
-       * 三个按钮比下拉框更直接：只有三种状态，一眼看到全部选项。 */
-      let typeFilter = 'all'; // all | text | image
+      /* 类型筛选。
+       * 【第一版只有 全部/文本/图片 三档，仍然不够用】
+       * 用户的实际诉求是"我想找上次复制的那段 JSON"或"那个网址"。
+       * 只分文本/图片时，上百条文本混在一起，搜索还得记得关键字。
+       * 所以把文本再细分，判据直接复用 lib/clip-analyze.js —— 它本来
+       * 就是"内容 → 类型"的唯一实现，这里不另写一套正则（否则两处
+       * 判定规则必然漂移）。增加的档位：网址 / JSON / 代码（哈希·JWT·颜色）。
+       * 图片与其它保持不变。 */
+      let typeFilter = 'all'; // all | text | image | url | json | misc
+      /* 每条文本的类型缓存：同一份历史在多次 render 之间反复分类很浪费，
+       * 而分类要跑 JSON.parse（大 JSON 更贵）。用 WeakMap 挂在条目对象上，
+       * 条目被淘汰时缓存跟着回收，不会泄漏。 */
+      const kindCache = new WeakMap();
+      function kindOf(item) {
+        if (item.type === 'image') return 'image';
+        const hit = kindCache.get(item);
+        if (hit) return hit;
+        let k = 'text';
+        try {
+          const C = window.ClipAnalyze;
+          if (C) {
+            const r = C.analyze({ text: item.content || '' });
+            if (r.kind === 'url') k = 'url';
+            else if (r.kind === 'json') k = 'json';
+            else if (r.kind === 'hash' || r.kind === 'jwt' || r.kind === 'color' || r.kind === 'timestamp') k = 'misc';
+          }
+        } catch (e) { /* 分类失败就当普通文本 */ }
+        kindCache.set(item, k);
+        return k;
+      }
       const typeBtns = {};
       function makeTypeBtn(key, label) {
         const b = btn(label, 'btn-sm btn-secondary', () => {
@@ -179,6 +205,43 @@
         return b;
       }
       const watchSw = switchEl(false, (v) => { watching = v; if (v) poll(); else if (timer) clearTimeout(timer); });
+      /* ---- 敏感内容自动过期 ----
+       * 开关状态落在 settings.clipSensitiveTtl（分钟，0 = 关闭）。
+       * 用分钟数而不是布尔：以后想加"30 分钟/1 小时/1 天"三档只改常量表，
+       * 不用再加一个键。 */
+      const SENSITIVE_TTL_MIN = 10;
+      const sensitiveSw = switchEl(false, async (v) => {
+        sensitiveTtl = v ? SENSITIVE_TTL_MIN : 0;
+        try { await invoke(Channels.CHANNELS.STORE.SET, 'settings.clipSensitiveTtl', sensitiveTtl); } catch (e) {}
+        if (v) sweepSensitive();
+        render();
+      });
+      let sensitiveTtl = 0;
+      /* 载入用户的开关状态 */
+      invoke(Channels.CHANNELS.STORE.GET, 'settings.clipSensitiveTtl', 0).then((v) => {
+        sensitiveTtl = Number(v) || 0;
+        /* switchEl 的初始值要在建好之后设，避免构造参数与实际存储不一致 */
+        try { if (sensitiveTtl > 0) sensitiveSw.classList.add('on'); } catch (e) {}
+      }).catch(() => {});
+      /* 敏感内容的形态判据在 lib/sensitive.js —— 抽到 lib 是为了能在
+       * Node 里直接单测（写在这里就只能靠真机 E2E，而 E2E 在 CI 会 SKIP，
+       * 等于这条判据没有守卫）。判据的取舍原则见那个文件的说明。
+       *
+       * 这里不另包一层 isSensitive：sweepSensitive 直接调 S.pickExpired，
+       * 那是同一个文件里的纯函数，已经包含"判敏感 + 判过期 + 尊重置顶"三件事。 */
+      /* 清掉过期的敏感条目。返回删掉几条（0 表示没动，不写盘）。 */
+      async function sweepSensitive() {
+        if (!(sensitiveTtl > 0)) return 0;
+        const S = window.Sensitive;
+        if (!S || !S.pickExpired) return 0;
+        const r = S.pickExpired(history, { ttlMinutes: sensitiveTtl, now: Date.now() });
+        if (!r.drop.length) return 0;
+        history = r.keep;
+        await dropImages(r.drop);
+        await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', history);
+        try { toast('已自动清理 ' + r.drop.length + ' 条敏感记录（超过 ' + sensitiveTtl + ' 分钟）', 'info', 3000); } catch (e) {}
+        return r.drop.length;
+      }
       let watching = false, timer = null, lastClip = '';
       window.App.onCleanup(() => { watching = false; if (timer) { clearTimeout(timer); timer = null; } });
       let history = [];
@@ -214,6 +277,9 @@
       }
       async function load() {
         history = await invoke(Channels.CHANNELS.STORE.GET, 'clipHistory', []);
+        /* 每次进页面先扫一次过期敏感条目 —— 用户可能几天没打开这个工具，
+         * 期间过期的凭据一直躺在磁盘上。 */
+        try { await sweepSensitive(); } catch (e) {}
         render();
       }
       // 单条文本上限：条数 × 单条体积决定 hehe-data.json 的大小，而 store 是
@@ -290,7 +356,7 @@
         const q = searchIn.value.trim().toLowerCase();
         list.innerHTML = '';
         const items = history
-          .filter(x => typeFilter === 'all' || x.type === typeFilter)
+          .filter(x => typeFilter === 'all' || kindOf(x) === typeFilter)
           .filter(x => !q || (x.type === 'text' && x.content.toLowerCase().includes(q)) || (x.type === 'image' && '图片 image 截图'.includes(q)))
           .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.time - a.time);
         if (!items.length) {
@@ -373,7 +439,31 @@
       });
       page.appendChild(div('card', div('card-title', '控制'),
         div('form-row', h('span', { class: 'form-label' }, '自动记录'), watchSw, h('span', { class: 'field-hint' }, '开启后自动捕获复制的文本与图片（仅本机保存）')),
-        div('form-row', searchIn, makeTypeBtn('all', '全部'), makeTypeBtn('text', '文本'), makeTypeBtn('image', '图片'), clearBtn)));
+        /* 筛选按钮从三个扩到六个：文本太笼统，用户找的是"那段 JSON"或"那个网址"。
+         * 分类判据复用 lib/clip-analyze.js 的 analyze()，与剪贴板动作面板
+         * 用的是同一套规则 —— 两处规则必须一致，否则同样一段内容
+         * 在面板里叫"网址"、在历史里被归到"文本"，用户会困惑。 */
+        div('form-row', searchIn,
+          makeTypeBtn('all', '全部'), makeTypeBtn('text', '文本'),
+          makeTypeBtn('image', '图片'), makeTypeBtn('url', '网址'),
+          makeTypeBtn('json', 'JSON'), makeTypeBtn('misc', '哈希/令牌/颜色'),
+          clearBtn),
+        /* ---- 敏感内容自动过期 ---- */
+        /* 【为什么需要】
+         * 剪贴板历史会把用户复制的密码、密钥、身份证号一并存进一个
+         * 明文的 hehe-data.json，而且默认永不清理。这是真实风险，
+         * 不是"可能有点不安全"。
+         *
+         * 【为什么不默认开启】默认开启会让"10 分钟前复制的东西不见了"
+         * 变成困惑；而且识别敏感内容总有误判。默认关闭、由用户主动打开，
+         * 并把"哪些会被清掉"写清楚，比偷偷删更可信。
+         *
+         * 【判据：两类】看内容形态（密码/密钥/token/私钥块/证件号），
+         * 以及"用户在密码框里复制的"（拿不到来源，只能看内容）。 */
+        div('form-row',
+          h('span', { class: 'form-label' }, '敏感内容自动清理'),
+          sensitiveSw,
+          h('span', { class: 'field-hint' }, '开启后，形如密码/密钥/令牌的记录 ' + SENSITIVE_TTL_MIN + ' 分钟后自动删除'))));
       page.appendChild(list);
       load();
     }

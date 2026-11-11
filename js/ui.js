@@ -1046,6 +1046,53 @@
       setMainText: (t) => dz.setMain && dz.setMain(t)
     };
     el.__picker = api;
+    /* ============ 接住「全局拖拽」送来的文件 ============
+     *
+     * 用户在窗口任意位置拖入文件、路由到本工具之后，文件路径放在
+     * window.__pendingDrop 里（见 js/drop-open.js）。这里负责把它吃进来。
+     *
+     * 【为什么放在 filePicker 而不是让每个工具页各写一遍】
+     * 40 多个工具都用 filePicker 选文件。如果在每个工具页里手写
+     * 「取待处理文件 → 过滤 → add」，那是 40 份重复代码，而且必然
+     * 有几处漏写 filter（把不支持的格式塞进列表）或漏调 onChange。
+     * 只在 filePicker 里做一次，所有工具自动生效。
+     *
+     * 【为什么要用 setTimeout 而不是同步 add】
+     * 工具页的 render 里通常接着 `page.appendChild(picker.el)` 并继续
+     * 引用其它控件；同步 add 会在那些控件还没插进 DOM 时就触发
+     * onChange（有些工具的 onChange 会去读同页的输入框，此时拿到 null）。
+     * 推到下一个微/宏任务，等 render 跑完再接。
+     *
+     * 【只消费一次】takePending 取完即清空，所以用户之后手动再点「选择文件」
+     * 不会被上次拖的文件污染。 */
+    setTimeout(() => {
+      try {
+        /* 【用 window.__renderingTool 而不是 opts.pendingFor】
+         * filePicker 的调用点有 40 多个，逐个改签名去传工具 id 既容易漏、
+         * 又让每次新增工具都得记着传一个参数。app.js 在调 t.render() 前
+         * 会设这个标记（并在之后清掉），这里读它即可自动拿到正确的 id。
+         * 拿不到（比如非工具页场景）就不消费 —— 宁可不接，也不能接错页。 */
+        const toolId = window.__renderingTool;
+        if (!toolId) return;
+        const pending = window.DropOpen && window.DropOpen.takePending
+          ? window.DropOpen.takePending(toolId, 30000) : null;
+        if (!pending || !pending.paths || !pending.paths.length) return;
+        let ok = pending.paths;
+        if (filter) {
+          ok = pending.paths.filter((p) => { try { return filter(p); } catch (e) { return false; } });
+          const rejected = pending.paths.length - ok.length;
+          if (rejected && onReject) onReject(rejected, pending.paths.filter((p) => !ok.includes(p)));
+          else if (rejected) toast('已忽略 ' + rejected + ' 个不支持的文件', 'warn');
+        }
+        if (!ok.length) return;
+        const r = fl.add(single ? ok.slice(0, 1) : ok);
+        /* 把「被挡掉几个」说清楚 —— 静默少加会让用户以为拖拽没生效。
+         * 【字段名是 dup，不是 duplicated】fileList.add 返回 { added, dup }，
+         * 写错字段名会让这条提示永远不出现（判 undefined 恒假），
+         * 而"拖了 3 个只进来 2 个"正是最需要解释的情况。 */
+        if (r && r.dup) toast('已跳过 ' + r.dup + ' 个重复文件', 'info', 2000);
+      } catch (e) { /* 参数记忆/拖拽是增强，失败不能影响工具主功能 */ }
+    }, 0);
     return api;
   }
 

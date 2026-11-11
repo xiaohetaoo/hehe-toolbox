@@ -150,6 +150,22 @@
       'B 的改法': "B's changes",
       '对比结果': 'Result',
       '开始对比': 'Compare',
+      /* ---- 合并模式（v0.8.3）----
+       * 这些文案是新增功能带的，不补进表里英文模式下会漏成中文
+       * （test-tool-i18n 会红，这是它该做的事）。 */
+      '进入合并模式': 'Merge mode',
+      '合并结果': 'Merged result',
+      '还有 {n} 行冲突未决定': '{n} conflict(s) still undecided',
+      '所有冲突已决定': 'All conflicts decided',
+      '（无此行）': '(no such line)',
+      '删除': 'Delete',
+      '全部采用 A': 'Take all from A',
+      '全部采用 B': 'Take all from B',
+      '复制': 'Copy',
+      '另存为': 'Save as',
+      '保存合并结果': 'Save merged result',
+      '已保存：{p}': 'Saved: {p}',
+      '保存失败：{e}': 'Save failed: {e}',
     },
     hash: {
       '文件校验': 'File',

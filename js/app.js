@@ -1920,7 +1920,27 @@
       page.appendChild(dangerNoticeCard(t.id));
     }
     try {
-      t.render(page, { App: window.App, ui: window.ui, api: window.api });
+      /* 第二个参数是「工具页可见的上下文」。
+       * 【toolId 必须传】全局拖拽把文件路由到某个工具后，那个工具的
+       * filePicker 要靠自己的 id 去取待处理文件（takePending 按 id 过滤），
+       * 否则同一个待处理队列会被任何工具吃走。
+       *
+       * 【为什么还要设 window.__renderingTool】
+       * filePicker 是 ui.js 里的通用组件，它的调用点有 40 多个，
+       * 没法逐个改签名去传 toolId。所以在 render 期间设一个"当前正在渲染
+       * 哪个工具"的标记，filePicker 建好后读它 —— 这是唯一的自动途径。
+       * 必须在 finally 里清掉：否则 render 抛异常后标记会残留，
+       * 之后别的工具建 filePicker 时会用错 id 去取待处理文件。 */
+      /* 【标记必须在 render 之后立刻清掉，不能留给 finally 之外的时机】
+       * filePicker 是在 render 内部同步创建的，它把「消费待处理文件」
+       * 推到 setTimeout(0) 执行 —— 那时 render 已经返回、标记已被清掉，
+       * 于是拿不到 toolId。
+       * 所以：**不清除**，而是让它保留到下一个工具 render 时被覆盖。
+       * 风险是"某个非工具页的 filePicker 用到了上一个工具的 id" ——
+       * 但 filePicker 只在工具页里用（40 多个调用点全在 js/tools/ 下），
+       * 且 takePending 取完即清空、30 秒过期，实际影响是零。 */
+      window.__renderingTool = toolId;
+      t.render(page, { App: window.App, ui: window.ui, api: window.api, toolId });
     } catch (e) {
       console.error('工具渲染失败', toolId, e);
       page.appendChild(window.ui.placeholder('alert', T('tool.renderFail'), e.message));
@@ -1928,6 +1948,41 @@
     }
     // 渲染成功后恢复上次用过的参数（见 rememberToolParams 的说明）
     rememberToolParams(toolId, page);
+    /* 剪贴板动作面板送来的内容：填进本页的主输入框。
+     *
+     * 【为什么用「第一个 textarea」这个通用判据】
+     * 面板可能把内容交给 20 多个工具（json-format / base64 / text-stats /
+     * diff-tool / translate…），逐个改签名不现实，而它们的共同点是：
+     * **主输入区都是页内第一个 textarea**（其余 textarea 要么是只读输出、
+     * 要么是第二/第三份输入，如 diff3 的三栏）。
+     * 填第一个并与它后面跟着的按钮联动（触发 input 事件），
+     * 这样统计类工具会立刻算出结果。
+     *
+     * 【必须推到下一个宏任务】
+     * 有些工具在 render 结尾才把自己那几个按钮的 disabled 状态算出来，
+     * 同步填值会让"输入框有内容但按钮还是灰的"。 */
+    setTimeout(() => {
+      try {
+        const p = window.ClipActions && window.ClipActions.takePendingClip
+          ? window.ClipActions.takePendingClip(toolId, 30000) : null;
+        if (!p) return;
+        if (p.text) {
+          const ta = page.querySelector('textarea:not(.readonly)') || page.querySelector('textarea');
+          if (ta) {
+            ta.value = p.text;
+            /* 触发 input：统计/预览类工具靠它联动；不冒泡避免触发外层监听 */
+            try { ta.dispatchEvent(new Event('input', { bubbles: false })); } catch (e) {}
+            ta.focus();
+            try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {}
+          }
+        }
+        /* 图片类内容：交给页内的图片选择器（如果有）。
+         * 走与拖拽相同的 __pendingDrop 通道，filePicker 会接住。 */
+        if (p.dataUrl) {
+          window.__pendingDrop = { paths: [], exts: [], dataUrl: p.dataUrl, at: Date.now() };
+        }
+      } catch (e) { /* 交接失败不影响工具主功能 */ }
+    }, 0);
   }
 
   /* 【工具参数记忆】
@@ -3007,6 +3062,16 @@
     bindUiPrefs();
     bindUpdateAvailable();
     installNumberWheelGuard();
+    /* 全局拖拽：把文件拖到窗口任意位置 → 按扩展名路由到能处理的工具。
+     * 只绑一次（它自己挂的是 document 级监听器，重复绑会让一次拖拽
+     * 被处理多遍，弹出多个选择面板）。 */
+    try { if (window.DropOpen && window.DropOpen.bind) window.DropOpen.bind(); } catch (e) { console.warn('drop bind', e); }
+    /* 剪贴板动作面板（Ctrl+Shift+V）。
+     * 【只绑窗口内快捷键，不注册 globalShortcut】
+     * globalShortcut 是系统级的：注册了 Ctrl+Shift+V 之后，用户在浏览器里
+     * 按 Ctrl+Shift+V（Chrome 的"粘贴为纯文本"）会被我们抢走，那是越权。
+     * 所以只在本应用窗口内响应，见 js/clip-actions.js 的说明。 */
+    try { if (window.ClipActions && window.ClipActions.bind) window.ClipActions.bind(); } catch (e) { console.warn('clip bind', e); }
     /* 保活上限要在第一次 render 之前读出来，否则首批打开的页会按默认 6 算。
      * 读失败就用默认值 —— 这个设置纯属偏好，不该影响启动。 */
     try {
