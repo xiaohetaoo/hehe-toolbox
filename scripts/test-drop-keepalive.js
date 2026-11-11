@@ -43,6 +43,7 @@ t('KA2 保活复用路径显式调用 consumePendingDrop', () => {
   const at = s.indexOf('keepAlive.has(pageKey)');
   assert.ok(at >= 0, '找不到保活复用分支');
   const seg = s.slice(at, at + 2600);
+  /* 锁的是：复用分支的补挂调用被删 —— 缺陷 #1 复发（文件静默蒸发）。 */
   assert.ok(/consumePendingDrop/.test(seg),
     '保活复用分支应调用 consumePendingDrop（否则已打开的工具页接不到拖拽文件）');
   /* 锁的是：调用没有延迟到宏任务 —— rec.el 刚贴回 DOM，fileList 渲染
@@ -104,6 +105,8 @@ t('KA7 面板送的图片走 __pendingDrop 通道并立即通知消费', () => {
    * 没有下一次 render，图片会躺到过期。 */
   assert.ok(/__pendingDrop = \{ paths: \[\], exts: \[\], dataUrl/.test(seg),
     '图片内容应走 __pendingDrop 通道');
+  /* 锁的是：放入 __pendingDrop 后没有通知消费 —— 保活场景没有下一次
+   * render，图片会躺到过期。 */
   assert.ok(/api\.consumePendingDrop\(\)/.test(seg),
     '放入 __pendingDrop 后应立即通知本页 picker 消费');
 });

@@ -105,3 +105,4 @@ scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
 scripts/version.js | A=3 | B=0 | build-meta
 scripts/test-drop-route.js | A=1 | B=0 | exact:扫 js/tools 下所有工具文件提取真实的 register id，用来校验路由表没有引用不存在的工具。这里必须读原始文本而不能用 readSrc —— readSrc 默认剥注释，被注释掉的 register 块也要把 id 算进来，否则会误报「路由表引用了不存在的工具」。读的是 id 字面量，不做形态断言。
+scripts/test-css-vars.js | A=3 | B=0 | exact:扫 css/app.css 与 snip/pin/ruler.html 的文本找 CSS 变量定义与 var() 引用。必须读原始文本：readSrc 是给 js 用的（按 js 注释规则剥 // 与 /* */），对 CSS/HTML 不适用——CSS 的注释是 /* */，而这里的 var() 引用横跨选择器体与值，剥注释会同时吞掉合法内容。读的是变量名字面量，不做形态断言。
