@@ -72,4 +72,40 @@ t('KA4 takePending 取完即清空且有过期时间（不串页、不残留）'
   assert.ok(/maxAge|30000/.test(s), 'takePending 必须有过期时间（默认 30 秒）');
 });
 
+t('KA5 剪贴板面板的内容交接必须与拖拽同构（保活路径也要接）', () => {
+  const s = readSrc('js/app.js');
+  /* 锁的是：consumePendingClip 被内联回 renderToolPage 的 setTimeout ——
+   * 那正是缺陷 #2 的形态：保活复用路径接不到，内容静默蒸发。 */
+  assert.ok(/function consumePendingClip\(page, toolId\)/.test(s),
+    '剪贴板内容交接应是具名函数 consumePendingClip（供保活路径复用）');
+  /* 锁的是：render 路径的接线被删。 */
+  assert.ok(/setTimeout\(\(\) => \{ try \{ consumePendingClip\(page, toolId\); \} catch/.test(s),
+    'render 路径仍应通过 setTimeout 交接（首次打开的场景）');
+  /* 锁的是：保活分支的补挂调用被删 —— 缺陷 #2 复发。 */
+  const at = s.indexOf('keepAlive.has(pageKey)');
+  const seg = s.slice(at, at + 3400);
+  assert.ok(/consumePendingClip\(rec\.el/.test(seg),
+    '保活复用分支应调用 consumePendingClip（否则已打开的工具页接不到面板内容）');
+});
+
+t('KA6 takePendingClip 同样取完即清空（与拖拽同构）', () => {
+  const s = readSrc('js/clip-actions.js');
+  /* 锁的是：takePendingClip 退化成只读不清 —— 下次打开工具会
+   * 冒出上次的剪贴板内容。 */
+  assert.ok(/window\.__pendingClip = null/.test(s), 'takePendingClip 取完必须清空');
+  assert.ok(/maxAge|30000/.test(s), 'takePendingClip 必须有过期时间');
+});
+
+t('KA7 面板送的图片走 __pendingDrop 通道并立即通知消费', () => {
+  const s = readSrc('js/app.js');
+  const at = s.indexOf('function consumePendingClip');
+  const seg = s.slice(at, at + 1800);
+  /* 锁的是：图片内容只放进 __pendingDrop 却没人消费 —— 保活场景下
+   * 没有下一次 render，图片会躺到过期。 */
+  assert.ok(/__pendingDrop = \{ paths: \[\], exts: \[\], dataUrl/.test(seg),
+    '图片内容应走 __pendingDrop 通道');
+  assert.ok(/api\.consumePendingDrop\(\)/.test(seg),
+    '放入 __pendingDrop 后应立即通知本页 picker 消费');
+});
+
 done();

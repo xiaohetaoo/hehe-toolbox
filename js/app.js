@@ -1590,6 +1590,13 @@
           } catch (e) { /* 交接失败不影响主功能 */ }
         }, 0);
       }
+      /* 【剪贴板面板的内容同样要接】与拖拽同一个缺陷：保活复用不 render，
+       * renderToolPage 尾部安排的 setTimeout(0) 早已跑完。
+       * consumePendingClip 内部先 takePendingClip（取不到即返回），
+       * 普通切页无副作用。 */
+      if (v.type === 'tool' && window.__pendingClip) {
+        setTimeout(() => { try { consumePendingClip(rec.el, v.toolId); } catch (e) {} }, 0);
+      }
       return;
     }
 
@@ -1970,40 +1977,44 @@
     // 渲染成功后恢复上次用过的参数（见 rememberToolParams 的说明）
     rememberToolParams(toolId, page);
     /* 剪贴板动作面板送来的内容：填进本页的主输入框。
-     *
-     * 【为什么用「第一个 textarea」这个通用判据】
-     * 面板可能把内容交给 20 多个工具（json-format / base64 / text-stats /
-     * diff-tool / translate…），逐个改签名不现实，而它们的共同点是：
-     * **主输入区都是页内第一个 textarea**（其余 textarea 要么是只读输出、
-     * 要么是第二/第三份输入，如 diff3 的三栏）。
-     * 填第一个并与它后面跟着的按钮联动（触发 input 事件），
-     * 这样统计类工具会立刻算出结果。
-     *
-     * 【必须推到下一个宏任务】
-     * 有些工具在 render 结尾才把自己那几个按钮的 disabled 状态算出来，
-     * 同步填值会让"输入框有内容但按钮还是灰的"。 */
-    setTimeout(() => {
-      try {
-        const p = window.ClipActions && window.ClipActions.takePendingClip
-          ? window.ClipActions.takePendingClip(toolId, 30000) : null;
-        if (!p) return;
-        if (p.text) {
-          const ta = page.querySelector('textarea:not(.readonly)') || page.querySelector('textarea');
-          if (ta) {
-            ta.value = p.text;
-            /* 触发 input：统计/预览类工具靠它联动；不冒泡避免触发外层监听 */
-            try { ta.dispatchEvent(new Event('input', { bubbles: false })); } catch (e) {}
-            ta.focus();
-            try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {}
-          }
+     * 逻辑抽在 consumePendingClip(page, toolId)（本函数之外），
+     * 因为保活复用路径（showView 的 keepAlive 分支）也要走同一份 ——
+     * 只写在这里的话，往「已打开的工具页」送内容会静默蒸发
+     * （与全局拖拽的缺陷同源，真机实测确认过）。 */
+    setTimeout(() => { try { consumePendingClip(page, toolId); } catch (e) {} }, 0);
+  }
+
+  /* 剪贴板动作面板 → 工具页 的内容交接。
+   * 被 renderToolPage 的 setTimeout 与保活复用分支两处调用，见上。 */
+  function consumePendingClip(page, toolId) {
+    try {
+      const p = window.ClipActions && window.ClipActions.takePendingClip
+        ? window.ClipActions.takePendingClip(toolId, 30000) : null;
+      if (!p) return;
+      if (p.text) {
+        const ta = page.querySelector('textarea:not(.readonly)') || page.querySelector('textarea');
+        if (ta) {
+          ta.value = p.text;
+          /* 触发 input：统计/预览类工具靠它联动；不冒泡避免触发外层监听 */
+          try { ta.dispatchEvent(new Event('input', { bubbles: false })); } catch (e) {}
+          ta.focus();
+          try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {}
         }
-        /* 图片类内容：交给页内的图片选择器（如果有）。
-         * 走与拖拽相同的 __pendingDrop 通道，filePicker 会接住。 */
-        if (p.dataUrl) {
-          window.__pendingDrop = { paths: [], exts: [], dataUrl: p.dataUrl, at: Date.now() };
-        }
-      } catch (e) { /* 交接失败不影响工具主功能 */ }
-    }, 0);
+      }
+      /* 图片类内容：交给页内的图片选择器（如果有）。
+       * 走与拖拽相同的 __pendingDrop 通道，filePicker 会接住。 */
+      if (p.dataUrl) {
+        window.__pendingDrop = { paths: [], exts: [], dataUrl: p.dataUrl, at: Date.now() };
+        /* 通知本页的 picker 立即消费（保活复用时 setTimeout 已过，没人接）。 */
+        setTimeout(() => {
+          try {
+            const el = page.querySelector('.picker');
+            const api = el && el.__picker;
+            if (api && api.consumePendingDrop) api.consumePendingDrop();
+          } catch (e) { /* 交接失败不影响主功能 */ }
+        }, 0);
+      }
+    } catch (e) { /* 交接失败不影响工具主功能 */ }
   }
 
   /* 【工具参数记忆】
