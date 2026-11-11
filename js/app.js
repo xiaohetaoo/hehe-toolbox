@@ -1569,6 +1569,27 @@
       const top = rec.scrollTop || 0;
       contentEl.scrollTop = top;
       requestAnimationFrame(() => { contentEl.scrollTop = top; });
+      /* 【保活复用也要接住全局拖拽/剪贴板面板送来的内容】
+       * 复用路径不 render，page 里 filePicker 建立时安排的
+       * setTimeout(0) 早就跑完了 —— 如果不在这里补一次，
+       * 用户往一个「已经打开的工具页」拖文件，路由正确、面板正确、
+       * openTool 正确，然后文件在 __pendingDrop 里躺 30 秒后静默蒸发。
+       * （真机实测确认过这个缺陷：pendingLeft=true、列表 0 行。）
+       *
+       * 做法：从复用的 page 里找到 filePicker 的 API（挂在根元素
+       * `__picker` 属性上），显式调它的 consumePendingDrop。
+       * 消费内部先 takePending（取不到就直接返回），所以普通切页
+       * 没有副作用。延迟到 setTimeout(0)：等页面真正贴回 DOM、
+       * fileList 的行渲染就绪后再 add。 */
+      if (v.type === 'tool' && window.__pendingDrop) {
+        setTimeout(() => {
+          try {
+            const el = rec.el.querySelector('.picker') || rec.el.querySelector('.dropzone');
+            const api = el && (el.__picker || (el.parentElement && el.parentElement.__picker));
+            if (api && api.consumePendingDrop) api.consumePendingDrop();
+          } catch (e) { /* 交接失败不影响主功能 */ }
+        }, 0);
+      }
       return;
     }
 

@@ -1043,7 +1043,10 @@
       setLocked: (v) => fl.setLocked(v),
       move: (i, d) => fl.move(i, d),
       sortBy: (fn) => fl.sortBy(fn),
-      setMainText: (t) => dz.setMain && dz.setMain(t)
+      setMainText: (t) => dz.setMain && dz.setMain(t),
+      /* 消费「全局拖拽/剪贴板面板」送来的待处理文件。
+       * 挂在 API 上而不只放在 setTimeout 里的原因见下方 consumePendingDrop。 */
+      consumePendingDrop
     };
     el.__picker = api;
     /* ============ 接住「全局拖拽」送来的文件 ============
@@ -1065,13 +1068,19 @@
      *
      * 【只消费一次】takePending 取完即清空，所以用户之后手动再点「选择文件」
      * 不会被上次拖的文件污染。 */
-    setTimeout(() => {
+    setTimeout(() => { try { consumePendingDrop(); } catch (e) { /* 增强逻辑，失败不影响主功能 */ } }, 0);
+
+    /* 【必须定义成 filePicker 作用域内的具名函数并挂到 API 上】
+     *
+     * 只放在 setTimeout 里有两种场景接不到：
+     *   ① 工具页处于**保活复用**（app.js 的 keepAlive 命中后直接 return，
+     *      不走 render）—— setTimeout 从未建立，文件 30 秒后静默蒸发；
+     *   ② setTimeout(0) 执行时 window.__renderingTool 已经被下一次
+     *      render 覆盖（快速连续切换工具时）。
+     * 抽成方法后，app.js 的保活复用路径可以显式调它（按 __renderingTool
+     * 找到页内的 picker），两条路径走同一份过滤/去重/提示逻辑。 */
+    function consumePendingDrop() {
       try {
-        /* 【用 window.__renderingTool 而不是 opts.pendingFor】
-         * filePicker 的调用点有 40 多个，逐个改签名去传工具 id 既容易漏、
-         * 又让每次新增工具都得记着传一个参数。app.js 在调 t.render() 前
-         * 会设这个标记（并在之后清掉），这里读它即可自动拿到正确的 id。
-         * 拿不到（比如非工具页场景）就不消费 —— 宁可不接，也不能接错页。 */
         const toolId = window.__renderingTool;
         if (!toolId) return;
         const pending = window.DropOpen && window.DropOpen.takePending
@@ -1092,7 +1101,7 @@
          * 而"拖了 3 个只进来 2 个"正是最需要解释的情况。 */
         if (r && r.dup) toast('已跳过 ' + r.dup + ' 个重复文件', 'info', 2000);
       } catch (e) { /* 参数记忆/拖拽是增强，失败不能影响工具主功能 */ }
-    }, 0);
+    }
     return api;
   }
 
