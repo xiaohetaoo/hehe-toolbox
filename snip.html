@@ -46,14 +46,67 @@
     canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
     #bar { position: fixed; display: none; background: #1F2430; border-radius: 10px; padding: 8px 10px;
       box-shadow: 0 6px 24px rgba(0,0,0,.45); z-index: 99; align-items: center; gap: 6px; }
-    .tbtn { min-width: 34px; height: 32px; border: none; border-radius: 7px; background: transparent; color: #C9D1E0;
-      font-size: 13px; cursor: pointer; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; }
+    .tbtn { min-width: 32px; height: 32px; border: none; border-radius: 7px; background: transparent; color: #C9D1E0;
+      font-size: 13px; cursor: pointer; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+    /* 【图标统一走 .icon：与主界面同一套线性 SVG 规范】
+     * 之前这里混用了三种形态：
+     *   ▭ ➚  —— 几何字符，字体缺失时是豆腐块
+     *   ✏️    —— 彩色 emoji，深色底上被系统强行染色，且与线条图标字重/基线和颜色都不受控
+     *   T ▦   —— 字母与网格字符，粗细跟着字体走
+     * 五个按钮三种观感，就是「风格不统一」的直接来源。
+     * 现在统一成 24×24 / stroke 2 / currentColor，颜色跟着 .tbtn 的 color 走，
+     * 选中态（.on 白字）与悬停态也能正确继承。 */
+    .tbtn .icon { width: 17px; height: 17px; flex: none; stroke: currentColor; fill: none;
+      stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    /* 文字类按钮（撤销/重选/复制…）内的图标略小，与汉字对齐 */
+    .tbtn.texty .icon { width: 15px; height: 15px; }
     .tbtn:hover { background: rgba(255,255,255,.12); }
     .tbtn.on { background: var(--aux-primary); color: var(--aux-on); }
     .tbtn.act { color: var(--aux-primary); }
     .sep { width: 1px; height: 20px; background: rgba(255,255,255,.15); }
     .sw { width: 18px; height: 18px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
     .sw.on { border-color: #fff; box-shadow: 0 0 0 2px var(--aux-primary); }
+    /* 【色块区：常用色 + 调色板】
+     * 常用色 6 个一键选；最后一个「调色板」用彩虹渐变标识它是自定义入口，
+     * 点开是系统取色器（原生 input[type=color] 藏在里面）。
+     * 为什么把 input 绝对定位铺满并设 opacity:0：
+     * 直接显示原生控件会破坏整条工具条的深色风格（它是白色方块），
+     * 而用 visibility/display 隐藏又点不到 —— opacity:0 保留点击命中区。 */
+    .swwrap { display: inline-flex; align-items: center; gap: 6px; }
+    .sw-custom { position: relative; background: conic-gradient(#FF4D4F,#FFC53D,#00B42A,#165DFF,#A855F7,#FF4D4F); }
+    .sw-custom input[type=color] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: none; padding: 0; cursor: pointer; }
+    .sw-custom-ico { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+    .sw-custom-ico .icon { width: 11px; height: 11px; stroke: #fff; stroke-width: 2.4; filter: drop-shadow(0 0 1.5px rgba(0,0,0,.9)); }
+    /* 自定义色被选中时，色块本身就是当前色，不再显示彩虹底 */
+    .sw-custom.on { border-color: #fff; box-shadow: 0 0 0 2px var(--aux-primary); }
+
+    /* 【线宽滑杆】
+     * 原来的「细/中/粗」三个按钮换成连续滑杆：
+     *   · 范围 1~12px（三档只有 2/3/5，覆盖不了画细箭头/涂粗马赛克的需求）；
+     *   · 右侧实时显示当前像素值，不用试三次才知道哪档合适。
+     * 滑杆用 accent-color 跟随主题色，避免与整条深色工具条割裂。 */
+    .szwrap { display: inline-flex; align-items: center; gap: 7px; padding: 0 2px; }
+    .szwrap .sz-ico { display: inline-flex; align-items: center; }
+    .szwrap .sz-ico .icon { width: 15px; height: 15px; stroke: #C9D1E0; stroke-width: 2; }
+    #sizeSlider { width: 84px; height: 18px; cursor: pointer; accent-color: var(--aux-primary); background: transparent;
+      -webkit-appearance: none; appearance: none; }
+    /* 【自绘轨道 + 已填充部分】
+     * 原生 range 在深色底上会被系统画成一条白色实心粗条（截图实证），
+     * 与整条深色工具条割裂。这里关掉 appearance 自己画：
+     *   · 轨道用半透明白，弱化存在感；
+     *   · 已填充部分用主题色，直观表示"当前值在哪"。
+     * 已填充部分靠 background 的 linear-gradient + --fill 变量实现，
+     * --fill 由 JS 在 input 时更新（原生 range 无法只靠 CSS 做双色轨道）。 */
+    #sizeSlider::-webkit-slider-runnable-track { height: 4px; border-radius: 2px;
+      background: linear-gradient(to right, var(--aux-primary) 0%, var(--aux-primary) var(--fill, 20%), rgba(255,255,255,.22) var(--fill, 20%), rgba(255,255,255,.22) 100%); }
+    #sizeSlider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 13px; height: 13px; margin-top: -4.5px;
+      border-radius: 50%; background: #fff; border: 2px solid var(--aux-primary); box-shadow: 0 1px 3px rgba(0,0,0,.5); }
+    /* 【当前线宽的预览方式：靠右侧数值的字重，而不是额外的圆点】
+     * 一开始加过一个「直径 = 线宽 ×2.2」的白点做预览，但 12px 时它和
+     * 滑块本身（13px 白圆）一样大，反而分不清哪个是滑块。
+     * 改成让数值文字的字重随线宽递增：数字本身就在说明"现在多粗"，
+     * 不额外占横向空间，也不会与滑块混淆。 */
+    .sz-num { min-width: 16px; text-align: right; font: 12px Consolas, monospace; color: #C9D1E0; }
     #tip { position: fixed; background: color-mix(in srgb, var(--aux-primary) 92%, transparent); color: var(--aux-on); font-size: 12px; padding: 3px 10px;
       border-radius: 4px; pointer-events: none; display: none; z-index: 98; }
     #sizeTip { position: fixed; color: #fff; background: rgba(0,0,0,.6); font: 12px Consolas, monospace; padding: 2px 8px;

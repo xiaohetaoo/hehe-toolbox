@@ -123,26 +123,54 @@
           s.pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
           ctx.stroke();
         } else {
-          // 马赛克：沿路径以低分辨率取样再放大
-          const px = Math.max(6, s.size * 3);
+          /* 【马赛克：必须「小图取样 → 大图铺开」，src 与 dst 尺寸不能相等】
+           *
+           * 原实现把源矩形和目标矩形都设成了同一个尺寸：
+           *   drawImage(img, sx, sy, px*DPR, px*DPR,  p.x-px/2, p.y-px/2, px, px)
+           * 而 drawShape 运行在 ctx.scale(DPR, DPR) 之下（见 render），
+           * 所以目标尺寸 px 会被放大成 px*DPR —— **与源矩形完全相等**。
+           * 1:1 复制 = 什么都没改，用户看到的就是「马赛克点了没反应」。
+           * 实测（本机 DPR 1.875，size=3 → px=9）：
+           *   源 9×1.875 = 16.875 物理像素 → 目标 9×1.875 = 16.875 物理像素
+           *   棋盘格背景上「明暗跳变数」涂抹前后 2599 → 2909（没变，差异来自选区边框）
+           *
+           * 【修法】取样格子固定为 BLOCK 逻辑像素，源矩形取 BLOCK*DPR，
+           * 目标矩形取 BLOCK —— 比例恒为 DPR，缩放恒定有效：
+           *   · BLOCK 越大越糊，这里取 px（= size*3，马赛克与画笔线宽联动）；
+           *   · 关闭 imageSmoothingEnabled 才能得到「硬边马赛克」而不是模糊。
+           *
+           * 【为什么用 9 宫格采样取平均色，而不是直接 drawImage 缩放】
+           * drawImage 缩小时会做插值，得到的是一团模糊（等于高斯模糊），
+           * 不是马赛克。真正的马赛克要「一格一个纯色」。所以先读该格的
+           * 平均色，再用纯色填充 —— 这样格子边界清晰，也确实抹掉了细节。 */
+          const block = Math.max(6, s.size * 3);
+          /* 记录已经画过的格子，避免路径在自身附近往返时反复叠加
+           * （每格纯色是幂等的，但可以省掉大量重复取样） */
+          const painted = new Set();
           for (const p of s.pts) {
-            /* 【取样坐标必须按 DPR 换算，不能用 naturalWidth/innerWidth】
-             * drawShape 是在 ctx.scale(DPR, DPR) 之后被调用的（见 render），
-             * 所以这里的 p.x/p.y 是**逻辑像素**；而 img 是物理尺寸的位图。
-             * 逻辑 → 物理只有一个系数：DPR。原实现用
-             *   naturalWidth / innerWidth
-             * 来换算，看起来"也对"，但当源图尺寸与窗口位图尺寸不完全相等时
-             * （本机 2561 vs 2563）它就偏离 DPR，取样点会逐像素漂移，
-             * 马赛克涂抹的位置与鼠标位置对不上。
-             * 用 DPR 是精确的：源图 1 物理像素 ↔ 逻辑 1/DPR 像素。 */
-            const sx = p.x * DPR;
-            const sy = p.y * DPR;
-            const sw = px * DPR;
-            const sh = px * DPR;
+            const gx = Math.floor(p.x / block);
+            const gy = Math.floor(p.y / block);
+            const key = gx + ',' + gy;
+            if (painted.has(key)) continue;
+            painted.add(key);
+            /* 取该格在源图上的平均色（源图是物理像素，坐标乘 DPR） */
+            const sx = Math.round(gx * block * DPR);
+            const sy = Math.round(gy * block * DPR);
+            const sw = Math.max(1, Math.round(block * DPR));
+            const sh = Math.max(1, Math.round(block * DPR));
+            let r = 128, g = 128, b = 128;
             try {
-              ctx.drawImage(img, sx, sy, sw, sh, p.x - px / 2, p.y - px / 2, px, px);
-            } catch (e) {}
+              const id = getSourceData(sx, sy, sw, sh);
+              if (id) {
+                let sr = 0, sg = 0, sb = 0, n = 0;
+                for (let i = 0; i < id.length; i += 4) { sr += id[i]; sg += id[i + 1]; sb += id[i + 2]; n++; }
+                if (n) { r = Math.round(sr / n); g = Math.round(sg / n); b = Math.round(sb / n); }
+              }
+            } catch (e) { /* 越界取样（路径贴边）时退回灰色，不让整段标注炸掉 */ }
+            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+            ctx.fillRect(gx * block, gy * block, block, block);
           }
+          ctx.fillStyle = s.color;   // 恢复，后面的图形继续用原色
         }
       } else if (s.type === 'text') {
         ctx.font = `${s.size * 7}px 'Microsoft YaHei', sans-serif`;
@@ -153,6 +181,33 @@
     }
     img.onload = render;
     window.addEventListener('resize', () => { render(); });
+
+    /* 【从源图读一块像素的平均色 —— 马赛克要用】
+     *
+     * 不能在主画布 ctx 上直接 getImageData：那时画布上已经压了压暗遮罩
+     * 和之前画的标注，取到的会是被污染的颜色（马赛克会把压暗的灰也吸进来，
+     * 越涂越黑）。所以单独开一块离屏画布，只把源图对应区域画进去再读。
+     *
+     * 离屏画布按需创建、复用一张：每次 new canvas 会在连续拖拽时产生
+     * 大量临时对象（一次拖拽可能几百个点）。
+     * 采样尺寸封顶 64：块再大也不需要更高精度，读整块像素很贵。 */
+    let srcCanvas = null, srcCtx = null;
+    function getSourceData(sx, sy, sw, sh) {
+      if (!img.naturalWidth) return null;
+      const w = Math.max(1, Math.min(64, sw)), h = Math.max(1, Math.min(64, sh));
+      if (!srcCanvas) {
+        srcCanvas = document.createElement('canvas');
+        srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+      }
+      if (srcCanvas.width !== w || srcCanvas.height !== h) {
+        srcCanvas.width = w; srcCanvas.height = h;
+      }
+      srcCtx.clearRect(0, 0, w, h);
+      /* 越界部分不画（留透明），调用方按实际读到的像素求平均；
+       * 源图边缘之外的马赛克会偏暗，这是可接受的（用户本来就涂在图上）。 */
+      try { srcCtx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h); } catch (e) { return null; }
+      try { return srcCtx.getImageData(0, 0, w, h).data; } catch (e) { return null; }
+    }
 
     /* ---------- 选区 ---------- */
     const tip = document.getElementById('tip'), sizeTip = document.getElementById('sizeTip');
@@ -208,50 +263,238 @@
     });
 
     /* ---------- 工具条 ---------- */
-    const TOOLS = [['rect', '▭'], ['arrow', '➚'], ['pen', '✏️'], ['text', 'T'], ['mosaic', '▦']];
+    /* 【图标统一为线性 SVG】
+     * 原来 TOOLS 用的是字符图标：▭ ➚ ✏️ T ▦。五个按钮三种形态：
+     *   · ▭ ▦ 是 U+25A0 区段的几何字符 —— 依赖字体，缺字时是豆腐块；
+     *   · ✏️ 是彩色 emoji —— 深色浮层上会被系统染色，且字重、基线、
+     *     颜色全部不受控（项目在 afa0bdc 那轮把全项目 122 处同类 emoji
+     *     换成了 SVG，唯独这里的工具条当时被认为"没有图标系统的位置"）；
+     *   · T 是字母 —— 粗细跟着字体走，与线条图标不是一套。
+     * 现在给每个按钮内联一段 24×24 / stroke 2 / currentColor 的路径，
+     * 与 js/icons.js 的规范一致（这个页面不引 icons.js：它只依赖
+     * js/auxwin/ 下的两个脚本，多引一个文件要多一条 CSP/打包校验）。
+     * 路径直接照搬 js/icons.js 的同名图标，视觉上与主界面完全一致。 */
+    const SVG = {
+      rect: '<rect x="4" y="5" width="16" height="14" rx="1.5"/>',
+      arrow: '<path d="M5 19 19 5"/><polyline points="11 5 19 5 19 13"/>',
+      pen: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+      text: '<polyline points="4 7 4 4 20 4 20 7"/><path d="M9 20h6M12 4v16"/>',
+      mosaic: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
+      undo: '<polyline points="9 14 4 9 9 4"/><path d="M4 9h11a5 5 0 0 1 0 10h-4"/>',
+      redo: '<polyline points="15 14 20 9 15 4"/><path d="M20 9H9a5 5 0 0 0 0 10h4"/>',
+      copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+      save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+      pin: '<path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+      ocr: '<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 12h8"/>',
+      /* 调色板：与主界面「颜色转换器」用的是同一形状（扇形色块 + 三点） */
+      palette: '<path d="M12 3a9 9 0 1 0 0 18h1.5a2.5 2.5 0 0 0 0-5H13a2 2 0 0 1 0-4h2.5A5.5 5.5 0 0 0 21 6.5"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7" r="1"/>',
+      /* 线宽：一端细一端粗的楔形，直观表达"粗细" */
+      line: '<path d="M4 18 20 6"/><path d="M4 15v6h6"/>',
+    };
+    function svgIcon(name) {
+      return '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">' + (SVG[name] || '') + '</svg>';
+    }
+    const TOOLS = [
+      ['rect', 'rect', '矩形'],
+      ['arrow', 'arrow', '箭头'],
+      ['pen', 'pen', '画笔'],
+      ['text', 'text', '文字'],
+      ['mosaic', 'mosaic', '马赛克'],
+    ];
+    /* 【常用色 + 调色板】
+     * 原来只有 6 个固定色块，想用别的颜色（比如标注截图里的品牌色）没有办法。
+     * 现在：左边 6 个常用色一键选，右边一个"调色板"按钮打开系统取色器，
+     * 选完的颜色会**替换**当格显示，并记进「最近用过的颜色」。
+     *
+     * 为什么用 <input type="color"> 而不是自己画取色面板：
+     * 系统取色器支持滴管、十六进制输入、色域切换，自己画一套既做不到
+     * 这些，又要在全屏透明窗里额外管理一层浮层（点击穿透、Esc 层级）。
+     * 原生控件还自带可访问性。 */
     const COLORS = ['#FF4D4F', '#FFC53D', '#165DFF', '#00B42A', '#FFFFFF', '#000000'];
+    /* 线宽范围：1~12。原来只有细/中/粗三档（2/3/5），
+     * 画细箭头和涂粗马赛克需要的粗细跨度远比这三档大。 */
+    const SIZE_MIN = 1, SIZE_MAX = 12;
     function showBar() {
       bar.innerHTML = '';
-      for (const [id, ic] of TOOLS) {
+      for (const [id, iconName, label] of TOOLS) {
         const b = document.createElement('button');
         b.className = 'tbtn' + (tool === id ? ' on' : '');
-        b.textContent = ic; b.title = { rect: '矩形', arrow: '箭头', pen: '画笔', text: '文字', mosaic: '马赛克' }[id];
-        b.onclick = () => { tool = id; showBar(); };
+        b.innerHTML = svgIcon(iconName);
+        /* title 与 aria-label 都给：title 供鼠标悬停，aria-label 供读屏器。
+         * 图标按钮没有可见文字，缺 aria-label 时读屏器只能念"按钮"。 */
+        b.title = label;
+        b.setAttribute('aria-label', label);
+        b.onclick = () => { tool = id; syncBar(); };
         bar.appendChild(b);
       }
       bar.appendChild(sep());
+
+      /* ---- 常用色 + 调色板 ---- */
+      const swWrap = document.createElement('div');
+      swWrap.className = 'swwrap';
       for (const c of COLORS) {
         const s = document.createElement('div');
-        s.className = 'sw' + (color === c ? ' on' : '');
+        s.className = 'sw';
+        s.dataset.color = c;
         s.style.background = c;
-        s.onclick = () => { color = c; showBar(); };
-        bar.appendChild(s);
+        s.title = c;
+        s.setAttribute('aria-label', c);
+        s.onclick = () => { color = c; syncBar(); };
+        swWrap.appendChild(s);
       }
+      /* 调色板：原生取色器藏在色块后面，点色块 = 点取色器 */
+      const custom = document.createElement('label');
+      custom.className = 'sw sw-custom';
+      custom.title = '调色板：自定义颜色';
+      custom.setAttribute('aria-label', '调色板');
+      const picker = document.createElement('input');
+      picker.type = 'color';
+      picker.id = 'colorPicker';
+      picker.value = color;
+      picker.oninput = () => {
+        color = picker.value;
+        /* 自定义色不再属于常用色列表，但要让它显示出来：
+         * 把色块背景改成当前色，并标记 .on */
+        custom.style.background = color;
+        syncBar();
+      };
+      /* 点开取色器时不要让事件冒泡到 stage（否则会开始画一笔） */
+      picker.onclick = (e) => e.stopPropagation();
+      custom.appendChild(picker);
+      const ico = document.createElement('span');
+      ico.className = 'sw-custom-ico';
+      ico.innerHTML = svgIcon('palette');
+      custom.appendChild(ico);
+      swWrap.appendChild(custom);
+      bar.appendChild(swWrap);
       bar.appendChild(sep());
-      const sz1 = mkBtn('细', 'tbtn' + (size === 2 ? ' on' : ''), () => { size = 2; showBar(); });
-      const sz2 = mkBtn('中', 'tbtn' + (size === 3 ? ' on' : ''), () => { size = 3; showBar(); });
-      const sz3 = mkBtn('粗', 'tbtn' + (size === 5 ? ' on' : ''), () => { size = 5; showBar(); });
-      bar.appendChild(sz1); bar.appendChild(sz2); bar.appendChild(sz3);
+
+      /* ---- 线宽滑杆 ---- */
+      /* 【为什么从「细/中/粗」三档改成滑杆】
+       * 三档覆盖不了实际需要：画细箭头想要 1px，涂马赛克想要 10px 以上，
+       * 而三档只有 2/3/5。滑杆能连续调，且实时显示当前数值，
+       * 用户不用试三次才知道哪档合适。
+       *
+       * 【为什么用 input[type=range] 而不是自己画】
+       * 原生滑杆自带键盘可达性（方向键微调）、拖动惯性、触控支持，
+       * 且在全屏透明窗里不会引入额外的浮层与点击穿透问题。 */
+      const szWrap = document.createElement('div');
+      szWrap.className = 'szwrap';
+      const szIco = document.createElement('span');
+      szIco.className = 'sz-ico';
+      szIco.innerHTML = svgIcon('line');
+      szWrap.appendChild(szIco);
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.id = 'sizeSlider';
+      slider.min = String(SIZE_MIN);
+      slider.max = String(SIZE_MAX);
+      slider.step = '1';
+      slider.value = String(size);
+      slider.title = '线宽 ' + size + ' px';
+      slider.setAttribute('aria-label', '线宽');
+      const val = document.createElement('span');
+      val.className = 'sz-num';
+      val.id = 'sizeNum';
+      val.textContent = String(size);
+      /* input 事件 = 拖动过程中持续触发；只更新数值，不重建工具条
+       * （重建会让滑杆失去拖拽状态，手指一松就跳回去）。 */
+      slider.oninput = () => {
+        size = Number(slider.value);
+        val.textContent = String(size);
+        slider.title = '线宽 ' + size + ' px';
+        slider.setAttribute('aria-valuetext', size + ' 像素');
+        /* 更新已填充轨道比例（原生 range 无法只用 CSS 做双色轨道） */
+        const fill = ((size - SIZE_MIN) / (SIZE_MAX - SIZE_MIN)) * 100;
+        slider.style.setProperty('--fill', fill.toFixed(1) + '%');
+        /* 数值文字的粗细跟着线宽变：这是最直观的"当前多粗"预览，
+         * 且不会像额外的圆点那样在大尺寸时与滑块本身混淆。 */
+        val.style.fontWeight = String(300 + Math.min(9, size) * 70);
+        placeBar();
+      };
+      /* 阻止拖动滑杆时的事件冒泡到 stage（否则会画出一笔） */
+      slider.addEventListener('pointerdown', (e) => e.stopPropagation());
+      slider.addEventListener('mousedown', (e) => e.stopPropagation());
+      slider.addEventListener('click', (e) => e.stopPropagation());
+      szWrap.appendChild(slider);
+      szWrap.appendChild(val);
+      bar.appendChild(szWrap);
       bar.appendChild(sep());
-      bar.appendChild(mkBtn('↩ 撤销', 'tbtn', () => { shapes.pop(); render(); }));
-      bar.appendChild(mkBtn('⟳ 重选', 'tbtn', () => { sel = null; shapes = []; bar.style.display = 'none'; render(); }));
+
+      bar.appendChild(mkBtn('撤销', 'tbtn texty', () => { shapes.pop(); render(); }, 'undo'));
+      bar.appendChild(mkBtn('重选', 'tbtn texty', () => { sel = null; shapes = []; bar.style.display = 'none'; render(); }, 'redo'));
       bar.appendChild(sep());
-      bar.appendChild(mkBtn('复制', 'tbtn act', () => finish('copy')));
-      bar.appendChild(mkBtn('保存', 'tbtn act', () => finish('save')));
-      bar.appendChild(mkBtn('贴图', 'tbtn act', () => finish('pin')));
-      bar.appendChild(mkBtn('OCR', 'tbtn act', () => finish('ocr')));
+      bar.appendChild(mkBtn('复制', 'tbtn act texty', () => finish('copy'), 'copy'));
+      bar.appendChild(mkBtn('保存', 'tbtn act texty', () => finish('save'), 'save'));
+      bar.appendChild(mkBtn('贴图', 'tbtn act texty', () => finish('pin'), 'pin'));
+      bar.appendChild(mkBtn('OCR', 'tbtn act texty', () => finish('ocr'), 'ocr'));
       bar.style.display = 'flex';
-      // 工具条位置：选区下方优先，空间不足放上方/选区内
-      requestAnimationFrame(() => {
-        const bw = bar.offsetWidth, bh = bar.offsetHeight;
-        let x = sel.x + sel.w - bw, y = sel.y + sel.h + 10;
-        if (y + bh > window.innerHeight) y = sel.y - bh - 10;
-        if (y < 0) y = sel.y + 10;
-        x = Math.max(8, Math.min(x, window.innerWidth - bw - 8));
-        bar.style.left = x + 'px'; bar.style.top = y + 'px';
-      });
+      syncBar();
+      requestAnimationFrame(placeBar);
     }
-    function mkBtn(t, cls, fn) { const b = document.createElement('button'); b.className = cls; b.textContent = t; b.onclick = fn; return b; }
+
+    /* 【syncBar：只同步状态，不重建 DOM】
+     * 原来每次点颜色/粗细都调 showBar() 整条重建。三个直接后果：
+     *   ① 滑杆拖到一半被重建 → 拖拽中断、值跳回；
+     *   ② 重建后元素是新对象，正在悬停的那个按钮"闪一下"；
+     *   ③ 每次都重新算布局，颜色多起来后有明显卡顿。
+     * 现在 DOM 只建一次，状态变化只改 class / 属性。 */
+    function syncBar() {
+      const btns = [...bar.querySelectorAll('.tbtn')];
+      TOOLS.forEach(([id], i) => {
+        if (btns[i]) btns[i].classList.toggle('on', tool === id);
+      });
+      for (const s of bar.querySelectorAll('.sw')) {
+        if (s.classList.contains('sw-custom')) {
+          s.classList.toggle('on', COLORS.indexOf(color) === -1);
+          if (COLORS.indexOf(color) === -1) s.style.background = color;
+        } else {
+          s.classList.toggle('on', s.dataset.color === color);
+        }
+      }
+      const picker = bar.querySelector('#colorPicker');
+      if (picker && COLORS.indexOf(color) === -1) picker.value = color;
+      const slider = bar.querySelector('#sizeSlider');
+      if (slider && Number(slider.value) !== size) slider.value = String(size);
+      /* 初始也要把已填充轨道比例算出来，否则重建后滑杆右侧是空轨道 */
+      if (slider) {
+        const fill = ((size - SIZE_MIN) / (SIZE_MAX - SIZE_MIN)) * 100;
+        slider.style.setProperty('--fill', fill.toFixed(1) + '%');
+      }
+      const num = bar.querySelector('#sizeNum');
+      if (num) {
+        num.textContent = String(size);
+        /* 与 oninput 保持一致：重建后数值的粗细也要跟上当前线宽 */
+        num.style.fontWeight = String(300 + Math.min(9, size) * 70);
+      }
+    }
+
+    /* 【工具条定位：独立成函数，滑杆拖动/颜色切换时也能重新贴边】
+     * 原来这段逻辑内联在 showBar 的 requestAnimationFrame 里，
+     * 只有"重建工具条"时才会重新定位 —— 而滑杆改变宽度后工具条变宽，
+     * 会超出屏幕右缘（用户看不到右边的按钮）。 */
+    function placeBar() {
+      if (!sel || bar.style.display === 'none') return;
+      const bw = bar.offsetWidth, bh = bar.offsetHeight;
+      let x = sel.x + sel.w - bw, y = sel.y + sel.h + 10;
+      if (y + bh > window.innerHeight) y = sel.y - bh - 10;
+      if (y < 0) y = sel.y + 10;
+      x = Math.max(8, Math.min(x, window.innerWidth - bw - 8));
+      bar.style.left = x + 'px'; bar.style.top = y + 'px';
+    }
+    /* 【mkBtn 支持前置图标】
+     * 原来只用 textContent，图标按钮与文字按钮无法混排。
+     * 现在 iconName 可选：给了就先插 SVG 再插文字，两者都用同一套
+     * .icon 尺寸与 currentColor，选中/悬停时颜色一起变。 */
+    function mkBtn(t, cls, fn, iconName) {
+      const b = document.createElement('button');
+      b.className = cls;
+      b.innerHTML = (iconName ? svgIcon(iconName) : '') + '<span>' + t + '</span>';
+      b.title = t;
+      b.setAttribute('aria-label', t);
+      b.onclick = fn;
+      return b;
+    }
     function sep() { const s = document.createElement('div'); s.className = 'sep'; return s; }
 
     /* ---------- 文字输入 ---------- */
@@ -289,8 +532,35 @@
       };
       textInput.onkeydown = (ev) => {
         ev.stopPropagation();
-        if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); commit(); }
-        if (ev.key === 'Escape') { textInput.value = ''; commit(); }
+        /* 【输入法组词中，回车/退格都归输入法，不能当提交/编辑处理】
+         *
+         * 中文用户打「你好」的实际顺序是：
+         *   敲 n i h a o → 输入框里是拼音占位 → 按空格/回车选候选词
+         *   → 此时才真正落汉字 → 再按一次回车才表示「写完了」。
+         *
+         * 选候选词那一次回车，浏览器给出的 KeyboardEvent 带 isComposing=true
+         * （或 keyCode 229）。原实现只判 `ev.key === 'Enter'`，于是：
+         *   · 用户打「ni'hao」第一次回车选词 → 直接把拼音 "nihao" 当成正文提交，
+         *     输入框消失，汉字根本没机会进输入框 —— 中文输入法用户看到的就是
+         *     「点了 T 什么都打不出来」或「打出来是拼音」。
+         *   · 同样的道理，组词途中按 Esc 想取消候选词，会连整个输入一起取消。
+         *
+         * 所以组词期间直接放行给输入法（只 stopPropagation 防止触发全局快捷键，
+         * 不做任何业务处理）。 */
+        if (ev.isComposing || ev.keyCode === 229) return;
+        /* Shift+Enter 换行：多行文字标注本来就是支持的（见 drawShape 里的
+         * split('\n')），但输入框是 <input> 不是 textarea，所以这里把
+         * Shift+Enter 转成一个换行符插到光标处，让多行标注真的可用。 */
+        if (ev.key === 'Enter' && ev.shiftKey) {
+          ev.preventDefault();
+          const st = textInput.selectionStart == null ? textInput.value.length : textInput.selectionStart;
+          const en = textInput.selectionEnd == null ? st : textInput.selectionEnd;
+          textInput.value = textInput.value.slice(0, st) + '\n' + textInput.value.slice(en);
+          try { textInput.setSelectionRange(st + 1, st + 1); } catch (e) {}
+          return;
+        }
+        if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+        if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); textInput.value = ''; commit(); }
       };
       textInput.addEventListener('blur', commit);
     }
