@@ -1,8 +1,8 @@
 {
   "_comment": "断言总数基线。由 scripts/check-assertion-count.js --write 生成，不要手改。",
   "_why": "防止「某个测试文件里悄悄删掉一堆用例，剩下的仍然全绿」。只允许往上走。\n注意：本基线是在**这台机器**上拍的。换一台机器（缺第二块盘、无交互桌面）时，依赖环境的脚本会走 SKIP 分支、PASS 数偏少 —— 那种情况由 skipped 判定放行并打印，不判红。",
-  "generatedAt": "2026-11-11T15:34:36.464Z",
-  "total": 2089,
+  "generatedAt": "2026-11-11T16:46:59.123Z",
+  "total": 2098,
   "files": {
     "scripts/test-acl-repair.js": 51,
     "scripts/test-archive-guard.js": 30,
@@ -20,6 +20,7 @@
     "scripts/test-crossdrive.js": 3,
     "scripts/test-crypt-guard.js": 6,
     "scripts/test-crypto-file.js": 3,
+    "scripts/test-css-vars.js": 2,
     "scripts/test-csv-proto.js": 14,
     "scripts/test-destructive.js": 55,
     "scripts/test-destructive2.js": 27,
@@ -33,6 +34,7 @@
     "scripts/test-download-entity.js": 6,
     "scripts/test-download-finish.js": 7,
     "scripts/test-download.js": 2,
+    "scripts/test-drop-keepalive.js": 7,
     "scripts/test-drop-route.js": 8,
     "scripts/test-dshow-timeout.js": 7,
     "scripts/test-dz-el.js": 20,
