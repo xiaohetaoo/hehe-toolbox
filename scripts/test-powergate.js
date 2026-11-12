@@ -429,6 +429,84 @@ t('28b 横杠写法与斜杠完全等价（shutdown -a 放行、-s 拦下）', (
     '「取消 & 真关机」必须整体拦截');
 });
 
+t('31 if / 花括号块 / iex 里的命令不许绕过门禁（F1）', () => {
+  /* 锁的是：判定只认「段首首词」——`if` 的条件之后、PS 的 `{ }` 块内、
+   * `iex` 的字符串参数里的命令全部不在视线内。
+   * 实测（无门禁开关时）：这 9 条 isPowerCommand 全返回 false，
+   * 而在 cmd / PowerShell 里**真的会关机**。
+   * 与当初 for 循环体漏拦（455 行注释）完全同构，修法也同构。 */
+  const mustDeny = [
+    'if 1==1 shutdown /s',
+    'if exist C:\\Windows shutdown /s /t 0',
+    'if not exist C:\\x shutdown /s',
+    'if %errorlevel%==0 shutdown /s',
+    'cmd /c if 1==1 shutdown /s',
+    'powershell -c "if ($true) { Stop-Computer }"',
+    'powershell -c "& { Stop-Computer }"',
+    'powershell -c "Invoke-Expression Stop-Computer"',
+    "powershell -c \"iex 'Stop-Computer'\"",
+    'powershell -c "foreach ($i in 1..1) { Stop-Computer }"',
+    'powershell -c "while ($true) { Stop-Computer }"',
+    'if 1==1 (shutdown /s)',
+  ];
+  for (const c of mustDeny) {
+    assert.strictEqual(PG.isPowerCommand(c), true, 'if/块/iex 里的关机必须拦截：' + c);
+  }
+
+  /* 【不许为了拦而误伤日常命令】门禁一旦开始误报，用户就会把高危开关
+   * 常开，门禁等于失效 —— 所以放行面必须一起锁住。
+   *
+   * 【注意 if %errorlevel%==0 echo ok 不在这张表里】
+   * 它含未展开的 %变量%，而门禁对「解不出内容的变量」一律 fail-closed
+   * （hasUnknownVar，见 power-gate.js 的说明）。这条行为**在本次修复前
+   * 就已如此**（已用 HEAD 版本对照实测确认），是刻意的保守取舍：
+   * 宁可多问一次，也不能让 `%FOO% shutdown /s` 换成变量名就绕过。
+   * 所以测试里不把它当"日常命令应放行"，否则等于要求实现变成不可靠的宽松。 */
+  const mustAllow = [
+    'if 1==1 echo hi',
+    'if exist C:\\Windows echo found',
+    'if not exist C:\\x echo missing',
+    'powershell -c "if ($true) { Write-Output hi }"',
+    'powershell -c "foreach ($i in 1..3) { Write-Output $i }"',
+    'echo if 1==1 shutdown /s',
+    'type if.txt',
+    /* 纯取消关机在 if 里同样要放行 —— 它是无害的恢复操作 */
+    'if 1==1 shutdown /a',
+  ];
+  for (const c of mustAllow) {
+    assert.strictEqual(PG.isPowerCommand(c), false, '日常命令被误拦：' + c);
+  }
+});
+
+t('32 花括号块与括号组要能嵌套配平', () => {
+  /* 锁的是：extractBraces 只取第一层就停 —— `{ if (x) { Stop-Computer } }`
+   * 这种嵌套块漏判。判据要覆盖嵌套，否则一层壳就绕过。 */
+  assert.strictEqual(PG.isPowerCommand('powershell -c "& { & { Stop-Computer } }"'), true,
+    '嵌套花括号块里的关机必须拦截');
+  /* 锁的是：引号内的花括号被当成语句块 ——
+   * `Write-Output "{ Stop-Computer }"` 只是打印一段字面量，不该拦。 */
+  assert.strictEqual(PG.isPowerCommand('powershell -c "Write-Output \'{Stop-Computer}\'"'), false,
+    '引号内的花括号是字面量，不该拦');
+});
+
+t('33 if 条件剥离不能把整个命令吃掉', () => {
+  /* 锁的是：stripIfCondition 跳过头 —— 把命令名也当条件剥掉后
+   * body 为空，于是 `if … shutdown /s` 变成"无可判定"而被放行。
+   * 这条与 31 互补：31 锁结果，这条锁"剥离后仍有东西可判"。 */
+  const src = read('lib/power-gate.js');
+  /* 锁的是：stripIfCondition 被简化成「按空白切掉前两个词」—— 那样
+   * `if exist C:\Windows shutdown /s` 会剩 "shutdown /s"（碰巧对），
+   * 而 `if 1==1 shutdown /s` 会剩 "shutdown /s"（也对），
+   * 但 `if not exist X shutdown /s` 会剩 "X shutdown /s"（首词是 X，漏拦）。 */
+  /* 锁的是：剥离实现被删 —— 条件之后的内容没人看，F1 回归。 */
+  assert.ok(/function stripIfCondition/.test(src), '缺少 stripIfCondition 实现');
+  /* 锁的是：条件关键字表被删 —— not/exist/errorlevel 不再被跳过。 */
+  const i = src.indexOf('function stripIfCondition');
+  const seg = src.slice(i, i + 2600);
+  assert.ok(/exist\|defined\|errorlevel/.test(seg),
+    'stripIfCondition 必须识别 exist/defined/errorlevel 这类条件关键字');
+});
+
 t('29 长命令判定不再近似 O(n^2)（40000 字符必须快速返回）', () => {
   /* 锁的是：三条壳正则的可选路径前缀在大输入上反复回溯。
    * 实测修复前 40000 字符约 2014ms —— 同步阻塞主进程两秒，
