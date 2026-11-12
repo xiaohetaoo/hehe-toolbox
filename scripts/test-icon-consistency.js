@@ -43,7 +43,7 @@ const EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{26FF}\u{2B00}-\u{2BFF}\u{FE0F}]/u
 /* 存量基线：2026-11-05 实测 35 行；2026-11-07 把「文件占用解锁」里新增的
  * 两处 ⚠ 换成了 SVG 图标（js/icons.js 的 alert），顺手降一条到 34。
  * 只允许往下走。 */
-const BASELINE = 34;
+const BASELINE = 33;
 
 /* 收集全部界面源码（相对路径，供 readSrc 用）。 */
 function collectSources() {
