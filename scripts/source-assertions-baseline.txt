@@ -108,3 +108,4 @@ scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
 scripts/version.js | A=3 | B=0 | build-meta
 scripts/test-css-responsive.js | A=1 | B=0 | exact:读 css/app.css 原文找 .home-cats 的 4 列基准与 @media 覆盖 —— 与 test-css-vars 同理，readSrc 是给 js 的（剥 // 注释），对 CSS 不适用；这里读的是选择器与断点宽度字面量。
+scripts/test-sweep-preview.js | A=1 | B=0 | exact:读 main.js 原文找 sweepPreviewTmp 的函数体与 Promise.all 接线 —— 与 test-assertion-guard 同理，readSrc 只服务 js/ 下应用源码且剥注释语义无关；这里读的是函数名与目录字面量。
