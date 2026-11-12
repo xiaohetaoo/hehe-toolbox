@@ -124,4 +124,67 @@ t('KA8 全局监听的 bind 必须幂等（切语言重建外壳不重复挂）'
   assert.ok(/__clipActionsBound/.test(clip), 'ClipActions.bind 缺少幂等标记 __clipActionsBound');
 });
 
+t('KA9 全局拖拽的上限提示不能用硬编码 0（F4）', () => {
+  const drop = readSrc('js/drop-open.js');
+  /* 锁的是：drop-open 把 expandNotice 的上限写成 (expanded, 0, 0) ——
+   * 用户拖超大文件夹触顶时看到「已达到 0 个文件的上限」，
+   * 而「去设置调大上限」的指引对着 0 无从下手。
+   * 同一功能两条路径：工具页内 dropzone 传的是真实上限（正确），
+   * 全局拖拽传 0（错误）。审查报告 F4 实测确认。 */
+  /* 锁的是：又把上限硬编码成 0 —— 触顶提示显示「0 个文件的上限」。 */
+  assert.ok(!/expandNotice\(\s*expanded\s*,\s*0\s*,\s*0\s*\)/.test(drop),
+    'drop-open.js 仍把上限硬编码成 0 —— 触顶提示会显示「0 个文件的上限」');
+
+  const ui = readSrc('js/ui.js');
+  /* 锁的是：expandNotice 又退回「只能用调用方给的上限」——
+   * 那样两个调用点必须各自记得传值，漏传就出现 0。
+   * 修复的关键是缺省自取，这条锁住那个设计。 */
+  const i = ui.indexOf('function expandNotice');
+  assert.ok(i >= 0, '找不到 expandNotice');
+  const seg = ui.slice(i, i + 900);
+  /* 锁的是：缺省自取的判据被删（0 不再被当作「未提供」）。 */
+  assert.ok(/maxFiles\s*>\s*0\s*\)\s*\?\s*maxFiles\s*:\s*expandMaxFiles\(\)/.test(seg),
+    'expandNotice 应对「非正数」的 maxFiles 回退到 expandMaxFiles()');
+  assert.ok(/maxDepth\s*>\s*0\s*\)\s*\?\s*maxDepth\s*:\s*expandMaxDepth\(\)/.test(seg),
+    'expandNotice 应对「非正数」的 maxDepth 回退到 expandMaxDepth()');
+});
+
+t('KA10 takePending / takePendingClip 必须按 toolId 过滤（F6）', () => {
+  const drop = readSrc('js/drop-open.js');
+  const clip = readSrc('js/clip-actions.js');
+
+  /* 锁的是：取用侧不比对 toolId —— 注释承诺「只有发起方是它时才返回」，
+   * 实现却从未读过这个参数。后果：拖文件给 A，A 还没消费、用户先切到 B，
+   * B 的 filePicker 把本该属于 A 的文件取走了（审查报告 F6）。
+   * 这一条只能用源码断言：真机验证需要控制「A 未消费时切到 B」的时序，
+   * 而 picker 的消费挂在 setTimeout(0) 上，靠 E2E 打这个时间窗不稳定；
+   * 已在审查轮用一次真机探针（11 项）确认过行为，这里锁结构防回归。 */
+  const di = drop.indexOf('function takePending');
+  assert.ok(di >= 0, '找不到 takePending');
+  const dseg = drop.slice(di, di + 1400);
+  /* 锁的是：拖拽取用侧不比对 toolId —— 文件会被别的工具偷走。 */
+  assert.ok(/p\.toolId\s*!==\s*toolId/.test(dseg),
+    'takePending 必须比对 p.toolId 与入参 toolId');
+
+  const ci = clip.indexOf('function takePendingClip');
+  assert.ok(ci >= 0, '找不到 takePendingClip');
+  const cseg = clip.slice(ci, ci + 1200);
+  /* 锁的是：剪贴板取用侧不比对 toolId —— 内容会被别的工具偷走。 */
+  assert.ok(/p\.toolId\s*!==\s*toolId/.test(cseg),
+    'takePendingClip 必须比对 p.toolId 与入参 toolId');
+
+  /* 锁的是：入队时不写 toolId —— 那样取用侧的比对永远拿不到期望值，
+   * 过滤形同虚设（所有入队都是"无 toolId"→ 放行给任何工具）。 */
+  assert.ok(/window\.__pendingDrop\s*=\s*\{[\s\S]{0,200}?toolId,/.test(drop),
+    'openWithTool 入队时必须写入 toolId');
+  /* 锁的是：面板入队时不写 toolId —— 过滤永远拿不到期望值。 */
+  assert.ok(/window\.__pendingClip\s*=\s*\{[\s\S]{0,220}?toolId:\s*act\.tool/.test(clip),
+    '剪贴板面板入队时必须写入 toolId');
+
+  /* 锁的是：不匹配时把队列清空 —— 用户切到 B 之后切回 A 就拿不到了，
+   * 等于用"丢数据"换取"不串页"。正确做法是只返回 null、保留队列。 */
+  assert.ok(/p\.toolId && toolId && p\.toolId !== toolId\) return null;/.test(cseg),
+    'takePendingClip 不匹配时应只返回 null、不清空队列');
+});
+
 done();

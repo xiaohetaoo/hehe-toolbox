@@ -119,6 +119,8 @@
        * 与拖拽共用同一个交接队列（window.__pendingDrop 的兄弟）：
        * 工具页不知道面板从哪来，它只关心"有没有待处理内容"。 */
       window.__pendingClip = {
+        /* 【记下目标工具】取用侧 takePendingClip 要按它过滤，见那边说明。 */
+        toolId: act.tool,
         kind: analysis.kind,
         text: clip.isImage ? '' : String(clip.text || ''),
         dataUrl: clip.dataUrl || (analysis.kind === 'base64image' ? normalizeDataUrl(clip.text) : ''),
@@ -275,11 +277,19 @@
     }, true);
   }
 
-  /** 工具页取待处理内容（与拖拽的 takePending 同构）。 */
+  /** 工具页取待处理内容（与拖拽的 takePending 同构）。
+   *
+   * 【必须按 toolId 过滤】原实现从头到尾没读过 toolId，
+   * 注释却承诺「只有发起方是它时才返回」。后果：面板把内容交给工具 A，
+   * A 还没来得及消费、用户先切到工具 B，B 就把内容取走了 ——
+   * 与拖拽队列那边同一个缺陷（审查报告 F6）。
+   * 不匹配时只返回 null、不清空队列，用户切回 A 仍能拿到。 */
   function takePendingClip(toolId, maxAge) {
     const p = window.__pendingClip;
     if (!p) return null;
     if (Date.now() - (p.at || 0) > (maxAge || 30000)) { window.__pendingClip = null; return null; }
+    /* 入队时没有 toolId 的（早期形态/外部写入）保持"谁先看到谁用"。 */
+    if (p.toolId && toolId && p.toolId !== toolId) return null;
     window.__pendingClip = null;
     return p;
   }
