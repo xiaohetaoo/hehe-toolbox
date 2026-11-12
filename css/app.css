@@ -759,6 +759,13 @@ body {
 .home-browse.hidden { display: none; }
 .home-recent { margin-bottom: 14px; }
 .home-cats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+/* 【响应式断点】窗口窄于 900px 时 4 列网格会溢出（真机 800x600 实测
+ * .home-cat 右缘超出视口 6 处）—— 分类名与计数被截断在窗外。
+ * 桌面工具箱最小可用宽度约 720px，两列在 640px 视口仍放得下；
+ * 1024px 以上维持 4 列（大屏排满更好看）。 */
+@media (max-width: 1023px) {
+  .home-cats { grid-template-columns: repeat(2, 1fr); }
+}
 .home-cat {
   display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 8px;
   border: 1px solid transparent; cursor: pointer; color: var(--text-2); font-size: 13px;
