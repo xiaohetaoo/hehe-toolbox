@@ -942,6 +942,11 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .dropzone.compact .dz-icon { margin-bottom: 0; }
 .dropzone.compact .dz-main { font-size: 13px; }
 .dropzone.compact .dz-sub { display: none; }
+/* 处理进行中（目标体积压缩等）：拖拽区已被 picker.setLocked 功能性锁定，
+   这里补上对应的视觉反馈 —— 变淡 + 禁用光标，让用户看出"此刻不能拖/点"。
+   此前 JS  toggled 'busy' 类却没有样式，锁定态在视觉上毫无表示。 */
+.dropzone.busy { opacity: 0.55; cursor: not-allowed; }
+.dropzone.busy:hover { background: var(--card-bg); }
 
 /* 待处理文件列表 */
 .file-list { margin-top: 10px; }

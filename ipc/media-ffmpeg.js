@@ -51,6 +51,8 @@ const CH = require('../lib/channels').CHANNELS;   // IPC 通道名唯一来源
 /* 硬件编码：探测本机可用的编码器并把 crf 换算成 cq。
  * 全部逻辑在 lib/ 里（纯函数，可单测），这里只负责「探测一次 + 缓存 + 拼参数」。 */
 const hwEncode = require('../lib/hw-encode');
+/* concat 清单行的转义（单引号路径）：纯函数，与测试共享同一份。 */
+const { concatFileLine } = require('../lib/fs-ops');
 
 /**
  * @param {object} ctx  见 ipc/ctx.js（win / jobs / isWin / send / nextJobSeq）
@@ -1388,7 +1390,10 @@ handle(CH.REC.STOP, (e, makeGif) => withRecordingOperation(e, async () => {
       } else {
         // 分段无损拼接（相同编码参数）
         const listFile = path.join(recSegDir, 'list.txt');
-        await fsp.writeFile(listFile, recSegs.map(s => `file '${s.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+        /* 【单引号路径必须转义】分段目录在 %TEMP% 下含用户名，O'Brien 这类
+         * 用户名会让未转义的清单在引号处提前闭合 → 拼接失败降级只留第一段。
+         * 转义形态经真跑 ffmpeg 实测挑选，见 lib/fs-ops.js concatFileLine。 */
+        await fsp.writeFile(listFile, recSegs.map(concatFileLine).join('\n'), 'utf8');
         const ffmpeg = findFfmpeg();
         const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', recOut], { timeout: 120000 });
         if (r.code !== 0) throw new Error('分段拼接失败：' + (r.stderr || '').split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));

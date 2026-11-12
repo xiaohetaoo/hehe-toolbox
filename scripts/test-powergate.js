@@ -648,6 +648,55 @@ t('PG-ENC-7 这次修的两种形态都要在源码注释里留下实测依据',
     '缺少「哪些近似写法不执行」的记录');
 });
 
+t('34 结构套结构不许绕过（第二轮审查：递归可执行位判定）', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 锁的是：v0.8.4 的平铺判定只剥一层 —— if 里套 if、for 体里套 if、
+   * 括号组里套 if、花括号嵌套（switch）、if 的 /i 开关与带空格引号比较，
+   * 每多一层嵌套就绕一次。以下全部经真机执行验证（无害标记命令），
+   * 在 cmd / PowerShell 里**真的会执行**条件后的命令。 */
+  const mustDeny = [
+    'if 1==1 if 2==2 shutdown /s',
+    'for %i in (x) do if 1==1 shutdown /s',
+    '(if 1==1 shutdown /s)',
+    'powershell -c "switch (1) { 1 { Stop-Computer } }"',
+    'if /i "a"=="a" shutdown /s',
+    'if "a b"=="a b" shutdown /s',
+    'if exist "C:\\Program Files" shutdown /s',
+    /* iex 的内容可以拼出来 / 从文件读 —— 段内看不到词根也必须拦 */
+    "powershell -c \"iex ('Stop-' + 'Computer')\"",
+    'powershell -c "iex (Get-Content c:\\x.ps1)"',
+  ];
+  for (const c of mustDeny) {
+    assert.strictEqual(PG.isPowerCommand(c), true, '嵌套结构里的关机必须拦截：' + c);
+  }
+  /* 放行面一起锁住：嵌套结构里的日常命令不能误伤 */
+  const mustAllow = [
+    'if 1==1 if 2==2 echo hi',
+    'for %i in (x) do if 1==1 echo hi',
+    '(if 1==1 echo hi)',
+    'powershell -c "switch (1) { 1 { Write-Output hi } }"',
+    'if /i "a"=="a" echo hi',
+    'if "a b"=="a b" echo hi',
+    'if 1==1 if 2==2 shutdown /a',
+  ];
+  for (const c of mustAllow) {
+    assert.strictEqual(PG.isPowerCommand(c), false, '嵌套结构里的日常命令被误拦：' + c);
+  }
+});
+
+t('35 iex 出现即拦（字符串即代码，与 -EncodedCommand 同取舍）', () => {
+  const PG = require(path.join(ROOT, 'lib', 'power-gate'));
+  /* 锁的是：iex 判定被改回「段内必须可见危险词根」——
+   * `iex (Get-Content x.ps1)` 与拼接串里没有词根，但内容不可静态判定，
+   * 必须与 -EncodedCommand 一样 fail-closed。 */
+  assert.strictEqual(PG.isPowerCommand('powershell -c "iex $script"'), true,
+    'iex 变量内容不可判定，必须拦');
+  assert.strictEqual(PG.isPowerCommand('powershell -c "Invoke-Expression (Get-Content a.ps1)"'), true,
+    'Invoke-Expression 读文件内容不可判定，必须拦');
+  /* 文本里提到 iex 不算（allTextSegments 先放行） */
+  assert.strictEqual(PG.isPowerCommand('echo iex something'), false, 'echo iex 被误拦');
+});
+
 /* ==================== 27. expr-eval 取余 vs 百分比 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
