@@ -11,23 +11,20 @@ async function serve(responder,run) {
   try {await run({root,requests,url:`http://127.0.0.1:${server.address().port}/fixture`});}
   finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));rmDir(root);}
 }
-/* 【为什么不能 res.write('AAAA') 后立刻定时 destroy】
- * write 的 4 字节只是进了 Node 的发送缓冲，destroy 在 50ms 后才执行 ——
- * 正常时 4 字节早已送达，但全量跑 185 个脚本时机器负载高，客户端可能
- * 只读到 3 字节连接就断了。于是断点保存为 3，第二个请求发
- * Range: bytes=3-，与断言 bytes=4- 不符，用例假失败。
- * 修法：用 res.flush() 确认 4 字节真的离开缓冲后再 destroy，
- * 并把兜底延时放大到 300ms（flush 回调本身就是确定性信号）。 */
+/* 【为什么不能 res.write('AAAA') 后定时 destroy —— 而要用 res.end('AAAA')】
+ * write 的 4 字节只是进了 Node 的发送缓冲，destroy 在延时后执行 ——
+ * 全量跑 185 个脚本时机器负载高，客户端可能只读到 3 字节连接就断了
+ * （destroy 发 RST 会丢弃接收缓冲里未取走的数据）。于是断点保存为 3，
+ * 第二个请求发 Range: bytes=3-，与断言 bytes=4- 不符，用例假失败。
+ * 已实测：flush 回调 + 兜底延时在 --write 的高负载下仍偶发。
+ *
+ * 确定性写法是 res.end('AAAA')：声明 Content-Length: 8 却只发 4 字节，
+ * end 触发正常 FIN —— 客户端**必然**先收满已发送的 4 字节，然后在
+ * 期待剩余 4 字节时收到截断（fetch 抛 "terminated"）。
+ * 没有任何时序依赖：无论机器多忙，"已收到 = 已发送" 恒成立。 */
 function partial(res,etag) {
   res.writeHead(200,{'Content-Length':8,...(etag?{ETag:etag}:{})});
-  res.write('AAAA', () => {
-    if (typeof res.flush === 'function') {
-      res.flush(() => setTimeout(() => res.destroy(), 100));
-    } else {
-      /* 没有 compression 中间件时 flush 可能不存在：给足缓冲排空时间 */
-      setTimeout(() => res.destroy(), 300);
-    }
-  });
+  res.end('AAAA');
 }
 const get=(url,out,ctrl=new AbortController())=>download(url,out,'test',ctrl,'fixture',{pause:async()=>{}});
 t('相同 ETag 才续传，并携带 If-Range',()=>serve((req,res,n)=>{
