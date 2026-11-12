@@ -65,4 +65,60 @@ t('CSS2 辅助窗口（snip/pin/ruler）里的 var() 引用也必须有定义', 
   }
 });
 
+t('CSS3 js/ 内联样式里的 var() 引用也必须有定义', () => {
+  /* 【这条补的是原来的测试盲区】
+   * CSS1/CSS2 只扫 css/app.css 与三个辅助窗口 html，**不扫 js/ 里的内联样式**。
+   * 于是 `style: { background: 'var(--fill-1)' }` 这种写在工具页里的引用
+   * 完全测不到 —— 审查报告 F3 就是这类：全项目没有 --fill-1 的定义，
+   * 两处背景在计算期失效变透明，控制台一个字都不报。
+   *
+   * 【只扫 js/ 里的字符串字面量】不做完整 JS 解析：目标是"找出代码里
+   * 出现的 var(--x) 文本"。剥掉注释与字符串中的普通文本没有必要 ——
+   * 注释里若提到 var(--x) 也是有效的设计说明，误报只会促使人补定义
+   * 或改用反引号写法，不会掩盖真问题。 */
+  const appCss = fs.readFileSync(path.join(ROOT, 'css', 'app.css'), 'utf8');
+  const defined = new Set([...appCss.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+  /* 辅助窗口 html 也自带一批变量（--aux-*） */
+  for (const f of ['snip.html', 'pin.html', 'ruler.html']) {
+    const html = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    for (const m of html.matchAll(/(--[a-z0-9-]+)\s*:/g)) defined.add(m[1]);
+  }
+
+  const files = [];
+  (function walk(dir) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (e.name.endsWith('.js')) files.push(p);
+    }
+  })(path.join(ROOT, 'js'));
+
+  assert.ok(files.length >= 50, 'js 文件只有 ' + files.length + ' 个，扫描可能失效');
+
+  const bad = [];
+  for (const p of files) {
+    const raw = fs.readFileSync(p, 'utf8');
+    const rel = path.relative(ROOT, p).split(path.sep).join('/');
+    /* 【先剥注释再扫】修复这类缺陷时，注释里常会写「原来用的是
+     * var(--fill-1)」作为说明 —— 那段不是代码，扫进来只会逼人
+     * 把注释改得含糊。剥掉注释后只看真正会进入 style 的引用。
+     * 用逐行剥块注释的方式（避免正则跨行误吞字符串）。 */
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ''));
+    for (const m of src.matchAll(/var\((--[a-z0-9-]+)\s*([,)])/g)) {
+      const name = m[1];
+      const hasFallback = m[2] === ',';
+      if (hasFallback) continue;         // var(--x, default) 是合法动态用法
+      if (!defined.has(name)) {
+        const line = src.slice(0, m.index).split('\n').length;
+        bad.push(rel + ':' + line + ' var(' + name + ')');
+      }
+    }
+  }
+  /* 锁的是：内联样式引用不存在的 CSS 变量 —— 浏览器静默回退，
+   * 属性整条失效、控制台零报错，只能靠视觉发现「背景怎么没了」。
+   * F3 就是 --fill-1 在 js 里被引用而未定义。 */
+  assert.deepStrictEqual(bad, [],
+    'js/ 里引用了未定义的 CSS 变量（背景/边框会静默失效）：\n  ' + bad.join('\n  '));
+});
+
 done();

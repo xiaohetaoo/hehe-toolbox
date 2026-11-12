@@ -112,7 +112,7 @@
         const bestBox = h('div', {
           class: 'mono',
           style: {
-            padding: '10px', background: 'var(--fill-1)', borderRadius: '6px',
+            padding: '10px', background: 'var(--bg-2)', borderRadius: '6px',
             whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '220px',
             overflowY: 'auto', userSelect: 'text', fontSize: '13px',
           },

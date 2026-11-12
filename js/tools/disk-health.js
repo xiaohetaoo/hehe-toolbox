@@ -128,7 +128,11 @@
             const vBox = div('', {
               style: {
                 marginTop: '8px', padding: '8px 10px', borderRadius: '6px',
-                background: 'color-mix(in srgb, var(--fill-1) 100%, transparent)',
+                /* 【用 --bg-2 而不是那个不存在的 --fill 系列变量】
+                 * 原写 fill-1，全项目没有这个定义，且无回退 ——
+                 * 整条 background 在计算期失效，结论框背景透明，
+                 * 与周边卡片视觉不一致（而且控制台零报错）。详见 test-css-vars。 */
+                background: 'var(--bg-2)',
                 borderLeft: '3px solid ' + ({
                   ok: 'var(--success, #00b42a)', warn: 'var(--warning)', bad: 'var(--danger, #f53f3f)',
                   unknown: 'var(--text-3)',

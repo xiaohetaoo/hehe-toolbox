@@ -157,7 +157,12 @@
     }
     const real = (expanded && expanded.files && expanded.files.length) ? expanded.files : paths;
     if (expanded && expanded.dirs) {
-      const notice = ui.expandNotice ? ui.expandNotice(expanded, 0, 0) : '';
+      /* 【不传上限，让 expandNotice 自己读】
+       * 原来这里写 (expanded, 0, 0) —— 把上限硬编码成 0，
+       * 用户拖超大文件夹触顶时看到「已达到 **0** 个文件的上限」。
+       * expandNotice 现在缺省自取 Prefs 里的真实值（与工具页内 dropzone
+       * 走同一份配置），所以这里不再需要知道上限是多少。 */
+      const notice = ui.expandNotice ? ui.expandNotice(expanded) : '';
       if (notice) ui.toast(notice, 'warn', 5000);
       else ui.toast('已从 ' + expanded.dirs + ' 个文件夹展开 ' + real.length + ' 个文件', 'info', 2500);
     }
@@ -195,7 +200,13 @@
    * 已经打开的标签页会被重新 render（openTool 走 showView），
    * 所以不需要额外处理"这个工具已经开着"的情况。 */
   function openWithTool(toolId, paths, routeInfo) {
-    window.__pendingDrop = { paths: paths.slice(), exts: (routeInfo && routeInfo.exts) || [], at: Date.now() };
+    /* 【入队时记下目标工具】取用侧要按它过滤，见 takePending 的说明。 */
+    window.__pendingDrop = {
+      toolId,
+      paths: paths.slice(),
+      exts: (routeInfo && routeInfo.exts) || [],
+      at: Date.now(),
+    };
     try {
       window.App.openTool(toolId);
     } catch (e) {
@@ -320,11 +331,32 @@
    *   用户打开同一个工具时突然冒出上次拖的文件）
    * @returns {{paths:string[], exts:string[]}|null}
    */
+  /* 取出待处理的拖拽文件。
+   *
+   * 【必须按 toolId 过滤，否则"避免串页"只是注释里的承诺】
+   * 原来的实现从头到尾没读过 toolId —— 任何工具调用都会取走全局队，
+   * 注释却写着「只有发起方是它时才返回」。于是出现这种串页：
+   * 拖文件给工具 A，A 的 picker 还没消费，用户先切到工具 B，
+   * B 的 filePicker 就把本该属于 A 的文件取走了。
+   *
+   * 【为什么"取完即清空 + 30 秒过期"不足以替代过滤】
+   * 那两条只解决"陈旧队列被反复读取"和"半小时前的拖拽突然生效"，
+   * 解决不了"另一个工具先到"。两个工具在同一个 tick 里争抢时，
+   * 后缀条件完全不起作用。所以按 id 过滤是必要的，不是冗余。
+   *
+   * 【队列不因不匹配而清空】只返回 null、保留队列 ——
+   * 用户切到 B 之后很可能再切回 A，A 的文件还在等着。 */
   function takePending(toolId, maxAge) {
     const p = window.__pendingDrop;
     if (!p) return null;
     const age = Date.now() - (p.at || 0);
+    /* 过期就整条丢掉（与过滤无关：老队列对谁都没用） */
     if (age > (maxAge || 30000)) { window.__pendingDrop = null; return null; }
+    /* 【只有入队时有 toolId 才过滤】面板送图片的路径（app.js 里
+     * window.__pendingDrop = { paths: [], exts: [], dataUrl, at })
+     * 不带 toolId —— 那种是"谁先看到谁用"，保持原行为。
+     * 有 toolId 时严格比对，不匹配就不取、也不清空。 */
+    if (p.toolId && toolId && p.toolId !== toolId) return null;
     window.__pendingDrop = null;
     return { paths: p.paths || [], exts: p.exts || [] };
   }

@@ -558,13 +558,23 @@
    * 用"是否触顶"这类布尔量 + 已知的部分计数，已经足够让用户知道
    * "结果不完整、该去调大上限"。
    */
+  /* 【上限参数缺省时自己取，不让调用方猜】
+   * 原来签名是 expandNotice(r, maxFiles, maxDepth)，两个调用点各传各的：
+   *   · dropzone（工具页内）传 expandMaxFiles()/expandMaxDepth() —— 正确；
+   *   · drop-open.js（全局拖拽）传的是硬编码的 0, 0 ——
+   *     于是用户拖超大文件夹触顶时看到「已达到 **0** 个文件的上限」，
+   *     而且「去设置调大上限」的指引对着 0 无从下手。
+   * 同一个功能两条路径、一条文案对一条显示 0，根因是「上限由调用方提供」
+   * 这个设计本身容易漏。改成缺省自取后，调用方传不传都正确。 */
   function expandNotice(r, maxFiles, maxDepth) {
+    const capFiles = (typeof maxFiles === 'number' && maxFiles > 0) ? maxFiles : expandMaxFiles();
+    const capDepth = (typeof maxDepth === 'number' && maxDepth > 0) ? maxDepth : expandMaxDepth();
     const parts = [];
     if (r && r.hitFileCap) {
-      parts.push(`已达到 ${maxFiles} 个文件的上限，剩余文件未加入`);
+      parts.push(`已达到 ${capFiles} 个文件的上限，剩余文件未加入`);
     }
     if (r && r.hitDepth) {
-      parts.push(`目录层级超过 ${maxDepth} 层，更深的内容未加入`);
+      parts.push(`目录层级超过 ${capDepth} 层，更深的内容未加入`);
     }
     if (!parts.length) return '';
     return parts.join('；') + '。可在「设置 → 工具默认值」里调大上限。';
