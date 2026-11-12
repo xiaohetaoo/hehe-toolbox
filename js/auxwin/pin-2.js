@@ -4,8 +4,6 @@
     const img = document.getElementById('pic');
     const hint = document.getElementById('hint');
     img.src = 'file:///' + encodeURI(src.replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
-    /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-    let scale = 1;
     img.onload = () => { hint.classList.add('show'); setTimeout(() => hint.classList.remove('show'), 2600); };
 
     // 手动拖动（与标尺一致：app-region 会吞事件，改走 IPC）

@@ -15,8 +15,6 @@
     render(page) {
       const preview = h('div', { style: { width: '100%', height: '80px', borderRadius: '8px', border: '1px solid var(--border)' } });
       const inputs = {};
-      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-      const rows = {};
       let updating = false;
       function hexToRgb(hex) {
         hex = hex.replace('#', '');
