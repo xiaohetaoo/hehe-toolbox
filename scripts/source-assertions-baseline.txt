@@ -34,7 +34,7 @@ scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
 scripts/test-crypt-guard.js | A=1 | B=0 | exact:那 1 处 fs.readFileSync 读的是用例自己在 %TEMP% 里刚写的 a.txt / b.txt（CS5 用来实测「rename 到已存在目标会静默覆盖」这个前提），不是项目源码；换成 readSrc 无从谈起
 scripts/test-crypto-file.js | A=4 | B=0 | exact:迁移自 round13 的 1a/1b/1c。加密格式的边界只能用构造出的字节序列验证；A=4 是读取测试自己生成的临时密文文件（夹具，不是项目源码）
 scripts/test-csp-wasm.js | A=3 | B=0 | exact:三处裸读都是为"原样检查文本"服务的 —— index.html 根本不是 JS，stripComments 对它没有意义（要验的是 CSP 属性原文）；两个 OCR 工具那两处只判"有没有调用 OcrGuard.withTimeout/failReason"，剥不剥注释结果相同（注释里也不该出现该调用）。真机 CSP 行为由本文件的 E1/E2 用 Electron 实测覆盖
-scripts/test-css-vars.js | A=3 | B=0 | exact:扫 css/app.css 与 snip/pin/ruler.html 的文本找 CSS 变量定义与 var() 引用。必须读原始文本：readSrc 是给 js 用的（按 js 注释规则剥 // 与 /* */），对 CSS/HTML 不适用——CSS 的注释是 /* */，而这里的 var() 引用横跨选择器体与值，剥注释会同时吞掉合法内容。读的是变量名字面量，不做形态断言。
+scripts/test-css-vars.js | A=6 | B=0 | exact:A=3（CSS1/CSS2）扫 css/app.css 与 snip/pin/ruler.html 找变量定义与 var() 引用，必须读原始文本 —— readSrc 是给 js 用的（剥 // 与 /* */），对 CSS/HTML 不适用。A=6 多的 3 处来自 CSS3：扫 js/ 内联样式里的 var() 引用（补 F3 的测试盲区，--fill-1 就是只在 js 里被引用而未定义），其中 1 处读 js 文件后自己剥注释、1 处读 app.css 取变量定义、1 处读三个辅助窗口 html 取 --aux-* 定义。读的都是字面量，不做形态断言。
 scripts/test-danger-inline-enable.js | A=2 | B=0 | e2e-fixture
 scripts/test-destructive.js | A=1 | B=11 | legacy-source-assertion
 scripts/test-destructive2.js | A=0 | B=64 | legacy-source-assertion
@@ -72,7 +72,7 @@ scripts/test-modal-close.js | A=1 | B=0 | exact:迁移自 round15 的 10a/10b。
 scripts/test-mojibake.js | A=3 | B=0 | exact:第 1 处读 lib/mojibake 源码（legacy-read 同理）；另两处读 scripts/fixtures/mojibake-golden.json 与 mojibake-corpus.json —— 那是测试夹具（预存的外部编码器结果与语料快照），不是项目源码，也没有注释要剥
 scripts/test-packaged-assets.js | A=2 | B=4 | legacy-read
 scripts/test-packaged-isdev.js | A=2 | B=0 | e2e-fixture
-scripts/test-path-guard.js | A=1 | B=0 | exact:A=1：迁移来的 25a 用例读 lib/path-guard.js 的源码（checkDeletable 的 recursive 分支）
+scripts/test-path-guard.js | A=1 | B=6 | exact:A=1：25a 用例读 lib/path-guard.js 源码。B=6：F2（非递归删除系统深层）与 F5（checkOverwritable 类型闸门）两条修复的判据都是「某个分支条件被去掉/被加回」，行为上验要真实删除 System32 下的文件，不可行 —— 所以锁源码形态：深层保护不受 recursive 限定、两个闸门共用 stringPathOrError 助手。
 scripts/test-pick-point.js | A=1 | B=0 | exact:迁移自 round15 的 4a/4b/4c。取色坐标要真实鼠标事件与真实屏幕才测得到，所以断言 calcPickPoint 的形态与调用点传的是 screenX/screenY；4a 抽真函数跑行为。
 scripts/test-picker-func.js | A=1 | B=0 | e2e-fixture
 scripts/test-pinyin.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本对 lib/pinyin.js 用 require 直接调用，对 index.html 的引入检查走 readSrc
