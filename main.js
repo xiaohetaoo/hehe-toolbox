@@ -4669,6 +4669,30 @@ async function sweepTempFiles(maxAgeMs = 24 * 3600 * 1000) {
   }
   return removed;
 }
+/* 文档预览的转换产物清扫：doc-preview 每预览一个 Office 文档，
+ * 就会在 userData/preview-tmp 下留一份 LibreOffice 转出的 PDF
+ * （渲染层 office.js 的 preview() 把 outDir 指到这里，预览完没人删）。
+ * 几次预览体积不大，但 PPT/大 Word 转出的 PDF 可能几十 MB，
+ * 长期使用会一直堆积。清扫按 mtime 保留 24 小时内的 ——
+ * 正在预览的那份不会被误删（刚转换出来的文件 mtime 是新的）。 */
+async function sweepPreviewTmp(maxAgeMs = 24 * 3600 * 1000) {
+  const dir = path.join(app.getPath('userData'), 'preview-tmp');
+  const now = Date.now();
+  let removed = 0;
+  let entries;
+  try { entries = await fsp.readdir(dir); } catch (e) { return 0; }
+  for (const n of entries) {
+    const full = path.join(dir, n);
+    try {
+      const st = await fsp.stat(full);
+      if (now - st.mtimeMs <= maxAgeMs) continue;
+      await fsp.rm(full, { force: true });
+      removed++;
+    } catch (e) {}
+  }
+  return removed;
+}
+
 async function sweepClipImages() {
   // 依赖 store 已加载：删掉 clipHistory 里已无引用的图片文件
   // store 没读出来时 clipHistory 是空数组，used 为空 → 所有图片都被判成孤儿。
@@ -4778,7 +4802,7 @@ if (!gotLock) {
     createTray();
     // 启动清扫：延迟执行，不阻塞窗口首帧
     setTimeout(() => {
-      Promise.all([sweepTempFiles(), sweepClipImages()])
+      Promise.all([sweepTempFiles(), sweepClipImages(), sweepPreviewTmp()])
         .then(([n1, n2]) => { if (n1 || n2) console.log('[sweep] 清理临时文件', n1, '个，孤儿剪贴板图片', n2, '个'); })
         .catch(() => {});
     }, 4000);
