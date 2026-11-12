@@ -8,8 +8,8 @@
  * 所以这里放一份同构的常量表，并由 scripts/test-channels-sync.js 校验：
  * 不只比键集合，还比**每个键对应的值**（值不同同样会导致静默失败）。
  *
- * 【迁移状态】目前只迁移了两个域（目录搬家、权限与链接）。
- * 其余域的通道仍是散落的字符串字面量，按 lib/channels.js 里的 TODO 逐轮推进。
+ * 【迁移状态】v0.4.2 起全部通道已迁入常量表（lib/channels.js 的 MIGRATION
+ * 声明是机读的对账依据，test-channels-sync 的 6f 会强制两边同步）。
  *
  * 【加载顺序】index.html 里要在 ui.js / registry.js 之前引入 ——
  * 工具文件在定义时就会引用 window.Channels（例如注册时的通道表）。
