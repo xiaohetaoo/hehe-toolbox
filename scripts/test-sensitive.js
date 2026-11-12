@@ -20,6 +20,11 @@ t('SE1 明确的凭据形态应被判为敏感', () => {
   const yes = [
     ['-----BEGIN RSA PRIVATE KEY-----', 'PEM 私钥'],
     ['ghp_' + 'a'.repeat(36), 'GitHub 令牌'],
+    /* 【github_pat_ 是 GitHub 2022 年后的 fine-grained token】
+     * v0.8.4 收尾的走查里发现这种新形态整条放过 —— 它同样是完整的
+     * 仓库访问凭据。长度下限 30（github_pat_ 后）防误伤普通文本，
+     * github_pat_short 这类短串不能命中。 */
+    ['github_pat_' + 'aB3xY9kL2mNpQrStUvWx'.repeat(2), 'GitHub 令牌（fine-grained）'],
     ['sk-' + 'a'.repeat(32), 'API 密钥'],
     ['AKIA' + 'A'.repeat(16), 'AWS 访问密钥'],
     ['110101199001011234', '身份证号'],
