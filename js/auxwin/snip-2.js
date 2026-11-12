@@ -1,8 +1,6 @@
     const params = new URLSearchParams(location.search);
     const MODE = params.get('mode') === 'region' ? 'region' : 'annotate';
     const DX = +params.get('dx') || 0, DY = +params.get('dy') || 0, SCALE = +params.get('scale') || 1;
-    /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-    const W = +params.get('w') || window.innerWidth, H = +params.get('h') || window.innerHeight;
     const canvas = document.getElementById('c');
     const bar = document.getElementById('bar');
     /* stage 是整块画布容器（框选/拖动/标注的三个 mousedown/mousemove/mouseup
