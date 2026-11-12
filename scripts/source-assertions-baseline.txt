@@ -23,6 +23,7 @@ scripts/run-tests.js | A=1 | B=0 | exact:这是测试运行器本身，必须读
 scripts/test-acl-diagnose-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-acl-gate-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-acl-repair.js | A=4 | B=25 | legacy-read
+scripts/test-assertion-guard.js | A=2 | B=0 | exact:那 2 处读的是 scripts/run-tests.js 与 scripts/check-assertion-count.js 的**字面量集合成员**（EXIT_ONLY 表），必须拿原始文本 —— readSrc 只服务 js/ 下的应用源码，且它剥注释的语义与这里无关（要的就是源码里写的名字）。B=0：本用例靠直接比对两张表的成员来锁「口径一致」，不是匹配源码形态的断言。
 scripts/test-aux-csp.js | A=4 | B=0 | legacy-source-assertion
 scripts/test-aux-windows-csp.js | A=4 | B=8 | legacy-read
 scripts/test-channels-sync.js | A=2 | B=1 | legacy-read

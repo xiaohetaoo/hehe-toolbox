@@ -40,6 +40,17 @@ const NEEDS_ENV = {
   'test-ctxmenu.js': '会临时改 HKCU 注册表测 Win11 右键菜单，必须在真人机器上跑',
 };
 
+/* 【只靠退出码判定的脚本：成功记 1 条】
+ * 这类脚本全程只打自己的可读输出（轮次明细之类）、不打印 PASS 行，
+ * 结尾 process.exit(ok?0:1)。它们做的是实质性判定，若按「数 PASS 行」
+ * 记 0 条，在基线里看起来像"一个测试都没跑"，删掉整个文件也不会报警。
+ *
+ * 【这张表必须与 check-assertion-count.js 的 EXIT_ONLY_FILES 保持一致】
+ * 两处口径不同会让同一仓库报出两个总数（曾出现 run-tests 2118 / 基线 2119，
+ * 差值恰好是这里的 1 条）。数字对不上时容易被误判成"有人删了测试"，
+ * 反过来也可能掩盖真的少了一条。由 test-assertion-guard 对着两边做校验。 */
+const EXIT_ONLY_TESTS = new Set(['test-target-e2e.js']);
+
 /* 判断一个测试脚本要不要起 Electron。
  * 【为什么这里可以扫源码】这是**构建工具**，不是测试断言：
  * 它的工作就是读测试脚本、按内容分组，不读源码没有第二条路。
@@ -152,9 +163,24 @@ function main() {
     }
     const n = (r.out.match(/^PASS /gm) || []).length;
     passCount += n;
+    /* 【进度行与汇总的条数要包含「只靠退出码判定的脚本」】
+     * check-assertion-count.js 里有一张 EXIT_ONLY_FILES 表
+     * （目前是 test-target-e2e.js）：这类脚本全程只打自己的可读输出、
+     * 不打印 PASS 行，结尾 process.exit(ok?0:1)。守卫对它们按
+     * 「成功记 1、失败记 0」来算，否则它们在基线里永远是 0，
+     * 看起来像「一个测试都没跑」。
+     *
+     * 【为什么这里也要跟着算】原来 run-tests 只数 ^PASS 行，于是同一个
+     * 仓库两处报出不同总数（run-tests 2118 / 基线 2119），差值恰好是
+     * 这类脚本的 1 条。两个数字对不上时，最容易被当成"有人改了测试"，
+     * 实际只是口径不同 —— 反过来也可能掩盖真的少了一条。
+     * 现在两边用同一张表、同一套规则。 */
+    const exitOnly = EXIT_ONLY_TESTS.has(f);
+    if (exitOnly && r.ok && n === 0) passCount += 1;
+    const shown = (exitOnly && r.ok && n === 0) ? 1 : n;
     // 进度行：脚本多的时候能看出跑到哪了
     process.stdout.write('[' + (i + 1) + '/' + list.length + '] ' + f + '  ' +
-      (r.ok ? 'ok' : 'FAIL') + '  ' + (r.ms / 1000).toFixed(1) + 's  ' + n + ' 条\n');
+      (r.ok ? 'ok' : 'FAIL') + '  ' + (r.ms / 1000).toFixed(1) + 's  ' + shown + ' 条\n');
   }
 
   const total = ((Date.now() - t0) / 1000).toFixed(1);
