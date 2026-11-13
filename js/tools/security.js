@@ -368,7 +368,7 @@
           const filtered = typeFilter !== 'all' || q;
           list.appendChild(div('empty-tip', filtered
             ? '没有符合当前筛选的记录'
-            : (watching ? '暂无记录，复制点什么试试' : '开启上方开关开始记录剪贴板')));
+            : (watching ? '没有记录，复制点什么试试' : '开启上方开关开始记录剪贴板')));
           return;
         }
         /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */

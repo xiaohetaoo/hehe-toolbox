@@ -431,7 +431,7 @@
       const restoreBtn = btn('从备份还原…', 'btn-sm btn-secondary', async () => {
         try {
           const list = await invoke(Channels.CHANNELS.HOSTS.BACKUPS);
-          if (!list.length) return toast('暂无备份', 'warn');
+          if (!list.length) return toast('没有备份', 'warn');
           const p = await invoke(Channels.CHANNELS.DIALOG.OPEN, { defaultPath: list[0], properties: ['openFile'] });
           if (!p || !p[0]) return;
           if (!(await window.ui.confirmBox({ title: '还原 Hosts', message: '将用备份覆盖当前 hosts 文件，确定？' }))) return;

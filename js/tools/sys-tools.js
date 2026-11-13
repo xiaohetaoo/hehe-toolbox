@@ -874,7 +874,7 @@
       async function loadOnce() {
         const list = await invoke(Channels.CHANNELS.SCHED.ONCE_LIST).catch(() => []);
         onceList.innerHTML = '';
-        if (!list || !list.length) { onceList.appendChild(div('empty-tip', '暂无挂起的一次性定时')); return; }
+        if (!list || !list.length) { onceList.appendChild(div('empty-tip', '没有挂起的一次性定时')); return; }
         for (const it of list) {
           const at = new Date(it.fireAt);
           onceList.appendChild(div('form-row',
@@ -914,7 +914,7 @@
       async function loadRecurring() {
         const list = await invoke(Channels.CHANNELS.SCHED.LIST).catch(() => []);
         rList.innerHTML = '';
-        if (!list.length) { rList.appendChild(div('empty-tip', '暂无周期任务')); return; }
+        if (!list.length) { rList.appendChild(div('empty-tip', '没有周期任务')); return; }
         for (const s of list) {
           const desc = s.type === 'daily' ? `每天 ${s.hhmm} 提醒：${s.message}`
             : s.type === 'loop' ? `每 ${s.everyMin} 分钟提醒：${s.message || '（循环提醒）'}`
