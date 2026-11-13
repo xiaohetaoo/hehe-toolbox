@@ -157,7 +157,15 @@
           } else {
             out.value = full ? [...utf8ToBytes(ta.value)].map(b => '%' + b.toString(16).toUpperCase().padStart(2, '0')).join('') : encodeURIComponent(ta.value);
           }
-        } catch (e) { out.value = ''; }
+        } catch (e) {
+          /* 【静默清空 = 用户以为工具没反应】
+           * 解码失败（裸 %、非法 UTF-8 序列）时输出框直接清空，没有任何提示。
+           * base64 半边对同类问题有三类中文归因（decodeErrHint），
+           * URL 半边也复用它 —— 同一文件两套标准是明显的不一致。 */
+          out.value = '';
+          const hint = decodeErrHint(String((e && e.message) || e));
+          out.value = '⚠ ' + hint;
+        }
       }
       function mode() { return swapDecode; }
       let swapDecode = false;
