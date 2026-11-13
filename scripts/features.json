@@ -1,0 +1,422 @@
+{
+  "_说明": [
+    "功能域 → 源文件 / 测试 的映射表。",
+    "",
+    "【为什么用反向映射而不是给每个测试打标签】",
+    "190 个测试里有 50 个不读任何源码（纯 e2e，直接起 Electron），",
+    "它们的『归属』无法从源码读取推断；而手工给 190 个文件加 @feature 注释，",
+    "维护成本高于收益 —— 改功能时忘了同步标签，漏测是静默的。",
+    "",
+    "改成：谁改了哪些源文件 → 反查出涉及的功能域 → 再取这些域下的测试。",
+    "映射表只有 20 来行，改功能时只需看『我改的文件在哪个域』，",
+    "比改 190 个文件里的注释可靠得多。",
+    "",
+    "src 里的支持通配（* 匹配任意字符），按 glob 语义从左到右匹配。",
+    "tests 里同样支持通配；另外任何测试文件若读取了某个域的 src，",
+    "也会被自动纳入该域（见 run-tests.js 的 testsForFeature）。"
+  ],
+  "core": {
+    "label": "核心框架（通道/断言/元检查/发布）",
+    "_说明": "src 只列真正「一改就影响全局」的文件。早期这里含 scripts/* 与 package.json，结果改任何一个测试脚本都会触发全量 —— 那让 --changed 失去意义。测试脚本自身的变化由 scripts/lib/features.js 里的 featuresOfTest 处理（它读源码判归属），不需要在这里声明。",
+    "src": [
+      "lib/channels.js",
+      "js/channels.js",
+      "main.js",
+      "preload.js",
+      "index.html",
+      "lib/job-id.js",
+      "lib/job-owner.js",
+      "lib/errors.js",
+      "lib/fail-text.js",
+      "lib/win*.js",
+      "package.json",
+      "scripts/run-tests.js",
+      "scripts/lib/*",
+      "scripts/features.json",
+      "scripts/assertions-baseline.json",
+      "scripts/source-assertions-baseline.txt"
+    ],
+    "tests": [
+      "test-channels-sync.js",
+      "test-assertion-*",
+      "test-job-*",
+      "test-errors.js",
+      "test-fail-text.js",
+      "test-release-*",
+      "test-version*",
+      "test-ipc-*",
+      "test-source-assertions.js",
+      "test-aux-csp.js",
+      "test-window-security*",
+      "test-features-map.js"
+    ]
+  },
+  "ui-shell": {
+    "label": "外壳与导航（标签页/搜索/命令面板/主题）",
+    "src": [
+      "js/app.js",
+      "js/ui.js",
+      "js/registry.js",
+      "js/cmdk.js",
+      "js/icons.js",
+      "js/keepalive*.js",
+      "css/app.css",
+      "js/i18n.js"
+    ],
+    "tests": [
+      "test-home-search.js",
+      "test-tabbar-*",
+      "test-tab-*",
+      "test-cmdk.js",
+      "test-search-*",
+      "test-tool-order.js",
+      "test-keepalive.js",
+      "test-shell-*",
+      "test-breadcrumb-*",
+      "test-icon-consistency.js",
+      "test-css-*",
+      "test-ui-*"
+    ]
+  },
+  "i18n": {
+    "label": "双语与本地化",
+    "src": [
+      "js/i18n.js",
+      "js/tools/i18n.js",
+      "lib/tool-names.js"
+    ],
+    "tests": [
+      "test-i18n-*",
+      "test-tool-i18n.js",
+      "test-tool-window-title.js"
+    ]
+  },
+  "fs": {
+    "label": "文件操作（哈希/重命名/加密/分割/查重）",
+    "src": [
+      "ipc/fs-ops.js",
+      "lib/fs-ops.js",
+      "lib/path-guard.js",
+      "lib/links.js",
+      "lib/rm-lockers.js",
+      "js/tools/file-tools.js",
+      "js/tools/hash.js",
+      "js/tools/text-codec.js"
+    ],
+    "tests": [
+      "test-hash-*",
+      "test-file-*",
+      "test-crypt-*",
+      "test-split*",
+      "test-destructive*",
+      "test-picker-*"
+    ]
+  },
+  "acl": {
+    "label": "权限与占用（ACL/链接/解锁）",
+    "src": [
+      "ipc/dir-acl-links.js",
+      "lib/acl-repair.js",
+      "lib/unlock-safety.js",
+      "js/tools/acl-repair.js",
+      "js/tools/file-unlock.js",
+      "js/tools/link-doctor.js",
+      "js/tools/dir-move.js",
+      "lib/dir-move.js"
+    ],
+    "tests": [
+      "test-acl-*",
+      "test-links.js",
+      "test-rm-lockers.js",
+      "test-dir-move.js",
+      "test-file-unlock.js"
+    ]
+  },
+  "media": {
+    "label": "音视频与图片（ffmpeg/压缩/水印/拼接）",
+    "src": [
+      "ipc/media-ffmpeg.js",
+      "lib/target-size.js",
+      "lib/hw-encode.js",
+      "js/tools/media/*",
+      "js/tools/target-size.js"
+    ],
+    "tests": [
+      "test-media-*",
+      "test-hw-*",
+      "test-dshow-*",
+      "test-target-*",
+      "test-img-*",
+      "test-video-*"
+    ]
+  },
+  "screen": {
+    "label": "截图与取色（snip/pin/ruler/录屏）",
+    "src": [
+      "snip.html",
+      "pin.html",
+      "ruler.html",
+      "js/auxwin/*",
+      "js/snip*.js"
+    ],
+    "tests": [
+      "test-snip*",
+      "test-pin*",
+      "test-ruler*",
+      "test-aux-*",
+      "test-pick-point.js",
+      "test-ui-dpi-fixes.js"
+    ]
+  },
+  "pdf": {
+    "label": "PDF（合并/拆分/水印/提取/瘦身）",
+    "src": [
+      "js/tools/pdf-plus.js",
+      "js/tools/office.js",
+      "lib/pdf*"
+    ],
+    "tests": [
+      "test-pdf-*"
+    ]
+  },
+  "archive": {
+    "label": "压缩包（zip/7z/解压安全）",
+    "src": [
+      "lib/archive-guard.js",
+      "lib/archive-process.js",
+      "js/tools/archive*"
+    ],
+    "tests": [
+      "test-archive-*",
+      "test-zip-*"
+    ]
+  },
+  "net": {
+    "label": "网络（ping/端口/下载/hosts）",
+    "src": [
+      "ipc/net-lan.js",
+      "lib/lan-scan.js",
+      "lib/download.js",
+      "lib/net-error.js",
+      "js/tools/net-tools.js",
+      "js/tools/lan-scan.js"
+    ],
+    "tests": [
+      "test-net-*",
+      "test-lan-*",
+      "test-download-*",
+      "test-host*"
+    ]
+  },
+  "sys": {
+    "label": "系统（进程/服务/电源/窗口管理/自启）",
+    "src": [
+      "js/tools/sys-tools.js",
+      "js/tools/disk-health.js",
+      "lib/disk-health.js",
+      "lib/power-gate.js",
+      "lib/spawn-detached.js",
+      "ipc/ctx.js"
+    ],
+    "tests": [
+      "test-disk-health.js",
+      "test-window-*",
+      "test-proc*",
+      "test-misc-*",
+      "test-ipc-ctx*",
+      "test-job-ownership.js"
+    ]
+  },
+  "text": {
+    "label": "文本与编码（codec/正则/JSON/对比）",
+    "src": [
+      "js/tools/text-tools.js",
+      "js/tools/json-regex.js",
+      "js/tools/convert.js",
+      "js/tools/diff3.js",
+      "lib/expr-eval.js",
+      "lib/csv-table.js",
+      "lib/mojibake.js"
+    ],
+    "tests": [
+      "test-expr-*",
+      "test-csv-*",
+      "test-hex-*",
+      "test-diff*",
+      "test-mojibake*"
+    ]
+  },
+  "clip": {
+    "label": "剪贴板（历史/智能动作/敏感清理）",
+    "src": [
+      "js/clip-actions.js",
+      "lib/clip-analyze.js",
+      "lib/sensitive.js"
+    ],
+    "tests": [
+      "test-clip-*",
+      "test-sensitive.js"
+    ]
+  },
+  "security": {
+    "label": "安全门禁（高危能力/路径守卫/窗口加固）",
+    "src": [
+      "lib/power-gate.js",
+      "lib/sensitive.js",
+      "lib/window-security.js",
+      "lib/path-guard.js",
+      "js/tools/security.js"
+    ],
+    "tests": [
+      "test-cmd-mask.js",
+      "test-csp*"
+    ]
+  },
+  "dev": {
+    "label": "开发工具（命令面板/工具链/HTTP/静态服务/取色）",
+    "src": [
+      "js/cmdk.js",
+      "js/tools/chain.js",
+      "js/tools/dev.js"
+    ],
+    "tests": [
+      "test-cmdk.js",
+      "test-chain.js",
+      "test-static-server.js",
+      "test-random-*",
+      "test-modal-close.js",
+      "test-pickone.js",
+      "test-fmt.js",
+      "test-sanitize.js",
+      "test-lib.js",
+      "test-concat-list.js"
+    ]
+  },
+  "life": {
+    "label": "生活辅助（番茄钟/日历/便签/朗读）",
+    "src": [
+      "js/tools/life.js"
+    ],
+    "tests": [
+      "test-pomodoro*",
+      "test-stopwatch-resume.js"
+    ]
+  },
+  "chain": {
+    "label": "工具链编排",
+    "src": [
+      "js/tools/chain.js"
+    ],
+    "tests": [
+      "test-chain.js"
+    ]
+  },
+  "drop": {
+    "label": "拖拽与文件选择",
+    "src": [
+      "js/drop-open.js",
+      "lib/drop-route.js"
+    ],
+    "tests": [
+      "test-drop-*",
+      "test-picker-contract.js",
+      "test-file-list-*",
+      "test-dz-el.js"
+    ]
+  },
+  "paths": {
+    "label": "路径守卫与命名（防覆盖/临时名/盘符判断）",
+    "src": [
+      "lib/path-guard.js",
+      "lib/temp-names.js",
+      "lib/fs-ops.js",
+      "lib/job-id.js"
+    ],
+    "tests": [
+      "test-path-*",
+      "test-safename.js",
+      "test-samepath.js",
+      "test-temp-names.js",
+      "test-critical-dirs.js",
+      "test-crossdrive.js",
+      "test-fs-ops.js",
+      "test-runcmd.js",
+      "test-scan-tree.js",
+      "test-pwd-bias.js"
+    ]
+  },
+  "store": {
+    "label": "存储与设置（prefs/store/单实例/崩溃日志）",
+    "src": [
+      "lib/prefs-spec.js",
+      "lib/crash-log.js",
+      "lib/update-file.js"
+    ],
+    "tests": [
+      "test-store-*",
+      "test-single-instance.js",
+      "test-crash-log*",
+      "test-update-*"
+    ]
+  },
+  "schedule": {
+    "label": "定时任务与计划",
+    "src": [
+      "lib/schedule*.js",
+      "lib/time-stamp.js"
+    ],
+    "tests": [
+      "test-schedule.js"
+    ]
+  },
+  "crypto": {
+    "label": "文件加解密",
+    "src": [
+      "ipc/fs-ops.js",
+      "lib/fs-ops.js"
+    ],
+    "tests": [
+      "test-crypt*",
+      "test-crypto-file.js"
+    ]
+  },
+  "danger": {
+    "label": "高危能力内联开启流程",
+    "src": [
+      "js/app.js",
+      "js/tools/security.js",
+      "lib/power-gate.js"
+    ],
+    "tests": [
+      "test-danger-*",
+      "test-powergate*"
+    ]
+  },
+  "ctxmenu": {
+    "label": "右键菜单管理",
+    "src": [
+      "js/tools/sys-tools.js",
+      "main.js"
+    ],
+    "tests": [
+      "test-ctxmenu.js"
+    ]
+  },
+  "misc": {
+    "label": "零散行为（不读源码的纯逻辑 / e2e 补充）",
+    "_说明": "这些测试不读项目源码（纯逻辑断言、纯 e2e、或只读 npm 包），无法从源码反查归属。它们改动的触发面很窄，归到 misc 域；--changed 命中时会连带跑，全量也一定会跑到。",
+    "src": [],
+    "tests": [
+      "test-dir-move-e2e.js",
+      "test-disk-health-e2e.js",
+      "test-download.js",
+      "test-exif-offset.js",
+      "test-extract-safety.js",
+      "test-link-read-memory.js",
+      "test-report-fixes.js",
+      "test-svc-action.js",
+      "test-sweep-preview.js",
+      "test-two-pass-e2e.js"
+    ]
+  }
+}

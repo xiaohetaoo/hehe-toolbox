@@ -51,6 +51,10 @@ const NEEDS_ENV = {
  * 反过来也可能掩盖真的少了一条。由 test-assertion-guard 对着两边做校验。 */
 const EXIT_ONLY_TESTS = new Set(['test-target-e2e.js']);
 
+/* 功能域解析（--changed / --feature / --list-features）。
+ * 映射表在 scripts/features.json，解析逻辑在 scripts/lib/features.js。 */
+const FEATURES = require('./lib/features.js');
+
 /* 判断一个测试脚本要不要起 Electron。
  * 【为什么这里可以扫源码】这是**构建工具**，不是测试断言：
  * 它的工作就是读测试脚本、按内容分组，不读源码没有第二条路。
@@ -100,6 +104,64 @@ function main() {
   const args = process.argv.slice(2);
   const groups = collect();
 
+  /* ---- 功能域相关模式（见 scripts/lib/features.js 顶部说明）---- */
+  const featArg = (name) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : null;
+  };
+
+  if (args.includes('--list-features')) {
+    for (const f of FEATURES.listFeatures()) {
+      console.log('  ' + f.id.padEnd(12) + String(f.tests).padStart(3) + '  ' + f.label);
+    }
+    console.log('\n用法：npm test -- --feature <id>   或   npm test -- --changed');
+    return 0;
+  }
+
+  /* --feature <id>：只跑某个功能域下的测试 */
+  const oneFeature = featArg('--feature');
+  if (oneFeature) {
+    let picked;
+    try { picked = FEATURES.testsForFeature(oneFeature); }
+    catch (e) { console.log(e.message); return 1; }
+    /* 与 collect() 的分组取交集：保证跳过项（NEEDS_ENV）仍被跳过 */
+    const known = new Set(groups.unit.concat(groups.ui));
+    const list = picked.filter((f) => known.has(f));
+    const dropped = picked.filter((f) => !known.has(f));
+    console.log('功能域 ' + oneFeature + '：' + list.length + ' 个测试'
+      + (dropped.length ? '（跳过 ' + dropped.length + ' 个需特殊环境的）' : ''));
+    if (!list.length) { console.log('该域没有可跑的测试'); return 1; }
+    return runList(list, groups);
+  }
+
+  /* --changed：按 git 改动算该跑哪些 */
+  if (args.includes('--changed')) {
+    let changed = [];
+    try {
+      changed = require('child_process')
+        .execSync('git diff --name-only HEAD && git diff --name-only --cached && git ls-files --others --exclude-standard',
+          { cwd: ROOT, encoding: 'utf8' })
+        .split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    } catch (e) {
+      console.log('读不到 git 改动（' + e.message.split('\n')[0] + '）→ 跑全量');
+      return runList(groups.unit.concat(groups.ui), groups);
+    }
+    /* 去重：同一个文件可能同时出现在已暂存与未暂存里 */
+    changed = [...new Set(changed)].filter((f) => !/^\.tmp-/.test(f) && !/^dist\//.test(f));
+    if (!changed.length) {
+      console.log('没有源码改动 → 不跑测试（加 --all 可强制全量）');
+      return 0;
+    }
+    const plan = FEATURES.testsForChanged(changed);
+    console.log('改动 ' + changed.length + ' 个文件 → ' + plan.reason);
+    console.log('涉及功能域：' + (plan.features.length ? plan.features.join(', ') : '(无)'));
+    const known = new Set(groups.unit.concat(groups.ui));
+    const list = plan.tests.filter((f) => known.has(f));
+    console.log('要跑 ' + list.length + ' 个测试' + (plan.full ? '（全量）' : ''));
+    if (!list.length) { console.log('没有匹配的测试'); return 1; }
+    return runList(list, groups);
+  }
+
   if (args.includes('--list')) {
     /* 支持 --list --unit / --list --ui：调用方（check-assertion-count）要按分组
      * 分别取清单，否则两组都列出来会被统计两次。 */
@@ -127,6 +189,14 @@ function main() {
   else if (args.includes('--ui')) list = groups.ui;
   else list = groups.unit.concat(groups.ui);
 
+  return runList(list, groups);
+}
+
+/**
+ * 跑一批测试并打印汇总。抽成函数是为了让 --changed / --feature 与全量
+ * 共用同一段执行与统计逻辑 —— 三处各写一遍必然出现"某个模式少算一条"。
+ */
+function runList(list, groups) {
   if (!list.length) { console.log('没有要跑的测试（分组为空）'); return 1; }
 
   /* 【不跳过 Electron 就直说】
