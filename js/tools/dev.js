@@ -240,10 +240,12 @@
       const formatsBox = div('');
       function paintFormats(hex, r, g, b) {
         formatsBox.innerHTML = '';
+        const [hh, ss, vv] = rgbToHsv(r, g, b);
         const rows = [
           ['HEX', hex],
           ['rgb()', 'rgb(' + r + ', ' + g + ', ' + b + ')'],
           ['hsl()', 'hsl(' + hslOf(r, g, b).replace(/,\s*/g, ' ').replace(/%,\s*/g, '%, ').replace(', ', ', ') + ')'],
+          ['hsv()', 'hsv(' + hh + ', ' + ss + '%, ' + vv + '%)'],
           ['CSS 变量', cssVarOf(hex)],
           ['Win32 COLORREF', colorRefOf(r, g, b)],
         ];
@@ -315,6 +317,11 @@
               const d = ctx.getImageData(80, 80, 1, 1).data;
               const hex = '#' + [d[0], d[1], d[2]].map(x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
               preview.style.background = hex;
+              /* 【"复制为"面板必须跟着取色刷新】不调 paintFormats 的话，
+               * 面板一直停在初始默认色（#165DFF）的各格式 —— 用户取完色
+               * 照着复制，拿到的是另一个颜色的写法。历史色块点击路径有调，
+               * 主取色路径漏了，两条路径必须一致。 */
+              paintFormats(hex, d[0], d[1], d[2]);
               /* 取到的颜色同时进历史色板：连续取几个色再一起去用是常态，
                * 每取一个就覆盖上一个的话，用户必须"取一个粘一个"。 */
               pushHistory(hex, d[0], d[1], d[2]);

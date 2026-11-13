@@ -76,7 +76,11 @@
   }
   function subLabel(cmd) {
     if (cmd.id && cmd.id.startsWith('@')) return cmd.nameEn || '';
-    const mod = cmd.module ? modLabel(cmd.module) : '';
+    /* 【cmd.module 是字符串 id，modName 要的是模块对象】直接传 id 进去，
+     * modName 读 m.name/m.nameEn 全是 undefined —— 模块名静默丢失，
+     * 副标题只剩描述。先按 id 查出模块对象再取本地化名。 */
+    const modObj = cmd.module ? window.Registry.MODULES.find((m) => m.id === cmd.module) : null;
+    const mod = modObj ? modLabel(modObj) : '';
     const d = toolDesc(cmd);
     return mod && d ? mod + ' · ' + d : (mod || d);
   }

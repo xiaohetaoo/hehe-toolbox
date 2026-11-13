@@ -128,6 +128,37 @@ public class HeheLayout {
 }
 `;
 
+/* ---------- 2b. 布局缩略图（用真实几何画，不另画一套） ---------- */
+/**
+ * 生成一个示意图 SVG 字符串。
+ * 【为什么用 computeLayout 的真实输出画】画死一套静态图的话，
+ * 改了算法就会出现"图上这么摆、实际那么摆"的分叉。
+ * 用同一份几何生成，图与行为永远一致。
+ * @param {string} kind  布局 id
+ * @param {number} [w]   画布宽
+ * @param {number} [h]   画布高
+ * @param {number} [n]   示意用窗口数
+ */
+function layoutPreviewSvg(kind, w, h, n) {
+  const W = w || 56, H = h || 40;
+  const def = LAYOUTS[kind] || LAYOUTS['v-split'];
+  /* 层叠/主窗右列这类"数量灵活"的布局给 3 个窗口示意，
+   * 其余给槽位数 —— 这样图最接近实际效果。 */
+  const count = n || (def.slots ? def.slots.length : 3);
+  const rects = computeLayout(kind, { x: 0, y: 0, width: W, height: H }, count, 2);
+  const parts = [];
+  rects.forEach((r, i) => {
+    /* 第一块用主色描边：让"顺序"也能从图上读出来
+     * （用户勾选的顺序就是从第一块到最后一块的顺序） */
+    const cls = i === 0 ? 'wl-pv-first' : 'wl-pv-rest';
+    parts.push('<rect class="' + cls + '" x="' + r.x + '" y="' + r.y
+      + '" width="' + Math.max(1, r.width) + '" height="' + Math.max(1, r.height)
+      + '" rx="1.5" />');
+  });
+  return '<svg class="wl-pv" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H
+    + '" aria-hidden="true">' + parts.join('') + '</svg>';
+}
+
 /* ---------- 3. 工具页 ---------- */
 (function () {
   const ui = window.ui;
@@ -141,7 +172,7 @@ public class HeheLayout {
   let layout = 'v-split';
   let gap = 8;
 
-  window.LayoutCalc = { LAYOUTS, computeLayout, LAYOUT_CS };
+  window.LayoutCalc = { LAYOUTS, computeLayout, LAYOUT_CS, layoutPreviewSvg };
 
   window.Registry.register({
     id: 'win-layout',
@@ -198,20 +229,29 @@ public class HeheLayout {
           : '勾选要排列的窗口（顺序即从左到右 / 从上到下的顺序）';
       }
 
+      /* 【必须重绘进已挂载的容器】旧实现每次点击都 return 一个**新** box，
+       * 但页面里挂的是首次创建的那个 —— 新 box 没人接收，按钮高亮永远
+       * 停在初始布局上，用户看到的"当前布局"与实际选择脱节。 */
+      const layoutsBox = div('wl-layouts');
       function renderLayouts() {
-        const box = div('wl-layouts');
+        layoutsBox.innerHTML = '';
         Object.entries(LAYOUTS).forEach(([k, v]) => {
-          const b = btn(v.label, 'btn-sm ' + (k === layout ? 'btn-primary' : 'btn-secondary'), () => {
+          /* 【卡片而不是文字按钮】布局是空间关系，一张缩略图一眼就懂；
+           * "三分（左大右两小）"这种描述光靠文字要在脑子里建模。
+           * 文字标签仍保留：读屏要念得出来，也方便"图上画的是哪种"对上号。 */
+          const card = div('wl-layout-card' + (k === layout ? ' active' : ''));
+          card.innerHTML = layoutPreviewSvg(k);
+          card.appendChild(div('wl-layout-name', v.label));
+          window.ui.makeButtonLike(card, '布局：' + v.label);
+          card.addEventListener('click', () => {
             layout = k;
             renderLayouts();
             paintStatus();
           });
-          box.appendChild(b);
+          layoutsBox.appendChild(card);
         });
-        return box;
       }
-
-      const layoutsBox = renderLayouts();
+      renderLayouts();
 
       async function apply() {
         if (!chosen.length) return toast('先勾选要排列的窗口', 'warn');

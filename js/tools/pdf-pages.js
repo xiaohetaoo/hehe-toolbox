@@ -222,11 +222,14 @@
         const list = parseRange(rangeInput.value, doc.getPageCount());
         if (!list.length) return toast('请先填页码范围', 'warn');
         const kill = new Set(list);
-        const before = pageOrder.length;
+        /* 【回滚必须恢复操作前的快照，不是 1..N 原始顺序】
+         * 用户可能已经重排过、或删过几页；用原始顺序重建会把那些
+         * 未写盘的调整悄悄抹掉。快照才是"这次操作之前"的真实状态。 */
+        const prevOrder = pageOrder.slice();
         pageOrder = pageOrder.filter((n) => !kill.has(n));
         if (!pageOrder.length) {
           /* 全删光就没有 PDF 可存了 —— 回滚比留个空文档好 */
-          pageOrder = Array.from({ length: before }, (_, i) => i + 1);
+          pageOrder = prevOrder;
           renderList();
           return toast('不能删掉所有页', 'warn');
         }

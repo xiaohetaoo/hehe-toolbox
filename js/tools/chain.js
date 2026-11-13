@@ -65,7 +65,11 @@
           if (mime === 'image/jpeg') { c2d.fillStyle = '#fff'; c2d.fillRect(0, 0, canvas.width, canvas.height); }
           c2d.drawImage(img, 0, 0);
           const du = canvas.toDataURL(mime, q);
-          const outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, p.replace(/(\.[^.\\/]+)$/, '-min$1'));
+          /* 【扩展名必须跟着真实编码走】bmp 没有 canvas 编码器，上面按 PNG 编码，
+           * 若仍保留 .bmp 后缀就得到"内容是 PNG、名字是 BMP"的说谎文件
+           * （与 img-watermark 修过的同一类缺陷）。bmp → .png，其余保持原样。 */
+          const outExt = /^bmp$/i.test(ext) ? '.png' : (p.match(/(\.[^.\\/]+)$/) || ['.png'])[0];
+          const outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, p.replace(/(\.[^.\\/]+)$/, '-min' + outExt));
           await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, du.split(',')[1]);
           out.push(outPath);
         }
@@ -117,7 +121,10 @@
         for (const p of ctx.files) {
           try {
             const r = await invoke(Channels.CHANNELS.FS.HASH_FILE_MULTI, p, ['sha256']);
-            const hex = (r && (r.sha256 || (r[0] && r[0].sha256))) || '';
+            /* 【返回形状是 { hex: { sha256: … }, size }】旧实现读 r.sha256 / r[0].sha256
+             * 两条路都是 undefined —— 哈希其实算出来了，却一条都进不了报告，
+             * 用户只看到一句空泛的"哈希完成"。与 hash.js 工具同一取法。 */
+            const hex = (r && r.hex && r.hex.sha256) || '';
             if (hex) lines.push(baseName(p) + '  ' + hex);
           } catch (e) { /* 单个文件读不了不影响整批 */ }
         }
@@ -151,17 +158,49 @@
     {
       id: 'to-pdf',
       name: '图片转 PDF',
-      desc: '把这一批图片合成一个 PDF',
+      desc: '把这一批图片合成一个 PDF（pdf-lib 本地，webp/bmp 先转 PNG）',
       async run(ctx) {
         const imgs = ctx.files.filter((p) => /\.(jpe?g|png|webp|bmp)$/i.test(p));
         if (!imgs.length) throw new Error('这一批里没有图片');
+        /* 【必须用 pdf-lib 本地合并，不能走 OFFICE.CONVERT】
+         * 旧实现调 office:convert(target:'pdf')：① 它依赖 LibreOffice/Office，
+         * 没装就整步失败，而图片合 PDF 本可以纯本地完成；② 它是**逐文件**转换，
+         * N 张图产出 N 份独立 PDF，旧代码只取第一个 ok 结果往下传，
+         * 却报告"N 张图片已合成 PDF" —— 其余 N-1 张静默丢失。
+         * 现在与 img2pdf 工具同一条链路：embedJpg/embedPng 逐张成页，
+         * 一份文档装下全部图片。pdf-lib 只认 jpg/png，webp/bmp 先经 canvas 转 PNG。 */
+        const PDFLib = window.PDFLib;
+        if (!PDFLib) throw new Error('pdf-lib 未加载');
+        const doc = await PDFLib.PDFDocument.create();
+        for (let i = 0; i < imgs.length; i++) {
+          const p = imgs[i];
+          ctx.onProgress(i, imgs.length, '合页 ' + baseName(p));
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, p);
+          const ext = (p.match(/\.([^.\\/]+)$/) || [])[1].toLowerCase();
+          let bytes;
+          if (ext === 'jpg' || ext === 'jpeg' || ext === 'png') {
+            bytes = Uint8Array.from(atob(r.b64), (c) => c.charCodeAt(0));
+          } else {
+            const img = await loadImg('data:image/' + guessMime(p) + ';base64,' + r.b64);
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, img.naturalWidth);
+            canvas.height = Math.max(1, img.naturalHeight);
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            bytes = Uint8Array.from(atob(canvas.toDataURL('image/png').split(',')[1]), (c) => c.charCodeAt(0));
+          }
+          const emb = (ext === 'jpg' || ext === 'jpeg') ? await doc.embedJpg(bytes) : await doc.embedPng(bytes);
+          const page = doc.addPage([emb.width, emb.height]);
+          page.drawImage(emb, { x: 0, y: 0, width: emb.width, height: emb.height });
+        }
+        const outBytes = await doc.save();
         const dir = imgs[0].replace(/[\\/][^\\/]+$/, '');
-        const out = await invoke(Channels.CHANNELS.OFFICE.CONVERT, {
-          files: imgs, target: 'pdf', outDir: dir,
-        });
-        const ok = out && out.results && out.results.find((x) => x.ok);
-        const path = ok && ok.out ? ok.out : dir;
-        return { files: [path], note: imgs.length + ' 张图片已合成 PDF' };
+        const outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, dir + '/chain-images.pdf');
+        let bin = '';
+        const chunk = 0x8000;
+        for (let i = 0; i < outBytes.length; i += chunk) bin += String.fromCharCode.apply(null, outBytes.subarray(i, i + chunk));
+        await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, btoa(bin));
+        ctx.onProgress(imgs.length, imgs.length, '完成');
+        return { files: [outPath], note: imgs.length + ' 张图片已合成一个 PDF' };
       },
     },
   ];
@@ -219,8 +258,11 @@
 
     for (let si = 0; si < steps.length; si++) {
       const op = steps[si];
-      /* 只把上一轮还活着的文件投进去 */
-      const alive = state.filter((s) => !s.failed);
+      /* 只把上一轮还活着、且未被合并进别的产物的文件投进去。
+       * 【merged 必须排除】zip 这类 N→1 的步骤之后，被合并文件的 cur
+       * 仍是它自己的旧路径；不排除的话，下一步（如解压）收到的又是
+       * 原始 N 个文件而不是那个 zip —— 链条从这一步起整个跑偏。 */
+      const alive = state.filter((s) => !s.failed && !s.merged);
       if (!alive.length) break;
       const inputs = alive.map((s) => s.cur);
       onProgress && onProgress({ step: si + 1, totalSteps: steps.length, label: op.name, files: inputs.length });
@@ -245,15 +287,21 @@
       /* 把返回的新路径按顺序对回文件。操作可能改变数量（如 ZIP 把多个
        * 文件收成一个），此时只能把结果记到第一个文件上，其余标记为"已合并"。 */
       const outFiles = (res && res.files) || inputs;
+      if (!outFiles.length) {
+        /* 空产出不是"合并"，是这一步什么都没做成 —— 如实记失败，
+         * 否则 cur 会被赋成 undefined，下一步拿着 undefined 去读盘。 */
+        alive.forEach((s) => { s.failed = op.name + '：没有产出文件'; });
+        break;
+      }
       if (outFiles.length === inputs.length) {
         alive.forEach((s, i) => { s.cur = outFiles[i]; s.doneSteps++; });
       } else {
         alive.forEach((s, i) => {
           if (i === 0) { s.cur = outFiles[0]; s.doneSteps++; }
-          else { s.doneSteps++; s.mergedInto = outFiles[0]; }
+          else { s.doneSteps++; s.merged = true; s.mergedInto = outFiles[0]; }
         });
       }
-      cur = state.filter((s) => !s.failed).map((s) => s.cur);
+      cur = state.filter((s) => !s.failed && !s.merged).map((s) => s.cur);
       if (res && res.note) onProgress && onProgress({
         step: si + 1, totalSteps: steps.length, label: res.note,
       });
@@ -332,7 +380,9 @@
         }
         const chain = chains[selected];
         const nameInput = h('input', { class: 'input input-sm', value: chain.name || '', style: { width: '220px' } });
-        nameInput.addEventListener('input', () => { chain.name = nameInput.value; });
+        /* 改名也要落盘：只改内存对象的话，用户改完名直接去执行（不碰步骤），
+         * 重进页面名字就回退了 —— 与步骤编辑同一套保存口径。 */
+        nameInput.addEventListener('input', () => { chain.name = nameInput.value; saveChains(chains); paintList(); });
 
         editorBox.appendChild(div('form-row',
           h('span', { class: 'form-label' }, '名称'), nameInput));

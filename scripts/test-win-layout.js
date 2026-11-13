@@ -47,6 +47,9 @@ function loadLayout() {
     compute: (kind, area, count, gap) => inner.computeLayout(kind, area, count, gap)
       .map((r) => ({ x: r.x, y: r.y, width: r.width, height: r.height })),
     cs: inner.LAYOUT_CS,
+    /* 原样透出（返回字符串，不涉及跨 realm 比较） */
+    previewSvg: (kind, w, h, n) => inner.layoutPreviewSvg(kind, w, h, n),
+    rawCompute: inner.computeLayout,
   };
 }
 
@@ -168,6 +171,43 @@ t('WL9 Place 的 Win32 实现要点齐全', () => {
   assert.ok(/ShowWindow\(p,\s*9\)/.test(cs), '应先 SW_RESTORE');
   /* 锁的是：SWP_NOACTIVATE(0x10)，否则一次摆四个窗口时焦点乱跳。 */
   assert.ok(/0x4\s*\|\s*0x10/.test(cs), '应用 NOZORDER | NOACTIVATE');
+});
+
+t('WL12 布局示意图由真实几何生成（图与行为不分叉）', () => {
+  const L = loadLayout();
+  const W = 100, H = 80;
+  /* 锁的是：示意图另画一套静态图形。改成「图由 computeLayout 生成」后，
+   * 算法一改图就跟着变；画死的话会出现"图上这么摆、实际那么摆"。
+   * 这里逐个布局比 SVG 里每个 rect 的 (x,y) 与计算结果的 (x,y)。 */
+  for (const kind of ['v-split', 'h-split', 'grid-4', 'grid-3', 'main-left', 'stack']) {
+    const svg = L.previewSvg(kind, W, H);
+    /* 【逐个 rect 单独取，不用跨 rect 的正则】写成
+     * /<rect[^>]*x="(\d+)"[^>]*y="(\d+)"/g 时，[^>]* 在第一个 rect 里
+     * 找不到 y 就会继续往后跨过 ">" 吃掉第二个 rect 的 y —— 结果只匹配到
+     * 一个坑位、位置还是错的。先按 <rect 切开，再在每段内取 x/y。 */
+    const svgRects = svg.split('<rect').slice(1).map((chunk) => {
+      const x = chunk.match(/x="(-?\d+)"/);
+      const y = chunk.match(/y="(-?\d+)"/);
+      return [x ? Number(x[1]) : NaN, y ? Number(y[1]) : NaN];
+    });
+    /* 【count 必须与 layoutPreviewSvg 内部算法一致】
+     * 它内部是 `n || (def.slots ? def.slots.length : 3)` ——
+     * 有 slots 的用槽位数，没有的（层叠/主窗右列）用 3。
+     * 这里若直接传 undefined，computeLayout 里的 `count | 0` 会变成 0、
+     * 再被夹到 1，于是只算出 1 个格子、与 SVG 的 2 个对不上。 */
+    const def = L.layoutsById ? null : null;
+    const slotsLen = { 'v-split': 2, 'h-split': 2, 'grid-4': 4, 'grid-3': 3 }[kind];
+    const count = slotsLen || 3;
+    /* 【calc 必须转成本地数组】rawCompute 在 vm 沙箱里执行，
+     * 返回的数组原型来自另一个 realm —— 即便内容相同，
+     * deepStrictEqual 也会判不等（它比原型）。而 `.map()` 是在**沙箱数组**
+     * 上调的，结果仍属于沙箱 realm，必须先 Array.from 落到本地再取字段。 */
+    const raw = L.rawCompute(kind, { x: 0, y: 0, width: W, height: H }, count, 2);
+    const calc = Array.from(raw, (r) => [r.x, r.y]);
+    assert.deepStrictEqual(svgRects, calc,
+      kind + ' 的示意图几何应与 computeLayout 一致');
+    assert.ok(svgRects.length > 0, kind + ' 应至少画出一个格子');
+  }
 });
 
 t('WL10 三张登记表都有 win-layout', () => {

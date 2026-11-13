@@ -45,7 +45,7 @@
     upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><path d="M12 3v12"/>',
     play: '<polygon points="6 4 20 12 6 20"/>',
     stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
-    refresh: '<path d="M20.5 9.5A9 9 0 1 0 15 20.6"/><polyline points="21 3.5 20.5 9.5 14.5 9"/>',
+    refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     alert: '<path d="M10.3 3.8 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
     list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',

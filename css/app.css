@@ -1558,7 +1558,42 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
 }
 
 /* ============ 窗口布局 ============ */
-.wl-layouts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.wl-layouts {
+  display: grid; grid-template-columns: repeat(6, minmax(96px, 1fr));
+  /* 卡片等高：布局名有长有短（"四宫格" vs "三分（左大右两小）"），
+     不压齐时后者换行会把那张卡撑高，六张参差不齐。 */
+  grid-auto-rows: 1fr;
+  gap: 10px; margin-bottom: 12px;
+}
+@media (max-width: 900px) {
+  .wl-layouts { grid-template-columns: repeat(3, minmax(96px, 1fr)); }
+}
+/* 每张卡是「示意图 + 名称」竖排：图在上、字在下。
+   卡片自身有边框，选中时边框与底色同时变化 —— 只换边框的话，
+   深色主题下 primary 边框与 secondary 的对比度不够。 */
+.wl-layout-card {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 10px 8px 8px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--page-bg);
+  transition: border-color 0.15s, background 0.15s;
+}
+.wl-layout-card:hover { border-color: var(--primary); background: var(--hover-fill); }
+.wl-layout-card.active { border-color: var(--primary); background: var(--hover-fill); }
+.wl-layout-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* 固定两行高度：布局名有长有短（"四宫格" vs "三分（左大右两小）"），
+   不给固定高度的话后者换行会把卡片撑高，六张卡片参差不齐。 */
+.wl-layout-name {
+  font-size: 11px; color: var(--text-2); text-align: center;
+  line-height: 1.3; word-break: keep-all;
+  height: 2.6em; display: flex; align-items: center; justify-content: center;
+}
+.wl-layout-card.active .wl-layout-name { color: var(--primary); }
+/* 示意图里的格子：第一块用主色描边（表示顺序上的第一个），
+   其余用中性色。填充留空 —— 实心色块在深色主题下会显得过重。 */
+.wl-pv { display: block; }
+.wl-pv-first { fill: none; stroke: var(--primary); stroke-width: 1.2; }
+.wl-pv-rest { fill: none; stroke: var(--text-3); stroke-width: 1; }
+.wl-layout-card.active .wl-pv-rest { stroke: var(--text-2); }
 .wl-list {
   max-height: 320px; overflow-y: auto; margin-top: 8px;
   border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px;

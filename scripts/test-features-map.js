@@ -15,10 +15,8 @@
  * （无遗漏、无悬空），语义正确性靠 PR 时看 diff。
  */
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 
-const { t, done, ROOT } = require('./lib/harness');
+const { t, done } = require('./lib/harness');
 const F = require('./lib/features.js');
 
 t('FM1 每个测试都归属至少一个功能域', () => {
