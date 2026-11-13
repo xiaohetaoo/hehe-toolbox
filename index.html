@@ -160,5 +160,9 @@
 
   <!-- 外壳（最后加载） -->
   <script src="js/app.js"></script>
+
+  <!-- 全局命令面板（Ctrl+K）。必须排在 app.js 之后：它调用 window.App 的
+       开关动作（主题/语言/设置/首页），并复用 Registry.search 做排序。 -->
+  <script src="js/cmdk.js"></script>
 </body>
 </html>

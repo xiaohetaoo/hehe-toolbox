@@ -65,7 +65,7 @@
       'search.empty': '没有找到「{q}」相关的工具',
       'search.emptyTip': '换个说法试试，比如「压缩」「PDF」「密码」「截图」；也可以清空搜索浏览全部分类',
       'search.more': '另有 {n} 个结果，在首页搜索中查看',
-      'search.titlebar': '搜索工具，Ctrl+K 快速聚焦…',
+      'search.titlebar': '搜索工具，Ctrl+K 打开命令面板…',
 
       'home.recent': '最近使用',
       'home.categories': '按分类浏览',
@@ -331,7 +331,7 @@
       'search.empty': 'No tools found for “{q}”',
       'search.emptyTip': 'Try another word such as “compress”, “PDF”, “password” or “screenshot”; or clear the search to browse all categories',
       'search.more': '{n} more results — search on the Home page to see them',
-      'search.titlebar': 'Search tools, Ctrl+K to focus…',
+      'search.titlebar': 'Search tools, Ctrl+K for command palette…',
 
       'home.recent': 'Recently used',
       'home.categories': 'Browse by category',

@@ -623,7 +623,16 @@
     const onDocKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        focusSearch();
+        /* 【优先打开命令面板，聚焦搜索框作为兜底】
+         * 面板能直达任何工具与命令（含首页/设置/主题/语言），
+         * 比「只是把光标放进搜索框」覆盖的场景多得多。
+         * 但 cmdk.js 是独立模块，若它因为脚本加载顺序或异常没就绪，
+         * 退回到原来的聚焦行为 —— 快捷键不能变成"按了没反应"。 */
+        if (window.CmdPalette && typeof window.CmdPalette.toggle === 'function') {
+          window.CmdPalette.toggle();
+        } else {
+          focusSearch();
+        }
       }
     };
     document.addEventListener('click', onDocClick);
@@ -3048,7 +3057,23 @@
   window.App = {
     openTool, showView, toggleFavorite, setStatus, state, refresh, onCleanup,
     applyLang,
-    openSettings
+    openSettings,
+    /* 【命令面板要用的两个开关】
+     * 面板里的「切换主题 / 切换语言」不能自己再写一遍读写逻辑 ——
+     * 主题要联动主进程（APP.SET_THEME 会同步所有窗口）与扩散动画，
+     * 语言要重建整个壳。这两件事的边界都在 app.js 内部，
+     * 所以只导出「切换」这一个动作，而不是把 changeTheme 的细节暴露出去。 */
+    toggleTheme: async () => {
+      /* 当前是浅就切深。读 dataset 而不是读 store：
+       * dataset 反映**正在显示**的状态（system 模式已解析成实际明暗），
+       * 而 store 里可能是 'system' —— 按它判断会切错方向。 */
+      const cur = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+      await changeTheme(cur === 'dark' ? 'light' : 'dark');
+    },
+    toggleLang: async () => {
+      const cur = await invoke(Channels.CHANNELS.STORE.GET, 'settings.lang', 'zh').catch(() => 'zh');
+      await applyLang(cur === 'zh' ? 'en' : 'zh');
+    },
   };
   /* 跳到设置页的指定分区（如 'danger' 高危功能），可选定位到一个具体开关。
    * 供其他工具在「被高危门禁拦住」时给出可点的引导，
