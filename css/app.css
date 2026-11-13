@@ -1533,3 +1533,26 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
 .chain-report-ok { color: var(--text-3); word-break: break-all; }
 .chain-report-err { color: var(--danger, #f53f3f); word-break: break-all; }
 .chain-report-row.bad .chain-report-name { color: var(--danger, #f53f3f); }
+
+/* ============ 取色器历史色板 ============ */
+/* 12 个色块排两行；每块是纯色方块，点一下回填。
+   用 grid 而不是 flex-wrap：固定 6 列才能让两行对齐、
+   不会因为色块数量变化而错位。 */
+.color-history {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 8px; margin: 8px 0;
+}
+.color-chip {
+  aspect-ratio: 1 / 1; border-radius: 6px; cursor: pointer;
+  /* 描边用低透明度黑/白各一层：浅色块需要深边、深色块需要浅边，
+     单一层会在另一种情况下看不见边界。 */
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12);
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.color-chip:hover {
+  transform: scale(1.08);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.18);
+}
+.color-chip:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 2px;
+}

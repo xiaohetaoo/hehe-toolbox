@@ -292,7 +292,8 @@
       "test-fmt.js",
       "test-sanitize.js",
       "test-lib.js",
-      "test-concat-list.js"
+      "test-concat-list.js",
+      "test-color-picker.js"
     ]
   },
   "life": {

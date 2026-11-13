@@ -103,6 +103,42 @@
       const valEl = div('');
       valEl.style.marginTop = '10px';
 
+      /* 取色器自己的 HSL/HSV 换算。
+       * 不引用别处同名函数：color-convert 的 rgbToHsl 在另一个 register()
+       * 的闭包里，这里拿不到（eslint 的 no-undef 已经指出来了）。 */
+      function rgbToHsl(r, g, b) {
+        const rr = r / 255, gg = g / 255, bb = b / 255;
+        const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
+        const l = (max + min) / 2;
+        let h = 0, sl = 0;
+        if (max !== min) {
+          const d = max - min;
+          sl = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+          if (max === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0));
+          else if (max === gg) h = ((bb - rr) / d + 2);
+          else h = ((rr - gg) / d + 4);
+          h *= 60;
+        }
+        return [Math.round(h), Math.round(sl * 100), Math.round(l * 100)];
+      }
+
+      function rgbToHsv(r, g, b) {
+        const rr = r / 255, gg = g / 255, bb = b / 255;
+        const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
+        const v = max;
+        const s2 = max === 0 ? 0 : (max - min) / max;
+        let h = 0;
+        if (max !== min) {
+          const d = max - min;
+          if (max === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0));
+          else if (max === gg) h = ((bb - rr) / d + 2);
+          else h = ((rr - gg) / d + 4);
+          h *= 60;
+        }
+        return [Math.round(h), Math.round(s2 * 100), Math.round(v * 100)];
+      }
+
+
       /* 【把"鼠标位置 → 画布像素"抽成纯函数，为了能测】
        *
        * 原实现：px = Math.round((e.clientX - cap.display.bounds.x) * dpr)
@@ -132,6 +168,91 @@
           return { px, py, cx, cy, inRange: false };
         }
         return { px, py, cx: px, cy: py, inRange: true };
+      }
+
+      /* ---- 历史色板 ---- */
+      /* 存最近 12 个颜色。12 是两行 6 列的容量：
+       * 再多会占掉取色区的位置，再少又不足以"取一组配色"。 */
+      const HISTORY_MAX = 12;
+      const history = [];       // [{ hex, r, g, b }]
+      const historyBox = div('color-history');
+
+      function rgbToHex(r, g, b) {
+        return '#' + [r, g, b].map((x) => {
+          const v = Math.max(0, Math.min(255, Math.round(x)));
+          return v.toString(16).padStart(2, '0');
+        }).join('').toUpperCase();
+      }
+
+      /* CSS 变量写法：design token 场景下比裸 HEX 好用得多 */
+      function cssVarOf(hex) { return 'var(--c-' + hex.replace('#', '').toLowerCase() + ')'; }
+
+      /* Win32 COLORREF 是 0x00BBGGRR（注意是 BGR 顺序，不是 RGB）——
+       * 这个顺序反直觉，写反了得到的颜色会红蓝互换。 */
+      function colorRefOf(r, g, b) {
+        const v = ((b & 0xff) << 16) | ((g & 0xff) << 8) | (r & 0xff);
+        return '0x' + v.toString(16).toUpperCase().padStart(6, '0');
+      }
+
+      function hslOf(r, g, b) {
+        const [h, s, l] = rgbToHsl(r, g, b);
+        return h + ', ' + s + '%, ' + l + '%';
+      }
+
+      function pushHistory(hex, r, g, b) {
+        /* 去重：同一个颜色反复取（比如对着同一个按钮点了几次）
+         * 只留最近一次，否则历史里全是同一个色，没有参考价值。 */
+        const i = history.findIndex((x) => x.hex === hex);
+        if (i >= 0) history.splice(i, 1);
+        history.unshift({ hex, r, g, b });
+        if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
+        paintHistory();
+      }
+
+      function paintHistory() {
+        historyBox.innerHTML = '';
+        if (!history.length) {
+          historyBox.appendChild(div('field-hint', '取到的颜色会出现在这里，最多保留 ' + HISTORY_MAX + ' 个'));
+          return;
+        }
+        history.forEach((c) => {
+          const chip = div('color-chip');
+          chip.style.background = c.hex;
+          chip.title = (c.hex || rgbToHex(c.r, c.g, c.b))
+            + ' · rgb(' + c.r + ', ' + c.g + ', ' + c.b + ')';
+          window.ui.makeButtonLike(chip, '颜色 ' + c.hex);
+          /* 点击回填到主取色区，方便"再取一个对比"或复制别的格式 */
+          chip.addEventListener('click', () => {
+            /* 回填到主取色区：只有 preview 与 valEl 两个展示位，
+             * 不像 color-convert 那样有四组输入框。 */
+            preview.style.background = c.hex;
+            valEl.innerHTML = '<span class="mono" style="user-select:text">'
+              + c.hex + ' · rgb(' + c.r + ', ' + c.g + ', ' + c.b + ')</span> ';
+            valEl.appendChild(btn('复制 HEX', 'btn-sm btn-text', () => copyText(c.hex)));
+            paintFormats(c.hex, c.r, c.g, c.b);
+          });
+          historyBox.appendChild(chip);
+        });
+      }
+
+      /* 多格式输出行：四种"别的地方要用"的写法，各自一个复制按钮。
+       * 取色器的价值有一半在"不用自己换算"——所以这里给的是成品字符串。 */
+      const formatsBox = div('');
+      function paintFormats(hex, r, g, b) {
+        formatsBox.innerHTML = '';
+        const rows = [
+          ['HEX', hex],
+          ['rgb()', 'rgb(' + r + ', ' + g + ', ' + b + ')'],
+          ['hsl()', 'hsl(' + hslOf(r, g, b).replace(/,\s*/g, ' ').replace(/%,\s*/g, '%, ').replace(', ', ', ') + ')'],
+          ['CSS 变量', cssVarOf(hex)],
+          ['Win32 COLORREF', colorRefOf(r, g, b)],
+        ];
+        for (const [label, val] of rows) {
+          formatsBox.appendChild(div('form-row',
+            h('span', { class: 'form-label', style: { minWidth: '110px' } }, label),
+            h('code', { class: 'mono', style: { flex: '1', userSelect: 'text' } }, val),
+            btn('复制', 'btn-sm btn-text', () => copyText(val))));
+        }
       }
 
       async function pick() {
@@ -194,6 +315,9 @@
               const d = ctx.getImageData(80, 80, 1, 1).data;
               const hex = '#' + [d[0], d[1], d[2]].map(x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
               preview.style.background = hex;
+              /* 取到的颜色同时进历史色板：连续取几个色再一起去用是常态，
+               * 每取一个就覆盖上一个的话，用户必须"取一个粘一个"。 */
+              pushHistory(hex, d[0], d[1], d[2]);
               valEl.innerHTML = `<span class="mono" style="user-select:text">${hex} · rgb(${d[0]}, ${d[1]}, ${d[2]})</span> `;
               valEl.appendChild(btn('复制 HEX', 'btn-sm btn-text', () => copyText(hex)));
             } catch (err) { toast('取色失败', 'error'); }
@@ -211,6 +335,20 @@
         btn('开始取色', 'btn-primary btn-lg', pick, 'target'),
         div('form-row', preview, valEl),
         div('field-hint', '点击后截取当前屏幕，在放大镜中选取像素颜色，按 Esc 退出')));
+      page.appendChild(div('card', div('card-title', '复制为'),
+        div('field-hint', '取色后这里会出现各种可直接粘贴的写法'),
+        formatsBox));
+      page.appendChild(div('card', div('card-title', '历史色板'),
+        div('field-hint', '点色块可回填到上方并查看各格式'),
+        historyBox,
+        div('form-row', btn('清空历史', 'btn-sm btn-text', () => {
+          history.length = 0;
+          paintHistory();
+        }))));
+      /* 初次渲染：两处都是空容器，不调一次的话页面刚打开时
+       * "复制为"与"历史色板"两个卡片里什么都没有，看起来像坏了。 */
+      paintHistory();
+      paintFormats('#165DFF', 22, 93, 255);
     }
   });
 

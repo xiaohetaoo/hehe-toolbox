@@ -112,3 +112,5 @@ scripts/test-sweep-preview.js | A=1 | B=0 | exact:读 main.js 原文找 sweepPre
 scripts/test-cmdk.js | A=1 | B=0 | exact:读源码核对命令面板的接线（依赖方向、导出函数、加载顺序、Ctrl+K 去向）。运行时已由 CDP 真机走查覆盖 14 项，Node 侧构造不出窗口与焦点。
 scripts/test-chain.js | A=1 | B=0 | exact:读源码核对工具链的操作通道签名（位置参数 vs 对象、单文件 vs 批量、图片压缩走 canvas）。这类错误传错了也不报错，只能对源码判；真机跑一遍已在 CDP 覆盖。
 scripts/test-module-intro.js | A=1 | B=0 | exact:读 js/registry.js 的 MODULES 原文核对 intro/introEn 的条数、长度、是否抄了 desc、英文里有无中文。这些都是对源码文本的判定；卡片真的显示介绍由 CDP 真机走查覆盖（4 项 + 深浅色截图）。
+scripts/test-color-picker.js | A=1 | B=0 | exact:读 js/tools/dev.js 原文核对 COLORREF 的 BGR 组合式、HSL 的 gg<bb 修正、历史去重与初次渲染调用。换算本身的正确性由行为断言覆盖（CP1-CP3），此处的源码匹配只做「实现与测试抄本不漂移」的印证。
+scripts/test-pdf-pages.js | A=1 | B=0 | exact:读 js/tools/pdf-pages.js 原文核对旋转累加、从源文件重新 load、删空回滚、三表登记。这些是「逻辑结构」而非可计算的值；parseRange 的真实行为已由 vm 沙箱行为断言覆盖（PP1-PP4）。
