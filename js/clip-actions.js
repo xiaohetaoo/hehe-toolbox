@@ -82,6 +82,28 @@
           await showPathProps(analysis.raw.path);
           return;
         }
+        /* 【三个"复制为…"动作】纯文本变换，直接写剪贴板后关面板。
+         * 复制完自动关：用户要的是内容，不是"已复制"的提示墙。 */
+        if (actionId === 'pathUnix' || actionId === 'pathName' || actionId === 'pathDir') {
+          const p = String(analysis.raw.path || '');
+          let out = p;
+          if (actionId === 'pathUnix') {
+            /* WSL / Git Bash 都吃正斜杠。UNC 的 \\server\share 转成
+             * //server/share 也合法 —— 一并处理，不做特例。 */
+            out = p.replace(/\\/g, '/');
+          } else if (actionId === 'pathName') {
+            out = p.replace(/^.*[\\/]/, '');
+          } else {
+            const i2 = p.search(/[\\/][^\\/]*$/);
+            /* 路径就是根（C:\ 或 \\server\share）时没有"所在目录"，
+             * 给原值比给空串好 —— 空串复制出去用户会以为动作坏了。 */
+            out = i2 > 0 ? p.slice(0, i2) : p;
+          }
+          await api.invoke(Ch.CLIP.WRITE_TEXT, out);
+          ui.toast('已复制：' + (out.length > 40 ? out.slice(0, 40) + '…' : out), 'success');
+          close();
+          return;
+        }
         if (actionId === 'imgPin') {
           /* 贴图走 snip:pin-clipboard（主进程直接读剪贴板图片并开贴图窗），
            * 不需要先把 dataURL 传过去 —— 那样多绕一次序列化。 */

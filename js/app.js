@@ -9,6 +9,8 @@
   const T = (k, v) => (window.i18n ? window.i18n.t(k, v) : k);
   const MN = (m) => (R.modName ? R.modName(m) : (m && m.name) || '');
   const MD = (m) => (R.modDesc ? R.modDesc(m) : (m && m.desc) || '');
+  /* 分类介绍（比 desc 长）。R.modIntro 自带语言选择与缺省回退。 */
+  const MI = (m) => (R.modIntro ? R.modIntro(m) : (m && m.desc) || '');
   /* 工具名/工具副标题的双语取值。与 MN/MD 同一套约定：英文缺失时回退中文。 */
   const TN = (t) => (R.toolName ? R.toolName(t) : (t && t.name) || '');
   const TD = (t) => (R.toolDesc ? R.toolDesc(t) : (t && t.desc) || '');
@@ -1886,10 +1888,20 @@
       const count = R.byModule(m.id).length;
       const c = div('home-cat');
       makeButtonLike(c);
+      /* title 用一行关键词（悬停看细节），卡片内显示 intro 首句。
+       * 【为什么卡片里也要露一句】原来只有 title，不悬停就完全不知道
+       * "系统与硬件"里装的是什么、和"安全与密码"有什么区别。
+       * 露首句的成本是每格多一行，换来的是不用逐个点进去试。 */
       c.title = MD(m);
       c.appendChild(h('span', { class: 'hc-icon' }, iconLg(m.icon)));
       c.appendChild(h('span', { class: 'hc-name' }, MN(m)));
       c.appendChild(h('span', { class: 'hc-count' }, String(count)));
+      const intro = MI(m);
+      if (intro) {
+        /* 只取第一句（到第一个句号/分号），再多会被两点截断省略号吃掉 */
+        const first = String(intro).split(/[。；;]|\.[ ]/)[0];
+        c.appendChild(h('span', { class: 'hc-intro' }, first));
+      }
       c.addEventListener('click', () => showView({ type: 'module', moduleId: m.id }));
       return c;
     })));
@@ -1909,8 +1921,12 @@
   function renderModulePage(page, moduleId) {
     const m = R.MODULES.find(x => x.id === moduleId);
     if (!m) return;
+    /* 模块页顶部显示完整 intro（不限首句）：进到这一层说明用户已经选了
+     * 这个分类，正是需要"这一包到底能干什么"的时候，多两行也值得。 */
     page.appendChild(div('tool-header', div('th-icon', iconLg(m.icon)),
-      div('', h('h2', null, MN(m)), h('div', { class: 'th-desc' }, MD(m)))));
+      div('', h('h2', null, MN(m)),
+        h('div', { class: 'th-desc' }, MD(m)),
+        MI(m) && MI(m) !== MD(m) ? h('div', { class: 'th-intro' }, MI(m)) : null)));
     const card = div('card');
     card.appendChild(div('tool-grid', ...R.byModule(moduleId).map(t => toolCard(t))));
     page.appendChild(card);

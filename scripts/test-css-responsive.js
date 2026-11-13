@@ -17,8 +17,12 @@ const { t, done, ROOT } = require('./lib/harness');
 
 t('CSS4 首页分类网格必须有窄视口断点', () => {
   const css = fs.readFileSync(path.join(ROOT, 'css', 'app.css'), 'utf8');
-  /* 锁的是：固定 4 列且无媒体查询覆盖 —— 窄窗口下分类卡片溢出视口。 */
-  assert.ok(/\.home-cats\s*\{[^}]*repeat\(4,\s*1fr\)/.test(css), '.home-cats 应保持 4 列基准');
+  /* 锁的是：宽屏下是等宽多列网格（不看死具体列数 —— 加介绍后
+   * 从 4 列改成了 3 列，硬编码列数会让"调整排版"这种正当改动报红）。
+   * 必须有 grid-template-columns: repeat(N, 1fr) 且 N>=2。 */
+  const base = css.match(/\.home-cats\s*\{[^}]*grid-template-columns:\s*repeat\((\d+),\s*1fr\)/);
+  assert.ok(base, '.home-cats 应为等宽多列网格');
+  assert.ok(parseInt(base[1], 10) >= 2, '列数应 >= 2，实际 ' + base[1]);
   /* 锁的是：断点被删（修复回退）。 */
   const mq = css.match(/@media\s*\(max-width:\s*\d+px\)\s*\{\s*\.home-cats\s*\{[^}]*repeat\(2/);
   assert.ok(mq, '缺少窄视口降两列的 @media 覆盖（.home-cats 会在 ≤800px 溢出）');
@@ -26,6 +30,9 @@ t('CSS4 首页分类网格必须有窄视口断点', () => {
    * 小于 800 则断点不生效。 */
   const w = mq && parseInt(mq[0].match(/max-width:\s*(\d+)/)[1], 10);
   assert.ok(w >= 800 && w <= 1023, '断点宽度 ' + w + ' 不在合理区间 [800,1023]');
+  /* 锁的是：所有卡片等高。介绍长短不一时，不锁 auto-rows 会让网格
+   * 出现三四种高度、看着参差不齐。 */
+  assert.ok(/grid-auto-rows:\s*1fr/.test(css), '.home-cats 需 grid-auto-rows: 1fr 保证卡片等高');
 });
 
 done();

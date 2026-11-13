@@ -758,25 +758,83 @@ body {
 /* 分类浏览区：搜索时整体让位 */
 .home-browse.hidden { display: none; }
 .home-recent { margin-bottom: 14px; }
-.home-cats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-/* 【响应式断点】窗口窄于 900px 时 4 列网格会溢出（真机 800x600 实测
- * .home-cat 右缘超出视口 6 处）—— 分类名与计数被截断在窗外。
- * 桌面工具箱最小可用宽度约 720px，两列在 640px 视口仍放得下；
- * 1024px 以上维持 4 列（大屏排满更好看）。 */
+/* 【3 列而不是 4 列】
+ * 加介绍之前 4 列够用（只有图标+名称+数量，一行就完）。
+ * 加了介绍后 4 列每格只有约 250px —— 一句介绍要挤成三四行，
+ * 或者被截掉大半，读起来比没有还累。3 列每格约 340px，
+ * 12px 字一行约 28 个字，三行正好说得清一件事。
+ *
+ * 【grid-auto-rows: 1fr 让所有卡片等高】
+ * 介绍长短不一（有的 40 字、有的 70 字），不加这条时每行高度跟着
+ * 最长的那个走，10 张卡片会出现三四种高度，网格看着参差不齐。 */
+.home-cats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: 1fr;
+  gap: 14px;
+}
+/* 【响应式断点】窗口窄于 1023px 时 3 列会溢出（真机 800x600 实测
+ * .home-cat 右缘超出视口）—— 分类名与计数被截断在窗外。
+ * 桌面工具箱最小可用宽度约 720px，两列在 640px 视口仍放得下。 */
 @media (max-width: 1023px) {
-  .home-cats { grid-template-columns: repeat(2, 1fr); }
+  .home-cats { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+}
+@media (max-width: 680px) {
+  .home-cats { grid-template-columns: 1fr; gap: 10px; }
 }
 .home-cat {
-  display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 8px;
+  /* 【网格布局：两行 —— 首行图标/名称/数量，次行介绍】
+   * 原来是单行 flex（图标+名称+数量），加不了介绍段落。
+   * 用 grid 的 span 定位：图标与数量固定在首行两端，
+   * 名称跟在图标后，介绍整行铺在第二行。 */
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "icon name count"
+    "intro intro intro";
+  align-content: start; gap: 8px 12px;
+  /* 【间距是"拥挤感"的主要来源，逐项调过】
+   * padding 10/12 → 18/20：原值来自"只有一行字"的时代，
+   * 加了两行介绍后 10px 让文字几乎顶着边框。
+   * 行高 1.45 → 1.8：中文小字号下 1.45 会让上下行粘连成一块灰疙瘩。
+   * 首行与介绍间距 2 → 8：两段文字需要有呼吸感，
+   * 贴太近会被读成"名称的一部分。 */
+  padding: 18px 20px; border-radius: 10px;
   border: 1px solid transparent; cursor: pointer; color: var(--text-2); font-size: 13px;
   background: var(--page-bg); transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .home-cat:hover { border-color: var(--primary); color: var(--primary); background: var(--hover-fill); }
-.home-cat .hc-icon { display: flex; color: var(--text-3); transition: color 0.15s; }
+.home-cat .hc-icon { grid-area: icon; display: flex; align-items: center; color: var(--text-3); transition: color 0.15s; }
 .home-cat:hover .hc-icon { color: var(--primary); }
-.home-cat .hc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.home-cat .hc-count { margin-left: auto; font-size: 11px; color: var(--text-3); flex: none; }
+.home-cat .hc-name {
+  grid-area: name; align-self: center;
+  font-size: 14px; font-weight: 500; letter-spacing: 0.2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.home-cat .hc-count {
+  grid-area: count; align-self: center;
+  font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums;
+}
 .home-cat:hover .hc-count { color: var(--primary); }
+/* 介绍：行数上限见 -webkit-line-clamp。
+ * 行高 1.8（原 1.45）：中文小字号下 1.45 会让上下行贴得太近，
+ * 整段看起来像一块灰疙瘩 —— 这是"拥挤"的核心来源。
+ * max-width 用 ch 限制行宽：卡片在 2 列时会很宽（约 620px），
+ * 一行能塞下 50 个字，长句子会拉成横条、眼睛难以换行定位。
+ * 限制在 42ch（约 42 个中文字符）后，行宽稳定在易读区间。 */
+.home-cat .hc-intro {
+  grid-area: intro;
+  font-size: 12px; line-height: 1.8; color: var(--text-3);
+  max-width: 42ch;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.home-cat:hover .hc-intro { color: var(--text-2); }
+/* 模块页顶部的完整介绍 */
+.th-intro {
+  font-size: 12px; line-height: 1.6; color: var(--text-3);
+  margin-top: 6px; max-width: 72ch;
+}
 
 .recent-row { display: flex; gap: 10px; flex-wrap: wrap; padding-bottom: 4px; }
 .recent-chip {

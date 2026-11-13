@@ -111,3 +111,4 @@ scripts/test-css-responsive.js | A=1 | B=0 | exact:读 css/app.css 原文找 .ho
 scripts/test-sweep-preview.js | A=1 | B=0 | exact:读 main.js 原文找 sweepPreviewTmp 的函数体与 Promise.all 接线 —— 与 test-assertion-guard 同理，readSrc 只服务 js/ 下应用源码且剥注释语义无关；这里读的是函数名与目录字面量。
 scripts/test-cmdk.js | A=1 | B=0 | exact:读源码核对命令面板的接线（依赖方向、导出函数、加载顺序、Ctrl+K 去向）。运行时已由 CDP 真机走查覆盖 14 项，Node 侧构造不出窗口与焦点。
 scripts/test-chain.js | A=1 | B=0 | exact:读源码核对工具链的操作通道签名（位置参数 vs 对象、单文件 vs 批量、图片压缩走 canvas）。这类错误传错了也不报错，只能对源码判；真机跑一遍已在 CDP 覆盖。
+scripts/test-module-intro.js | A=1 | B=0 | exact:读 js/registry.js 的 MODULES 原文核对 intro/introEn 的条数、长度、是否抄了 desc、英文里有无中文。这些都是对源码文本的判定；卡片真的显示介绍由 CDP 真机走查覆盖（4 项 + 深浅色截图）。

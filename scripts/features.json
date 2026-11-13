@@ -75,7 +75,8 @@
       "test-breadcrumb-*",
       "test-icon-consistency.js",
       "test-css-*",
-      "test-ui-*"
+      "test-ui-*",
+      "test-module-intro.js"
     ]
   },
   "i18n": {
