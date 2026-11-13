@@ -116,7 +116,7 @@
       // 右键菜单：两个同类
       'ctxmenu-manage', 'win-classic-menu',
       // 剩下的单项
-      'autostart', 'window-manager'
+      'autostart', 'window-manager', 'win-layout'
     ],
     file: [
       // 「删不掉、提示被占用，但不知道谁占的」是中文 Windows 上最高频的痛点，

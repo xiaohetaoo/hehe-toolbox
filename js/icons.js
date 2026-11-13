@@ -45,7 +45,7 @@
     upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><path d="M12 3v12"/>',
     play: '<polygon points="6 4 20 12 6 20"/>',
     stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
-    refresh: '<polyline points="21 3 21 8 16 8"/><path d="M21 8a9 9 0 1 0 2.4 8"/><polyline points="3 21 3 16 8 16"/><path d="M3 16a9 9 0 1 0-2.4-8" transform="translate(0,0)" opacity="0"/><path d="M3 16A9 9 0 0 0 21 8"/>',
+    refresh: '<path d="M20.5 9.5A9 9 0 1 0 15 20.6"/><polyline points="21 3.5 20.5 9.5 14.5 9"/>',
     check: '<polyline points="20 6 9 17 4 12"/>',
     alert: '<path d="M10.3 3.8 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
     list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
@@ -89,7 +89,11 @@
     rotate: '<polyline points="23 4 23 10 17 10"/><path d="M20.5 15a9 9 0 1 1-2-9.3L23 10"/>',
     'arrow-right': '<path d="M5 12h14"/><polyline points="13 6 19 12 13 18"/>',
     'arrow-left': '<path d="M19 12H5"/><polyline points="11 18 5 12 11 6"/>',
-    table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>'
+    table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
+    /* 窗口布局：外框 + 左半竖线 + 右半横线，直观表示分屏 */
+    layout: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M12 12h9"/>',
+    /* 层叠：三个错开的矩形，表示多层窗口 */
+    layers: '<rect x="3" y="8" width="13" height="13" rx="2"/><path d="M8 3h11a2 2 0 0 1 2 2v11"/>'
   };
   window.iconSvg = function (name, cls) {
     const body = I[name] || I.info;

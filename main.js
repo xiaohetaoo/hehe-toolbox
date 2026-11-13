@@ -1213,6 +1213,9 @@ handle(CH.APP.GET_INFO, () => ({
   electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome,
   platform: process.platform,
   userData: app.getPath('userData'),
+  /* 主显示器工作区（不含任务栏）。窗口布局工具靠它算格子 ——
+   * 用 workArea 而不是 bounds：后者含任务栏区域，摆过去的窗口底部会被挡住。 */
+  workArea: (function(){ const d = screen.getPrimaryDisplay(); return d.workArea; })(),
   exePath: app.getPath('exe'),
   hostname: os.hostname(),
   username: os.userInfo().username
@@ -3016,10 +3019,23 @@ delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
 [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x,int y,int cx,int cy,uint flags);
 [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h,int i,int v);
 [DllImport("user32.dll")] static extern bool SetLayeredWindowAttributes(IntPtr h, uint cr, byte alpha, uint flags);
+[DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
 public static void List(){ EnumWindows(delegate(IntPtr h, IntPtr l){ if(!IsWindowVisible(h)) return true; var sb=new StringBuilder(512); if(GetWindowText(h,sb,512)==0) return true; uint pid; GetWindowThreadProcessId(h,out pid); string pn=""; try{pn=Process.GetProcessById((int)pid).ProcessName;}catch{} int ex=GetWindowLong(h,-20); Console.WriteLine(h.ToInt64()+"\\t"+pid+"\\t"+(((ex&0x8)!=0)?1:0)+"\\t"+pn+"\\t"+sb.ToString().Replace("\\t"," ")); return true;}, IntPtr.Zero); }
 public static string Topmost(long h, bool on){ SetWindowPos((IntPtr)h, on?new IntPtr(-1):new IntPtr(-2),0,0,0,0,0x3); return "OK"; }
 public static string Bottom(long h){ SetWindowPos((IntPtr)h, new IntPtr(1),0,0,0,0,0x3); return "OK"; }
 public static string Opacity(long h, int alpha){ var p=(IntPtr)h; int ex=GetWindowLong(p,-20); if(alpha>=255){ SetWindowLong(p,-20,ex & ~0x80000); } else { if((ex&0x80000)==0) SetWindowLong(p,-20,ex|0x80000); SetLayeredWindowAttributes(p,0,(byte)alpha,2);} return "OK"; }
+/* 摆位置。三件事缺一不可：
+ *   1) ShowWindow(SW_RESTORE)：最大化/最小化的窗口直接 SetWindowPos
+ *      不会按预期移动（Win32 的既定行为，不是 bug）；
+ *   2) SetWindowPos 用 SWP_NOZORDER | SWP_NOACTIVATE：不动 Z 序、不抢焦点
+ *      —— 一次摆四个窗口时若每个都激活，最后焦点会落在最后一个上；
+ *   3) 返回 "OK" 让调用方能区分「成功」与「静默没动」。 */
+public static string Place(long h, int x, int y, int w, int hgt){
+  var p=(IntPtr)h;
+  ShowWindow(p, 9);
+  SetWindowPos(p, IntPtr.Zero, x, y, w, hgt, 0x4 | 0x10);
+  return "OK";
+}
 }}
 `;
 async function winmgrRun(method) {
@@ -3038,6 +3054,25 @@ handle(CH.WINMGR.LIST, async () => {
 handle(CH.WINMGR.TOPMOST, (e, hwnd, on) => winmgrRun(`[HeheWin.Util]::Topmost(${+hwnd}, ${on ? '$true' : '$false'})`));
 handle(CH.WINMGR.BOTTOM, (e, hwnd) => winmgrRun(`[HeheWin.Util]::Bottom(${+hwnd})`));
 handle(CH.WINMGR.OPACITY, (e, hwnd, alpha) => winmgrRun(`[HeheWin.Util]::Opacity(${+hwnd}, ${Math.max(20, Math.min(255, alpha | 0))})`));
+/* 把窗口摆到指定矩形（窗口布局工具）。
+ *
+ * 【参数全部强制取整并夹取】坐标来自渲染层的布局计算，理论上已经是整数，
+ * 但 IPC 是信任边界之外 —— 传进来 NaN/负数会让 SetWindowPos 把窗口
+ * 挪到屏幕外甚至出现诡异尺寸，而用户看不到任何报错。
+ * 这里统一 (x|0) 再夹到合理范围。 */
+handle(CH.WINMGR.PLACE, (e, hwnd, x, y, w, hgt) => {
+  const num = (v, lo, hi, def) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return def;
+    return Math.max(lo, Math.min(hi, Math.round(n)));
+  };
+  const px = num(x, -30000, 30000, 0);
+  const py = num(y, -30000, 30000, 0);
+  /* 最小 100×80：再小就不是"窗口"了，而且有些应用会在极小时崩溃 */
+  const pw = num(w, 100, 20000, 800);
+  const ph = num(hgt, 80, 20000, 600);
+  return winmgrRun(`[HeheWin.Util]::Place(${+hwnd}, ${px}, ${py}, ${pw}, ${ph})`);
+});
 
 /* ================= IPC: 文件占用解锁（Restart Manager） =================
  * 中文 Windows 上最高频的痛点之一：删不掉、提示被占用，但不知道谁占的。

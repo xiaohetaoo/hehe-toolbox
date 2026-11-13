@@ -219,7 +219,8 @@
       "lib/disk-health.js",
       "lib/power-gate.js",
       "lib/spawn-detached.js",
-      "ipc/ctx.js"
+      "ipc/ctx.js",
+      "js/tools/win-layout.js"
     ],
     "tests": [
       "test-disk-health.js",
@@ -227,7 +228,8 @@
       "test-proc*",
       "test-misc-*",
       "test-ipc-ctx*",
-      "test-job-ownership.js"
+      "test-job-ownership.js",
+      "test-win-layout.js"
     ]
   },
   "text": {

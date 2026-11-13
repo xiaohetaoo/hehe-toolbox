@@ -1556,3 +1556,20 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
 .color-chip:focus-visible {
   outline: 2px solid var(--primary); outline-offset: 2px;
 }
+
+/* ============ 窗口布局 ============ */
+.wl-layouts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.wl-list {
+  max-height: 320px; overflow-y: auto; margin-top: 8px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px;
+}
+.wl-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 12px;
+}
+.wl-row:last-child { border-bottom: none; }
+.wl-proc { color: var(--text-3); min-width: 90px; flex-shrink: 0; font-size: 11px; }
+.wl-title {
+  flex: 1; color: var(--text-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

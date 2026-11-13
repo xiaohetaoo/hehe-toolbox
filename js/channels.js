@@ -366,6 +366,8 @@
       LIST: 'winmgr:list',
       OPACITY: 'winmgr:opacity',
       TOPMOST: 'winmgr:topmost',
+      /* 与 lib/channels.js 必须逐字一致（test-channels-sync 会校验值） */
+      PLACE: 'winmgr:place',
     },
 
     /* ---- zip 压缩与解压 ---- */
