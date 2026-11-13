@@ -2,7 +2,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, fmtBytes } = window.ui;
+  const { escapeHtml, div, btn, toast, fmtBytes } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
 

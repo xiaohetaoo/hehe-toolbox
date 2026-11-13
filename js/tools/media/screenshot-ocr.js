@@ -2,7 +2,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, filePicker, progressEl } = window.ui;
+  const { escapeHtml, div, btn, toast, copyText, filePicker, progressEl } = window.ui;
   const { invoke } = window.api;
   /* OCR 的超时与失败归因（lib/ocr-guard.js，UMD 挂到 window） */
   const OcrGuard = window.OcrGuard;

@@ -2,7 +2,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, guard, toast, copyText, confirmBox, alertBox, filePicker, renderTable, fmtBytes, progressEl } = window.ui;
+  const { escapeHtml, div, btn, guard, toast, copyText, confirmBox, alertBox, filePicker, renderTable, fmtBytes, progressEl } = window.ui;
   const { invoke } = window.api;
   /* EXIF 解析搬到了 lib/exif.js（纯函数，可单测，也被 exif-view 复用）。
    * 【为什么用 require 而不是 window.xxx】

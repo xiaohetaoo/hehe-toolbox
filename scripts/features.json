@@ -76,7 +76,8 @@
       "test-icon-consistency.js",
       "test-css-*",
       "test-ui-*",
-      "test-module-intro.js"
+      "test-module-intro.js",
+      "test-markdown-sanitize.js"
     ]
   },
   "i18n": {

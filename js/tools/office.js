@@ -3,7 +3,7 @@
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-  const { div, btn, toast, copyText, filePicker, fmtBytes } = window.ui;
+  const { escapeHtml, div, btn, toast, copyText, filePicker, fmtBytes } = window.ui;
   const { invoke } = window.api;
   const MOD = 'office';
 
@@ -334,7 +334,15 @@
         const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p);
         if (isMd && window.marked) {
           const box = div('md-view');
-          box.innerHTML = window.DOMPurify ? DOMPurify.sanitize(window.marked.parse(r.content)) : window.marked.parse(r.content);
+          /* 【无 sanitizer 时退化为纯文本，不是原样渲染】
+   * marked 默认不过滤脚本；DOMPurify 缺失意味着环境异常，
+   * 此时应"降级为纯文本预览"而不是把未过滤 HTML 写进 innerHTML ——
+   * 打开一个含脚本的 .md 文件就执行脚本，是真实的 XSS 路径。 */
+  if (window.DOMPurify) {
+    box.innerHTML = DOMPurify.sanitize(window.marked.parse(r.content));
+  } else {
+    box.textContent = r.content;
+  }
           box.style.cssText = 'max-width:800px;margin:0 auto;line-height:1.7';
           view.appendChild(box);
         } else {

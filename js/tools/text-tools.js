@@ -2,7 +2,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, convertLayout, renderTable, fmtNum, makeButtonLike } = window.ui;
+  const { escapeHtml, div, btn, toast, copyText, convertLayout, renderTable, fmtNum, makeButtonLike } = window.ui;
   const { invoke } = window.api;
   const MOD = 'text';
 
@@ -312,7 +312,7 @@
       const TAG_MARK = /^<!--hehe:tags:(.*)-->$/m;
       function renderMd() {
         if (!window.marked) return;
-        preview.innerHTML = window.DOMPurify ? DOMPurify.sanitize(window.marked.parse(ta.value || '')) : window.marked.parse(ta.value || '');
+        if (!window.DOMPurify) { preview.textContent = ta.value || ''; } else { preview.innerHTML = DOMPurify.sanitize(window.marked.parse(ta.value || '')); }
       }
       ta.addEventListener('input', renderMd);
       async function refreshList() {

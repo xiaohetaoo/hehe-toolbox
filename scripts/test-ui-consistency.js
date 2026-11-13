@@ -80,6 +80,8 @@ t('UC3 JS style 对象里不写死 #hex 颜色', () => {
     const rel = path.relative(ROOT, f).replace(/\\/g, '/');
     const lines = fs.readFileSync(f, 'utf8').split('\n');
     lines.forEach((l, i) => {
+      /* 锁的是：写死颜色不跟主题（换主色/深浅色时它们原地不动）——
+       * v0.8.6 审查确认全项目零处，这里锁住这个状态。 */
       if (/style:\s*\{[^}]*color:\s*'#(?:[0-9a-fA-F]{3,6})'/.test(l) && !/^\s*(\/\/|\*)/.test(l)) {
         bad.push(rel + ':' + (i + 1));
       }
@@ -97,7 +99,9 @@ t('UC4 window.ui 导出面必须覆盖 Object.assign(window) 全部成员', () =
    *   · 解构能用、全局是 undefined（反向）。
    * 43 个工具文件解构 window.ui，这份清单必须完整覆盖全局导出。 */
   const uiSrc = fs.readFileSync(path.join(ROOT, 'js', 'ui.js'), 'utf8');
+  /* 锁的是：两份导出面都要能解析 —— 解析不到说明某一面的形态被改了（重构未同步）。 */
   const assignLine = uiSrc.match(/Object\.assign\(window,\s*\{([^}]*)\}\)/);
+  /* 锁的是：window.ui 这一面同样要能解析（43 个工具文件解构它）。 */
   const uiLine = uiSrc.match(/window\.ui = \{([^}]*)\};/);
   assert.ok(assignLine && uiLine, '两份导出面都要能解析到');
   const parse = (txt) => new Set(txt.split(',').map((x) => x.trim()).filter(Boolean));
@@ -123,7 +127,11 @@ t('UC5 工具文件显式解构 escapeHtml（错误路径用法不再依赖隐�
   ];
   const missing = [];
   for (const rel of files) {
+    /* 锁的是：读这个文件是为了核对解构行 —— escapeHtml 的显式声明
+     * 不回退（上一轮定的规范），重构成 window.ui.xxx 直调时这里要同步改。 */
     const s = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    /* 锁的是：解构行必须存在（重构成 window.ui.xxx 直调时这里要同步改）；
+     * escapeHtml 的显式声明不回退（上一轮定的规范）。 */
     const d = s.match(/const \{([^}]*)\} = window\.ui;/);
     if (!d || !/escapeHtml/.test(d[1])) missing.push(rel);
   }

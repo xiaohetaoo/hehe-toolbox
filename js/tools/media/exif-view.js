@@ -2,7 +2,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, filePicker } = window.ui;
+  const { escapeHtml, div, btn, toast, filePicker } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
   /* 文案取词（与 qr / hash 同一套约定）：以中文原文作键，

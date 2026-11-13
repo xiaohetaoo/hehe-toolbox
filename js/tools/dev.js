@@ -3,7 +3,7 @@
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-  const { div, btn, toast, copyText, fmtBytes, renderTable } = window.ui;
+  const { escapeHtml, div, btn, toast, copyText, fmtBytes, renderTable } = window.ui;
   const { invoke, isDesktop } = window.api;
   const MOD = 'dev';
 
@@ -607,7 +607,8 @@
       `);
       function renderMd() {
         if (!window.marked) { view.innerHTML = '<span class="field-err">marked 库未加载</span>'; return; }
-        try { view.innerHTML = window.DOMPurify ? DOMPurify.sanitize(window.marked.parse(ta.value || '')) : window.marked.parse(ta.value || ''); }
+        if (!window.DOMPurify) { view.textContent = ta.value; return; }  // 降级：无 sanitizer 时不渲染 HTML
+        try { view.innerHTML = DOMPurify.sanitize(window.marked.parse(ta.value || '')); }
         catch (e) { view.innerHTML = '<span class="field-err">' + escapeHtml(e.message) + '</span>'; }
       }
       async function exportHtml() {
