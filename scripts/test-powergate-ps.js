@@ -147,4 +147,31 @@ t('PB6 PowerShell 的 $env: 变量与 cmd 的 %VAR% 一视同仁地展开', () =
   assert.ok(!/\$env:/.test(viaDollar), '展开后仍残留 $env: 字面量：' + viaDollar);
 });
 
+/* ==================== 30. 电源门禁：wmic 关机/重启形态 ==================== */
+t('30 电源门禁：wmic 的关机/重启形态必须拦（v0.8.6 审查发现的绕过）', () => {
+  const pg = gate;
+  /* 锁的是：wmic os where primary=1 call shutdown 不含任何已知词根
+   * （shutdown/stop-computer/…），门禁放行 → 系统直接关机。
+   * 这条命令网上很容易搜到（定时关机命令），绕过门槛与直接输入 shutdown
+   * 相同的结果却不需要开启「系统电源操作」—— 防护不一致。
+   * 修复：DANGER_TOKENS 加 wmic（宁可多问：wmic 正在被微软弃用，
+   * 误拦也只是多确认一次）。 */
+  const bypass = [
+    'wmic os where primary=1 call shutdown',
+    'wmic os where primary=1 call reboot',
+    'wmic /namespace:\\root\cimv2 path Win32_OperatingSystem call shutdown',
+  ];
+  for (const cmd of bypass) {
+    assert.strictEqual(pg.isPowerCommand(cmd), true,
+      'isPowerCommand(' + JSON.stringify(cmd) + ') 应为 true（wmic 关机形态必须拦）');
+  }
+  /* 锁的是：常规命令不误伤（这些不进电源门禁）。 */
+  const safe = ['ipconfig /all', 'notepad', 'echo hello', 'dir'];
+  for (const cmd of safe) {
+    assert.strictEqual(pg.isPowerCommand(cmd), false,
+      'isPowerCommand(' + JSON.stringify(cmd) + ') 不应拦截无害命令');
+  }
+});
+
+
 done();
