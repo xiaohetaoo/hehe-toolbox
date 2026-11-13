@@ -4917,8 +4917,15 @@ if (process.env.HEHE_SMOKE) {
         // .tool-card / .tool-grid 仍在模块页与收藏页使用，所以下面单独去模块页断言，
         // 不能再在首页上找它们（首页已不渲染工具卡片网格）。
         expect('.home-search .hs-input', 'display', 'inline-block', '首页搜索框');
-        expect('.home-cat', 'display', 'flex', '首页分类条');
+        /* 【.home-cat 的 display 由 flex 改成了 grid】
+         * v0.8.6 给分类加了介绍段落（第二行文字），单行 flex 装不下，
+         * 改用 grid 做「图标/名称/数量 + 整行介绍」的两行布局。
+         * 这里锁的仍然是"分类条是可见的块级元素"，只是布局方式变了。 */
+        expect('.home-cat', 'display', 'grid', '首页分类条');
         expect('.home-cats', 'display', 'grid', '首页分类网格');
+        /* 介绍段落必须真的渲染出来 —— 加了字段不渲染等于没加 */
+        const catIntro = document.querySelector('.home-cat .hc-intro');
+        if (!catIntro || catIntro.textContent.length < 5) styleErrs.push('分类介绍缺失');
         const catIcon = document.querySelector('.home-cat .hc-icon');
         if (catIcon && !catIcon.querySelector('svg')) styleErrs.push('分类条图标缺失');
         // 搜索交互：输入后结果区必须出现、分类区必须让位
