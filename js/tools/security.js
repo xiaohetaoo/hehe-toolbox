@@ -220,8 +220,11 @@
       /* 载入用户的开关状态 */
       invoke(Channels.CHANNELS.STORE.GET, 'settings.clipSensitiveTtl', 0).then((v) => {
         sensitiveTtl = Number(v) || 0;
-        /* switchEl 的初始值要在建好之后设，避免构造参数与实际存储不一致 */
-        try { if (sensitiveTtl > 0) sensitiveSw.classList.add('on'); } catch (e) {}
+        /* 【必须走 set() 而不是 classList.add('on')】switchEl 的状态有两份：
+         * class 'on'（视觉）与 aria-checked（读屏）。只改 class 的话，
+         * 开关看起来是开的，读屏却播报「已关闭」—— 两份状态从此分叉，
+         * 用户下一次点击的 toggle 结果也与预期相反。set() 一次同步两份。 */
+        try { if (sensitiveTtl > 0) sensitiveSw.set(true); } catch (e) {}
       }).catch(() => {});
       /* 敏感内容的形态判据在 lib/sensitive.js —— 抽到 lib 是为了能在
        * Node 里直接单测（写在这里就只能靠真机 E2E，而 E2E 在 CI 会 SKIP，

@@ -60,8 +60,12 @@ register({
       });
       const canvasBox = div('');
       let direction = 'v';
+      let stitching = false; // 防重入：解码+绘制是重活，连点会并发两份
       async function stitch() {
+        if (stitching) return;
         if (picker.count < 2) return toast('至少需要两张图片', 'warn');
+        stitching = true;
+        try {
         const isV = direction === 'v';
 
         /* 【画布上限】Chrome 的单边上限约 32767px，总面积上限约 2.68 亿像素
@@ -129,11 +133,20 @@ register({
           } catch (e) { toast(e.message || String(e), 'error'); }
         }, 'save');
         canvasBox.appendChild(div('form-row', saveBtn, h('span', { class: 'field-hint' }, `${canvas.width}×${canvas.height}px`)));
+        } finally { stitching = false; }
+      }
+      /* 方向按钮的高亮必须跟着 direction 走：原来两个按钮的类在 render 时
+       * 定死（纵向恒 primary），点了横向之后高亮还停在纵向上，
+       * 用户看到的"当前方向"与实际拼接方向不一致。 */
+      const vBtn = btn('纵向拼接 ↓', 'btn-sm btn-primary', () => { direction = 'v'; paintDir(); stitch(); });
+      const hBtn = btn('横向拼接 →', 'btn-sm btn-secondary', () => { direction = 'h'; paintDir(); stitch(); });
+      function paintDir() {
+        vBtn.className = 'btn btn-sm ' + (direction === 'v' ? 'btn-primary' : 'btn-secondary');
+        hBtn.className = 'btn btn-sm ' + (direction === 'h' ? 'btn-primary' : 'btn-secondary');
       }
       page.appendChild(div('card', div('card-title', '添加图片'), picker.el));
       page.appendChild(div('card', div('card-title', '拼接'),
-        div('form-row', btn('纵向拼接 ↓', 'btn-sm ' + (direction === 'v' ? 'btn-primary' : 'btn-secondary'), (e) => { direction = 'v'; stitch(); }),
-          btn('横向拼接 →', 'btn-sm btn-secondary', () => { direction = 'h'; stitch(); })),
+        div('form-row', vBtn, hBtn),
         canvasBox));
     }
   })

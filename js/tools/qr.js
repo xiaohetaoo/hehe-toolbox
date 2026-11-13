@@ -91,6 +91,9 @@
         }
         preview.appendChild(img);
         img.addEventListener('load', () => decodeImage(img));
+        /* 解码失败必须有提示：只挂 load 的话，损坏/不支持的图片会让预览区
+         * 一直空白，用户以为工具卡死。与 load 对称挂 error。 */
+        img.addEventListener('error', () => { preview.innerHTML = ''; toast(T('图片加载失败，请确认文件是有效的图片'), 'error'); });
       }
       const picker = filePicker({
         text: T('拖入或选择二维码图片'),
@@ -115,6 +118,7 @@
           const img = h('img', { src: imgData, style: { maxWidth: '100%' } });
           preview.appendChild(img);
           img.addEventListener('load', () => decodeImage(img));
+          img.addEventListener('error', () => { preview.innerHTML = ''; toast(T('图片加载失败，请确认剪贴板里是有效的图片'), 'error'); });
           // 剪贴板来源也登记一行（虚拟条目：没有磁盘路径，只作展示）
           selfUpdating = true;
           try { picker.clear(); picker.list.add([{ path: T('剪贴板图片'), name: T('剪贴板图片'), virtual: true }]); }

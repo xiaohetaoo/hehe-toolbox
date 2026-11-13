@@ -212,6 +212,7 @@
     keywords: ['pdf', '图片', '转换', '渲染'],
     render(page) {
       let pdfPath = null;
+      let rendering = false; // 防重入标志：渲染中禁止再次点击
       const info = div('field-hint', '未选择');
       const scaleIn = h('input', { type: 'number', class: 'input input-sm', value: '2', min: '1', max: '4', step: '0.5', style: { width: '80px' } });
       const list = div('');
@@ -228,8 +229,12 @@
         }
       });
       async function render() {
+        /* 防重入：渲染是长任务，连点会并发两个循环写同一目录、
+         * 进度文案互相覆盖。与 pdf-office-convert 的 running 同一形态。 */
+        if (rendering) return;
         if (!pdfPath) return toast('请先选择 PDF', 'warn');
         if (!window.pdfjsLib) return toast('pdf.js 未加载', 'error');
+        rendering = true;
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
         status.textContent = '渲染中…';
         try {
@@ -257,6 +262,7 @@
           status.innerHTML = `<span class="status-ok">✓ 完成</span> 共 ${pdf.numPages} 页，输出目录 ${escapeHtml(outDir)}`;
           toast('PDF 转图片完成', 'success');
         } catch (e) { status.textContent = '✗ ' + e.message; }
+        finally { rendering = false; }
       }
       page.appendChild(div('card', div('card-title', '选择 PDF'), picker.el, info,
         div('form-row', h('span', { class: 'form-label' }, '清晰度'), scaleIn, h('span', { class: 'field-hint' }, '倍渲染（2 = 约 192dpi）'),
