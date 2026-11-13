@@ -126,7 +126,7 @@
             hint = '无法解码为文本。请确认内容完整的 Base64（可能把原文当成了编码结果）。' +
               (msg ? '（原始报错：' + msg + '）' : '');
           }
-          out.value = '⚠ ' + hint;
+          out.value = '注意：' + hint;
         }
       };
       ta.addEventListener('input', run);
@@ -164,7 +164,7 @@
            * URL 半边也复用它 —— 同一文件两套标准是明显的不一致。 */
           out.value = '';
           const hint = decodeErrHint(String((e && e.message) || e));
-          out.value = '⚠ ' + hint;
+          out.value = '注意：' + hint;
         }
       }
       function mode() { return swapDecode; }
