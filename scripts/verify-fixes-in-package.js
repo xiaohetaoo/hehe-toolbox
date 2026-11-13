@@ -79,6 +79,39 @@ const CHECKS_BY_VERSION = {
     ['js/clip-actions.js', 'F6 takePendingClip 按 toolId 过滤',
       (s) => /p\.toolId\s*&&\s*toolId\s*&&\s*p\.toolId\s*!==\s*toolId/.test(s)],
   ],
+  '0.8.5': [
+    ['lib/power-gate.js', 'R1 递归可执行位判定（textHasDanger）',
+      (s) => /function textHasDanger/.test(s) && /textHasDanger\(/.test(s)],
+    ['lib/power-gate.js', 'R1 iex 出现即拦',
+      (s) => /invoke-expression/.test(s) && /iex/.test(s)],
+    ['lib/power-gate.js', 'R1 引号感知的条件剥离',
+      (s) => /function stripIfCondition/.test(s)],
+    ['lib/fs-ops.js', 'R2 单引号路径转义（concatFileLine）',
+      (s) => {
+        if (!/function concatFileLine/.test(s)) return false;
+        /* 判据：函数体里必须有 `'\\''` 这段转义序列。
+         * 【不用正则写这个判据】转义在正则字面量里要套四层反斜杠，
+         * 写错一次就会变成永远匹配不上（假红）或永远匹配（假绿）。
+         * 直接数源码里的字符码：两个反斜杠 + 两个单引号。 */
+        const fn = s.slice(s.indexOf('function concatFileLine'), s.indexOf('module.exports'));
+        const need = '\\'.repeat(2) + "''";
+        return fn.indexOf(need) !== -1;
+      }],
+    ['ipc/media-ffmpeg.js', 'R2 concat 清单改用 concatFileLine',
+      (s) => /concatFileLine/.test(s)],
+    ['lib/sensitive.js', 'R3 GitHub fine-grained token 判据',
+      (s) => /github_pat_/.test(s)],
+    ['css/app.css', 'R4 首页分类网格响应式断点',
+      (s) => /@media\s*\(max-width:\s*1023px\)[\s\S]{0,120}\.home-cats/.test(s)],
+    ['css/app.css', 'R6 拖拽区 busy 状态样式',
+      (s) => /\.dropzone\.busy/.test(s)],
+    ['main.js', 'R5 preview-tmp 清扫',
+      (s) => /function sweepPreviewTmp/.test(s) && /sweepPreviewTmp\(\)/.test(s)],
+    ['js/auxwin/snip-2.js', '死代码 W/H 已清理',
+      (s) => !/const W = \+params\.get/.test(s)],
+    ['js/channels.js', '陈旧迁移注释已修正',
+      (s) => !/只迁移了两个域/.test(s)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];
