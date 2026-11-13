@@ -197,7 +197,7 @@
       // PDF 四连：合并拆分 → 转图 → 图转 → Office 互转
       'pdf-tools', 'pdf2img', 'img2pdf', 'pdf-office-convert',
       // PDF 增强三件套：紧挨着 PDF 四连 —— 用户处理 PDF 时会在这两批之间来回
-      'pdf-watermark', 'pdf-extract-text', 'pdf-slim',
+      'pdf-pages', 'pdf-watermark', 'pdf-extract-text', 'pdf-slim',
       // 预览：文档 → Markdown
       'doc-preview', 'markdown-preview',
       // 对比与翻译

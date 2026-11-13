@@ -174,10 +174,12 @@
     "src": [
       "js/tools/pdf-plus.js",
       "js/tools/office.js",
-      "lib/pdf*"
+      "lib/pdf*",
+      "js/tools/pdf-pages.js"
     ],
     "tests": [
-      "test-pdf-*"
+      "test-pdf-*",
+      "test-pdf-pages.js"
     ]
   },
   "archive": {
