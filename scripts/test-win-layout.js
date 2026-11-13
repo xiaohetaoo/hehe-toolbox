@@ -195,7 +195,6 @@ t('WL12 布局示意图由真实几何生成（图与行为不分叉）', () => 
      * 有 slots 的用槽位数，没有的（层叠/主窗右列）用 3。
      * 这里若直接传 undefined，computeLayout 里的 `count | 0` 会变成 0、
      * 再被夹到 1，于是只算出 1 个格子、与 SVG 的 2 个对不上。 */
-    const def = L.layoutsById ? null : null;
     const slotsLen = { 'v-split': 2, 'h-split': 2, 'grid-4': 4, 'grid-3': 3 }[kind];
     const count = slotsLen || 3;
     /* 【calc 必须转成本地数组】rawCompute 在 vm 沙箱里执行，
