@@ -9,7 +9,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, copyText, filePicker } = window.ui;
+  const { escapeHtml, div, btn, h, toast, copyText, filePicker } = window.ui;
   const { invoke } = window.api;
   const MOD = 'dev';
   const T = (zh, vars) => TT('qr', zh, vars);
@@ -34,7 +34,7 @@
           lastB64 = r.b64;
           imgBox.innerHTML = '';
           imgBox.appendChild(h('img', { src: 'data:image/png;base64,' + r.b64, style: { maxWidth: '320px', borderRadius: '8px', border: '1px solid var(--border)' } }));
-        } catch (e) { if (t === genSeq) { imgBox.innerHTML = ''; imgBox.appendChild(div('field-err', '✗ ' + (e && e.message ? e.message : e))); } }
+        } catch (e) { if (t === genSeq) { imgBox.innerHTML = ''; imgBox.appendChild(div('field-err', '✗ ' + escapeHtml(e && e.message ? e.message : String(e)))); } }
       }
       const saveBtn = btn(T('保存 PNG'), 'btn-secondary btn-sm', async () => {
         if (!lastB64) return toast(T('请先生成二维码'), 'warn');
@@ -81,10 +81,11 @@
       let selfUpdating = false;
       async function handleFile(path, blob) {
         preview.innerHTML = '';
+        dropLastUrl();
         let img;
         if (blob) {
-          const url = URL.createObjectURL(blob);
-          img = h('img', { src: url });
+          lastObjUrl = URL.createObjectURL(blob);
+          img = h('img', { src: lastObjUrl });
         } else {
           const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path);
           img = h('img', { src: 'data:image/png;base64,' + r.b64 });
@@ -106,10 +107,15 @@
            * 那一步已经自己设好 preview 了，若还往下走会执行 items.length 分支
            * 把刚画好的预览清空 —— 粘贴完就白屏。 */
           if (selfUpdating) return;
-          if (!items.length) { preview.innerHTML = ''; return; }
+          if (!items.length) { preview.innerHTML = ''; dropLastUrl(); return; }
           if (!items[0].virtual) handleFile(items[0].path).catch((e) => toast(e.message, 'error'));
         }
       });
+      /* blob 的 objectURL 生命周期：img 从 DOM 移除后 blob 就不再被引用，
+       * 不 revoke 的话它要等下一次 GC 才可能释放。粘贴/选图是高频操作，
+       * 把上一次的 URL 存起来、进函数先释放，是成本最低的收口。 */
+      let lastObjUrl = null;
+      const dropLastUrl = () => { if (lastObjUrl) { URL.revokeObjectURL(lastObjUrl); lastObjUrl = null; } };
       const pasteBtn = btn(T('从剪贴板识别'), 'btn-secondary', async () => {
         try {
           const imgData = await invoke(Channels.CHANNELS.CLIP.READ_IMAGE);

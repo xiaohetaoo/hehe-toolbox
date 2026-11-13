@@ -21,9 +21,15 @@
     /* eslint-disable-next-line no-async-promise-executor -- 历史写法：async 作 Promise executor。改成非 async 会变更异常传播路径，属行为改动，本轮不动 */
     return new Promise(async (resolve, reject) => {
       const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      if (blob) img.src = URL.createObjectURL(blob);
+      /* blob 的 objectURL 在加载完成/失败后立即释放：
+       * 图片解码后数据已在 img 元素里，URL 再活着只是让 Blob 无法回收。
+       * 高频工具（压缩/水印）一次拖几十张图，不释放就是几十个悬空 blob。 */
+      let url = null;
+      const done = () => { if (url) { URL.revokeObjectURL(url); url = null; } };
+      img.onload = () => { done(); resolve(img); };
+      img.onerror = () => { done(); reject(new Error('图片无法解码'));
+      };
+      if (blob) { url = URL.createObjectURL(blob); img.src = url; }
       else {
         try { const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path); img.src = 'data:image;base64,' + r.b64; }
         catch (e) { reject(e); }

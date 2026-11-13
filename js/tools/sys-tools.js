@@ -3,7 +3,7 @@
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-  const { div, btn, icon, toast, copyText, confirmBox, renderTable, fmtBytes, fmtNum, fmtDate, progressEl } = window.ui;
+  const { escapeHtml, div, btn, icon, toast, copyText, confirmBox, renderTable, fmtBytes, fmtNum, fmtDate, progressEl } = window.ui;
   const { invoke, on, isDesktop } = window.api;
   const MOD = 'system';
 
@@ -690,7 +690,7 @@
           allSvc = await invoke(Channels.CHANNELS.SVC.LIST);
           svcStatus.textContent = `${allSvc.length} 个服务`;
           renderSvc();
-        } catch (e) { svcBox.innerHTML = ''; svcBox.appendChild(div('field-err', '✗ ' + e.message)); }
+        } catch (e) { svcBox.innerHTML = ''; svcBox.appendChild(div('field-err', '✗ ' + escapeHtml(e.message))); }
       }
       function renderSvc() {
         const q = svcFilter.value.trim().toLowerCase();
@@ -747,7 +747,7 @@
             }));
             powerBox.appendChild(row);
           }
-        } catch (e) { powerBox.innerHTML = ''; powerBox.appendChild(div('field-err', '✗ ' + e.message)); }
+        } catch (e) { powerBox.innerHTML = ''; powerBox.appendChild(div('field-err', '✗ ' + escapeHtml(e.message))); }
       }
       page.appendChild(div('card', div('card-title', 'Windows 服务'),
         div('form-row', btn('刷新', 'btn-sm btn-secondary', loadSvc, 'refresh'), svcFilter, svcStatus),

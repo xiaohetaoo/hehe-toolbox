@@ -146,6 +146,48 @@ t('27 expr-eval：% 取余不能被当成百分比（10 % -3 应为 1）', () =>
   }
 });
 
+t('28 expr-eval：百分比后缀与乘除幂/括号/函数连用不再报错', () => {
+  const EEx = require(path.join(ROOT, 'lib', 'expr-eval'));
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  /* 锁的是：v0.8.6 修复的「常用写法直接报错」缺陷。
+   * 修复前 `50%*2` 抛「表达式无效」——isPercentAt 把 % 后面的 `*`
+   * 一律当二元取余，但取余的右操作数不可能以二元运算符开头，
+   * parser 只能报错。Windows calc 与 Google 对 `50%*2` 都按 0.5*2=1 求值。
+   * 修复：`%` 后面是 `*`/`/`/`^` 时判为百分比后缀。 */
+  const cases = [
+    ['50%*2', 1], ['50%/2', 0.25], ['50%^2', 0.25],
+    ['(1+50%)*2', 3], ['200*10%', 20],
+  ];
+  for (const [e, want] of cases) {
+    const got = EEx.evaluate(e);
+    assert.ok(near(got, want),
+      'evaluate(' + JSON.stringify(e) + ') 应为 ' + want + '，实际 ' + got +
+      '（修复前 ' + e + ' 直接抛「表达式无效」）');
+  }
+});
+
+t('29 expr-eval：% 紧跟右括号/函数调用也按百分比（不再「括号不匹配」）', () => {
+  const EEx = require(path.join(ROOT, 'lib', 'expr-eval'));
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  /* 锁的是：改写操作数时不能只 out.pop() 弹一个 token。
+   * `sqrt(4)%` 左侧的完整操作数是三段（func + ( + num + ) 共 4 个 token），
+   * 只弹一个会把右括号弹掉、括号结构被毁，parser 报「括号不匹配」。
+   * 函数名必须一起包进 (X/100)：sqrt(4)% = (sqrt(4))/100 = 0.02，
+   * 漏掉函数名会得到 sqrt(4/100) = 0.2，语义全错。 */
+  const cases = [
+    ['sqrt(4)%', 0.02],
+    ['(2+3)%', 0.05],
+    ['sqrt(sqrt(4))%', Math.sqrt(Math.sqrt(4)) / 100],
+    ['(50%)*2', 1],                       // 已有行为不回归
+  ];
+  for (const [e, want] of cases) {
+    const got = EEx.evaluate(e);
+    assert.ok(near(got, want),
+      'evaluate(' + JSON.stringify(e) + ') 应为 ' + want + '，实际 ' + got +
+      '（修复前括号结构被改写逻辑毁掉）');
+  }
+});
+
 /* ==================== 28. acl-repair：写权限 ≠ 完全控制 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');

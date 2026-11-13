@@ -82,10 +82,16 @@ register({
           toast('识别失败：' + reason, 'error');
         }
       }
+      /* objectURL 收口：img 挂的是 URL，blob 几 MB 时（全屏截图）
+       * 不释放就是持续占用。进函数先释放上一次的。 */
+      let lastObjUrl = null;
+      const dropLastUrl = () => { if (lastObjUrl) { URL.revokeObjectURL(lastObjUrl); lastObjUrl = null; } };
       async function fromBlob(blob, label) {
         currentImg = blob;
         preview.innerHTML = '';
-        preview.appendChild(h('img', { src: URL.createObjectURL(blob), style: { maxWidth: '100%', maxHeight: '240px', borderRadius: '8px' } }));
+        dropLastUrl();
+        lastObjUrl = URL.createObjectURL(blob);
+        preview.appendChild(h('img', { src: lastObjUrl, style: { maxWidth: '100%', maxHeight: '240px', borderRadius: '8px' } }));
         showInList(label || '剪贴板图片', true);
       }
       async function handleFile(pathArg, blob) {
@@ -103,7 +109,7 @@ register({
         onChange: (items) => {
           // 单文件槽位：列表里最多一项，换图时 preview 跟着换
           if (selfUpdating) return; // 自己登记的条目（剪贴板/贴图），图片已经加载好了
-          if (!items.length) { currentImg = null; preview.innerHTML = ''; return; }
+          if (!items.length) { currentImg = null; preview.innerHTML = ''; dropLastUrl(); return; }
           const it = items[0];
           if (it.virtual) return; // 虚拟条目没有磁盘路径，图片也已就位
           handleFile(it.path).catch((e) => toast(e.message, 'error'));
