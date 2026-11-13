@@ -112,6 +112,44 @@ const CHECKS_BY_VERSION = {
     ['js/channels.js', '陈旧迁移注释已修正',
       (s) => !/只迁移了两个域/.test(s)],
   ],
+  '0.8.6': [
+    ['js/cmdk.js', 'N1 命令面板存在且接了五个动作',
+      (s2) => /@home/.test(s2) && /@settings/.test(s2) && /@theme/.test(s2) && /@lang/.test(s2)],
+    ['js/cmdk.js', 'N1 复用 Registry.search（排序只有一份）',
+      (s2) => /window\.Registry\.search\(/.test(s2)],
+    ['js/tools/chain.js', 'N2 工具链：六个操作都在',
+      (s2) => /compress-image/.test(s2) && /rename-seq/.test(s2) && /to-pdf/.test(s2)],
+    ['js/tools/chain.js', 'N2 图片转 PDF 用 pdf-lib 本地（不依赖 Office）',
+      /* 【必须剥掉注释再判】源码里有一大段解释「为什么不能走
+       * OFFICE.CONVERT」，不剥注释的话那段解释会被当成"还在用它"，
+       * 检查永远红、而且红的原因看起来像没修好。 */
+      (s2) => {
+        const code = s2.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        return /embedJpg|embedPng/.test(code) && !/OFFICE\.CONVERT/.test(code);
+      }],
+    ['js/tools/chain.js', 'N2 哈希取 r.hex.sha256',
+      (s2) => /r\.hex\.sha256/.test(s2)],
+    ['js/tools/pdf-pages.js', 'N3 PDF 页面管理存在',
+      (s2) => /function parseRange/.test(s2) && /removePage|copyPages/.test(s2)],
+    ['js/tools/win-layout.js', 'N4 窗口布局：六种布局 + 示意图',
+      (s2) => /v-split/.test(s2) && /grid-4/.test(s2) && /function layoutPreviewSvg/.test(s2)],
+    ['js/tools/win-layout.js', 'N4 Place 用 SW_RESTORE + NOACTIVATE',
+      (s2) => /ShowWindow\(p,\s*9\)/.test(s2) && /0x4\s*\|\s*0x10/.test(s2)],
+    ['js/registry.js', 'N5 三个新工具都登记进 ORDER',
+      (s2) => /'tool-chain'/.test(s2) && /'pdf-pages'/.test(s2) && /'win-layout'/.test(s2)],
+    ['lib/channels.js', 'N4 winmgr:place 通道存在',
+      (s2) => /WINMGR\.PLACE|winmgr:place/.test(s2)],
+    ['main.js', 'N4 Handlers 已注册 place + workArea',
+      (s2) => /WINMGR\.PLACE/.test(s2) && /workArea:/.test(s2)],
+    ['js/tools/dev.js', 'N6 取色器：历史色板 + 多格式',
+      (s2) => /color-history/.test(s2) && /colorRefOf/.test(s2) && /paintFormats/.test(s2)],
+    ['js/registry.js', 'N7 分类有 intro/introEn',
+      (s2) => /introEn:/.test(s2)],
+    ['css/app.css', 'N7 卡片等高等宽',
+      (s2) => /grid-auto-rows:\s*1fr/.test(s2) && /hc-intro/.test(s2)],
+    ['js/icons.js', 'N8 refresh 图标已修（弧与箭头同源）',
+      (s2) => /M21 12a9 9 0 1 1-2\.64-6\.36/.test(s2)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];
