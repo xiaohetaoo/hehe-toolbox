@@ -148,11 +148,23 @@ const PROBE = `
   const cats = [...document.querySelectorAll('.home-cat')].map((c) => (c.querySelector('.hc-name') || {}).textContent);
   log('categories', { count: cats.length, names: cats.slice(0, 4) });
 
-  // ---- 11. Ctrl+K 在首页要聚焦到大搜索框 ----
+  // ---- 11. Ctrl+K 要打开命令面板（v0.9 起）并把焦点放进面板输入框 ----
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true, cancelable: true }));
-  await tick(120);
+  await tick(160);
   const activeCls = document.activeElement ? document.activeElement.className : '';
-  log('ctrl-k', { activeClass: activeCls, isHomeInput: /hs-input/.test(activeCls) });
+  const cmdkMask = document.querySelector('.cmdk-mask');
+  const cmdkOpen = !!(cmdkMask && cmdkMask.classList.contains('show'));
+  log('ctrl-k', {
+    activeClass: activeCls,
+    isHomeInput: /hs-input/.test(activeCls),
+    cmdkFocused: /cmdk-input/.test(activeCls),
+    cmdkOpen,
+  });
+  /* 收尾：把面板关掉，免得影响后续断言（后面的用例还在同一个页面上跑） */
+  if (window.CmdPalette && window.CmdPalette.isOpen && window.CmdPalette.isOpen()) {
+    window.CmdPalette.close();
+    await tick(120);
+  }
 
   return out;
 })()
@@ -290,8 +302,14 @@ if (R.fatal) {
       '分类卡片保留（' + (by.categories && by.categories.count) + ' 个）: '
       + JSON.stringify(by.categories && by.categories.names));
 
-  chk(by['ctrl-k'] && by['ctrl-k'].isHomeInput,
-      'Ctrl+K 在首页聚焦大搜索框（实际聚焦 ' + (by['ctrl-k'] && by['ctrl-k'].activeClass) + '）');
+  /* 【Ctrl+K 的去向变了：现在开命令面板，不再是"聚焦搜索框"】
+   * v0.9 起 Ctrl+K 唤起全局命令面板（js/cmdk.js），输入框是 .cmdk-input。
+   * 断言跟着改，但仍要求「焦点落在某个可打字的地方」——
+   * 否则按了快捷键光标没进输入框，用户打字没反应，跟坏了没区别。 */
+  const ck = by['ctrl-k'] || {};
+  chk(ck.cmdkFocused || ck.isHomeInput,
+      'Ctrl+K 把焦点放进可输入处（命令面板或搜索框），实际聚焦 '
+      + (ck.activeClass || '无') + (ck.cmdkOpen ? '（命令面板已开）' : ''));
 
   chk(R.errors.length === 0, '页面运行期无 JS 报错' + (R.errors.length ? ': ' + JSON.stringify(R.errors) : ''));
   const hardErrs = (R.consoleErrs || []).filter((m) => /ReferenceError|is not defined|TypeError/.test(m));

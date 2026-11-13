@@ -138,7 +138,10 @@
       // 颜色：换算 → 取样
       'color-convert', 'color-picker',
       // 屏幕与码
-      'coords-picker', 'qr-generate', 'qr-scan', 'random-gen'
+      'coords-picker', 'qr-generate', 'qr-scan', 'random-gen',
+      // 工具链是「跨工具」的编排入口，不属于任何单一分类，
+      // 放在末尾：日常用它的人会通过 Ctrl+K 直达，不需要占网格首屏。
+      'tool-chain'
     ],
     media: [
       // 截图抓取：标注 + 录屏（最常用的两个动作）

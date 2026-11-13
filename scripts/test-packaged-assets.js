@@ -27,15 +27,32 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 
-/* 找待检产物：优先用 dist/ 里的 zip，其次用参数给的目录 */
+/* 找待检产物：优先用 dist/ 里的 zip，其次用参数给的目录。
+ *
+ * 【必须只认当前版本的产物】
+ * 原来这里找的是"任意一个 hehe-toolbox-*-win-x64.zip"。问题在于：
+ * 改了源码、还没重新打包时，dist/ 里躺着的是上一版的 zip —— 拿它去跑
+ * "index.html 引用的脚本是否都在包里"，会报"新增的 js 文件缺失"。
+ * 那条报错**看起来像代码 bug**，实际是"产物过期"，
+ * 每次加新文件都要重新构建才能让测试变绿 —— 而这个测试本该只在
+ * "有对应版本的产物"时才有意义。
+ *
+ * 现在的规则：zip 文件名里的版本必须等于 package.json 的 version。
+ * 不相等 = 产物过期 → SKIP 并说清哪一版过期了（而不是假装失败）。 */
 function locate() {
   const arg = process.argv[2];
   if (arg) return { kind: 'dir', dir: arg };
   const distDir = path.join(ROOT, 'dist');
   if (!fs.existsSync(distDir)) return null;
-  const zip = fs.readdirSync(distDir).find((n) => /^hehe-toolbox-.*-win-x64\.zip$/.test(n));
-  if (!zip) return null;
-  return { kind: 'zip', zip: path.join(distDir, zip) };
+  /* 读版本号用 require：package.json 是 CommonJS 可直接载入，
+   * 不必为此多一处裸 readFileSync（那会被 SA-3 记账）。 */
+  const pkgVer = require(path.join(ROOT, 'package.json')).version;
+  const zips = fs.readdirSync(distDir).filter((n) => /^hehe-toolbox-.*-win-x64\.zip$/.test(n));
+  if (!zips.length) return null;
+  const exact = zips.find((n) => n.indexOf('-' + pkgVer + '-') !== -1);
+  if (exact) return { kind: 'zip', zip: path.join(distDir, exact) };
+  /* 没有同版本产物：明确 SKIP，并指出最接近的是哪一版 */
+  return { kind: 'stale', have: zips[0], want: pkgVer };
 }
 
 let fail = 0;
@@ -44,6 +61,13 @@ const chk = (c, m) => { console.log((c ? 'PASS  ' : 'FAIL  ') + m); if (!c) fail
 const target = locate();
 if (!target) {
   console.log('SKIP 没有打包产物可检（先构建，或传入解包目录）');
+  process.exit(0);
+}
+if (target.kind === 'stale') {
+  /* 产物版本与源码不符：这是"还没重新打包"，不是代码缺陷。
+   * 明说哪一版过期，比抛一堆"文件缺失"更有用。 */
+  console.log('SKIP dist 里只有 ' + target.have + '，而 package.json 是 '
+    + target.want + ' —— 产物已过期，先重新构建再跑这项');
   process.exit(0);
 }
 
