@@ -91,6 +91,8 @@
     'arrow-left': '<path d="M19 12H5"/><polyline points="11 18 5 12 11 6"/>',
     table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
     /* 窗口布局：外框 + 左半竖线 + 右半横线，直观表示分屏 */
+    palette: '<circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1"/><circle cx="14.5" cy="8.5" r="1"/><circle cx="9" cy="15" r="1"/><path d="M12 3a9 9 0 0 0 0 18c1.5 0 2-1 2-2s-1-1.5-1-2.5 1-1.5 2.5-1.5H19a4 4 0 0 0 4-4c0-5-5-8-11-8z"/>',
+    line: '<path d="M4 20 20 4"/>',
     layout: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M12 12h9"/>',
     /* 层叠：三个错开的矩形，表示多层窗口 */
     layers: '<rect x="3" y="8" width="13" height="13" rx="2"/><path d="M8 3h11a2 2 0 0 1 2 2v11"/>'
