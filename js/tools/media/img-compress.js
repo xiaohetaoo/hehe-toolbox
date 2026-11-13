@@ -56,7 +56,10 @@ register({
       const prog = progressEl(); prog.hide();
       const status = h('span', { class: 'field-hint' }, '');
       let running = false;
+      let cancelFlag = false;
       const startBtn = btn('开始压缩', 'btn-primary', run, 'send');
+      const stopBtn = btn('停止', 'btn-danger-plain', () => { cancelFlag = true; stopBtn.disabled = true; }, 'square');
+      stopBtn.disabled = true;
 
       function hasAlpha(img) {
         const c = document.createElement('canvas');
@@ -140,6 +143,7 @@ register({
       async function run() {
         if (!picker.count) return toast('请先选择图片', 'warn');
         if (running) return;
+        cancelFlag = false;
         running = true; startBtn.disabled = true;
         picker.setLocked(true);
         prog.show(); status.textContent = '';
@@ -148,6 +152,7 @@ register({
         try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) {}
         let totalBefore = 0, totalAfter = 0, ok = 0, fail = 0;
         for (let i = 0; i < paths.length; i++) {
+          if (cancelFlag) break;   // 用户点了停止
           prog.set((i + 1) / paths.length * 100);
           const p = paths[i];
           const name = p.split(/[\\/]/).pop();
@@ -197,6 +202,7 @@ register({
           }
         }
         prog.hide(); running = false; startBtn.disabled = false; picker.setLocked(false);
+        stopBtn.disabled = true; cancelFlag = false;
         status.textContent = totalBefore ? `完成：成功 ${ok}，失败 ${fail}，合计 ${fmtBytes(totalBefore)} → ${fmtBytes(totalAfter)}（节省 ${fmtBytes(Math.max(0, totalBefore - totalAfter))}），输出目录 ${outDir}` : '';
         toast(`压缩完成（${ok} 成功 / ${fail} 失败）`, fail ? 'warn' : 'success');
       }
@@ -208,7 +214,7 @@ register({
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '最大宽'), maxWIn),
         div('form-row', h('span', { class: 'form-label' }, '输出格式'), fmtSel),
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
-        div('form-row', startBtn, ' ', prog.el, status)));
+        div('form-row', startBtn, ' ', stopBtn, prog.el, status)));
       // 测试钩子：**只在开发态挂载**（打包版默认不挂，避免留下可注入的调试后门）。
       // 打包态跑 E2E 时用环境变量 HEHE_TEST_HOOKS=1 临时开启。
       if (window.api.isDev) (window.__heheTest = window.__heheTest || {}).imgCompress = {

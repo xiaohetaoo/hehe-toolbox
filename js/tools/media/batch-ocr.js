@@ -40,6 +40,10 @@ register({
        * 所以这里挡下来，并明确告诉用户为什么 ——
        * 不能只说「已在运行中」，那看不出「上一次可能还在后台耗着」。 */
       let running = false;
+      let cancelFlag = false;
+      const ocrRunBtn = btn('开始批量识别', 'btn-primary', run, 'search');
+      const ocrStopBtn = btn('停止', 'btn-danger-plain', () => { cancelFlag = true; ocrStopBtn.disabled = true; }, 'square');
+      ocrStopBtn.disabled = true;
       async function run() {
         if (!dir) return toast('请先选择文件夹', 'warn');
         if (!window.Tesseract) return toast('OCR 引擎未加载，请重启应用', 'error');
@@ -48,6 +52,7 @@ register({
           toast('上一次识别仍在后台，请稍候', 'warn');
           return;
         }
+        cancelFlag = false;
         running = true; prog.show(); out.value = '';
         try {
           const items = await invoke(Channels.CHANNELS.FS.LIST, dir);
@@ -55,6 +60,7 @@ register({
           if (!imgs.length) { running = false; toast('该文件夹没有图片', 'warn'); return; }
           let done = 0;
           for (const it of imgs) {
+            if (cancelFlag) break;   // 用户点了停止
             const name = it.name || it;
             const p = (dir.replace(/[\\/]+$/, '')) + '/' + name;
             status.textContent = `识别中 ${done + 1}/${imgs.length}：` + name;
@@ -81,11 +87,11 @@ register({
           status.textContent = `完成：${imgs.length} 张`;
           toast('批量识别完成', 'success');
         } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
-        finally { running = false; prog.hide(); }
+        finally { running = false; prog.hide(); ocrStopBtn.disabled = true; }
       }
       page.appendChild(div('card', div('card-title', '图片文件夹'), div('form-row', pickBtn, dirLabel, langSel)));
       page.appendChild(div('card', div('card-title', '识别'),
-        div('form-row', btn('开始批量识别', 'btn-primary', run, 'search'), prog.el, status),
+        div('form-row', ocrRunBtn, ocrStopBtn, prog.el, status),
         out, div('form-row', saveBtn)));
     }
   })

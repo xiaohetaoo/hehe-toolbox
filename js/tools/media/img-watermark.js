@@ -26,10 +26,15 @@ register({
       const opacityIn = h('input', { type: 'number', class: 'input input-sm', value: '50', min: '5', max: '100', style: { width: '80px' } });
       const preview = div('');
       const prog = progressEl(); prog.hide();
+      let cancelFlag = false;
+      const wmRunBtn = btn('添加水印', 'btn-primary', run, 'droplet');
+      const wmStopBtn = btn('停止', 'btn-danger-plain', () => { cancelFlag = true; wmStopBtn.disabled = true; }, 'square');
+      wmStopBtn.disabled = true;
       async function run() {
         if (running) return; // 防重入：双击「开始」会并发跑两遍
         if (!picker.count) return toast('请先选择图片', 'warn');
         if (!textIn.value.trim()) return toast('请输入水印文字', 'warn');
+        cancelFlag = false;
         running = true;
         prog.show();
         picker.setLocked(true);
@@ -42,6 +47,7 @@ register({
         const errs = [];
         try {
         for (let i = 0; i < paths.length; i++) {
+          if (cancelFlag) break;   // 用户点了停止
           prog.set((i + 1) / paths.length * 100);
           try {
             const p = paths[i];
@@ -131,7 +137,7 @@ register({
       page.appendChild(div('card', div('card-title', '水印设置'),
         div('form-row', h('span', { class: 'form-label' }, '文字'), textIn),
         div('form-row', h('span', { class: 'form-label' }, '位置'), posSel, ' 字号', sizeIn, ' 透明度%', opacityIn),
-        div('form-row', btn('添加水印', 'btn-primary', run, 'droplet'), prog.el)));
+        div('form-row', wmRunBtn, wmStopBtn, prog.el)));
       page.appendChild(div('card', div('card-title', '首图预览'), preview));
     }
   })

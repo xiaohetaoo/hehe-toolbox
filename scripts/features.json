@@ -149,7 +149,8 @@
       "test-dshow-*",
       "test-target-*",
       "test-img-*",
-      "test-video-*"
+      "test-video-*",
+      "test-batch-cancel.js"
     ]
   },
   "screen": {

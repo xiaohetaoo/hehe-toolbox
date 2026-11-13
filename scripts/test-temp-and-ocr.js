@@ -73,9 +73,13 @@ t('OCR1 批量 OCR 的重入挡板给了可理解的提示（不是静默 return
 t('OCR2 批量 OCR 仍保留超时归因与 finally 复位', () => {
   const src = readSrc('js/tools/media/batch-ocr.js');
   /* 锁的是：为了加提示而把已有的超时保护/复位弄丢 ——
-   * 那会让整批卡死或按钮永久不可用。 */
+   * 那会让整批卡死或按钮永久不可用。
+   * v0.9 给批量识别加了停止按钮，finally 里同步复位按钮（取消后可回用）。 */
   assert.ok(/OcrGuard\.withTimeout/.test(src), '单张超时保护不见了');
-  assert.ok(/finally \{ running = false; prog\.hide\(\); \}/.test(src), 'finally 复位不见了');
+  /* 锁的是：finally 复位 running 与 prog —— v0.9 加停止按钮后还要同步复位
+   * 按钮（取消后按钮可回用）。复位丢了表现为「第二次点开始没反应」。 */
+  assert.ok(/finally \{ running = false; prog\.hide\(\); ocrStopBtn\.disabled = true; \}/.test(src),
+    'finally 复位不见了（应同时复位 running / prog / 停止按钮）');
 });
 
 /* ============ 17b) MB 口径 ============ */

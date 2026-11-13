@@ -117,3 +117,4 @@ scripts/test-pdf-pages.js | A=1 | B=0 | exact:读 js/tools/pdf-pages.js 原文�
 scripts/test-win-layout.js | A=1 | B=0 | exact:读 js/tools/win-layout.js 与 js/icons.js 原文核对 Place 的 Win32 常量、图标名是否在库里、三表登记。几何计算的正确性由 vm 沙箱行为断言覆盖（WL1-WL8 共 8 组），此处只锁结构与登记。
 scripts/test-markdown-sanitize.js | A=1 | B=0 | exact:读 office.js/dev.js/text-tools.js 原文核对 marked.parse 调用点的守卫与退化路径、index.html 的 DOMPurify 加载。XSS 防御深度无法用行为断言验证（DOMPurify 缺失才会走退化路径，正常环境不会触发）。
 scripts/test-ui-consistency.js | A=5 | B=0 | exact:读 js/icons.js 与全部 js/ 源码核对图标引用、硬编码颜色、window.ui 两份导出面的一致性。iconSvg 对未知名静默回退 info 不报错、Object.assign(window) 与 window.ui 双导出面必然漂移 —— 都只能扫源码文本。
+scripts/test-batch-cancel.js | A=1 | B=4 | exact:读三个批量工具原文核对取消标志的声明/循环检查/停止按钮/收尾复位。行为断言需要真实跑批量（几十张图几分钟）且无法验证取消时机，源码形态断言成本最低。
