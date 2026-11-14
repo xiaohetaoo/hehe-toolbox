@@ -117,18 +117,27 @@
       async run(ctx) {
         /* 签名 fs:hash-file-multi(path, algos) 是**单文件**版，
          * 不是一批。所以逐个调（哈希本身很快，串行足够）。 */
-        const lines = [];
+        const extras = [];
+        let done = 0;
         for (const p of ctx.files) {
+          let line = '';
           try {
             const r = await invoke(Channels.CHANNELS.FS.HASH_FILE_MULTI, p, ['sha256']);
             /* 【返回形状是 { hex: { sha256: … }, size }】旧实现读 r.sha256 / r[0].sha256
              * 两条路都是 undefined —— 哈希其实算出来了，却一条都进不了报告，
              * 用户只看到一句空泛的"哈希完成"。与 hash.js 工具同一取法。 */
             const hex = (r && r.hex && r.hex.sha256) || '';
-            if (hex) lines.push(baseName(p) + '  ' + hex);
+            /* 【必须按文件对齐】extras[i] 对应 ctx.files[i]，失败留空串而不是
+             * 跳过 —— 跳过会让后面所有文件的哈希错位挂到别人名下。 */
+            if (hex) { line = baseName(p) + '  ' + hex; done++; }
           } catch (e) { /* 单个文件读不了不影响整批 */ }
+          extras.push(line);
         }
-        return { files: ctx.files.slice(), note: lines.length ? '已算 ' + lines.length + ' 个 SHA-256' : '哈希完成' };
+        return {
+          files: ctx.files.slice(),
+          note: done ? '已算 ' + done + ' 个 SHA-256' : '哈希完成',
+          extras,
+        };
       },
     },
     {
@@ -302,6 +311,14 @@
         });
       }
       cur = state.filter((s) => !s.failed && !s.merged).map((s) => s.cur);
+      /* 【把操作附带的明细挂到对应文件上】哈希这类操作算出的 sha256 原本
+       * 只用来拼一句 note，报告里看不到任何值。extras 与 inputs 同序，
+       * 只在数量一致时对齐（ZIP 那种一对多合并的操作没有逐文件明细）。 */
+      if (res && Array.isArray(res.extras) && res.extras.length === inputs.length) {
+        alive.forEach((s, i) => {
+          if (res.extras[i]) s.extras = (s.extras || []).concat(res.extras[i]);
+        });
+      }
       if (res && res.note) onProgress && onProgress({
         step: si + 1, totalSteps: steps.length, label: res.note,
       });
@@ -482,6 +499,13 @@
             if (s.failed) row.appendChild(div('chain-report-err', '✗ ' + s.failed));
             else if (s.mergedInto) row.appendChild(div('chain-report-ok', '✓ 已并入 ' + baseName(s.mergedInto)));
             else row.appendChild(div('chain-report-ok', '✓ ' + s.cur));
+            /* 附带明细（目前是哈希值）：一行一条，等宽字体便于比对/复制 */
+            if (s.extras && s.extras.length) {
+              for (const line of s.extras) {
+                row.appendChild(div('chain-report-ok mono',
+                  { style: { fontSize: '11.5px', paddingLeft: '8px', userSelect: 'text' } }, line));
+              }
+            }
             reportBox.appendChild(row);
           });
           toast(okCount === rep.state.length ? '工具链执行完成' : '完成，但有条目失败', okCount === rep.state.length ? 'success' : 'warn');

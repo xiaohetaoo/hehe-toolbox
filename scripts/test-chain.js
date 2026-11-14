@@ -132,4 +132,26 @@ t('CH10 index.html 引入 chain.js', () => {
   assert.ok(html.indexOf('js/ui.js') < html.indexOf('js/tools/chain.js'), 'chain.js 应在 ui.js 之后');
 });
 
+t('CH11 哈希结果必须逐文件带进报告（不是只拼一句计数）', () => {
+  const s = read('js/tools/chain.js');
+  /* 锁的是：hash 操作只把 lines 用来拼 note —— 哈希算出来了却没有任何出口，
+   * 用户只看到「已算 N 个 SHA-256」，复制的不是哈希值。这是 v0.8.8 发布后
+   * 发现「方案写了但没实现」的那一条，因此这里同时锁三处：
+   *   ① hash 操作返回 extras；② runChain 挂到对应文件上；③ 报告渲染它。
+   * 【为什么不是行为断言】run 依赖 window.api.invoke 与真实文件系统，
+   * Node 侧没有等价入口；真实链路由 CDP 真机走查覆盖。 */
+  const i = s.indexOf("id: 'hash'");
+  assert.ok(i >= 0, '找不到 hash 操作');
+  const seg = s.slice(i, i + 1200);
+  /* 锁的是：hash 操作返回里没有 extras —— 结果又没有出口了。 */
+  assert.ok(/extras,/.test(seg) || /extras:\s*extras/.test(seg), 'hash 操作必须返回 extras');
+  /* 锁的是：按文件对齐写回（失败留空串），否则后面的哈希会错位挂到别人名下。 */
+  assert.ok(/extras\.push\(line\)/.test(seg), 'extras 必须逐文件 push（失败留空串）');
+  /* 锁的是：runChain 没把 extras 挂到 state 上 —— 报告仍拿不到值。 */
+  assert.ok(/s\.extras = \(s\.extras \|\| \[\]\)\.concat\(res\.extras\[i\]\)/.test(s),
+    'runChain 必须把 extras 挂到对应文件的 state 上');
+  /* 锁的是：报告只渲染路径/错误，不渲染 extras。 */
+  assert.ok(/for \(const line of s\.extras\)/.test(s), '报告需要逐条渲染 extras');
+});
+
 done();

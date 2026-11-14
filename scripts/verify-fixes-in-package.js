@@ -182,6 +182,76 @@ const CHECKS_BY_VERSION = {
     ['js/icons.js', 'S8 refresh 图标已修',
       (s2) => /M21 12a9 9 0 1 1-2\.64-6\.36/.test(s2)],
   ],
+  /* v0.8.8：第四轮审查 18 处修复 + 四项新功能。
+   * 每组都挑「产物里能读到、且改回去就会重现 bug」的那一行 —— 不锁文案。 */
+  '0.8.8': [
+    ['lib/ps-script.js', 'P1 更新脚本 BOM 约定（独立模块）',
+      (s2) => /withBom/.test(s2) && /\\uFEFF/.test(s2)],
+    ['main.js', 'P1 两处脚本写盘都走 withBom',
+      (s2) => /psScript\.withBom\(ps\)/.test(s2) && /psScript\.withBom\(rb\)/.test(s2)],
+    ['main.js', 'P1 更新脚本起不来不再假装升级（psStarted）',
+      (s2) => /if \(!psStarted\)/.test(s2) && /WindowsPowerShell/.test(s2)],
+    ['lib/power-gate.js', 'P2 电源门禁：caret 转义 + 变量首词',
+      (s2) => /function isVariableHead/.test(s2) && /\\\^\(\[\\s\\S\]\)/.test(s2.replace(/\\\\/g, '\\'))],
+    ['lib/power-gate.js', 'P2 延迟展开只在 /v:on 下 fail-closed',
+      (s2) => /\\\/v:on/.test(s2) && /!\[\^!\\s\]\+!/.test(s2)],
+    ['js/ui.js', 'P3 消费拖拽支持显式 toolId',
+      (s2) => /function consumePendingDrop\(explicitToolId\)/.test(s2)],
+    ['js/app.js', 'P3 保活复用传 v.toolId',
+      (s2) => /consumePendingDrop\(v\.toolId\)/.test(s2)],
+    ['js/tools/pdf-plus.js', 'P4 字体无条件 embed（只加页码不崩）',
+      (s2) => /const font = await doc\.embedFont/.test(s2) && !/if \(wantWm\) font =/.test(s2)],
+    /* 【P5（工具链哈希结果进报告）不在 0.8.8 的产物里】
+   * 这是本版的已知偏差：代码修复在 v0.8.8 发布之后才真正落地（原先只有
+   * 方案没有实现），因此对 0.8.8 的产物校验不能把它列为必过项；
+   * 等下一版构建后再把这条加进对应的版本块。 */
+    ['js/tools/win-layout.js', 'P6 首屏枚举并裁剪失效选择',
+      (s2) => /chosen = chosen\.filter/.test(s2)],
+    ['ipc/media-ffmpeg.js', 'P7 录制中途死亡记 recDeath',
+      (s2) => /recDeath/.test(s2) && /recExpectedStop/.test(s2)],
+    ['main.js', 'P8 更新包死锁：认领自己的旧包',
+      (s2) => /isOwnUpdateArtifact/.test(s2)],
+    ['js/cmdk.js', 'P9 键盘监听挂 document 并可摘除',
+      (s2) => /document\.addEventListener\('keydown', onKey\)/.test(s2)
+        && /document\.removeEventListener\('keydown', onKey\)/.test(s2)],
+    ['js/tools/dev.js', 'P10 取色器不再累积 onCleanup 闭包',
+      (s2) => {
+        /* 剥注释再判：说明文字里会引用旧写法 App.onCleanup(cleanup)，
+         * 直接搜全文会假阳性（同 0.8.3/0.8.4 那几条的处理）。 */
+        const code = s2.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        return /pickCleanup/.test(code) && !/App\.onCleanup\(cleanup\)/.test(code);
+      }],
+    ['js/tools/pdf-pages.js', 'P11 读取失败清空四个状态',
+      (s2) => /doc = null; srcB64 = null; pageOrder = \[\]; rotations/.test(s2)],
+    ['js/ui.js', 'P12 dropzone 点击防重入',
+      (s2) => /if \(picking\) return/.test(s2) && /finally \{ picking = false; \}/.test(s2)],
+    ['main.js', 'P13 update:apply 目标不再由渲染层指定',
+      (s2) => {
+        /* 剥注释：注释里保留了「原来的写法是 opts.target」这段历史，
+         * 直接否定会被自己的说明文字误判成失败。 */
+        const code = s2.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        return /PORTABLE_EXECUTABLE_FILE \|\| app\.getPath\('exe'\)/.test(code) && !/opts\.target/.test(code);
+      }],
+    ['lib/fs-ops.js', 'P15 排他占位改名（placeUnique）',
+      (s2) => /async function placeUnique/.test(s2) && /open\(cand, 'wx'\)/.test(s2)],
+    ['ipc/fs-ops.js', 'P16 原子写拒绝目录目标',
+      (s2) => /DEST_IS_DIR/.test(s2)],
+    ['lib/path-guard.js', 'P17/P18 盘符相对 + \\\\?\\ 前缀',
+      (s2) => /DRIVE_RELATIVE/.test(s2) && s2.indexOf('{2}[?.]') >= 0],
+    ['lib/restore-point.js', 'N4 还原点解析独立模块',
+      (s2) => /parseVssStorage/.test(s2) && /parseDmtfTime/.test(s2)],
+    ['lib/startup-inventory.js', 'N3 启动项归一化独立模块',
+      (s2) => /normalizeTasks/.test(s2) && /normalizeStartupFolder/.test(s2)],
+    ['main.js', 'N3/N4 新通道与高危能力接线',
+      (s2) => /CH\.AUTOSTART\.INVENTORY/.test(s2) && /'restore-point-delete'/.test(s2)
+        && /'sys:restore-delete': 'restore-point-delete'/.test(s2)],
+    ['js/tools/sys-tools.js', 'N1 空间分析器下钻（面包屑）',
+      (s2) => /function breadcrumb/.test(s2) && /DIR_CHILDREN/.test(s2)],
+    ['js/tools/sys-tools.js', 'N2 清理类别带 defaultOff / needsAdmin',
+      (s2) => /checked: !it\.defaultOff/.test(s2) && /it\.needsAdmin/.test(s2)],
+    ['lib/channels.js', 'N4 通道常量全量迁移 188/188',
+      (s2) => /TOTAL: 188/.test(s2) && /MIGRATED: 188/.test(s2)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];
