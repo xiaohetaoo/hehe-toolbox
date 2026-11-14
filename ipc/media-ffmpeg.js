@@ -1121,6 +1121,18 @@ handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, ga
 /* ================= IPC: 屏幕录制（ffmpeg gdigrab，区域/声音/暂停分段/GIF） ================= */
 let recProc = null, recOut = null, recSegs = [], recSegDir = null, recOpts = null;
 let recBusy = false, recOwner = null;
+/* 【本次会话里是否出现过「进程自己死掉」】
+ * 第四轮审查抓到的缺陷：录制途中 gdigrab 可能因分辨率/DPI 切换、RDP 断开、
+ * UAC 安全桌面、显示休眠而自行退出（exitCode≠0）。此时 stop 只看到
+ * 「proc.exitCode !== null」就直接 return，既不检查退出码，也没人记录；
+ * 而分段目录里那段 mp4 只有半个文件头（moov 从未写出），mp4 播放器打不开，
+ * 界面却显示「录制完成」并按 stat 得到的体积报成功。
+ * recDeath 记录第一例异常退出，STOP 时据此把结果标成 degraded。 */
+let recDeath = null;
+/* 哪些子进程是「我们让它停的」。它们的 exit 不算异常。
+ * 用 WeakSet 而不是挂在 proc 上挂属性：ChildProcess 上没有这个字段，
+ * tsc 的 checkJs 会报 TS2339。 */
+const recExpectedStop = new WeakSet();
 function recordingOwner(e) { return e && e.sender ? e.sender.id : null; }
 async function withRecordingOperation(e, operation) {
   if (recBusy) throw new Error('录制操作正在进行，请稍候');
@@ -1307,6 +1319,7 @@ handle(CH.REC.START, async (e, { outPath, fps, rect, audio, camera, camPos, camS
   recOpts = { fps: fps || 30, rect, audio: audio || null, camera: camera || null, camPos: camPos || 'rb', camScale: camScale || 0.25 };
   recOwner = recordingOwner(e);
   recSegs = [];
+  recDeath = null;
   recSegDir = tempNames.recSegDir({ tempDir: tempDir() });
   try {
     await fsp.mkdir(recSegDir, { recursive: true });
@@ -1314,7 +1327,7 @@ handle(CH.REC.START, async (e, { outPath, fps, rect, audio, camera, camPos, camS
   } catch (err) {
     // 启动失败必须回滚状态：否则临时目录泄漏，且下次 resume 会误判会话仍在
     const dir = recSegDir;
-    recOpts = null; recSegs = []; recSegDir = null; recProc = null; recOwner = null;
+    recOpts = null; recSegs = []; recSegDir = null; recProc = null; recOwner = null; recDeath = null;
     if (dir) await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
@@ -1324,6 +1337,14 @@ async function recStartSeg() {
   const seg = path.join(recSegDir, `seg-${recSegs.length + 1}.mp4`);
   const { proc } = recSpawnSeg(seg);
   recProc = proc;
+  /* 【中途死亡必须留证据，否则「停止」会把半截文件当成成品】
+   * 正常停止/暂停会先把进程登记进 recExpectedStop 再写 q；
+   * 没登记就退出的，一律记为 recDeath（带退出码与分段名），由 STOP 标 degraded。
+   * 注意判据不能只看 recProc：recStopSeg 会先把 recProc 置空。 */
+  proc.once('exit', (code, signal) => {
+    if (recExpectedStop.has(proc)) return;
+    recDeath = { code: typeof code === 'number' ? code : null, signal: signal || null, seg };
+  });
   let errOut = '';
   /* 【必须挂 error 监听，否则「ffmpeg 起不来」会把主进程炸掉】
    * spawn 失败（可执行文件被删/被杀软隔离/无执行权限）时 Node 会 emit 'error'；
@@ -1357,7 +1378,15 @@ async function recStartSeg() {
 async function recStopSeg() {
   const proc = recProc;
   recProc = null;
-  if (!proc || proc.exitCode !== null) return;
+  if (!proc) return;
+  /* 【先登记「这是我们要它停的」】必须在写 q / taskkill 之前：
+   * 否则正常暂停也会被 exit 监听记成 recDeath，成品永远被标成不完整。 */
+  recExpectedStop.add(proc);
+  /* 【已经退出的进程不能直接 return 了事】
+   * 第四轮审查：这里原来直接 return，退出码被丢弃。现在退出码已由
+   * recStartSeg 的 exit 监听记进 recDeath，STOP 会据此如实告知用户
+   * 「进程中途退出，文件可能不完整」，而不是按体积报成功。 */
+  if (proc.exitCode !== null) return;
   await new Promise((resolve) => {
     const timer = setTimeout(() => {
       if (proc.exitCode === null) {
@@ -1382,6 +1411,14 @@ handle(CH.REC.STOP, (e, makeGif) => withRecordingOperation(e, async () => {
   // 拼接失败时的降级标记：必须如实告诉用户只拿到了第一段，
   // 否则“暂停过的录制”会静默丢掉后半段，用户还以为完整。
   let degraded = null;
+  /* 【进程中途死亡 = 结果不可信，必须降级】
+   * 半截 mp4 只是「体积非 0」，stat 判不出它能不能播（moov 从未写出）。
+   * 这里先把话说明白：分段目录也会因此保留，用户还能拿单段去救。
+   * 拼接成功也不能清掉这条 —— 拼进去的本来就是残缺分段。 */
+  if (recDeath) {
+    const code = recDeath.code == null ? '未知' : String(recDeath.code);
+    degraded = '录制进程中途退出（退出码 ' + code + '），已保存的文件可能不完整，建议先试播确认；分段保留在 ' + recSegDir;
+  }
   // 用 try/finally 保证临时分段目录一定被清理（原先清理写在末尾，中途抛错就泄漏）
   try {
     try {
@@ -1465,7 +1502,7 @@ handle(CH.REC.STOP, (e, makeGif) => withRecordingOperation(e, async () => {
     } else {
       console.warn('[rec] 保留分段目录以便手工恢复：' + recSegDir);
     }
-    recOpts = null; recSegs = []; recSegDir = null; recOwner = null;
+    recOpts = null; recSegs = []; recSegDir = null; recOwner = null; recDeath = null;
   }
 }));
 };

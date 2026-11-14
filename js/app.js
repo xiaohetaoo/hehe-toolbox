@@ -1597,7 +1597,10 @@
           try {
             const el = rec.el.querySelector('.picker') || rec.el.querySelector('.dropzone');
             const api = el && (el.__picker || (el.parentElement && el.parentElement.__picker));
-            if (api && api.consumePendingDrop) api.consumePendingDrop();
+            /* 【必须传 v.toolId】复用路径不 render，window.__renderingTool 停在
+             * 上一次渲染的工具上 —— 不传的话 consumePendingDrop 会拿错 id，
+             * 拖给本页的文件被判成"不属于我"，队列保留到 30 秒后过期。 */
+            if (api && api.consumePendingDrop) api.consumePendingDrop(v.toolId);
           } catch (e) { /* 交接失败不影响主功能 */ }
         }, 0);
       }
@@ -2035,7 +2038,10 @@
           try {
             const el = page.querySelector('.picker');
             const api = el && el.__picker;
-            if (api && api.consumePendingDrop) api.consumePendingDrop();
+            /* 传 toolId 保持与拖拽路径同构：虽然面板送的 dataUrl 队列不带
+             * toolId（takePending 不会过滤它），但两条路径的调用形态一旦不一致，
+             * 下一个人给 dataUrl 队列补 toolId 时这里会静默失效。 */
+            if (api && api.consumePendingDrop) api.consumePendingDrop(toolId);
           } catch (e) { /* 交接失败不影响主功能 */ }
         }, 0);
       }
@@ -2250,9 +2256,14 @@
    *   - local-notes / clipboard-history：记笔记、看历史无害，只有删除要 file-delete
    *   - link-doctor：体检（link:scan）只读，只有「清理僵尸链接」（link:remove）要 file-delete
    *   - acl-repair：诊断（acl:diagnose）只读，只有「取得所有权/修复权限」（acl:repair）要 acl-repair
-   * 也就是说这两个工具的「清理 / 修复」按钮由主进程的通道级门禁锁着
-   * （CAP_GATED_CHANNELS: link:remove / acl:repair），页面本身照常可用。 */
-  const DELETE_ONLY_TOOLS = new Set(['local-notes', 'clipboard-history', 'link-doctor', 'acl-repair']);
+   *   - restore-points：列出/创建/启用保护都无害，只有「删除还原点」（sys:restore-delete）要能力
+   *   - autostart：读取自启项与只读汇总（启动文件夹/计划任务/服务）都无害，
+   *     只有禁用/删除（autostart:delete/enable）要 registry-edit ——
+   *     整页锁会让用户连"看"都做不到（第四轮扩面后尤其明显）。
+   * 也就是说这些工具的「清理 / 修复 / 删除」按钮由主进程的通道级门禁锁着
+   * （CAP_GATED_CHANNELS: link:remove / acl:repair / sys:restore-delete / autostart:delete），
+   * 页面本身照常可用。 */
+  const DELETE_ONLY_TOOLS = new Set(['local-notes', 'clipboard-history', 'link-doctor', 'acl-repair', 'restore-points', 'autostart']);
   function requiresWholeToolLock(toolId) { return !DELETE_ONLY_TOOLS.has(toolId); }
   function dangerNoticeCard(toolId) {
     const card = div('card');

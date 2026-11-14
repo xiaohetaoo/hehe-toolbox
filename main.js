@@ -30,6 +30,9 @@ const windowSecurity = require('./lib/window-security');
 const updateFile = require('./lib/update-file');
 const downloadLib = require('./lib/download');
 const powerGate = require('./lib/power-gate');       // 电源命令识别 + 门禁判定（与测试共享同一实现）
+const psScript = require('./lib/ps-script');          // 更新/回滚脚本的 UTF-8 BOM 约定（PS 5.1 必须）
+const startupInventory = require('./lib/startup-inventory'); // 自启来源归一化（纯逻辑，可单测）
+const restorePoint = require('./lib/restore-point');         // 还原点时间/vssadmin 输出解析（纯逻辑）
 /* lib/job-id 只在**渲染层一侧**用（js/job-prefixes.js 与它对齐）。
  * 主进程从来不读这张表：事件过滤是渲染层 claimJobId 做的。
  * 这里原先有一行未使用的 require，已删除 —— 留着会让「主进程也参与过滤」
@@ -467,6 +470,19 @@ function ps(script, timeout = 30000, cwd) {
   return runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + script], { timeout, encoding: 'utf8', cwd });
 }
 
+/* 【容错的 ps：拿不到结果时不抛完整命令行】
+ * runCmd 在「非零退出且无 stdout」时会 reject，而 err.message 是**整条命令行**
+ * （execFile 的原样拼接）。系统还原点的查询在「没有还原点 / 系统保护未启用」
+ * 时就正是这种形态 —— 直接抛出去会把一条几百字符的命令弹到界面上（实测截图
+ * 里就是一行 "Command failed: powershell.exe ... Get-ComputerRestorePoint"）。
+ * 这里把失败折叠成 failed:true，由调用方给出人话提示。 */
+async function psSoft(script, timeout = 30000) {
+  try {
+    return await ps(script, timeout);
+  } catch (err) {
+    return { stdout: '', stderr: '', code: -1, failed: true, error: String((err && err.message) || err) };
+  }
+}
 // 异步存在性判断：批量文件操作里替代 fs.existsSync，避免阻塞主进程
 async function pathExists(p) {
   try { await fsp.access(p); return true; } catch (e) { return false; }
@@ -567,7 +583,7 @@ const PS_PATH_BATCH = 60;
 const CAP_TEXT = {
   zh: {
     'file-delete': ['删除文件', '删除重复文件、空目录、笔记、剪贴板图片等（不进回收站）'],
-    'junk-clean': ['垃圾清理', '清理系统临时文件、浏览器缓存、缩略图缓存'],
+    'junk-clean': ['垃圾清理', '清理临时文件、浏览器缓存、缩略图、下载目录安装包与系统日志（安装包默认不勾选）'],
     'recycle-empty': ['清空回收站', '永久清空系统回收站，不可恢复'],
     'process-kill': ['结束进程', '强制结束任意进程，未保存数据会丢失'],
     'service-stop': ['停止系统服务', '停止正在运行的 Windows 服务，依赖它的程序可能异常退出'],
@@ -579,10 +595,13 @@ const CAP_TEXT = {
      * 所以它必须是独立的高危能力，不能借用 file-delete。 */
     'dir-move': ['目录搬家（建链接替身）', '把目录搬到别处并在原位置建目录联接；失败时可能留下坏链接'],
     'acl-repair': ['取得所有权 / 修复权限', '改文件所有者并授予完全控制；会放宽该路径（及其子项）的访问权限'],
+    /* 还原点删除会连带清掉该卷上的其它卷影副本（备份软件、文件历史也可能用），
+     * 且不可恢复 —— 所以它是独立能力，不借用 file-delete。 */
+    'restore-point-delete': ['删除系统还原点', '删除卷影副本（系统还原点）；不可恢复，且会同时清掉该卷上的其它卷影副本'],
   },
   en: {
     'file-delete': ['Delete files', 'Delete duplicate files, empty folders, notes, clipboard images, etc. (bypassing the Recycle Bin)'],
-    'junk-clean': ['Junk cleanup', 'Clean temp files, browser caches and thumbnail caches'],
+    'junk-clean': ['Junk cleanup', 'Clean temp files, browser caches, thumbnails, downloaded installers and system logs (installers are unchecked by default)'],
     'recycle-empty': ['Empty Recycle Bin', 'Permanently empty the Recycle Bin; this cannot be undone'],
     'process-kill': ['Kill processes', 'Force-kill any process; unsaved work is lost'],
     'service-stop': ['Stop services', 'Stop running Windows services; programs that depend on them may fail'],
@@ -591,12 +610,14 @@ const CAP_TEXT = {
     'registry-edit': ['Registry and context menu', 'Remove startup entries, switch to the Windows 11 classic context menu'],
     'dir-move': ['Folder move (with link)', 'Move a folder elsewhere and leave a directory junction behind; a failed run may leave a broken link'],
     'acl-repair': ['Take ownership / repair permissions', 'Change the owner and grant full control; widens access for that path and everything under it'],
+    'restore-point-delete': ['Delete restore points', 'Delete shadow copies (restore points); cannot be undone and also clears other shadow copies on that volume'],
   },
 };
 /* 清单顺序即设置页展示顺序（显式列出，不靠对象键顺序）。 */
 const DANGEROUS_CAP_IDS = [
   'file-delete', 'junk-clean', 'recycle-empty', 'process-kill', 'service-stop',
   'system-power', 'hosts-edit', 'registry-edit', 'dir-move', 'acl-repair',
+  'restore-point-delete',
 ];
 function capText(id) {
   const pack = CAP_TEXT[uiLang] || CAP_TEXT.zh;
@@ -659,7 +680,9 @@ const CAP_GATED_CHANNELS = {
    * 工具卡片不标红、只要以管理员运行就能直接调 acl:repair。
    * 而「改所有者 + 递归放宽整棵子树的权限」是这批功能里影响面最大的一个
    * （对目录递归就是一次性放开其下所有条目），所以它不能只靠「用户看得见」。 */
-  'acl:repair': 'acl-repair'
+  'acl:repair': 'acl-repair',
+  /* 删除还原点会连带清掉该卷的其它卷影副本，且不可恢复 —— 单独能力 */
+  'sys:restore-delete': 'restore-point-delete'
 };
 // sys:power 通道里既有危险动作（关机/重启/休眠）也有无害动作（锁屏/睡眠），
 // 睡眠只是把内存转成待机状态、不会丢数据，所以不纳入高危门禁。
@@ -727,7 +750,10 @@ const TOOL_DANGEROUS_CAPS = {
   'dir-move': ['dir-move'],
   'link-doctor': ['file-delete'],
   /* 诊断（acl:diagnose）是只读的，不进这张表；只有真正改权限的 acl:repair 计入 */
-  'acl-repair': ['acl-repair']
+  'acl-repair': ['acl-repair'],
+  /* 还原点工具里「列出 / 创建 / 启用保护」都是无害的，只有删除要能力；
+   * 因此它进 DELETE_ONLY_TOOLS（部分锁定），不整页锁死。 */
+  'restore-points': ['restore-point-delete']
 };
 handle(CH.DANGEROUS.TOOL_CAPS, () => {
   const out = {};
@@ -2007,6 +2033,69 @@ handle(CH.SYS.POWER, async (e, action) => {
     default: throw new Error('未知操作');
   }
 });
+/* ---------------- 系统还原点 ---------------- */
+/* 系统盘根：与 hosts 等系统路径一样按 SystemRoot 推导，不写死 C:\ */
+function systemDriveRoot() {
+  const root = path.parse(process.env.SystemRoot || process.env.windir || 'C:\\Windows').root;
+  return root || 'C:\\';
+}
+/* 把 PowerShell 的错误压成一行可读文本（vssadmin 的报错常带多行横幅） */
+function lastErrLines(r, n) {
+  const text = String((r && (r.stderr || r.stdout)) || '').trim();
+  const lines = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  return lines.slice(-(n || 2)).join(' ');
+}
+handle(CH.SYS.RESTORE_LIST, async () => {
+  /* 【查询失败不是错误，是「没有」】系统保护未启用、或本机没有还原点时，
+   * Get-ComputerRestorePoint 会非零退出且没有 stdout。用 psSoft 折叠成
+   * note，界面照实说，不把整条命令弹出来。 */
+  const r = await psSoft(`Get-ComputerRestorePoint -ErrorAction SilentlyContinue | Select-Object SequenceNumber,Description,CreationTime,EventType | ConvertTo-Json -Compress`, 30000);
+  let rows = [];
+  try { rows = restorePoint.asArray(JSON.parse(r.stdout || '[]')); } catch (err) { rows = []; }
+  return {
+    points: restorePoint.normalizePoints(rows),
+    systemDrive: systemDriveRoot(),
+    /* 系统自带「系统还原」界面：只给路径，渲染层不猜盘符 */
+    rstrui: path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'rstrui.exe'),
+    note: r.failed ? '读取失败：系统保护可能未启用，或当前账户无权限（可用「打开系统还原」查看）' : '',
+  };
+});
+handle(CH.SYS.RESTORE_STORAGE, async () => {
+  /* vssadmin 需要管理员；非管理员会输出「没有找到…」或拒绝访问。
+   * 解析不出就返回 storage:null + 一句话原因，界面如实显示，不画假进度条。 */
+  const r = await psSoft('vssadmin list shadowstorage', 30000);
+  const storage = restorePoint.parseVssStorage(r.stdout);
+  return {
+    storage,
+    note: storage ? '' : (r.failed ? '需要管理员权限' : (lastErrLines(r, 2) || 'vssadmin 没有输出可解析的存储信息')),
+  };
+});
+handle(CH.SYS.RESTORE_CREATE, async (e, description) => {
+  /* 描述会拼进 PowerShell 脚本，必须先净化：换行/回车会变成语句分隔符
+   * （本项目在 PowerShell 换行语义上踩过坑），长度也要截断。 */
+  const desc = String(description == null ? '' : description)
+    .replace(/[\r\n]+/g, ' ').trim().slice(0, 100) || '核核工具箱手动还原点';
+  const r = await psSoft(`Checkpoint-Computer -Description ${psSingleQuote(desc)} -RestorePointType MODIFY_SETTINGS -ErrorAction Stop`, 180000);
+  if (r.failed || r.code !== 0) throw new Error('创建还原点失败：系统保护可能未启用，或需要管理员权限（可先点「启用系统保护」）');
+  return true;
+});
+handle(CH.SYS.RESTORE_ENABLE, async () => {
+  const drive = systemDriveRoot();
+  const r = await psSoft(`Enable-ComputerRestore -Drive ${psSingleQuote(drive)} -ErrorAction Stop`, 60000);
+  if (r.failed || r.code !== 0) throw new Error('启用系统保护失败：需要管理员权限');
+  return true;
+});
+handle(CH.SYS.RESTORE_DELETE, async (e, mode) => {
+  /* 门禁由 CAP_GATED_CHANNELS 的 sys:restore-delete → restore-point-delete 完成。
+   * mode: 'oldest' = 只删最早的一个；其它值按「删全部」处理（界面只有这两个入口）。
+   * 注意 /all 会删掉**该卷上的全部卷影副本**，包括备份软件/文件历史用的 ——
+   * 界面文案必须把这句话说清楚，不能只说「删除还原点」。 */
+  const drive = systemDriveRoot();
+  const flag = mode === 'oldest' ? '/oldest' : '/all';
+  const r = await psSoft(`vssadmin delete shadows /for=${drive} ${flag} /quiet`, 120000);
+  if (r.failed || r.code !== 0) throw new Error('删除还原点失败：需要以管理员身份运行');
+  return true;
+});
 handle(CH.SYS.RECYCLE_EMPTY, async () => {
   /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
   const r = await ps(`Clear-RecycleBin -Force -ErrorAction Stop`, 20000);
@@ -2017,7 +2106,9 @@ const RUN_KEYS = [
   { hive: 'HKCU', key: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', label: '当前用户' },
   { hive: 'HKLM', key: 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', label: '所有用户' }
 ];
-handle(CH.AUTOSTART.LIST, async () => {
+/* 读注册表 Run 键。抽成函数是为了让 autostart:inventory 复用同一份实现 ——
+ * 否则「自启项列表」与「自启来源汇总」里的 Run 部分会各写一遍、迟早漂移。 */
+async function collectRunItems() {
   const out = [];
   for (const rk of RUN_KEYS) {
     try {
@@ -2029,6 +2120,62 @@ handle(CH.AUTOSTART.LIST, async () => {
     } catch (err) { /* HKLM may fail silently */ }
   }
   return out;
+}
+handle(CH.AUTOSTART.LIST, () => collectRunItems());
+
+/* 【其他自启来源：只读汇总】启动文件夹 / 计划任务 / 自动启动的服务。
+ * 这三类只展示、不代改：
+ *   · 计划任务与服务改动需要系统工具/管理员，第三方工具代改风险太高
+ *     （删错计划任务能毁掉系统更新、备份、驱动安装）；
+ *   · 所以界面只给「打开对应系统界面」，让用户在自己的工具里动手。
+ * 归一化规则在 lib/startup-inventory.js（有单测），这里只负责取数。 */
+handle(CH.AUTOSTART.INVENTORY, async () => {
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  const programData = process.env.ProgramData || process.env.ALLUSERSPROFILE || 'C:\\ProgramData';
+  const sysRoot = process.env.SystemRoot || 'C:\\Windows';
+  const run = await collectRunItems();
+
+  const dirSpec = [
+    { label: '当前用户启动文件夹', dir: path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup') },
+    { label: '所有用户启动文件夹', dir: path.join(programData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup') },
+  ];
+  const startupDirs = [];
+  for (const d of dirSpec) {
+    let items = [];
+    try {
+      items = startupInventory.normalizeStartupFolder(await fsp.readdir(d.dir, { withFileTypes: true }), d.dir);
+    } catch (err) { items = []; }
+    startupDirs.push({ label: d.label, dir: d.dir, items, exists: fs.existsSync(d.dir) });
+  }
+
+  const parseArray = (text) => {
+    try { return startupInventory.asArray(JSON.parse(String(text || '[]'))); }
+    catch (err) { return []; }
+  };
+  /* 【两条 PowerShell 并行，且把系统自带任务在 PowerShell 侧就过滤掉】
+   * 实测串行 + 全量：Get-ScheduledTask 4.7s / 19KB，服务 2s，合计 >6s；
+   * 改成「服务端 Where 过滤 + 并行」后约 2.5s（19KB → 1.3KB）。
+   * 页面打开后要等这么久才出内容，用户会以为卡住了。 */
+  let tasks = [];
+  let services = [];
+  const [tasksProc, svcProc] = await Promise.all([
+    psSoft(`Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' } | Select-Object TaskName,TaskPath,State | ConvertTo-Json -Compress`, 20000),
+    psSoft(`Get-CimInstance Win32_Service -Filter "StartMode='Auto'" | Select-Object Name,DisplayName,State,StartMode | ConvertTo-Json -Compress`, 20000),
+  ]);
+  tasks = startupInventory.normalizeTasks(parseArray(tasksProc.stdout));
+  services = startupInventory.normalizeServices(parseArray(svcProc.stdout));
+
+  return {
+    run,
+    startupDirs,
+    tasks,
+    services,
+    /* 系统面板入口：由主进程给出绝对路径，渲染层不猜盘符 */
+    panels: {
+      tasks: path.join(sysRoot, 'System32', 'taskschd.msc'),
+      services: path.join(sysRoot, 'System32', 'services.msc'),
+    },
+  };
 });
 handle(CH.AUTOSTART.DELETE, async (e, item, permanent) => {
   if (permanent) {
@@ -3517,9 +3664,12 @@ handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
       if (ent.isDir) { await dirFor(ent.name); continue; }
       const parentRel = path.dirname(ent.name);
       const parentAbs = await dirFor(parentRel || '.');
-      // 只有文件需要唯一化；目录层已确定，文件落进对应目录
-      const dst = await uniqueTarget(parentAbs, path.basename(ent.name));
-      await fsp.rename(src, dst);
+      /* 只有文件需要唯一化；目录层已确定，文件落进对应目录。
+       * 【必须走排他占位】原来的 uniqueTarget + fsp.rename 是
+       * 「先查存在、再改名」，而 Windows 的 rename 会覆盖已存在的目标：
+       * 两步之间出现的同名文件被静默覆盖，回滚还会把覆盖后的内容搬走。
+       * fsOps.placeUnique 用 open('wx') 先占名字，只可能覆盖自己刚建的空文件。 */
+      const dst = await fsOps.placeUnique(src, parentAbs, path.basename(ent.name));
       movedTo.push(dst);
       moved++;
     }
@@ -3700,7 +3850,7 @@ function downloadToFile(url, dest, id, ctrl, label) {
   return downloadLib.download(url, dest, id, ctrl, label, { send });
 }
 /* ================= IPC: 通用文件下载（断点续传） ================= */
-handle(CH.NET.DOWNLOAD, (e, { url, out }) => {
+handle(CH.NET.DOWNLOAD, async (e, { url, out }) => {
   /* 【下载前必须查覆盖】downloadToFile 最后是 fsp.rename(tmp, dest)，
    * 而 Windows 上 rename 目标已存在会直接覆盖 —— 用户手输的保存路径
    * 一旦撞上已有文件，那个文件会被静默抹掉，界面上只显示「下载完成」。
@@ -3708,7 +3858,22 @@ handle(CH.NET.DOWNLOAD, (e, { url, out }) => {
    * 命中关键目录或已存在同名文件时抛错，让用户换个路径。 */
   const bad = pathGuard.checkOverwritable(out);
   if (bad) throw pathGuard.err(bad.code, bad.reason, '请换一个保存路径');
-  if (fs.existsSync(out)) throw new Error('目标文件已存在，为避免覆盖已拒绝：' + out);
+  if (fs.existsSync(out)) {
+    /* 【唯一的例外：本项目自己的更新包】
+     * 更新包目标固定是 <userData>/update/<assetName>。用户下载成功后
+     * 没点「确认更新」就切走/关应用，update:cleanup 会按 pendingName 保留
+     * 它；下次再检查更新时目标已存在 → 被下面的闸门挡住，而界面此时
+     * 既没有下载按钮也没有安装按钮 —— 只能去资源管理器手删（第四轮审查）。
+     * 只对「自己目录里的更新包」放行并先删旧件：其它路径一律继续拒绝，
+     * 用户文件的保护不被放宽。 */
+    if (updateFile.isOwnUpdateArtifact(out, app.getPath('userData'))) {
+      try { await fsp.rm(out, { force: true }); } catch (err) {
+        throw new Error('旧的更新包无法删除（可能被占用），请关闭杀软后重试：' + out);
+      }
+    } else {
+      throw new Error('目标文件已存在，为避免覆盖已拒绝：' + out);
+    }
+  }
   const id = 'dlg' + (++jobSeq);
   const ctrl = new AbortController();
   jobs.set(id, { cancel: () => ctrl.abort() });
@@ -4017,7 +4182,16 @@ async function updateApplyImpl(opts = {}) {
   // Trust metadata held by the main process, not a digest supplied by a renderer.
   const verified = await updateFile.verifyUpdateFile(newExe, metadata);
   // 便携版启动时 electron-builder 注入 PORTABLE_EXECUTABLE_FILE 指向原始 exe
-  const target = process.env.PORTABLE_EXECUTABLE_FILE || (opts && opts.target) || app.getPath('exe');
+  /* 【替换目标绝不能由渲染层指定】原写法是
+   *   PORTABLE_EXECUTABLE_FILE || (opts && opts.target) || app.getPath('exe')
+   * —— 前两条与第三条在绿色版（无 PORTABLE_EXECUTABLE_FILE 注入）时都落空，
+   * 于是渲染层只要 invoke('update:apply', { target: 'C:\\任意\\victim.exe' })
+   * 就能让主进程用一份合法的更新包覆盖任意 .exe（只校验 .exe 后缀）。
+   * newExe 那边审得很细（目录 + 资产名 + 体积 + SHA256 + PE 头），
+   * target 却完全来自不可信一侧 —— 这是第四轮审查发现的注入面。
+   * 现在只认两个可信来源：打包器注入的原始 exe，或 Electron 自己的
+   * 当前可执行文件。渲染层传什么都不看。 */
+  const target = process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe');
   if (!/\.exe$/i.test(target)) throw new Error('目标不是可执行文件，无法自动替换：' + target);
   if (path.resolve(target).toLowerCase() === path.resolve(newExe).toLowerCase()) throw new Error('新旧文件相同，无需替换');
   const scriptDir = path.join(app.getPath('userData'), 'update');
@@ -4100,8 +4274,15 @@ async function updateApplyImpl(opts = {}) {
     '  Start-Process -FilePath $target',
     '} catch { Add-Content -LiteralPath $log -Value ("rollback-failed: " + $_.Exception.Message) }'
   ].join('\r\n');
-  await fsp.writeFile(script, ps, 'utf8');
-  await fsp.writeFile(rollbackScript, rb, 'utf8');
+  /* 【必须带 BOM 写盘，否则升级永远不生效】
+   * Windows PowerShell 5.1 对无 BOM 的 .ps1 按系统 ANSI 代码页解码，
+   * 而脚本里嵌的 `$newExe` 恒含中文（userData = %APPDATA%\核核工具箱）：
+   * 乱码 → Get-Item 抛错 → catch → exit 1，主进程此时已经 exit，用户
+   * 重启回来还是旧版。实测（PS 5.1）：无 BOM 的 Test-Path 输出 MISSING，
+   * 加 BOM 输出 EXISTS。rollback.ps1 同样要加，否则「双击回退」的兜底
+   * 也是坏的。编码约定收在 lib/ps-script.js，有真跑 PowerShell 的测试。 */
+  await fsp.writeFile(script, psScript.withBom(ps), 'utf8');
+  await fsp.writeFile(rollbackScript, psScript.withBom(rb), 'utf8');
   const spawnArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script];
   if (opts && opts.dryRun) {
     return { ok: true, dryRun: true, script, rollbackScript, target, newExe, backup, args: spawnArgs };
@@ -4113,7 +4294,33 @@ async function updateApplyImpl(opts = {}) {
    * 崩溃日志会写进一份本该是「正常退出完成更新」的记录里，
    * 用户下次看到「上次异常退出」却完全找不到对应现象。
    * spawnDetached 已经挂了空 error 监听并 unref。 */
-  spawnDetached('powershell.exe', spawnArgs, { detached: true, stdio: 'ignore' });
+  /* 【起不来就不能假装「正在升级」】
+   * 原实现把 spawnDetached 的返回值丢掉，然后无条件 1 秒后 app.exit(0)。
+   * 而 powershell.exe 被杀软隔离 / AppLocker 禁掉 / PATH 异常时：
+   *   · 同步失败 → spawnDetached 返回 null（已有注释说明）
+   *   · 异步失败（最常见：ENOENT）→ 只 emit 'error'，返回值仍是个对象
+   * 两种都不会抛，于是「包没替换、日志没写、应用已退出」，用户只会觉得
+   * 升级按钮没用（与「脚本无 BOM」是同一个用户症状，排错时极易混淆）。
+   *
+   * 现在：① 用绝对路径调 powershell.exe，绕开 PATH；
+   *      ② 等 'spawn' 或 'error'（上限 400ms）确认真的起来了；
+   *      ③ 没起来就把单飞标志放开并抛错，界面能显示原因，应用不退出。 */
+  const psExe = path.join(process.env.SystemRoot || 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const psChild = fs.existsSync(psExe)
+    ? spawnDetached(psExe, spawnArgs, { detached: true, stdio: 'ignore' })
+    : null;
+  const psStarted = psChild
+    ? await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(true), 400);
+      psChild.once('spawn', () => { clearTimeout(timer); resolve(true); });
+      psChild.once('error', () => { clearTimeout(timer); resolve(false); });
+    })
+    : false;
+  if (!psStarted) {
+    updateApplying = false;
+    throw new Error('无法启动更新脚本（powershell.exe 不可用或被安全软件拦截）');
+  }
   /* 替换脚本已经起来了：此后不再允许第二次 apply（标志也就不必再放开） */
   updateApplyingCommitted = true;
   /* 【退出前必须手动清会话标记】

@@ -35,6 +35,10 @@ function loadFsOpsHandlers() {
   const org = require('../../ipc/fs-ops');
   const handlers = new Map();
   const notNeeded = (name) => () => { throw new Error('测试桩不该被调用：' + name); };
+  /* 【nextJobSeq 必须有】scan-tree / dir-children 都用它生成任务 id。
+   * 不给的话会在「第一次真调扫描类 channel」时抛 TypeError —— 而这正是
+   * 这几个通道此前只做源码断言、从没被行为测过的原因之一。 */
+  let seq = 0;
   const deps = {
     handle: (ch, fn) => { handlers.set(ch, fn); },
     send: () => {},
@@ -48,14 +52,18 @@ function loadFsOpsHandlers() {
     crypto: require('crypto'),
     shell: {},
     AdmZip: notNeeded('AdmZip'),
-    pathGuard: {},
+    /* 【pathGuard 必须是真实现】它是纯逻辑模块（不 require electron），
+     * 塞空对象会让任何走到 pathGuard.err/checkOverwritable 的用例拿到
+     * TypeError 而不是真正的 CodedError —— 错误码断言就永远对不上，
+     * 而且失败原因会指向测试桩，不是被测代码。 */
+    pathGuard: require('../../lib/path-guard'),
     tempNames: {},
     fsOps: {},
     archiveGuard: {},
     uniqueTarget: notNeeded('uniqueTarget'),
     isOwnTempName: notNeeded('isOwnTempName'),
   };
-  org({}, deps);
+  org({ nextJobSeq: () => ++seq, jobs: deps.jobs }, deps);
   return handlers;
 }
 

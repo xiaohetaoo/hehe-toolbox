@@ -140,4 +140,20 @@ t('CM12 标题栏搜索占位符与实际快捷键一致', () => {
   assert.ok(en && en.length >= 2, '中英两份占位符都要有');
 });
 
+t('CM13 按键监听挂在 document 上并在关闭时摘掉（第四轮审查）', () => {
+  const s = read('js/cmdk.js');
+  /* 背景：结果行是带 tabindex 的 div，Tab 一次焦点就离开输入框。
+   * 监听只挂在 inputEl 上时，Esc 关不掉、↑↓ 不动（鼠标点列表空白区、
+   * 焦点回到 body 时同样死），而面板层级 2000 会盖住看得见的界面。 */
+  /* 锁的是：监听又挂回输入框 —— Tab 之后键盘导航整段失效。 */
+  assert.ok(/document\.addEventListener\(['"]keydown['"], onKey\)/.test(s),
+    '键盘监听必须挂在 document 上（否则 Tab 到结果行后 Esc/↑↓ 失效）');
+  /* 锁的是：关闭时不摘监听 —— 面板关了还在全局劫持 Esc / 方向键。 */
+  assert.ok(/document\.removeEventListener\(['"]keydown['"], onKey\)/.test(s),
+    '关闭面板必须摘掉 document 上的 keydown 监听');
+  /* 锁的是：又给输入框单独挂一份 —— 事件会冒泡，一次 Enter 会执行两次。 */
+  assert.ok(!/inputEl\.addEventListener\(['"]keydown['"]/.test(s),
+    '不能再给输入框单独挂 keydown（会和 document 监听重复触发）');
+});
+
 done();

@@ -261,84 +261,84 @@ t('搬完之后作废预检、按钮保持禁用，改路径才恢复', () => {
   assert.ok(/已搬完/.test(src), '应换成「已搬完」的说明卡');
 });
 
-t('目标落在系统目录时必须被拒（即使调用方没传 dstProtected）', () => {
-  const D = require('../lib/dir-move.js');
-  const OK = {
-    src: 'C:' + BS + 'Users' + BS + 'u' + BS + 'bigdir', dst: 'D:' + BS + 'backup' + BS + 'bigdir',
-    srcExists: true, srcIsDir: true, srcIsLink: false, srcIsRoot: false, srcIsCritical: false,
-    dstExists: false, needBytes: 1000, freeBytes: 10737418240, lockedPaths: [],
-  };
-  const win = process.env.SystemRoot || 'C:' + BS + 'Windows';
-  for (const dst of [win, win + BS + 'moved', (process.env.ProgramFiles || 'C:' + BS + 'Program Files') + BS + 'x']) {
-    const r = D.validateMove(Object.assign({}, OK, { dst }));
-    assert.strictEqual(r.code, 'DST_PROTECTED', dst + ' 应被拒，实际 ' + r.code + ' / ' + r.reason);
-  }
-  /* 正常目标不受影响 */
-  assert.strictEqual(D.validateMove(OK).ok, true, '正常目标不该被误拒');
-  /* 显式结论也要生效（main.js 的调用方式） */
-  assert.strictEqual(D.validateMove(Object.assign({}, OK, { dstProtected: true })).code, 'DST_PROTECTED');
-});
-
-t('main.js 的两处调用都传了 dstProtected（预检 + 执行）', () => {
-  const code = stripComments(mainSrc);
-  const hits = (code.match(/dstProtected:/g) || []).length;
-  assert.ok(hits >= 3, '预检与执行都应传 dstProtected（含返回值），实际 ' + hits + ' 处');
-  assert.ok(/isProtectedForModify\(dstAbs\)/.test(code), '目标侧应复用 isProtectedForModify');
-});
-
-/* ================= ③ principalEq ================= */
-
-t('预检只走一遍全树（体积 + 链接同一次遍历）', () => {
-  const code = stripComments(mainSrc);
-  const seg = code.slice(precheckAt(code), moveAt(code));
-  assert.ok(/collectLinks\(srcAbs, \{ wantSize: true \}\)/.test(seg), '预检没有用一次遍历同时取体积与链接');
-  assert.ok(!/links\.dirSize\(srcAbs\)/.test(seg), '预检里仍在走第二遍（dirSize）');
-  assert.ok(/linkCount: treeLinks\.length/.test(seg), 'linkCount 应直接复用遍历结果');
-  /* 结果要真的被界面用上（之前算了却没人显示） */
-  const ui = stripComments(read('js/tools/dir-move.js'));
-  assert.ok(/r\.linkCount/.test(ui), '预检结果里的 linkCount 没有显示给用户');
-});
-
-t('盘符根保护：任何存在的盘上的 Windows/Program Files 都拦，不存在的盘不误伤', () => {
-  const p = require('../lib/path-guard.js');
-  const win = process.env.SystemRoot || 'C:' + BS + 'Windows';
-  assert.strictEqual(p.isProtectedForModify(win).protected, true, 'Windows 目录应受保护');
-  assert.strictEqual(p.isProtectedForModify(win + BS + 'System32').protected, true);
-  assert.strictEqual(p.isProtectedForModify('Q:' + BS + 'Windows').protected, false,
-    '不存在的盘不该凭空产生保护项（会误伤同名的普通目录）');
+t('目标落在系统目录时必须被拒（即使调用方没传 dstProtected）', () => {
+  const D = require('../lib/dir-move.js');
+  const OK = {
+    src: 'C:' + BS + 'Users' + BS + 'u' + BS + 'bigdir', dst: 'D:' + BS + 'backup' + BS + 'bigdir',
+    srcExists: true, srcIsDir: true, srcIsLink: false, srcIsRoot: false, srcIsCritical: false,
+    dstExists: false, needBytes: 1000, freeBytes: 10737418240, lockedPaths: [],
+  };
+  const win = process.env.SystemRoot || 'C:' + BS + 'Windows';
+  for (const dst of [win, win + BS + 'moved', (process.env.ProgramFiles || 'C:' + BS + 'Program Files') + BS + 'x']) {
+    const r = D.validateMove(Object.assign({}, OK, { dst }));
+    assert.strictEqual(r.code, 'DST_PROTECTED', dst + ' 应被拒，实际 ' + r.code + ' / ' + r.reason);
+  }
+  /* 正常目标不受影响 */
+  assert.strictEqual(D.validateMove(OK).ok, true, '正常目标不该被误拒');
+  /* 显式结论也要生效（main.js 的调用方式） */
+  assert.strictEqual(D.validateMove(Object.assign({}, OK, { dstProtected: true })).code, 'DST_PROTECTED');
 });
 
-t('问题7：checkbox 从 state.recursive 读初值，不硬设 false', () => {
-  const tool = read('js/tools/acl-repair.js');
-  const code = stripComments(tool);
-  assert.ok(/chk\.checked = !!state\.recursive;/.test(code),
-    'render() 里应读回 state.recursive —— 硬设 false 会让界面与状态脱节');
-  assert.ok(!/chk\.checked = false;/.test(code), '不该硬设 false');
-});
+t('main.js 的两处调用都传了 dstProtected（预检 + 执行）', () => {
+  const code = stripComments(mainSrc);
+  const hits = (code.match(/dstProtected:/g) || []).length;
+  assert.ok(hits >= 3, '预检与执行都应传 dstProtected（含返回值），实际 ' + hits + ' 处');
+  assert.ok(/isProtectedForModify\(dstAbs\)/.test(code), '目标侧应复用 isProtectedForModify');
+});
 
-t('问题7：换目标路径才复位递归（onChange 与「用这个路径」都要复位）', () => {
-  const tool = read('js/tools/acl-repair.js');
-  const code = stripComments(tool);
-  const onChangeSeg = code.slice(code.indexOf('onChange: (items)'), code.indexOf('onChange: (items)') + 400);
-  assert.ok(/state\.recursive = false/.test(onChangeSeg),
-    'onChange 里应复位 recursive（换路径沿用上次勾选是危险的默认值）');
-  const usePathSeg = code.slice(code.indexOf('usePathBtn'), code.indexOf('usePathBtn') + 500);
-  assert.ok(/state\.recursive = false/.test(usePathSeg), '「用这个路径」也应复位');
-});
-
+/* ================= ③ principalEq ================= */
+
+t('预检只走一遍全树（体积 + 链接同一次遍历）', () => {
+  const code = stripComments(mainSrc);
+  const seg = code.slice(precheckAt(code), moveAt(code));
+  assert.ok(/collectLinks\(srcAbs, \{ wantSize: true \}\)/.test(seg), '预检没有用一次遍历同时取体积与链接');
+  assert.ok(!/links\.dirSize\(srcAbs\)/.test(seg), '预检里仍在走第二遍（dirSize）');
+  assert.ok(/linkCount: treeLinks\.length/.test(seg), 'linkCount 应直接复用遍历结果');
+  /* 结果要真的被界面用上（之前算了却没人显示） */
+  const ui = stripComments(read('js/tools/dir-move.js'));
+  assert.ok(/r\.linkCount/.test(ui), '预检结果里的 linkCount 没有显示给用户');
+});
+
+t('盘符根保护：任何存在的盘上的 Windows/Program Files 都拦，不存在的盘不误伤', () => {
+  const p = require('../lib/path-guard.js');
+  const win = process.env.SystemRoot || 'C:' + BS + 'Windows';
+  assert.strictEqual(p.isProtectedForModify(win).protected, true, 'Windows 目录应受保护');
+  assert.strictEqual(p.isProtectedForModify(win + BS + 'System32').protected, true);
+  assert.strictEqual(p.isProtectedForModify('Q:' + BS + 'Windows').protected, false,
+    '不存在的盘不该凭空产生保护项（会误伤同名的普通目录）');
+});
+
+t('问题7：checkbox 从 state.recursive 读初值，不硬设 false', () => {
+  const tool = read('js/tools/acl-repair.js');
+  const code = stripComments(tool);
+  assert.ok(/chk\.checked = !!state\.recursive;/.test(code),
+    'render() 里应读回 state.recursive —— 硬设 false 会让界面与状态脱节');
+  assert.ok(!/chk\.checked = false;/.test(code), '不该硬设 false');
+});
+
+t('问题7：换目标路径才复位递归（onChange 与「用这个路径」都要复位）', () => {
+  const tool = read('js/tools/acl-repair.js');
+  const code = stripComments(tool);
+  const onChangeSeg = code.slice(code.indexOf('onChange: (items)'), code.indexOf('onChange: (items)') + 400);
+  assert.ok(/state\.recursive = false/.test(onChangeSeg),
+    'onChange 里应复位 recursive（换路径沿用上次勾选是危险的默认值）');
+  const usePathSeg = code.slice(code.indexOf('usePathBtn'), code.indexOf('usePathBtn') + 500);
+  assert.ok(/state\.recursive = false/.test(usePathSeg), '「用这个路径」也应复位');
+});
+
 /* ================= 问题 8：lockedPaths 语义与文案 ================= */
 
-t('33 dir-move：剩余空间未知（null）不该报「空间不足」', () => {
-  const DMx = require(path.join(ROOT, 'lib', 'dir-move'));
-  const r = DMx.validateMove({
-    src: 'C:\\a', dst: 'D:\\a', srcExists: true, srcIsDir: true, srcIsLink: false, srcIsRoot: false,
-    srcIsCritical: false, dstExists: false, dstProtected: false,
-    needBytes: 100 * 1024 * 1024, freeBytes: null, lockedPaths: [],
-  });
-  assert.strictEqual(r.ok, true,
-    'freeBytes=null 表示「读不到剩余空间」，Number(null)===0 会让它变成「剩余 0 GB」而永久拒绝搬家：' + r.reason);
-});
-
+t('33 dir-move：剩余空间未知（null）不该报「空间不足」', () => {
+  const DMx = require(path.join(ROOT, 'lib', 'dir-move'));
+  const r = DMx.validateMove({
+    src: 'C:\\a', dst: 'D:\\a', srcExists: true, srcIsDir: true, srcIsLink: false, srcIsRoot: false,
+    srcIsCritical: false, dstExists: false, dstProtected: false,
+    needBytes: 100 * 1024 * 1024, freeBytes: null, lockedPaths: [],
+  });
+  assert.strictEqual(r.ok, true,
+    'freeBytes=null 表示「读不到剩余空间」，Number(null)===0 会让它变成「剩余 0 GB」而永久拒绝搬家：' + r.reason);
+});
+
 /* ==================== 34. archive-guard：文件/目录冲突要双向查 ==================== */
 
 t('6a UNC 目标必须在预检阶段就被拒（不是等到建链接才失败）', () => {
@@ -404,5 +404,19 @@ t('6d 界面把「未校验」如实说出来', () => {
  * 结果 verifyCopy 的 readdir 压根看不到它，计数恒为 0（测试假绿）。
  * 只有让 readdir 正常返回目录项、而 stat(源) 单独抛 ENOENT，才能精确命中目标分支。
  * 注意桩要区分源侧/目标侧路径：只让**源**路径消失，目标侧照常返回。 */
+
+t('34 dir-move：D: 这类盘符相对写法必须在 resolve 之前判（第四轮审查）', () => {
+  const code = stripComments(read('ipc/dir-acl-links.js'));
+  /* 背景：`D:` 是盘符相对写法，path.resolve('D:') 会变成进程 cwd
+   * （即应用自己的工作目录）。lib/links.js 里专门写了 isVolumeRootOnly('D:')，
+   * 但两处调用点都传的已 resolve 路径 → 判据永远为 false。
+   * 后果：用户在「源目录」手输 D:，会去搬应用自己的目录。 */
+  const hits = [...code.matchAll(/srcIsRoot[^\n]*isVolumeRootOnly\([^)]*\)/g)].map((m) => m[0]);
+  assert.ok(hits.length >= 2, '应有预检与执行两处 srcIsRoot 判定，实际 ' + hits.length);
+  for (const h of hits) {
+    /* 锁的是：只拿 resolve 后的路径判盘符根 —— 专用判据成为死代码。 */
+    assert.ok(/String\(src \|\| ''\)/.test(h), 'srcIsRoot 必须先用原始字符串判一次：' + h);
+  }
+});
 
 done();

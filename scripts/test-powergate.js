@@ -697,6 +697,65 @@ t('35 iex 出现即拦（字符串即代码，与 -EncodedCommand 同取舍）',
   assert.strictEqual(PG.isPowerCommand('echo iex something'), false, 'echo iex 被误拦');
 });
 
+/* ==================== 36. 变量/转义绕过（第四轮审查） ====================
+ * 三条共同的成因：门禁只看「字面上的首词」。首词被变量或 caret 顶替后，
+ * DANGER_TOKENS 一个都对不上，`checkPowerGate(cmd,false)` 直接返回 null。
+ * 以下每一条都在 cmd.exe 里会真的执行（纯判定复现；实机验证用 `shutdown /a`
+ * 这种无害载荷做过，见 docs 里的审查记录）。 */
+t('36a for /f 间接取程序名必须拦（%i 不在 DANGER_TOKENS 里）', () => {
+  const cmd = "cmd /c for /f %i in ('echo shutdown') do %i /s";
+  /* 锁的是：for 体里的可执行位是 `%i`，危险词只出现在收集部分的引号里。
+   * 只递归 for 体、不把「首词是变量」判成 fail-closed 的话，这条会放行。 */
+  assert.strictEqual(PG.isPowerCommand(cmd), true, 'for /f %i 间接关机必须拦截');
+  assert.ok(PG.checkPowerGate(cmd, false), '未开启高危能力时该命令必须被门禁拒绝');
+});
+
+t('36b cmd 延迟展开 !VAR! 必须拦（与 %VAR% 同一取舍）', () => {
+  const cmd = 'cmd.exe /v:on /c set x=shutdown& !x! /s';
+  /* 锁的是：hasUnknownVar 只认 %VAR% 时，`!x!` 原样留下 ——
+   * 首词是 `!x!`，与危险词对不上；而 /v:on 下 cmd 会在执行时把它展开成 shutdown。 */
+  assert.strictEqual(PG.isPowerCommand(cmd), true, '延迟展开的关机必须拦截');
+  assert.ok(PG.checkPowerGate(cmd, false), '未开启高危能力时该命令必须被门禁拒绝');
+});
+
+t('36c cmd 的 ^ 转义必须剥掉再判首词', () => {
+  /* 锁的是：normalizeCommand 若不剥 caret，首词会是 shut^down / s^hutdown，
+   * 与 DANGER_TOKENS 全不匹配 —— 而 cmd 会吃掉 ^ 后照常执行 shutdown。 */
+  for (const cmd of ['cmd /c shut^down /s', 'cmd /c s^hutdown /s', 'shutdown^ /s']) {
+    assert.strictEqual(PG.isPowerCommand(cmd), true, 'caret 转义的关机必须拦截：' + cmd);
+  }
+});
+
+t('36d 三类绕过修好后，日常命令与 /a 不能被误伤', () => {
+  /* 锁的是：这次加固的回归面 —— 文本命令、参数里含 shutdown 字样、
+   * 取消关机（/a）都必须继续放行，否则用户日常操作会一直弹高危确认。 */
+  const mustAllow = [
+    'cmd /c echo hello',
+    'cmd /c echo shutdown',
+    'cmd /c echo !x!',
+    'cmd /c del D:\\logs\\shutdown.log',
+    'cmd /c shutdown /a',
+    'for %i in (x) do echo hi',
+  ];
+  for (const c of mustAllow) {
+    assert.strictEqual(PG.isPowerCommand(c), false, '日常命令被误拦：' + c);
+  }
+  /* 锁的是：源码里必须留下「变量当首词 = fail-closed」与「剥 caret」两处实现，
+   * 否则下一个人删掉注释/分支时测试仍可能绿。 */
+  const code = read('lib/power-gate.js');
+  assert.ok(/\^\(\[\\s\\S\]\)/.test(code), 'normalizeCommand 里找不到剥 caret 的实现');
+  /* 锁的是：textHasDanger 里「首词是变量」的判定被删（for /f %i 那条会复发）。 */
+  assert.ok(/isVariableHead\(head\)/.test(code), 'textHasDanger 里找不到「首词是变量」的判定');
+  /* 锁的是：变量首词的判据本身 —— for 变量 %i/%%i 必须被认成变量，
+   * 而普通程序名（哪怕长得像）不能被误认，否则门禁会大面积误拦。 */
+  for (const v of ['%i', '%%i', '%FOO%', '!x!', '%~dp0setup']) {
+    assert.strictEqual(PG.isVariableHead(v), true, '该形态是变量，必须 fail-closed：' + v);
+  }
+  for (const v of ['shutdown', 'cmd', 'echo', 'del', 'not shutdown']) {
+    assert.strictEqual(PG.isVariableHead(v), false, '普通首词被误判成变量：' + v);
+  }
+});
+
 /* ==================== 27. expr-eval 取余 vs 百分比 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');

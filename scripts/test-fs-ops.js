@@ -246,6 +246,77 @@ t('9b moveFile：非 EXDEV 的错误要原样抛出，不能悄悄改成复制',
   await assert.rejects(() => fn('x', 'y'), /EPERM/, '非 EXDEV 必须原样抛出');
 });
 
+/* ---------- (10) 排他占位与原子写的目录目标（第四轮审查） ---------- */
+await t('10a placeUnique：绝不覆盖已存在的目标，而是换名', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r12x-place-'));
+  try {
+    const src = path.join(dir, 'src.txt');
+    fs.writeFileSync(src, 'NEW');
+    const user = path.join(dir, 'data.txt');
+    fs.writeFileSync(user, 'USER');
+    /* 锁的是：uniquePath + rename 的竞态 —— 用户已有文件必须是 USER。
+     * Windows 的 rename 会覆盖目标，所以「先查后改」在窗口期会毁数据；
+     * placeUnique 用 open('wx') 占位，只可能覆盖自己刚建的空文件。 */
+    const out = await fsOps.placeUnique(src, dir, 'data.txt');
+    assert.notStrictEqual(path.basename(out), 'data.txt', '冲突时必须换名');
+    assert.strictEqual(await fs.promises.readFile(user, 'utf8'), 'USER', '用户已有文件绝不能被动');
+    assert.strictEqual(await fs.promises.readFile(out, 'utf8'), 'NEW', '内容必须落到新名字上');
+    assert.ok(!fs.existsSync(src), '源文件应被搬走');
+    /* 锁的是：连续两次都占同一个名字时仍然要换名（占位文件也会 EEXIST）。 */
+    const src2 = path.join(dir, 'src2.txt');
+    fs.writeFileSync(src2, 'NEW2');
+    const out2 = await fsOps.placeUnique(src2, dir, 'data.txt');
+    assert.notStrictEqual(out2, out, '第二次也要拿到不同的名字');
+    assert.strictEqual(await fs.promises.readFile(user, 'utf8'), 'USER');
+  } finally { rmDir(dir); }
+});
+
+await t('10b writeFileAtomic：目标是目录时必须拒绝，不能把目录改名成备份', async () => {
+  const { loadFsOpsHandlers } = require('./lib/load-fs-ops-handlers');
+  const handlers = loadFsOpsHandlers();
+  const write = handlers.get('fs:write-text');
+  assert.ok(write, '找不到 fs:write-text');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r12x-atomic-'));
+  try {
+    const targetDir = path.join(dir, 'out');
+    fs.mkdirSync(targetDir);
+    fs.writeFileSync(path.join(targetDir, 'keep.txt'), 'KEEP');
+    let err = null;
+    try { await write({}, targetDir, 'CONTENT'); } catch (e) { err = e; }
+    /* 锁的是：写目录时的灾难路径 —— rename 目录成 .hehe-bak-* 再写入文件、
+     * 删备份失败被吞、handler 报成功。必须提前拒绝且不动目录。 */
+    assert.ok(err, '目标为目录时必须报错');
+    assert.strictEqual(err.code, 'DEST_IS_DIR', '错误码应为 DEST_IS_DIR');
+    assert.ok(fs.existsSync(path.join(targetDir, 'keep.txt')), '目录内容不能被搬走/清掉');
+    assert.deepStrictEqual(fs.readdirSync(dir), ['out'], '目录本身不能被改名成 .hehe-bak-*');
+  } finally { rmDir(dir); }
+});
+
+/* ---------- (11) 空间分析器的下钻通道（第四轮新增功能） ---------- */
+await t('11a fs:dir-children：按体积降序列出直接子项，且不跟随符号链接', async () => {
+  const { loadFsOpsHandlers } = require('./lib/load-fs-ops-handlers');
+  const handlers = loadFsOpsHandlers();
+  const list = handlers.get('fs:dir-children');
+  assert.ok(list, '找不到 fs:dir-children');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r12x-du-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'small.txt'), 'x');
+    fs.writeFileSync(path.join(dir, 'big.bin'), Buffer.alloc(4096, 7));
+    fs.mkdirSync(path.join(dir, 'sub'));
+    fs.writeFileSync(path.join(dir, 'sub', 'inner.bin'), Buffer.alloc(8192, 7));
+    const r = await list({}, dir);
+    /* 锁的是：下钻只列直接子项、按体积降序、目录带累积体积 ——
+     * 否则"大目录钻取"等于把整棵树拍平，用户点不进下一层。 */
+    assert.deepStrictEqual(r.children.map((c) => c.name), ['sub', 'big.bin', 'small.txt']);
+    assert.strictEqual(r.children[0].isDir, true, '子目录要标 isDir');
+    assert.strictEqual(r.children[0].size, 8192, '子目录体积应递归累计');
+    assert.strictEqual(r.children[1].size, 4096);
+    assert.strictEqual(r.dir, path.resolve(dir), '返回的 dir 应是归一化绝对路径');
+    assert.strictEqual(r.totalSize, 1 + 4096 + 8192, 'totalSize 应等于各子项之和');
+    assert.ok(r.volume === null || r.volume.total > 0, '分区容量要么是数字，要么明确为 null');
+  } finally { rmDir(dir); }
+});
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
   process.exit(fail === 0 ? 0 : 1);
 })();

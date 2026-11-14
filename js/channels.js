@@ -69,6 +69,8 @@
       DELETE: 'autostart:delete',
       DISABLED_LIST: 'autostart:disabled-list',
       ENABLE: 'autostart:enable',
+      /* 只读汇总：注册表 Run + 启动文件夹 + 计划任务 + 自启服务 */
+      INVENTORY: 'autostart:inventory',
       LIST: 'autostart:list',
     },
 
@@ -136,6 +138,8 @@
       DEDUPE: 'fs:dedupe',
       DELETE: 'fs:delete',
       DELETE_EMPTY: 'fs:delete-empty',
+      /* 逐层列出某个目录的直接子项及体积（空间分析器的下钻） */
+      DIR_CHILDREN: 'fs:dir-children',
       ENCRYPT_FILE: 'fs:encrypt-file',
       EXISTS: 'fs:exists',
       HASH_FILE_MULTI: 'fs:hash-file-multi',
@@ -308,6 +312,12 @@
       HW_INFO: 'sys:hw-info',
       POWER: 'sys:power',
       RECYCLE_EMPTY: 'sys:recycle-empty',
+      /* 系统还原点：列出 / 创建 / 删除（删除走「系统还原点」高危能力）/ 启停保护 / 查看占用 */
+      RESTORE_CREATE: 'sys:restore-create',
+      RESTORE_DELETE: 'sys:restore-delete',
+      RESTORE_ENABLE: 'sys:restore-enable',
+      RESTORE_LIST: 'sys:restore-list',
+      RESTORE_STORAGE: 'sys:restore-storage',
     },
 
     /* ---- 目标体积压缩 ---- */

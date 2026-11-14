@@ -116,4 +116,28 @@ t('CP7 色板样式存在且可聚焦', () => {
   assert.ok(/\.color-history/.test(css), '需 .color-history 容器样式');
 });
 
+t('CP8 取色覆盖层的页面级清理只登记一次（第四轮审查）', () => {
+  const s = read('js/tools/dev.js');
+  /* 背景：每次 pick() 都新建 cleanup 闭包并 App.onCleanup(cleanup)，
+   * 而 onCleanup 按引用去重且没有撤销接口 → 取 N 次色就留下 N 个闭包，
+   * 每个都捕获整屏 canvas（1080p≈8MB / 4K≈33MB）与 dataUrl。 */
+  /* 锁的是：pick() 里又直接往 onCleanup 塞闭包 —— 泄漏复发。
+   * 只看 pick() 自身片段：注释里提到这个方法名是允许的。 */
+  const pi = s.indexOf('async function pick(');
+  assert.ok(pi >= 0, '找不到 pick()');
+  const pseg = s.slice(pi, pi + 3200);
+  /* 锁的是：pick() 里又直接往 onCleanup 塞闭包 —— 每次都是新引用，去重永远不命中。 */
+  assert.ok(!/App\.onCleanup\(/.test(pseg),
+    'pick() 内不能再注册页面级清理（每次都是新闭包，去重永远不命中）');
+  /* 锁的是：页面级只登记一个稳定闭包（通过 pickCleanup 槽位间接调用）。 */
+  assert.ok(/let pickCleanup = null;/.test(s), '需要 pickCleanup 槽位');
+  assert.ok(/App\.onCleanup\(\(\) => \{[\s\S]{0,160}?pickCleanup/.test(s),
+    '页面级 onCleanup 应只登记一个读取槽位的稳定闭包');
+  /* 锁的是：pick() 用完不更新槽位 —— 切页时清不掉正在显示的覆盖层。 */
+  assert.ok(/pickCleanup = cleanup;/.test(s), 'pick() 必须把最新的 cleanup 放进槽位');
+  /* 锁的是：cleanup 执行后不清槽位 —— 切页时会对已摘除的节点二次 remove。 */
+  assert.ok(/if \(pickCleanup === cleanup\) pickCleanup = null;/.test(s),
+    'cleanup 执行后必须清空槽位');
+});
+
 done();

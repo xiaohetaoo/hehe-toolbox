@@ -27,10 +27,11 @@ function extractor(runSeven) {
     extractFn(source, 'async function uniqueTarget(') + ';return uniqueTarget;')(
     path, pathGuard, async p => fs.existsSync(p));
   new Function('handle', 'CH', 'findSevenFull', 'sevenZa', 'fsp', 'tempNames', 'runSeven',
-    'archiveGuard', 'pathGuard', 'path', 'uniqueTarget',
+    'archiveGuard', 'pathGuard', 'path', 'uniqueTarget', 'fsOps',
     extractFn(source, 'async function scanDirForGuard(') + '\n' + segFromHandler(source, 'seven:extract') + ');')(
     (ch, fn) => { extract = fn; }, CH, () => require('7zip-bin').path7za, null, fs.promises,
-    require('../lib/temp-names'), runSeven, guard, pathGuard, path, uniqueTarget);
+    require('../lib/temp-names'), runSeven, guard, pathGuard, path, uniqueTarget,
+    require('../lib/fs-ops'));
   return extract;
 }
 function zipExtractor() {

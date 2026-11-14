@@ -527,4 +527,18 @@ t('7b 录像输出为 .mp4 时，GIF 与录像同目录同基名（不改变既�
  * 结果是「18 通过 / 0 失败」里少了 2 条，而报告上看不出任何异常。
  * 这与仓库里另一个已知坑同源：默认 deferred 模式下用例在 `t()` 注册时就
  * 立即执行，所以顺序是有语义的，不能随意摆放。 */
+t('12 ffmpeg 定位必须按 productName 找用户目录（写死 hehe-toolbox 会静默 SKIP）', () => {
+  const { defaultUserDataDir } = require('./lib/load-media-ffmpeg');
+  const pkg = require('../package.json');
+  const dir = defaultUserDataDir();
+  const legacy = path.join(path.dirname(dir), 'hehe-toolbox');
+  const legacyHasFfmpeg = fs.existsSync(path.join(legacy, 'bin', 'ffmpeg.exe'));
+  /* 锁的是：测试的 userDataDir 又写死 hehe-toolbox —— 那是早期空壳目录，
+   * 真实数据在 %APPDATA%\<productName>。后果是 ffmpeg 已装的机器上
+   * test-concat-list / test-video-trim / test-two-pass-e2e 整段 SKIP，
+   * 而 SKIP 被断言数守卫当环境跳过放行，真回归可以顺着这条缝漏过去。 */
+  assert.ok(legacyHasFfmpeg ? /hehe-toolbox$/.test(dir) : dir.endsWith(pkg.productName),
+    '默认用户目录应指向 %APPDATA%\\<productName>（当前：' + dir + '）');
+});
+
 done();

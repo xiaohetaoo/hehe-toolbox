@@ -154,8 +154,13 @@
             targetIdx = set;
           }
 
-          let font = null;
-          if (wantWm) font = await doc.embedFont(StandardFonts.HelveticaBold);
+          /* 【字体必须无条件 embed】页码分支 :216 也要用它算文本宽度。
+           * 第四轮审查抓到的真实崩溃：只勾「页码」、把水印文字清空
+           * （wantWm=false）时 font 一直是 null → 生成时在
+           * font.widthOfTextAtSize 处抛 TypeError，界面报「生成失败：…null」。
+           * 「只要页码」正是这个工具最自然的用法之一，等于主功能不可用。
+           * 标准字体 embed 一次的成本可以忽略（PDF 里复用同一个字体对象）。 */
+          const font = await doc.embedFont(StandardFonts.HelveticaBold);
 
           const op = Math.max(0.02, Math.min(1, Number(wmOpacity.value) || 0.15));
           const col = hexToRgb(wmColor.value);

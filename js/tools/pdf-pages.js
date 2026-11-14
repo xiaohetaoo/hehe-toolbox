@@ -106,7 +106,14 @@
        * （几毫秒到几十毫秒）远低于"删错页"的代价。 */
       async function loadDoc() {
         const PDFLib = window.PDFLib;
-        if (!PDFLib) { toast('pdf-lib 未加载', 'error'); return; }
+        if (!PDFLib) {
+          /* 退化路径也要清状态：否则上一次成功加载的 doc/页序还留着，
+           * 界面却提示「pdf-lib 未加载」，点操作会作用在旧文档上。 */
+          doc = null; srcB64 = null; pageOrder = []; rotations = {};
+          pageList.innerHTML = '';
+          toast('pdf-lib 未加载', 'error');
+          return;
+        }
         status.textContent = '读取中…';
         try {
           const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pdfPath);
@@ -117,6 +124,14 @@
           renderList();
           status.textContent = '共 ' + doc.getPageCount() + ' 页';
         } catch (e) {
+          /* 【读失败必须把状态清干净，不能留半更新的现场】
+           * 第四轮审查：原来先把 srcB64 赋上再 load，load 抛错时只弹 toast。
+           * 于是 srcB64 非空、doc 仍是 null（首次加载失败）→ 点「删除这些页」
+           * 直接 TypeError，事件处理器里没有 toast，界面毫无反应；
+           * 若此前成功加载过另一份 PDF，则页序还是旧文档的，
+           * fileHint 却已显示新路径 —— 用户会按错的页数操作。 */
+          doc = null; srcB64 = null; pageOrder = []; rotations = {};
+          pageList.innerHTML = '';
           status.textContent = '';
           toast('读取失败：' + e.message, 'error');
         }
@@ -218,7 +233,10 @@
       const saveBtn = btn('另存为…', 'btn-primary', () => saveAs('-edited'), 'save');
 
       const delRangeBtn = btn('删除这些页', 'btn-sm btn-secondary', () => {
-        if (!srcB64) return toast('请先选择 PDF', 'warn');
+        /* 【两个状态都要判】读取失败后 srcB64 与 doc 必须同时为 null，
+         * 但这里是调用点和状态之间的契约，别只赌 loadDoc 的清理 —— 
+         * 任一为 null 都直接拦下，避免 doc.getPageCount() 抛 TypeError。 */
+        if (!srcB64 || !doc) return toast('请先选择 PDF（读取成功后可用）', 'warn');
         const list = parseRange(rangeInput.value, doc.getPageCount());
         if (!list.length) return toast('请先填页码范围', 'warn');
         const kill = new Set(list);
@@ -238,7 +256,7 @@
       });
 
       const keepRangeBtn = btn('只保留这些页', 'btn-sm btn-secondary', () => {
-        if (!srcB64) return toast('请先选择 PDF', 'warn');
+        if (!srcB64 || !doc) return toast('请先选择 PDF（读取成功后可用）', 'warn');
         const list = parseRange(rangeInput.value, doc.getPageCount());
         if (!list.length) return toast('请先填页码范围', 'warn');
         pageOrder = list.slice();

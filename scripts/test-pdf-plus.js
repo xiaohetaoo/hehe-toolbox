@@ -176,4 +176,26 @@ t('PP8 平铺水印的循环必须覆盖整页（含旋转出界）', () => {
     '平铺终点应到两倍页宽（覆盖旋转出界）');
 });
 
+t('PP9 只勾页码（水印文字为空）时字体不能是 null（第四轮审查）', () => {
+  const src = readSrc('js/tools/pdf-plus.js');
+  /* 背景（真实崩溃）：wantWm 由「水印文字非空」决定，font 原来只在
+   * wantWm 为真时 embed；而页码分支 :216 无条件用 font 算文本宽度。
+   * 于是「清空水印文字 + 只勾页码 → 生成」必抛 TypeError，
+   * 而这正是「只给 PDF 加页码」的唯一自然路径 —— 主功能整条不可用。
+   *
+   * 这条只能锁源码：run 按钮的闭包依赖 DOM 控件（wmText/numOn…），
+   * 纯 Node 里没有等价入口；PDF 层面的等价行为在 PP3 已经覆盖。 */
+  /* 锁的是：字体又被改回「只有水印才 embed」—— 只加页码会再次崩。 */
+  assert.ok(/const font = await doc\.embedFont\(StandardFonts\.HelveticaBold\);/.test(src),
+    '字体必须无条件 embed（页码分支也要用它算宽度）');
+  assert.ok(!/if \(wantWm\) font = await doc\.embedFont/.test(src),
+    '字体不该再被 wantWm 条件挡住');
+  /* 锁的是：页码分支确实用了这个 font（否则「无条件 embed」只是摆着）。 */
+  const pi = src.indexOf("if (wantNum) {");
+  assert.ok(pi >= 0, '找不到页码分支');
+  const seg = src.slice(pi, pi + 1400);
+  /* 锁的是：页码分支拿 font 算宽度这一行被删 —— 那「只加页码」就没有宽度可算。 */
+  assert.ok(/font\.widthOfTextAtSize\(label, ns\)/.test(seg), '页码分支应使用 font 算宽度');
+});
+
 done();

@@ -22,25 +22,31 @@ scripts/pack-zip.js | A=1 | B=0 | build-meta
 scripts/run-tests.js | A=1 | B=0 | exact:这是测试运行器本身，必须读测试脚本的原始文本才能判断它是否依赖 Electron（分组依据）。它不做任何"断言实现形态"的事，因此不存在需要剥注释的问题；上面的 electronNeeded 三条匹配已写「锁的是」
 scripts/test-acl-diagnose-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-acl-gate-e2e.js | A=2 | B=0 | e2e-fixture
-scripts/test-acl-repair.js | A=4 | B=25 | legacy-read
+scripts/test-acl-repair.js | A=4 | B=34 | legacy-read
 scripts/test-assertion-guard.js | A=2 | B=0 | exact:那 2 处读的是 scripts/run-tests.js 与 scripts/check-assertion-count.js 的**字面量集合成员**（EXIT_ONLY 表），必须拿原始文本 —— readSrc 只服务 js/ 下的应用源码，且它剥注释的语义与这里无关（要的就是源码里写的名字）。B=0：本用例靠直接比对两张表的成员来锁「口径一致」，不是匹配源码形态的断言。
 scripts/test-aux-csp.js | A=4 | B=0 | legacy-source-assertion
 scripts/test-aux-windows-csp.js | A=4 | B=8 | legacy-read
+scripts/test-batch-cancel.js | A=1 | B=1 | exact:读三个批量工具原文核对取消标志的声明/循环检查/停止按钮/收尾复位。行为断言需要真实跑批量（几十张图几分钟）且无法验证取消时机，源码形态断言成本最低。
+scripts/test-chain.js | A=1 | B=0 | exact:读源码核对工具链的操作通道签名（位置参数 vs 对象、单文件 vs 批量、图片压缩走 canvas）。这类错误传错了也不报错，只能对源码判；真机跑一遍已在 CDP 覆盖。
 scripts/test-channels-sync.js | A=2 | B=1 | legacy-read
 scripts/test-click-sweep.js | A=1 | B=0 | e2e-fixture
 scripts/test-clip-history.js | A=1 | B=0 | exact:迁移自 round15 的 2 / 16a / 16b。倒计时分支与裁剪上限只能看源码形态（真跑要等 25 分钟倒计时 + 真实剪贴板事件）；16b 的「淘汰图片必须回收文件」有行为断言。
+scripts/test-cmdk.js | A=1 | B=0 | exact:读源码核对命令面板的接线（依赖方向、导出函数、加载顺序、Ctrl+K 去向）。运行时已由 CDP 真机走查覆盖 14 项，Node 侧构造不出窗口与焦点。
+scripts/test-color-picker.js | A=1 | B=0 | exact:读 js/tools/dev.js 原文核对 COLORREF 的 BGR 组合式、HSL 的 gg<bb 修正、历史去重与初次渲染调用。换算本身的正确性由行为断言覆盖（CP1-CP3），此处的源码匹配只做「实现与测试抄本不漂移」的印证。
 scripts/test-crash-log.js | A=1 | B=0 | exact:那 1 处是 readFile() 助手，读的是测试自己在 %TEMP% 里刚写的 crash.log（运行时日志正文，不是项目源码，没有剥注释的语义）；另有 3 处直接调用已改成走这个助手；对 main.js 的 4 条接线断言走 readMain()，已写「锁的是」
 scripts/test-critical-dirs.js | A=1 | B=0 | legacy-source-assertion
 scripts/test-crossdrive.js | A=1 | B=0 | e2e-fixture
 scripts/test-crypt-guard.js | A=1 | B=0 | exact:那 1 处 fs.readFileSync 读的是用例自己在 %TEMP% 里刚写的 a.txt / b.txt（CS5 用来实测「rename 到已存在目标会静默覆盖」这个前提），不是项目源码；换成 readSrc 无从谈起
 scripts/test-crypto-file.js | A=4 | B=0 | exact:迁移自 round13 的 1a/1b/1c。加密格式的边界只能用构造出的字节序列验证；A=4 是读取测试自己生成的临时密文文件（夹具，不是项目源码）
 scripts/test-csp-wasm.js | A=3 | B=0 | exact:三处裸读都是为"原样检查文本"服务的 —— index.html 根本不是 JS，stripComments 对它没有意义（要验的是 CSP 属性原文）；两个 OCR 工具那两处只判"有没有调用 OcrGuard.withTimeout/failReason"，剥不剥注释结果相同（注释里也不该出现该调用）。真机 CSP 行为由本文件的 E1/E2 用 Electron 实测覆盖
+scripts/test-css-responsive.js | A=1 | B=0 | exact:读 css/app.css 原文找 .home-cats 的 4 列基准与 @media 覆盖 —— 与 test-css-vars 同理，readSrc 是给 js 的（剥 // 注释），对 CSS 不适用；这里读的是选择器与断点宽度字面量。
 scripts/test-css-vars.js | A=6 | B=0 | exact:A=3（CSS1/CSS2）扫 css/app.css 与 snip/pin/ruler.html 找变量定义与 var() 引用，必须读原始文本 —— readSrc 是给 js 用的（剥 // 与 /* */），对 CSS/HTML 不适用。A=6 多的 3 处来自 CSS3：扫 js/ 内联样式里的 var() 引用（补 F3 的测试盲区，--fill-1 就是只在 js 里被引用而未定义），其中 1 处读 js 文件后自己剥注释、1 处读 app.css 取变量定义、1 处读三个辅助窗口 html 取 --aux-* 定义。读的都是字面量，不做形态断言。
 scripts/test-danger-inline-enable.js | A=2 | B=0 | e2e-fixture
 scripts/test-destructive.js | A=1 | B=11 | legacy-source-assertion
 scripts/test-destructive2.js | A=0 | B=64 | legacy-source-assertion
 scripts/test-dir-move-e2e.js | A=4 | B=0 | e2e-fixture
 scripts/test-dir-move-impl.js | A=3 | B=14 | exact:这 9 条锁的是内部链接改写 / 悬空链接 stat 判据 / PS_PATH_BATCH 分块 / innerLinkCount 同源，都只能看源码形态（真搬家要完整目录树与真实链接）；2 处 readFileSync 是 read() 助手与 8.3 短名测试读 %TEMP% 夹具
+scripts/test-dir-move.js | A=0 | B=26 | legacy-source-assertion
 scripts/test-disk-health-e2e.js | A=2 | B=0 | e2e-fixture
 scripts/test-drop-route.js | A=1 | B=0 | exact:扫 js/tools 下所有工具文件提取真实的 register id，用来校验路由表没有引用不存在的工具。这里必须读原始文本而不能用 readSrc —— readSrc 默认剥注释，被注释掉的 register 块也要把 id 算进来，否则会误报「路由表引用了不存在的工具」。读的是 id 字面量，不做形态断言。
 scripts/test-dz-el.js | A=2 | B=13 | legacy-source-assertion
@@ -53,7 +59,7 @@ scripts/test-harness.js | A=0 | B=1 | legacy-source-assertion
 scripts/test-hash-results.js | A=1 | B=1 | exact:迁移自 round15 的 3a。结果回填依赖 filePicker 的 rowEnd 回调与真实 DOM，单测只能断言「按路径存进 Map + rowEnd 回填」这个形态；3b 用等价实现验了行为。
 scripts/test-hosts-fallback.js | A=2 | B=0 | e2e-fixture
 scripts/test-hosts-restore.js | A=4 | B=0 | e2e-fixture
-scripts/test-i18n-coverage.js | A=10 | B=18 | legacy-source-assertion
+scripts/test-i18n-coverage.js | A=10 | B=25 | legacy-source-assertion
 scripts/test-i18n-dict.js | A=1 | B=0 | exact:那 1 处读的是 js/i18n.js 原文并用 new Function 加载真实 DICT —— 必须拿原始文本（要的是字面量数据，不是剥注释后的形态）；A=1 是它唯一的读取
 scripts/test-improvements-a.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本全部是真实渲染后的事件/DOM 断言，没有源码匹配断言
 scripts/test-ipc-channels.js | A=4 | B=0 | legacy-read
@@ -67,13 +73,16 @@ scripts/test-keyboard-a11y.js | A=1 | B=0 | exact:那 1 处读的是 Electron �
 scripts/test-lan-scan.js | A=1 | B=1 | exact:迁移来的 read() 助手用 fs.readFileSync 读 js/tools/lan-scan.js 源码（该文件整体形态是自建助手，改成 readSrc 会改变既有行为，属语义变更）
 scripts/test-lib.js | A=1 | B=0 | exact:A=1：readAny() 助手读项目源码遍历「全库」检查展开传参（Math.max(...arr) 这类）。
 scripts/test-links.js | A=2 | B=41 | exact:同上：迁移来的 read() 助手读 lib/links.js 与 js/tools/link-doctor.js 源码，与文件原有的助手风格一致
+scripts/test-markdown-sanitize.js | A=1 | B=0 | exact:读 office.js/dev.js/text-tools.js 原文核对 marked.parse 调用点的守卫与退化路径、index.html 的 DOMPurify 加载。XSS 防御深度无法用行为断言验证（DOMPurify 缺失才会走退化路径，正常环境不会触发）。
 scripts/test-media-ffmpeg.js | A=1 | B=3 | exact:rec:start 覆盖语义与系统闸门的分离，只能看源码形态（真开录要 ffmpeg+桌面捕获），行为面由 test-destructive 的 rec:stop 覆盖
 scripts/test-media-split.js | A=6 | B=8 | legacy-source-assertion
 scripts/test-modal-close.js | A=1 | B=0 | exact:迁移自 round15 的 10a/10b。modal 的 onClose 是否被传、是否被 try/catch 包住，只能看源码（要验行为得真点弹窗）；10c 用 Promise.race 把「永不 settle」变成可判定失败。
+scripts/test-module-intro.js | A=1 | B=0 | exact:读 js/registry.js 的 MODULES 原文核对 intro/introEn 的条数、长度、是否抄了 desc、英文里有无中文。这些都是对源码文本的判定；卡片真的显示介绍由 CDP 真机走查覆盖（4 项 + 深浅色截图）。
 scripts/test-mojibake.js | A=3 | B=0 | exact:第 1 处读 lib/mojibake 源码（legacy-read 同理）；另两处读 scripts/fixtures/mojibake-golden.json 与 mojibake-corpus.json —— 那是测试夹具（预存的外部编码器结果与语料快照），不是项目源码，也没有注释要剥
 scripts/test-packaged-assets.js | A=2 | B=4 | legacy-read
 scripts/test-packaged-isdev.js | A=2 | B=0 | e2e-fixture
 scripts/test-path-guard.js | A=1 | B=6 | exact:A=1：25a 用例读 lib/path-guard.js 源码。B=6：F2（非递归删除系统深层）与 F5（checkOverwritable 类型闸门）两条修复的判据都是「某个分支条件被去掉/被加回」，行为上验要真实删除 System32 下的文件，不可行 —— 所以锁源码形态：深层保护不受 recursive 限定、两个闸门共用 stringPathOrError 助手。
+scripts/test-pdf-pages.js | A=1 | B=0 | exact:读 js/tools/pdf-pages.js 原文核对旋转累加、从源文件重新 load、删空回滚、三表登记。这些是「逻辑结构」而非可计算的值；parseRange 的真实行为已由 vm 沙箱行为断言覆盖（PP1-PP4）。
 scripts/test-pick-point.js | A=1 | B=0 | exact:迁移自 round15 的 4a/4b/4c。取色坐标要真实鼠标事件与真实屏幕才测得到，所以断言 calcPickPoint 的形态与调用点传的是 screenX/screenY；4a 抽真函数跑行为。
 scripts/test-picker-func.js | A=1 | B=0 | e2e-fixture
 scripts/test-pinyin.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本对 lib/pinyin.js 用 require 直接调用，对 index.html 的引入检查走 readSrc
@@ -96,25 +105,17 @@ scripts/test-static-server.js | A=1 | B=0 | exact:迁移自 round15 的 5a/5b。
 scripts/test-stopwatch-resume.js | A=1 | B=5 | legacy-source-assertion
 scripts/test-store-health.js | A=3 | B=0 | exact:B=7 锁的是「损坏的 store 必须先备份再回退」的实现形态（真跑要伪造损坏的 store 文件）；A=3 是读测试自己写出的临时 store 文件
 scripts/test-svc-action.js | A=0 | B=3 | legacy-source-assertion
+scripts/test-sweep-preview.js | A=1 | B=0 | exact:读 main.js 原文找 sweepPreviewTmp 的函数体与 Promise.all 接线 —— 与 test-assertion-guard 同理，readSrc 只服务 js/ 下应用源码且剥注释语义无关；这里读的是函数名与目录字面量。
 scripts/test-target-e2e.js | A=1 | B=0 | e2e-fixture
 scripts/test-tool-i18n.js | A=4 | B=4 | legacy-source-assertion
 scripts/test-tool-order.js | A=2 | B=2 | legacy-source-assertion
 scripts/test-tray-i18n.js | A=3 | B=1 | e2e-fixture
+scripts/test-ui-consistency.js | A=5 | B=0 | exact:读 js/icons.js 与全部 js/ 源码核对图标引用、硬编码颜色、window.ui 两份导出面的一致性。iconSvg 对未知名静默回退 info 不报错、Object.assign(window) 与 window.ui 双导出面必然漂移 —— 都只能扫源码文本。
 scripts/test-ui-dpi-fixes.js | A=1 | B=0 | exact:那 1 处读的是本测试在 %TEMP% 里让 Electron 子进程写出的探测结果 JSON（运行时数据，不是项目源码，没有剥注释的语义）；对 ruler-2.js / main.js / convert.js / app.css 的 4 处源码读取已全部改用 readSrc
 scripts/test-ui-prefs-sync.js | A=1 | B=0 | exact:那 1 处用 fs.readFileSync 读 js/channels.js 是为了把它**原样求值**（在最小 window 桩里跑出 window.Channels 再比对，属于行为断言）。不能换成 readSrc：readSrc 会先剥注释，而这里要跑的就是项目里那份 IIFE 原文；剥过注释的文本虽语义等价，却让「求值的是项目里那份」这个前提不再直观。求值前也不需要剥注释 —— 注释本就不参与语义
 scripts/test-update-cleanup.js | A=0 | B=2 | legacy-source-assertion
 scripts/test-version.js | A=3 | B=0 | exact:三处读的都是用例自己在 %TEMP% 里生成的 package.json 副本（验证 --write 是否落盘、是否只改一行），不是项目源码
+scripts/test-win-layout.js | A=1 | B=0 | exact:读 js/tools/win-layout.js 与 js/icons.js 原文核对 Place 的 Win32 常量、图标名是否在库里、三表登记。几何计算的正确性由 vm 沙箱行为断言覆盖（WL1-WL8 共 8 组），此处只锁结构与登记。
 scripts/test-zip-extract.js | A=2 | B=0 | e2e-fixture
 scripts/verify-dist-round3.js | A=0 | B=1 | build-meta
 scripts/version.js | A=3 | B=0 | build-meta
-scripts/test-css-responsive.js | A=1 | B=0 | exact:读 css/app.css 原文找 .home-cats 的 4 列基准与 @media 覆盖 —— 与 test-css-vars 同理，readSrc 是给 js 的（剥 // 注释），对 CSS 不适用；这里读的是选择器与断点宽度字面量。
-scripts/test-sweep-preview.js | A=1 | B=0 | exact:读 main.js 原文找 sweepPreviewTmp 的函数体与 Promise.all 接线 —— 与 test-assertion-guard 同理，readSrc 只服务 js/ 下应用源码且剥注释语义无关；这里读的是函数名与目录字面量。
-scripts/test-cmdk.js | A=1 | B=0 | exact:读源码核对命令面板的接线（依赖方向、导出函数、加载顺序、Ctrl+K 去向）。运行时已由 CDP 真机走查覆盖 14 项，Node 侧构造不出窗口与焦点。
-scripts/test-chain.js | A=1 | B=0 | exact:读源码核对工具链的操作通道签名（位置参数 vs 对象、单文件 vs 批量、图片压缩走 canvas）。这类错误传错了也不报错，只能对源码判；真机跑一遍已在 CDP 覆盖。
-scripts/test-module-intro.js | A=1 | B=0 | exact:读 js/registry.js 的 MODULES 原文核对 intro/introEn 的条数、长度、是否抄了 desc、英文里有无中文。这些都是对源码文本的判定；卡片真的显示介绍由 CDP 真机走查覆盖（4 项 + 深浅色截图）。
-scripts/test-color-picker.js | A=1 | B=0 | exact:读 js/tools/dev.js 原文核对 COLORREF 的 BGR 组合式、HSL 的 gg<bb 修正、历史去重与初次渲染调用。换算本身的正确性由行为断言覆盖（CP1-CP3），此处的源码匹配只做「实现与测试抄本不漂移」的印证。
-scripts/test-pdf-pages.js | A=1 | B=0 | exact:读 js/tools/pdf-pages.js 原文核对旋转累加、从源文件重新 load、删空回滚、三表登记。这些是「逻辑结构」而非可计算的值；parseRange 的真实行为已由 vm 沙箱行为断言覆盖（PP1-PP4）。
-scripts/test-win-layout.js | A=1 | B=0 | exact:读 js/tools/win-layout.js 与 js/icons.js 原文核对 Place 的 Win32 常量、图标名是否在库里、三表登记。几何计算的正确性由 vm 沙箱行为断言覆盖（WL1-WL8 共 8 组），此处只锁结构与登记。
-scripts/test-markdown-sanitize.js | A=1 | B=0 | exact:读 office.js/dev.js/text-tools.js 原文核对 marked.parse 调用点的守卫与退化路径、index.html 的 DOMPurify 加载。XSS 防御深度无法用行为断言验证（DOMPurify 缺失才会走退化路径，正常环境不会触发）。
-scripts/test-ui-consistency.js | A=5 | B=0 | exact:读 js/icons.js 与全部 js/ 源码核对图标引用、硬编码颜色、window.ui 两份导出面的一致性。iconSvg 对未知名静默回退 info 不报错、Object.assign(window) 与 window.ui 双导出面必然漂移 —— 都只能扫源码文本。
-scripts/test-batch-cancel.js | A=1 | B=4 | exact:读三个批量工具原文核对取消标志的声明/循环检查/停止按钮/收尾复位。行为断言需要真实跑批量（几十张图几分钟）且无法验证取消时机，源码形态断言成本最低。

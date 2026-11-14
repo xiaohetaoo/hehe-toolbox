@@ -221,6 +221,8 @@
       "lib/disk-health.js",
       "lib/power-gate.js",
       "lib/spawn-detached.js",
+      "lib/startup-inventory.js",
+      "lib/restore-point.js",
       "ipc/ctx.js",
       "js/tools/win-layout.js"
     ],
@@ -231,7 +233,9 @@
       "test-misc-*",
       "test-ipc-ctx*",
       "test-job-ownership.js",
-      "test-win-layout.js"
+      "test-win-layout.js",
+      "test-startup-inventory.js",
+      "test-restore-point.js"
     ]
   },
   "text": {

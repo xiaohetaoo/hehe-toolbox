@@ -158,8 +158,12 @@ t('SD7 TTS / 更新替换 / explorer 重启这三处都不再裸 spawn', () => {
    * SD4 的通用扫描也会覆盖它，但那条靠"下一个 handle 为界"的窗口；
    * 这里指名道姓钉一次，防止将来有人放宽窗口把这条漏过去。 */
   assert.ok(/proc\.on\('error'/.test(ttsSeg), 'TTS.SPEAK 的 spawn 没有 error 监听');
-  /* 锁的是：更新替换脚本退回 spawn().unref()。 */
-  assert.ok(/spawnDetached\('powershell\.exe', spawnArgs/.test(src), '更新替换脚本没有走 spawnDetached');
+  /* 锁的是：更新替换脚本退回 spawn().unref()。
+   * 第四轮起改成用绝对路径调 powershell（psExe），但**必须仍然走 spawnDetached** ——
+   * 裸 spawn 在「即将退出」的时刻把 error 升级成 uncaughtException，
+   * 崩溃日志会写脏，用户下次看到「上次异常退出」却找不到现象。
+   * 锁的是：替换脚本的启动没有走统一收口。 */
+  assert.ok(/spawnDetached\((?:'powershell\.exe'|psExe), spawnArgs/.test(src), '更新替换脚本没有走 spawnDetached');
   /* 锁的是：explorer 重启退回裸 spawn —— 外面的 try/catch 接不到异步 error。 */
   assert.ok(/spawnDetached\('explorer\.exe'/.test(src), 'explorer 重启没有走 spawnDetached');
 });

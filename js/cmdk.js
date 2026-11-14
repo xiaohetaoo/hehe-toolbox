@@ -167,6 +167,8 @@
 
   function close() {
     if (!mask) return;
+    /* 按键监听挂在 document 上，关闭时必须摘掉，否则面板关了还在劫持 Esc。 */
+    try { document.removeEventListener('keydown', onKey); } catch (e) {}
     const m = mask;
     mask = null; inputEl = null; listEl = null; items = [];
     m.classList.remove('show');
@@ -196,7 +198,14 @@
     /* 点遮罩空白处关闭（与搜索下拉同一交互）：点在面板上不关 */
     mask.addEventListener('mousedown', (e) => { if (e.target === mask) close(); });
     inputEl.addEventListener('input', () => paint(inputEl.value));
-    inputEl.addEventListener('keydown', onKey);
+    /* 【按键必须挂在 document，不能只挂输入框】
+     * 第四轮审查：结果行是 div + makeButtonLike（带 tabindex=0），按 Tab
+     * 就能把焦点移出行；此时 input 的 keydown 收不到事件 → Esc 关不掉、
+     * ↑↓ 不移动，用户只能再按一次 Ctrl+K 或点遮罩。鼠标点击列表空白处
+     * （焦点回到 body）同样会死。
+     * 挪到 document 上后，无论焦点在输入框、某一行还是 body 都生效；
+     * 关闭时同步摘掉（见 close）。 */
+    document.addEventListener('keydown', onKey);
     document.body.appendChild(mask);
     /* 下一帧再加 show：同帧加类，transition 不会触发，面板是"闪现"出来的 */
     requestAnimationFrame(() => { if (mask) mask.classList.add('show'); });

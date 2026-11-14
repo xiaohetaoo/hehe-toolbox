@@ -17,6 +17,7 @@
   /* 与 lib/job-id.js 的 JOB_PREFIXES 保持一一对应 */
   const JOB_PREFIXES = {
     scan: '磁盘空间分析',
+    dirscan: '目录逐层统计',
     empty: '空目录清理',
     dedupe: '重复文件查找',
     job: '哈希计算',

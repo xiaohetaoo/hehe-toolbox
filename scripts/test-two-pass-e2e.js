@@ -14,13 +14,17 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 const targetSize = require('../lib/target-size');
+/* 【目录名不能写死 hehe-toolbox】真实数据目录是 %APPDATA%\<productName>
+ * （核核工具箱），写死旧名会让本测试在装了 ffmpeg 的机器上静默 SKIP ——
+ * 两遍法等于没验证。定位逻辑统一走 scripts/lib/load-media-ffmpeg.js。 */
+const { defaultUserDataDir } = require('./lib/load-media-ffmpeg');
 
 /* ffmpeg 定位：显式参数 > 应用自己的 bin 目录 > PATH。
  * 找不到就 SKIP（exit 0），不让没有 ffmpeg 的环境（如 CI）误报失败——
  * 但本地有 ffmpeg 时必须真跑，否则这个测试等于没写。 */
 function locateFfmpeg() {
   if (process.argv[2]) return path.join(process.argv[2], 'ffmpeg.exe');
-  const appBin = path.join(process.env.APPDATA || '', 'hehe-toolbox', 'bin', 'ffmpeg.exe');
+  const appBin = path.join(defaultUserDataDir(), 'bin', 'ffmpeg.exe');
   if (fs.existsSync(appBin)) return appBin;
   try {
     const { spawnSync } = require('child_process');

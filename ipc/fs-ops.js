@@ -66,6 +66,25 @@ async function writeFileAtomic(dest, data, encoding) {
   if (nameBad) throw pathGuard.err(nameBad.code, nameBad.reason);
   const dir = path.dirname(dest);
   await fsp.mkdir(dir, { recursive: true });
+  /* 【目标是目录时必须在写之前拒绝】
+   * 第四轮审查（纯函数+实测复现）：dest 若是已存在的目录，
+   *   fsp.rename(tmp, dest)        → EPERM（文件不能覆盖目录）
+   *   fsp.rename(dest, bak)        → **成功**（把用户的目录改成 .hehe-bak-*）
+   *   fsp.rename(tmp, dest)        → 成功（原位置多出一个文本文件）
+   *   fsp.rm(bak,{force:true})     → EISDIR 失败，被 .catch 吞掉
+   * 最后 handler 返回成功 —— 用户的目录被藏成备份、原路径变文件，界面却报成功。
+   * 现有调用方都来自保存对话框（不会给目录），但闸门的职责是「看不懂就拒绝」，
+   * 不能把不变式（失败可回滚）建立在调用方的自觉上。 */
+  try {
+    const dstStat = await fsp.lstat(dest);
+    if (dstStat.isDirectory()) {
+      throw pathGuard.err('DEST_IS_DIR', '目标是目录，不能写入文件：' + dest, '请换一个文件名');
+    }
+  } catch (e) {
+    if (e && e.code === 'DEST_IS_DIR') throw e;
+    /* ENOENT（还没有这个文件）与 EPERM（读不到）都继续走原流程：
+     * rename 会给出更准确的错误，这里不越权替它下结论。 */
+  }
   const tag = process.pid + '-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
   const tmp = tempNames.writeTmp(dest, tag);
   try {
@@ -356,6 +375,72 @@ handle(CH.FS.SCAN_TREE, async (e, root, opts = {}) => {
   return { id, root: scanRoot, totalSize, files, dirCount, topFiles: topFiles.slice(0, 30), topDirs };
 });
 
+/* ================= 空间分析器的「下钻」：列出一个目录的直接子项 =================
+ *
+ * 为什么需要独立通道：scan-tree 只返回「全树 TOP N 文件夹」，用户点不进下一层。
+ * 下钻要的是「当前这一层的每个子项多大」，而且必须**逐层按需算** ——
+ * 一次性把整棵树的每个目录都列出来，在几十万文件的盘上既慢又占内存。
+ *
+ * 口径与 scan-tree 一致：目录用 dirSizeFast（递归累计），文件用 stat。
+ * 符号链接/设备直接跳过 —— 它们的体积口径不确定，宁可少一行也不猜。
+ */
+handle(CH.FS.DIR_CHILDREN, async (e, dir, opts = {}) => {
+  const abs = normalizeRootForScan(dir);
+  /* 任务前缀必须与 scan-tree 区分：test-job-stream-isolation 会做「前缀无重复」
+   * 的对账，复用 'scan' 会被判成重复声明（两个算法不该共用一个 id 空间）。 */
+  const id = 'dirscan' + ctx.nextJobSeq();
+  const cancelRef = { canceled: false };
+  jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
+  setLatestCancelable(() => { cancelRef.canceled = true; });
+  const limit = Math.min(500, Math.max(1, Number(opts && opts.limit) || 200));
+  let children = [];
+  let files = 0, totalSize = 0, lastEmit = 0;
+  /* 分区容量：用 fsp.statfs（Node 原生，不需要 PowerShell）。
+   * 取不到就返回 null，界面照实说「取不到」，不编一个假百分比。 */
+  let volume = null;
+  try {
+    const st = await fsp.statfs(abs);
+    volume = { total: Number(st.bsize) * Number(st.blocks), free: Number(st.bsize) * Number(st.bavail) };
+  } catch (err) { volume = null; }
+  try {
+    let entries;
+    try { entries = await fsp.readdir(abs, { withFileTypes: true }); }
+    catch (err) { throw new Error('无法读取目录（可能没有权限）：' + abs + '（' + err.code + '）'); }
+    for (const ent of entries) {
+      if (cancelRef.canceled) break;
+      const full = path.join(abs, ent.name);
+      let size = 0, n = 0, isDir = false;
+      try {
+        if (ent.isDirectory()) {
+          isDir = true;
+          const r = await dirSizeFast(full);
+          size = r.size; n = r.files;
+        } else if (ent.isFile()) {
+          const st = await fsp.stat(full);
+          size = st.size; n = 1;
+        } else {
+          continue;   // 链接 / 设备：体积口径不确定，不猜
+        }
+      } catch (err) { continue; }
+      files += n; totalSize += size;
+      children.push({ name: ent.name, path: full, isDir, size, files: n });
+      const now = Date.now();
+      /* 进度事件的 kind 必须与 scan-tree 区分开：渲染层的「扫描中…」文案
+       * 是按 kind='scan' 订阅的，下钻时复用同一个 kind 会把
+       * 「完成：N 个文件…」覆盖成「已扫描 1 个文件…」（真机 CDP 验证时抓到）。 */
+      if (now - lastEmit > 200) {
+        lastEmit = now;
+        try { send('job:progress', { id, kind: 'dirscan', files, size: totalSize }); } catch (err) {}
+      }
+    }
+  } finally { jobs.delete(id); }
+  if (cancelRef.canceled) throw new Error('已取消');
+  children.sort((a, b) => b.size - a.size);
+  const truncated = children.length > limit;
+  if (truncated) children = children.slice(0, limit);
+  return { id, dir: abs, parent: path.dirname(abs), totalSize, files, children, truncated, volume };
+});
+
 /* 扫描用的根路径归一：绝对化 + 去尾随分隔符（盘符根本身保留 'X:\' 形态）。 */
 function normalizeRootForScan(root) {
   let s = path.resolve(String(root == null ? '' : root));
@@ -469,6 +554,7 @@ function normForJunk(p) {
 }
 handle(CH.FS.SCAN_JUNK, async () => {
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const sysRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
   const cands = [
     // 临时文件：**只扫本应用自己的产物**（hehe- 前缀白名单）。
     // 原实现把整个 os.tmpdir() 当成一个清理目标，keepRoot 模式下会把 %TEMP%
@@ -478,10 +564,27 @@ handle(CH.FS.SCAN_JUNK, async () => {
     { id: 'temp', label: '本应用临时文件', path: os.tmpdir(), ownOnly: true },
     { id: 'chrome', label: 'Chrome 浏览器缓存', path: path.join(local, 'Google', 'Chrome', 'User Data'), pattern: /Cache|Code Cache|GPUCache/ },
     { id: 'edge', label: 'Edge 浏览器缓存', path: path.join(local, 'Microsoft', 'Edge', 'User Data'), pattern: /Cache|Code Cache|GPUCache/ },
-    { id: 'thumb', label: '缩略图缓存', path: path.join(local, 'Microsoft', 'Windows', 'Explorer'), pattern: /thumbcache|thumbcache_.*\.db/i }
+    { id: 'thumb', label: '缩略图缓存', path: path.join(local, 'Microsoft', 'Windows', 'Explorer'), pattern: /thumbcache|thumbcache_.*\.db/i },
+    /* 【第四轮扩类别：安装包 / 更新缓存 / 系统日志 / WER】
+     * 这四类是同类工具里最常见的空间占用项，但性质各不相同，必须分开标：
+     *   · 安装包：**可能是用户还要装的程序** → 默认不勾选，只能手动勾；
+     *   · 更新缓存 / 系统日志：需要管理员，删了系统会重建（日志排障时才要看）；
+     *   · WER：崩溃报告，普通用户可删。
+     * 注意 Downloads 可能被用户改到别的盘，这里按 %USERPROFILE%\Downloads 兜底 ——
+     * 扫不到就是「没有可清理项」，不猜别的位置。 */
+    { id: 'installers', label: '下载目录里的安装包', path: path.join(os.homedir(), 'Downloads'),
+      filePattern: /\.(exe|msi|msix|appx|iso|zip|7z|rar)$/i, depth: 2, defaultOff: true,
+      hint: '可能是你还要用的安装包，默认不勾选' },
+    { id: 'wupdate', label: 'Windows 更新缓存', path: path.join(sysRoot, 'SoftwareDistribution', 'Download'),
+      needsAdmin: true, hint: 'Windows 会在需要时重新下载' },
+    { id: 'wintemp', label: '系统临时目录（Windows\\Temp）', path: path.join(sysRoot, 'Temp'), needsAdmin: true },
+    { id: 'winlogs', label: '系统日志目录（Windows\\Logs）', path: path.join(sysRoot, 'Logs'),
+      needsAdmin: true, hint: 'CBS 等日志，通常只在排障时才需要' },
+    { id: 'wer', label: 'Windows 错误报告（WER）', path: path.join(local, 'Microsoft', 'Windows', 'WER') },
   ];
   const out = [];
   for (const c of cands) {
+    const extra = { defaultOff: !!c.defaultOff, needsAdmin: !!c.needsAdmin, hint: c.hint || '' };
     if (c.ownOnly) {
       // 只列本应用自己的临时产物
       let size = 0, files = 0;
@@ -494,7 +597,30 @@ handle(CH.FS.SCAN_JUNK, async () => {
         size += r.size; files += r.files;
         targets.push(full);
       }
-      if (files > 0) out.push({ id: c.id, label: c.label, path: c.path, size, files, targets });
+      if (files > 0) out.push(Object.assign({ id: c.id, label: c.label, path: c.path, size, files, targets }, extra));
+      continue;
+    }
+    if (c.filePattern) {
+      /* 下载目录里按扩展名找安装包：限深度（默认 2 层），避免把整个
+       * "下载/项目/子项目" 翻个底朝天；只收文件，不收目录。 */
+      let size = 0, files = 0;
+      const targets = [];
+      const maxDepth = Math.min(3, Math.max(1, Number(c.depth) || 2));
+      const stack = [{ p: c.path, d: 0 }];
+      while (stack.length) {
+        const { p, d } = stack.pop();
+        let entries;
+        try { entries = await fsp.readdir(p, { withFileTypes: true }); } catch (err) { continue; }
+        for (const ent of entries) {
+          const full = path.join(p, ent.name);
+          if (ent.isDirectory()) { if (d + 1 <= maxDepth) stack.push({ p: full, d: d + 1 }); }
+          else if (ent.isFile() && c.filePattern.test(ent.name)) targets.push(full);
+        }
+      }
+      for (const t of targets) {
+        try { const st = await fsp.stat(t); size += st.size; files++; } catch (err) {}
+      }
+      if (files > 0) out.push(Object.assign({ id: c.id, label: c.label, path: c.path, size, files, targets }, extra));
       continue;
     }
     if (c.pattern) {
@@ -512,10 +638,10 @@ handle(CH.FS.SCAN_JUNK, async () => {
         }
       }
       for (const t of targets) { const r = await dirSizeFast(t); size += r.size; files += r.files; }
-      if (files > 0) out.push({ id: c.id, label: c.label, path: c.path, size, files, targets });
+      if (files > 0) out.push(Object.assign({ id: c.id, label: c.label, path: c.path, size, files, targets }, extra));
     } else {
       const r = await dirSizeFast(c.path);
-      if (r.files > 0) out.push({ id: c.id, label: c.label, path: c.path, size: r.size, files: r.files, targets: [c.path] });
+      if (r.files > 0) out.push(Object.assign({ id: c.id, label: c.label, path: c.path, size: r.size, files: r.files, targets: [c.path] }, extra));
     }
   }
   /* 记下本轮扫描命中的全部候选路径，供 fs:clean-junk 校验来源。

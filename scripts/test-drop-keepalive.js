@@ -24,8 +24,11 @@ const { t, done } = require('./lib/harness');
 t('KA1 filePicker 把消费逻辑暴露成 consumePendingDrop 方法', () => {
   const s = readSrc('js/ui.js');
   /* 锁的是：消费逻辑内联回 setTimeout 里（退回修复前形态）——
-   * 那样保活复用路径就拿不到它，缺陷复发。 */
-  assert.ok(/function consumePendingDrop\(\)/.test(s),
+   * 那样保活复用路径就拿不到它，缺陷复发。
+   * 形参允许带一个显式的 toolId（第四轮：复用路径要能传自己的 id），
+   * 但函数必须仍叫这个名字并挂在 picker API 上。
+   * 锁的是：具名函数被删/改名 —— 复用路径找不到入口。 */
+  assert.ok(/function consumePendingDrop\(/.test(s),
     'filePicker 里缺少具名的 consumePendingDrop 函数');
   /* 锁的是：API 上没挂这个方法 —— app.js 复用路径找不到入口。 */
   assert.ok(/consumePendingDrop\n?\s*\}/.test(s) || /consumePendingDrop\s*,?\s*\n/.test(s),
@@ -106,9 +109,10 @@ t('KA7 面板送的图片走 __pendingDrop 通道并立即通知消费', () => {
   assert.ok(/__pendingDrop = \{ paths: \[\], exts: \[\], dataUrl/.test(seg),
     '图片内容应走 __pendingDrop 通道');
   /* 锁的是：放入 __pendingDrop 后没有通知消费 —— 保活场景没有下一次
-   * render，图片会躺到过期。 */
-  assert.ok(/api\.consumePendingDrop\(\)/.test(seg),
-    '放入 __pendingDrop 后应立即通知本页 picker 消费');
+   * render，图片会躺到过期。
+   * 第四轮起要求显式传 toolId（与复用路径同构），所以这里锁的是带参形态。 */
+  assert.ok(/api\.consumePendingDrop\(toolId\)/.test(seg),
+    '放入 __pendingDrop 后应立即通知本页 picker 消费（并带上 toolId）');
 });
 
 t('KA8 全局监听的 bind 必须幂等（切语言重建外壳不重复挂）', () => {
@@ -185,6 +189,37 @@ t('KA10 takePending / takePendingClip 必须按 toolId 过滤（F6）', () => {
    * 等于用"丢数据"换取"不串页"。正确做法是只返回 null、保留队列。 */
   assert.ok(/p\.toolId && toolId && p\.toolId !== toolId\) return null;/.test(cseg),
     'takePendingClip 不匹配时应只返回 null、不清空队列');
+});
+
+t('KA11 保活复用必须显式传 v.toolId（第四轮审查：拿错 id 会静默丢文件）', () => {
+  const app = readSrc('js/app.js');
+  const ui = readSrc('js/ui.js');
+  const at = app.indexOf('keepAlive.has(pageKey)');
+  assert.ok(at >= 0, '找不到保活复用分支');
+  const seg = app.slice(at, at + 2800);
+  /* 锁的是：复用分支调用时把 v.toolId 传进去。不传的话消费侧退回
+   * window.__renderingTool —— 而复用路径不 render，那个值停在上一个
+   * 渲染过的工具上，takePending 判"不是我"→ 返回 null、队列不清空，
+   * 文件躺 30 秒后静默蒸发（剪贴板那条一直是显式传的，只有拖拽漏了）。
+   * 锁的是：调用点必须显式传 v.toolId。 */
+  assert.ok(/consumePendingDrop\(v\.toolId\)/.test(seg),
+    '保活复用路径必须 consumePendingDrop(v.toolId)，不能退回全局 __renderingTool');
+
+  /* 锁的是：消费侧支持显式 id（否则上面的传参没有意义）。 */
+  const di = ui.indexOf('function consumePendingDrop');
+  assert.ok(di >= 0, '找不到 consumePendingDrop');
+  const useg = ui.slice(di, di + 1800);
+  /* 锁的是：函数签名要接受显式 toolId —— 否则调用点传了也没处收。 */
+  assert.ok(/function consumePendingDrop\(explicitToolId\)/.test(useg),
+    'consumePendingDrop 必须接受显式的 toolId 参数');
+  /* 锁的是：显式 id 必须优先于全局标记，否则复用路径还是在拿错 id。 */
+  assert.ok(/explicitToolId \|\| window\.__renderingTool/.test(useg),
+    '显式 id 必须优先；没有传时才退回 __renderingTool（首次打开的场景）');
+
+  /* 锁的是：剪贴板面板送图片的分支也要传 toolId —— 两条路径形态不同构时，
+   * 谁给 dataUrl 队列补上 toolId 谁就会静默失效。 */
+  assert.ok(/consumePendingDrop\(toolId\)/.test(app),
+    '剪贴板 → 图片 picker 的交接也要传 toolId');
 });
 
 done();

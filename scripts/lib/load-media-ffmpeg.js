@@ -2,6 +2,28 @@
 const fs = require('fs');
 const path = require('path');
 
+/* 【数据目录名必须跟产品名走，不能写死 hehe-toolbox】
+ * 真实数据目录是 %APPDATA%/<productName>，而 package.json 的 productName 是
+ * 「核核工具箱」。这里曾写死 hehe-toolbox —— 那只是早期版本留下的空壳目录。
+ * 后果不是报错，而是**静默 SKIP**：ffmpeg 明明装在
+ * %APPDATA%\核核工具箱\bin\ffmpeg.exe，test-concat-list / test-video-trim /
+ * test-two-pass-e2e 却判定「本机没有 ffmpeg」整段跳过，而断言数守卫把 SKIP
+ * 当成环境跳过放行 —— 真正的回归可以顺着这条缝漏过去（第四轮审查实测到）。
+ * 现在按 productName 解析，并保留旧目录名作为兼容回退。 */
+function defaultUserDataDir() {
+  const os = require('os');
+  const root = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  let productName = '核核工具箱';
+  try {
+    productName = require('../../package.json').productName || productName;
+  } catch (e) { /* 读不到就退回已知名字 */ }
+  const primary = path.join(root, productName);
+  if (fs.existsSync(path.join(primary, 'bin', 'ffmpeg.exe'))) return primary;
+  const legacy = path.join(root, 'hehe-toolbox');
+  if (fs.existsSync(path.join(legacy, 'bin', 'ffmpeg.exe'))) return legacy;
+  return primary;
+}
+
 /**
  * 加载 ipc/media-ffmpeg.js，返回「通道名 → handler」的 Map。
  *
@@ -93,9 +115,10 @@ function loadMediaFfmpeg(overrides) {
     tempDir: () => require('os').tmpdir(),
     /* 【userDataDir 必须指到真实存在 ffmpeg 的那个目录】
      * findFfmpeg 会先查 storeGet('settings.ffmpegPath')，没设时查
-     * userDataDir()/bin/ffmpeg.exe。测试里把 userDataDir 指到本机真实的
-     * %APPDATA%/hehe-toolbox，这样 ffmpeg 已安装的机器上能真跑。 */
-    userDataDir: o.userDataDir || (() => path.join(require('os').homedir(), 'AppData', 'Roaming', 'hehe-toolbox')),
+     * userDataDir()/bin/ffmpeg.exe。目录名按 package.json 的 productName 解析
+     * （见 defaultUserDataDir 的说明：写死 hehe-toolbox 会让三条真跑 ffmpeg
+     * 的测试静默 SKIP）。 */
+    userDataDir: o.userDataDir || defaultUserDataDir,
     pathGuard: require('../../lib/path-guard'),
     tempNames: require('../../lib/temp-names'),
     targetSize: notNeeded('targetSize'),
@@ -110,11 +133,11 @@ function loadMediaFfmpeg(overrides) {
 /** 找一台机器上可用的 ffmpeg；没有则返回 null（测试据此 SKIP）。 */
 function detectFfmpeg() {
   const candidates = [
-    path.join(require('os').homedir(), 'AppData', 'Roaming', 'hehe-toolbox', 'bin', 'ffmpeg.exe'),
+    path.join(defaultUserDataDir(), 'bin', 'ffmpeg.exe'),
     '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg',
   ];
   for (const c of candidates) if (fs.existsSync(c)) return c;
   return null;
 }
 
-module.exports = { loadMediaFfmpeg, detectFfmpeg, makeRunCmd, pathExists };
+module.exports = { loadMediaFfmpeg, detectFfmpeg, makeRunCmd, pathExists, defaultUserDataDir };

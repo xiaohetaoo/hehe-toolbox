@@ -594,7 +594,18 @@
     if (sub) dz.appendChild(div('dz-sub', sub));
     // 供 picker 在「已有内容」时把提示文案换成「继续添加」
     dz.setMain = (t) => setMainText(t);
+    /* 【点击入口必须防重入】getFiles 是 async，中间至少要跨
+     * pickFileOrFolder（双模工具的自绘二选一）与 DIALOG.OPEN 两个 await，
+     * 而 dz 上原来没有任何 busy 标志。用户双击拖拽区（很常见的操作）时
+     * 第二次点击在第一个 await 期间进入 → 双模工具叠出两个二选一弹窗，
+     * 普通工具并发弹两个系统打开框；取消其中一个后状态还会错位。
+     * 文件列表侧靠 fileList 去重兜住了数据，所以这里只判 P2，但体验上是
+     * 「点了没反应 / 两个框叠着」。项目已有 ui.guard() 做同一件事，
+     * 这里用局部标志即可（guard 的 finally 会复位，语义相同）。 */
+    let picking = false;
     const getFiles = async () => {
+      if (picking) return;
+      picking = true;
       try {
         let props = pickProps || (directory ? ['openDirectory'] : (multiple ? ['openFile', 'multiSelections'] : ['openFile']));
         /* 【Windows 上 openFile + openDirectory 不可能同时生效】
@@ -624,6 +635,7 @@
         const paths = await invoke(Channels.CHANNELS.DIALOG.OPEN, filters ? { properties: props, filters } : { properties: props });
         if (paths && paths.length) onFiles(paths);
       } catch (e) { toast(e.message, 'error'); }
+      finally { picking = false; }
     };
     dz.addEventListener('click', getFiles);
     /* 【拖入文件夹时要给不一样的反馈】
@@ -1088,10 +1100,18 @@
      *   ② setTimeout(0) 执行时 window.__renderingTool 已经被下一次
      *      render 覆盖（快速连续切换工具时）。
      * 抽成方法后，app.js 的保活复用路径可以显式调它（按 __renderingTool
-     * 找到页内的 picker），两条路径走同一份过滤/去重/提示逻辑。 */
-    function consumePendingDrop() {
+     * 找到页内的 picker），两条路径走同一份过滤/去重/提示逻辑。
+     *
+     * 【explicitToolId：复用路径必须把「正在看的那个工具」传进来】
+     * 第四轮审查抓到的真实缺陷：保活复用时 __renderingTool 指向的是
+     * **最后一次 render 过的工具**，不是用户眼前这一页。于是拖给 A 的文件
+     * 被拿去和 B 比对 → takePending 判不匹配、返回 null、队列不清空，
+     * 文件躺 30 秒后静默蒸发；反向错位时还会把 C 的文件塞进 A 的列表。
+     * 剪贴板那条路径（app.js 的 consumePendingClip(rec.el, v.toolId)）一直是
+     * 显式传 id 的，唯独拖拽这条漏了。调用方传 id 时以它为准。 */
+    function consumePendingDrop(explicitToolId) {
       try {
-        const toolId = window.__renderingTool;
+        const toolId = explicitToolId || window.__renderingTool;
         if (!toolId) return;
         const pending = window.DropOpen && window.DropOpen.takePending
           ? window.DropOpen.takePending(toolId, 30000) : null;

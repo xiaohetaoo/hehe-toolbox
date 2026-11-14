@@ -126,4 +126,23 @@ t('PP9 index.html 引入了 pdf-pages.js', () => {
   assert.ok(html.indexOf('js/tools/pdf-pages.js') > 0, 'index.html 需引入 pdf-pages.js');
 });
 
+t('PP10 读取失败必须把 doc/srcB64/页序一起清空（第四轮审查）', () => {
+  const s = read('js/tools/pdf-pages.js');
+  const at = s.indexOf('async function loadDoc');
+  assert.ok(at >= 0, '找不到 loadDoc');
+  const seg = s.slice(at, at + 1800);
+  /* 背景：先把 srcB64 赋上再 load，load 抛错只弹 toast → srcB64 非空、
+   * doc 为 null，点「删除这些页」直接 TypeError 且界面毫无反应；
+   * 若此前加载过别的 PDF，页序还是旧文档的，用户会按错的页数操作。 */
+  /* 锁的是：catch 里只弹 toast 不重置状态 —— 半更新现场复发。 */
+  assert.ok(/doc = null; srcB64 = null; pageOrder = \[\]; rotations = \{\};/.test(seg),
+    'loadDoc 失败时必须把四个状态一起清空');
+  /* 锁的是：pdf-lib 未加载的退化路径留着旧文档 —— 操作会作用在旧 PDF 上。 */
+  assert.ok(/if \(!PDFLib\) \{[\s\S]{0,220}?srcB64 = null/.test(seg),
+    'PDFLib 缺失的退化路径也要清状态');
+  /* 锁的是：操作入口只判 srcB64 —— doc 为 null 时仍会抛 TypeError。 */
+  assert.ok(/if \(!srcB64 \|\| !doc\)/.test(s),
+    '删除/保留页的入口必须同时判 srcB64 与 doc');
+});
+
 done();

@@ -111,6 +111,8 @@
       'disk-analyze', 'junk-clean', 'empty-dir-clean',
       // 磁盘健康：与空间分析同属「关心我的盘」，挨着放
       'disk-health',
+      // 还原点：系统盘瘦身/回滚都绕不开它，放在同一组
+      'restore-points',
       // 系统操作：断电类动作
       'quick-ops', 'scheduler', 'services-power',
       // 右键菜单：两个同类

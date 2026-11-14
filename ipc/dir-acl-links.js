@@ -663,7 +663,7 @@ async function dirMoveRun(opts) {
     const v = dirMove.validateMove({
       src: srcAbs, dst: dstAbs,
       srcExists: !!sst, srcIsDir: !!sst && sst.isDirectory(),
-      srcIsLink: lst.isLink, srcIsRoot: links.isVolumeRootOnly(srcAbs),
+      srcIsLink: lst.isLink, srcIsRoot: links.isVolumeRootOnly(String(src || '')) || links.isVolumeRootOnly(srcAbs),
       /* 与预检用同一判据（isProtectedForModify），保证两阶段说法一致。
        * 原因也要带上：SRC_CRITICAL 的笼统文案对用户没有指导意义。 */
       srcIsCritical: pathGuard.isProtectedForModify(srcAbs).protected,
@@ -1478,7 +1478,12 @@ handle(dirMoveCh.DIR_MOVE.PRECHECK, async (e, opts) => {
   const lst = links.linkStat(srcAbs);
   const srcExists = !!sst;
   const srcIsDir = !!sst && sst.isDirectory();
-  const srcIsRoot = links.isVolumeRootOnly(srcAbs);
+  /* 【必须拿原始字符串判一次】`D:` 是盘符相对写法，path.resolve('D:') 会
+   * 变成「进程当前目录」（可能是应用自己的安装目录）—— 判据就永远不成立。
+   * isVolumeRootOnly 就是为这个形态写的（lib/links.js 有注释），
+   * 但它必须在 resolve 之前用；第四轮审查发现两处调用点都传的是已 resolve 的
+   * 路径，于是这段专用判据成了死代码：用户手输 `D:` 会被当成 cwd 搬走。 */
+  const srcIsRoot = links.isVolumeRootOnly(String(src || '')) || links.isVolumeRootOnly(srcAbs);
   /* 【这里用 isProtectedForModify 而不是 isCriticalPath】
    * isCriticalPath 把「关键目录的直接子目录」也算危险，而 criticalDirs()
    * 含用户家目录 —— 于是「把 Documents 搬到 D 盘」这种完全正常的操作

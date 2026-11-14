@@ -39,9 +39,10 @@ t('真实更新预检绑定主进程元数据；校验失败不生成脚本',()=
   const update=path.join(root,'update'); fs.mkdirSync(update);
   const file=path.join(update,'release.exe'); fs.writeFileSync(file,'');
   let metadata={assetName:'release.exe',assetSize:128,assetSha256:null};
-  const fn=new Function('fs','fsp','path','crypto','app','psSingleQuote','updateFile','updateCacheGet','pathGuard', code+';return updateApplyImpl;')(
+  const fn=new Function('fs','fsp','path','crypto','app','psSingleQuote','updateFile','updateCacheGet','pathGuard','psScript','spawnDetached', code+';return updateApplyImpl;')(
     fs,fs.promises,path,crypto,{getPath:key=>key==='exe'?path.join(root,'current.exe'):root},s=>"'"+s.replace(/'/g,"''")+"'",
-    require('../lib/update-file'),()=>({payload:metadata}),require('../lib/path-guard'));
+    require('../lib/update-file'),()=>({payload:metadata}),require('../lib/path-guard'),
+    require('../lib/ps-script'),()=>null);
   await assert.rejects(()=>fn({newExe:file,dryRun:true}),/体积/);
   assert.strictEqual(fs.existsSync(path.join(update,'apply-update.ps1')),false);
   fs.writeFileSync(file,executable());

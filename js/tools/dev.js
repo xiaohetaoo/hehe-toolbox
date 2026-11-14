@@ -177,6 +177,22 @@
       const history = [];       // [{ hex, r, g, b }]
       const historyBox = div('color-history');
 
+      /* 【取色覆盖层的清理句柄：只留最近一次】
+       * 第四轮审查抓到的泄漏：原实现每次 pick() 都新建一个 cleanup 闭包并
+       * 调 App.onCleanup(cleanup)。而 app.js 的 onCleanup 按**引用**去重
+       * （indexOf），每次都是新函数 → 永远不命中；它也没有撤销接口，
+       * 只在切页时统一执行。于是取 20 次色就在 pageCleanupFns 里堆 20 个
+       * 闭包，每个都捕获整屏 canvas（1080p ≈ 8MB，4K ≈ 33MB）与 dataUrl，
+       * 一直到离开页面才释放。
+       * 现在：页面级只登记一个稳定闭包，pick() 只更新槽位里的清理函数。 */
+      let pickCleanup = null;
+      window.App.onCleanup(() => {
+        if (!pickCleanup) return;
+        const fn = pickCleanup;
+        pickCleanup = null;
+        try { fn(); } catch (e) { /* 切页清理失败不影响主功能 */ }
+      });
+
       function rgbToHex(r, g, b) {
         return '#' + [r, g, b].map((x) => {
           const v = Math.max(0, Math.min(255, Math.round(x)));
@@ -331,8 +347,14 @@
             cleanup();
           }
           function onKey(e) { if (e.key === 'Escape') cleanup(); }
-          function cleanup() { mask.remove(); mag.remove(); info.remove(); document.removeEventListener('mousemove', onMove); document.removeEventListener('keydown', onKey); mask.removeEventListener('click', onClick); }
-          if (window.App && App.onCleanup) App.onCleanup(cleanup); // 切页时清理取色覆盖层
+          function cleanup() {
+            mask.remove(); mag.remove(); info.remove();
+            document.removeEventListener('mousemove', onMove); document.removeEventListener('keydown', onKey); mask.removeEventListener('click', onClick);
+            /* 清空槽位：否则切页时会对已经清理过的对象再 remove 一次 */
+            if (pickCleanup === cleanup) pickCleanup = null;
+          }
+          /* 【只更新槽位，不要再往 onCleanup 里塞新闭包】见上面 pickCleanup 的说明 */
+          pickCleanup = cleanup;
           mask.addEventListener('mousemove', onMove);
           mask.addEventListener('click', onClick);
           document.addEventListener('keydown', onKey);

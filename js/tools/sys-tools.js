@@ -232,8 +232,8 @@
   /* ---------- 开机自启管理 ---------- */
   register({
     id: 'autostart', name: '开机自启管理', nameEn: 'Startup Apps', module: MOD, icon: 'power',
-    desc: '查看注册表自启项，支持禁用 / 启用 / 删除', descEn: 'Manage programs that launch with Windows; enable or disable entries safely',
-    keywords: ['自启', '启动项', '开机'],
+    desc: '查看注册表自启项（可禁用/删除），并只读汇总启动文件夹、计划任务与自启服务', descEn: 'Manage registry startup entries; read-only view of Startup folders, scheduled tasks and auto services',
+    keywords: ['自启', '启动项', '开机', '启动文件夹', '计划任务', '服务'],
     render(page) {
       const box = div('');
       const status = h('span', { class: 'field-hint' }, '');
@@ -287,60 +287,207 @@
           }
         } catch (e) { status.textContent = '✗ ' + e.message; }
       }
-      page.appendChild(div('card', div('card-title', '自启项', btn('刷新', 'btn-sm btn-secondary', load, 'refresh')), status));
+      /* ---------- 其他自启来源（只读汇总） ----------
+       * 启动文件夹 / 计划任务 / 自启服务同样会开机自动运行。
+       * 这里**只展示、不代改**：删错计划任务能毁掉系统更新/备份/驱动安装，
+       * 所以只给「打开对应系统界面」，改动留给用户在自己的工具里做。 */
+      const extraBox = div('');
+      const CAP = 40;
+      function sectionCard(title, total, rows, emptyText) {
+        const card = div('card', div('card-title', title,
+          h('span', { class: 'field-hint' }, total + ' 个')));
+        if (!rows.length) { card.appendChild(div('empty-tip', emptyText)); return card; }
+        for (const r of rows) {
+          card.appendChild(div('form-row',
+            h('span', { class: 'mono', style: { flex: '1', wordBreak: 'break-all', fontSize: '12px' } }, r.name),
+            r.meta ? h('span', { class: 'tag tag-gray' }, r.meta) : null,
+            r.hint ? h('span', { class: 'field-hint', style: { fontSize: '11.5px' } }, r.hint) : null));
+        }
+        if (total > rows.length) card.appendChild(div('field-hint', `只显示前 ${rows.length} 个（共 ${total} 个）`));
+        return card;
+      }
+      async function loadExtra() {
+        extraBox.innerHTML = '';
+        extraBox.appendChild(window.ui.loadingBlock('读取启动文件夹 / 计划任务 / 自启服务…'));
+        let inv;
+        try { inv = await invoke(Channels.CHANNELS.AUTOSTART.INVENTORY); }
+        catch (e) { extraBox.innerHTML = ''; extraBox.appendChild(div('empty-tip', '读取失败：' + e.message)); return; }
+        extraBox.innerHTML = '';
+        const head = div('card', div('card-title', '其他自启来源（只读）'),
+          div('field-hint', '这三类同样会开机自动运行，但改动需要系统工具或管理员权限 —— 本工具只做展示，不代改。'));
+        for (const d of (inv.startupDirs || [])) {
+          head.appendChild(div('form-row', h('span', { style: { fontWeight: 500 } }, d.label),
+            h('span', { class: 'field-hint mono', style: { flex: '1', wordBreak: 'break-all', fontSize: '11.5px' } }, d.dir),
+            d.exists ? btn('打开', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.OPEN_PATH, d.dir), 'external') : h('span', { class: 'tag tag-gray' }, '不存在')));
+        }
+        head.appendChild(div('form-row',
+          btn('打开任务计划', 'btn-sm btn-secondary', () => invoke(Channels.CHANNELS.FS.OPEN_PATH, (inv.panels || {}).tasks), 'external'),
+          btn('打开服务', 'btn-sm btn-secondary', () => invoke(Channels.CHANNELS.FS.OPEN_PATH, (inv.panels || {}).services), 'external')));
+        extraBox.appendChild(head);
+        const dirRows = (inv.startupDirs || []).flatMap((d) => d.items.map((it) => ({ name: it.name, hint: d.label })));
+        extraBox.appendChild(sectionCard('启动文件夹里的项目', dirRows.length, dirRows.slice(0, CAP), '启动文件夹是空的'));
+        const tRows = (inv.tasks || []).map((t) => ({ name: t.name, meta: t.state, hint: t.path }));
+        extraBox.appendChild(sectionCard('计划任务（不含 Microsoft 系统任务）', tRows.length, tRows.slice(0, CAP), '没有第三方计划任务'));
+        const sRows = (inv.services || []).map((s) => ({ name: s.displayName, meta: s.state, hint: s.name }));
+        extraBox.appendChild(sectionCard('自动启动的服务', sRows.length, sRows.slice(0, CAP), '没有自动启动的服务'));
+      }
+      page.appendChild(div('card', div('card-title', '自启项', btn('刷新', 'btn-sm btn-secondary', () => { load(); loadExtra(); }, 'refresh')), status));
       page.appendChild(box);
+      page.appendChild(extraBox);
       load();
+      loadExtra();
     }
   });
 
-  /* ---------- 磁盘空间分析 ---------- */
+  /* ---------- 磁盘空间分析（空间分析器：分区总览 + 大文件 + 逐层下钻） ---------- */
   register({
     id: 'disk-analyze', name: '磁盘空间分析', nameEn: 'Disk Usage', module: MOD, icon: 'harddrive',
-    desc: '扫描目录，找出大文件与大文件夹占比', descEn: 'See which folders eat the most space in a directory tree',
-    keywords: ['磁盘', '空间', '大文件', '分析'],
+    desc: '扫描目录找出大文件与大文件夹，可逐层下钻（只读，不改动任何文件）', descEn: 'Find large files and folders with level-by-level drill-down (read-only)',
+    keywords: ['磁盘', '空间', '大文件', '大文件夹', '下钻', '占用', '分析', 'du'],
     render(page) {
       const dirIn = h('input', { class: 'input', placeholder: '要分析的目录或分区（如 D:\\）', style: { flex: '1' } });
-      const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
-        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
-        if (d && d[0]) dirIn.value = d[0];
-      });
       const status = h('span', { class: 'field-hint' }, '');
       const prog = progressEl(); prog.hide();
       const result = div('');
-      const scanBtn = btn('开始分析', 'btn-primary', async () => {
+      let scanRoot = '';     // 本次扫描的根，面包屑从它开始
+      let topFiles = [];     // 全盘最大文件（scan-tree 的结果）
+      let levelSeq = 0;      // 快速连点目录时丢弃过期响应
+      let busy = false;
+
+      const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
+        const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
+        if (d && d[0]) { dirIn.value = d[0]; scan(); }
+      });
+
+      async function scan() {
         const dir = dirIn.value.trim();
         if (!dir) return toast('请选择目录', 'warn');
-        result.innerHTML = ''; prog.show(); scanBtn.disabled = true;
-        const unsub = on('job:progress', (d) => { if (d.kind === 'scan') status.textContent = `已扫描 ${fmtNum(d.files)} 个文件，${fmtBytes(d.size)}`; });
+        if (busy) return;
+        busy = true;
+        result.innerHTML = ''; prog.show(); status.textContent = '扫描中…';
+        const unsub = on('job:progress', (d) => {
+          if (d.kind === 'scan') status.textContent = `已扫描 ${fmtNum(d.files)} 个文件，${fmtBytes(d.size)}`;
+        });
         try {
           const r = await invoke(Channels.CHANNELS.FS.SCAN_TREE, dir, {});
+          scanRoot = r.root; topFiles = r.topFiles || [];
           status.textContent = `完成：${fmtNum(r.files)} 个文件 / ${fmtNum(r.dirCount)} 个文件夹 / 总计 ${fmtBytes(r.totalSize)}`;
-          result.innerHTML = '';
-          const c1 = div('card', div('card-title', `最大文件 TOP ${r.topFiles.length}`));
-          const maxF = r.topFiles[0] ? r.topFiles[0].size : 1;
-          for (const f of r.topFiles.slice(0, 20)) {
-            c1.appendChild(div('form-row',
-              h('div', { class: 'progress', style: { flex: '1', height: '10px' } }, h('div', { class: 'progress-fill', style: { width: (f.size / maxF * 100) + '%' } })),
-              h('span', { class: 'mono', style: { width: '70px', fontSize: '12px', textAlign: 'right' } }, fmtBytes(f.size)),
-              btn('查看', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, f.path))));
-            c1.appendChild(div('mono', { style: { fontSize: '11.5px', color: 'var(--text-3)', marginTop: '-6px', marginBottom: '6px', wordBreak: 'break-all' } }, f.path));
-          }
-          const c2 = div('card', div('card-title', '最大文件夹'));
-          const maxD = r.topDirs[0] ? r.topDirs[0].size : 1;
-          for (const d of r.topDirs.slice(0, 20)) {
-            c2.appendChild(div('form-row',
-              h('span', { class: 'mono', style: { flex: '1', fontSize: '12px', wordBreak: 'break-all' } }, d.path),
-              h('div', { class: 'progress', style: { width: '160px' } }, h('div', { class: 'progress-fill', style: { width: (d.size / maxD * 100) + '%' } })),
-              h('span', { class: 'mono', style: { width: '80px', fontSize: '12px', textAlign: 'right' } }, fmtBytes(d.size))));
-          }
-          result.appendChild(c1); result.appendChild(c2);
+          /* 【先退订再下钻】下钻会发 job:progress，不退订的话它的进度
+           * 会把刚写好的「完成：…」覆盖掉（真机 CDP 验证时抓到：
+           * 完成后状态栏显示「已扫描 1 个文件，5.0 MB」）。 */
+          try { unsub(); } catch (e) {}
+          await openDir(r.root);
         } catch (e) {
           status.textContent = '✗ ' + e.message;
-        } finally { prog.hide(); scanBtn.disabled = false; unsub(); }
-      });
+        } finally { prog.hide(); busy = false; unsub(); }
+      }
+
+      /* 面包屑：从扫描根到当前目录的每一段都可点。
+       * 【为什么按字符串切而不是记路径栈】用户可能从工具栏/输入框跳到任意层，
+       * 一条路径随时能重算出来，栈反而要处理"跳层"这种非树形操作。 */
+      function breadcrumb(dir) {
+        const box = div('form-row');
+        box.style.flexWrap = 'wrap';
+        box.style.gap = '4px';
+        const chain = [];
+        let cur = dir;
+        while (cur && cur.length >= scanRoot.length) {
+          chain.unshift(cur);
+          if (cur === scanRoot) break;
+          const parent = cur.replace(/[\\/][^\\/]+$/, '');
+          if (!parent || parent === cur) break;
+          cur = parent;
+        }
+        if (!chain.length) chain.push(dir);
+        chain.forEach((p, i) => {
+          if (i) box.appendChild(h('span', { class: 'field-hint' }, '›'));
+          const isLast = i === chain.length - 1;
+          const label = p === scanRoot ? p : (p.split(/[\\/]/).pop() || p);
+          if (isLast) box.appendChild(h('span', { style: { fontWeight: 600, wordBreak: 'break-all' } }, label));
+          else box.appendChild(btn(label, 'btn-sm btn-text', () => openDir(p)));
+        });
+        /* 上一级：扫描根已经是顶了，再往上是盘符根，没有可分析的意义 */
+        if (dir !== scanRoot) {
+          box.appendChild(btn('上一级', 'btn-sm btn-secondary', () => {
+            const parent = dir.replace(/[\\/][^\\/]+$/, '');
+            if (parent && parent !== dir && parent.length >= scanRoot.length) openDir(parent);
+          }, 'arrow-left'));
+        }
+        return div('card', box, volumeEl);
+      }
+
+      /* 分区容量条：statfs 取不到时如实说「取不到」，不画假百分比 */
+      const volumeEl = h('div', { class: 'field-hint' }, '');
+      function paintVolume(volume) {
+        if (!volume || !(volume.total > 0)) {
+          volumeEl.textContent = '分区容量：取不到（不影响目录统计）';
+          return;
+        }
+        const used = Math.max(0, volume.total - volume.free);
+        const pct = Math.round(used / volume.total * 100);
+        volumeEl.textContent = `分区：已用 ${fmtBytes(used)} / 共 ${fmtBytes(volume.total)}（${pct}%），剩余 ${fmtBytes(volume.free)}`;
+      }
+
+      /* 逐层展示当前目录的直接子项 */
+      async function openDir(dir) {
+        const seq = ++levelSeq;
+        result.innerHTML = '';
+        result.appendChild(window.ui.loadingBlock('统计「' + dir + '」的直接子项…'));
+        let r;
+        try {
+          r = await invoke(Channels.CHANNELS.FS.DIR_CHILDREN, dir);
+        } catch (e) {
+          if (seq === levelSeq) {
+            result.innerHTML = '';
+            result.appendChild(div('empty-tip', '无法读取：' + e.message));
+          }
+          return;
+        }
+        if (seq !== levelSeq) return;
+        result.innerHTML = '';
+        paintVolume(r.volume);
+        result.appendChild(breadcrumb(r.dir));
+
+        const rows = r.children || [];
+        const maxSize = rows.length ? rows[0].size : 1;
+        const card = div('card', div('card-title', '当前目录',
+          h('span', { class: 'field-hint' }, fmtBytes(r.totalSize) + ' · ' + rows.length + ' 项')));
+        if (!rows.length) card.appendChild(div('empty-tip', '这个目录是空的'));
+        for (const it of rows) {
+          const pct = maxSize ? Math.max(1, it.size / maxSize * 100) : 0;
+          const row = div('form-row',
+            icon(it.isDir ? 'folder' : 'file'),
+            h('span', { class: 'mono', style: { flex: '1', wordBreak: 'break-all', fontWeight: it.isDir ? 500 : 400 } }, it.name),
+            h('div', { class: 'progress', style: { width: '120px' } }, h('div', { class: 'progress-fill', style: { width: pct + '%' } })),
+            h('span', { class: 'mono', style: { width: '88px', textAlign: 'right', fontSize: '12px' } }, fmtBytes(it.size)),
+            h('span', { class: 'field-hint', style: { width: '66px', textAlign: 'right' } }, fmtNum(it.files) + ' 个'),
+            it.isDir ? btn('进入', 'btn-sm btn-text', () => openDir(it.path), 'chev-right')
+              : btn('定位', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, it.path), 'eye'));
+          card.appendChild(row);
+        }
+        if (r.truncated) card.appendChild(div('field-hint', '子项太多，只显示体积最大的前 ' + rows.length + ' 项'));
+        result.appendChild(card);
+
+        /* 全盘最大文件：scan-tree 已经算过，直接展示；点行可定位 */
+        if (topFiles.length) {
+          const c = div('card', div('card-title', `全盘最大文件 TOP ${Math.min(20, topFiles.length)}`));
+          const maxF = topFiles[0] ? topFiles[0].size : 1;
+          for (const f of topFiles.slice(0, 20)) {
+            c.appendChild(div('form-row',
+              h('div', { class: 'progress', style: { flex: '1', height: '10px' } }, h('div', { class: 'progress-fill', style: { width: (f.size / maxF * 100) + '%' } })),
+              h('span', { class: 'mono', style: { width: '70px', fontSize: '12px', textAlign: 'right' } }, fmtBytes(f.size)),
+              btn('定位', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, f.path), 'eye')));
+            c.appendChild(div('mono', { style: { fontSize: '11.5px', color: 'var(--text-3)', marginTop: '-6px', marginBottom: '6px', wordBreak: 'break-all' } }, f.path));
+          }
+          result.appendChild(c);
+        }
+      }
+
+      const scanBtn = btn('开始分析', 'btn-primary', scan);
       page.appendChild(div('card', div('card-title', '分析目标'),
         div('form-row', dirIn, pickBtn),
-        div('form-row', scanBtn, prog.el, status)));
+        div('form-row', scanBtn, prog.el, status),
+        div('field-hint', '只读扫描，不会修改或删除任何文件。下钻按层统计，体积大的目录首次进入需要等几秒。')));
       page.appendChild(result);
     }
   });
@@ -348,8 +495,8 @@
   /* ---------- 垃圾清理 ---------- */
   register({
     id: 'junk-clean', name: '垃圾清理', nameEn: 'Junk Cleanup', module: MOD, icon: 'trash',
-    desc: '扫描临时文件与缓存，勾选后一键清理（含回收站）', descEn: 'Scan and clean temporary files, only touching files this app created',
-    keywords: ['垃圾', '清理', '缓存', '临时文件'],
+    desc: '扫描临时文件、缓存、安装包与系统日志，勾选后一键清理（含回收站）', descEn: 'Scan temp files, caches, installers and system logs, then clean the selected ones',
+    keywords: ['垃圾', '清理', '缓存', '临时文件', '安装包', '更新缓存', '日志'],
     render(page) {
       const box = div('');
       const status = h('span', { class: 'field-hint' }, '');
@@ -367,10 +514,17 @@
       function draw() {
         box.innerHTML = '';
         for (const it of items) {
-          const cb = h('input', { type: 'checkbox', class: 'checkbox', checked: true, dataset: { id: it.id } });
+          /* 【默认勾选策略】安装包这类「可能是用户还要用的东西」默认不勾，
+           * 其余清理项默认勾上（与改造前一致）。 */
+          const cb = h('input', { type: 'checkbox', class: 'checkbox', checked: !it.defaultOff, dataset: { id: it.id } });
+          const meta = div('');
+          if (it.hint) meta.appendChild(h('div', { class: 'field-hint', style: { fontSize: '11.5px' } }, it.hint));
           box.appendChild(div('form-row', cb,
-            div('', h('div', null, h('b', null, it.label)), h('div', { class: 'field-hint mono', style: { fontSize: '11.5px' } }, it.path)),
-            h('span', { class: 'tag tag-blue', style: { marginLeft: 'auto' } }, fmtBytes(it.size)),
+            div('', h('div', null, h('b', null, it.label)),
+              h('div', { class: 'field-hint mono', style: { fontSize: '11.5px' } }, it.path),
+              meta),
+            it.needsAdmin ? h('span', { class: 'tag tag-orange', style: { marginLeft: 'auto' } }, '需要管理员') : null,
+            h('span', { class: 'tag tag-blue', style: { marginLeft: it.needsAdmin ? '6px' : 'auto' } }, fmtBytes(it.size)),
             h('span', { class: 'field-hint', style: { width: '80px', textAlign: 'right' } }, it.files + ' 个文件')));
         }
       }
@@ -398,6 +552,96 @@
       page.appendChild(div('card', div('card-title', '扫描与清理'),
         div('form-row', scanBtn, cleanBtn, rbBtn, status)));
       page.appendChild(box);
+    }
+  });
+
+  /* ---------- 系统还原点 ---------- */
+  register({
+    id: 'restore-points', name: '系统还原点', nameEn: 'Restore Points', module: MOD, icon: 'clock',
+    desc: '查看、创建与清理系统还原点（删除不可恢复，需开启高危能力）', descEn: 'List, create and clean Windows restore points',
+    keywords: ['还原点', '系统还原', '卷影副本', 'rstrui', 'restore'],
+    render(page) {
+      const status = h('span', { class: 'field-hint' }, '');
+      const storageEl = div('field-hint', '');
+      const box = div('');
+      const descIn = h('input', { class: 'input input-sm', value: '核核工具箱手动还原点', maxlength: '100', style: { flex: '1' } });
+      let points = [];
+      let rstrui = '';
+
+      async function load() {
+        status.textContent = '读取中…';
+        try {
+          const r = await invoke(Channels.CHANNELS.SYS.RESTORE_LIST);
+          points = r.points || [];
+          rstrui = r.rstrui || '';
+          if (r.note) status.textContent = r.note;
+          else status.textContent = points.length
+            ? `${points.length} 个还原点（系统盘 ${r.systemDrive || '?'}）`
+            : '没有还原点（可能系统保护未启用，或从未创建过）';
+          /* 存储占用单独取：它需要管理员，取不到也要如实说 */
+          let st = null;
+          try { st = await invoke(Channels.CHANNELS.SYS.RESTORE_STORAGE); } catch (e) { st = null; }
+          if (st && st.storage) {
+            const s = st.storage;
+            storageEl.textContent = '卷影存储：已用 ' + fmtBytes(s.used || 0)
+              + (s.max ? ' / 上限 ' + fmtBytes(s.max) + (s.pct != null ? `（${s.pct}%）` : '') : ' / 上限未知');
+          } else {
+            storageEl.textContent = '卷影存储占用：取不到' + (st && st.note ? '（' + st.note + '）' : '（需要管理员）');
+          }
+          draw();
+        } catch (e) {
+          status.textContent = '✗ ' + e.message;
+        }
+      }
+
+      function draw() {
+        box.innerHTML = '';
+        if (!points.length) { box.appendChild(div('empty-tip', '没有可显示的还原点')); return; }
+        box.appendChild(renderTable({
+          columns: [
+            { key: 'time', title: '创建时间', width: '170px', render: (p) => h('span', { class: 'mono', style: { fontSize: '12px' } }, p.time ? fmtDate(p.time, true) : '未知') },
+            { key: 'seq', title: '序号', width: '70px', render: (p) => h('span', { class: 'mono' }, String(p.seq || '')) },
+            { key: 'desc', title: '描述', render: (p) => h('span', null, p.description || '（无描述）') },
+          ],
+          rows: points,
+        }));
+      }
+
+      const createBtn = btn('创建还原点', 'btn-primary', async () => {
+        if (!(await confirmBox({ title: '创建还原点', message: `将用描述「${descIn.value.trim() || '核核工具箱手动还原点'}」创建一个系统还原点。\n\n创建需要系统保护已开启，且可能耗时十几秒。`, okText: '创建' }))) return;
+        try { await invoke(Channels.CHANNELS.SYS.RESTORE_CREATE, descIn.value); toast('已创建还原点', 'success'); load(); }
+        catch (e) { toast(e.message, 'error', 8000); }
+      }, 'plus');
+      const enableBtn = btn('启用系统保护', 'btn-secondary', async () => {
+        if (!(await confirmBox({ title: '启用系统保护', message: '将为系统盘启用系统保护。\n\n这会占用一部分磁盘空间（Windows 默认上限约为该盘的 10%）。', okText: '启用' }))) return;
+        try { await invoke(Channels.CHANNELS.SYS.RESTORE_ENABLE); toast('已启用系统保护', 'success'); load(); }
+        catch (e) { toast(e.message, 'error', 8000); }
+      }, 'shield');
+      const openBtn = btn('打开系统还原', 'btn-secondary', () => {
+        if (rstrui) invoke(Channels.CHANNELS.FS.OPEN_PATH, rstrui).catch((e) => toast(e.message, 'error'));
+      }, 'external');
+      const delOldBtn = btn('删除最旧的还原点', 'btn-danger-plain', async () => {
+        if (!(await confirmBox({ title: '删除最旧的还原点', message: '将删除系统中最早的卷影副本（还原点）。\n\n删除后无法恢复。确定继续？', danger: true, okText: '删除' }))) return;
+        try { await invoke(Channels.CHANNELS.SYS.RESTORE_DELETE, 'oldest'); toast('已删除最旧的还原点', 'success'); load(); }
+        catch (e) { toast(e.message, 'error', 8000); }
+      }, 'trash');
+      const delAllBtn = btn('删除全部还原点', 'btn-danger', async () => {
+        if (!(await confirmBox({
+          title: '删除全部还原点',
+          message: '将删除系统盘上「全部卷影副本」：系统还原点、部分备份软件与「文件历史」的副本都可能在其中，且不可恢复。\n\n确定要继续吗？',
+          danger: true, okText: '全部删除'
+        }))) return;
+        try { await invoke(Channels.CHANNELS.SYS.RESTORE_DELETE, 'all'); toast('已删除全部还原点', 'success'); load(); }
+        catch (e) { toast(e.message, 'error', 8000); }
+      }, 'trash');
+
+      page.appendChild(div('card', div('card-title', '系统还原点', btn('刷新', 'btn-sm btn-secondary', load, 'refresh')),
+        div('form-row', descIn, createBtn, enableBtn, openBtn),
+        div('form-row', delOldBtn, delAllBtn),
+        status, storageEl,
+        div('field-hint', '说明：列表与创建需要系统保护已开启；删除卷影副本需要管理员权限，且会清除该卷上的其它卷影副本。')));
+      page.appendChild(box);
+      load();
     }
   });
 

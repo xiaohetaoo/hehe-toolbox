@@ -75,5 +75,36 @@ t('CRITICAL_DIRS 旧名字仍能访问（Proxy 兼容）', () => {
   assert.ok(typeof pg.CRITICAL_DIRS[0] === 'string', '索引访问应可用');
 });
 
+/* ============ 第四轮审查：两类归一化缺口 ============ */
+t('盘符相对写法 D: 必须被拒绝（resolve 后会变成 cwd）', () => {
+  /* 锁的是：`D:` 被当成「D 盘当前目录」= 应用自己的工作目录。
+   * 用户手输 D: 本意是 D 盘根，结果会删/搬应用目录。判据只认 D:\。 */
+  const del = pg.checkDeletable('D:');
+  assert.ok(del && del.code === 'DRIVE_RELATIVE', 'checkDeletable 必须拒绝 D:');
+  const ow = pg.checkOverwritable('D:');
+  assert.ok(ow && ow.code === 'DRIVE_RELATIVE', 'checkOverwritable 必须拒绝 D:');
+  const mod = pg.isProtectedForModify('D:');
+  assert.strictEqual(mod.protected, true, 'isProtectedForModify 必须拦 D:');
+  /* 对照：显式盘符根与普通路径的结论不变 */
+  assert.strictEqual(pg.checkDeletable(p('D:/')).code, 'ROOT', 'D:\\ 仍应判盘符根');
+  assert.strictEqual(pg.checkDeletable(p('D:/normal/file.txt')), null, '普通文件路径不该被误伤');
+});
+
+t('\\\\?\\ 扩展长度前缀不能绕过关键目录闸门（realpath 失败时）', () => {
+  /* 背景（实测）：普通用户对 System32\\config 没有读权限，realpath 抛 EPERM，
+   * resolveReal 退回原路径；归一化若不剥 `\\?\` 前缀，就得到
+   * `\\?\c:\windows\...` 与 `c:\windows\...` 对不上 → 闸门放行。
+   * 判据不能依赖「realpath 恰好会成功」。路径按本机 SystemRoot 拼，
+   * 免得测试机器系统盘不是 C:。 */
+  const sys = process.env.SystemRoot || process.env.windir || p('C:/Windows');
+  const prefixed = p('//?/' + sys.replace(/[\\/]+/g, '/') + '/System32/config/SAM');
+  const del = pg.checkDeletable(prefixed);
+  assert.ok(del && del.code === 'CRITICAL_DEEP', '带 \\\\?\\ 前缀的系统文件也必须拦，实际：' + JSON.stringify(del));
+  const ow = pg.checkOverwritable(prefixed.replace(/config[\\/]SAM$/, p('drivers/etc/hosts')));
+  assert.ok(ow && ow.code === 'CRITICAL', '带前缀的 hosts 覆盖也必须拦');
+  /* 对照：前缀不改变「关键目录本身」的判定 */
+  assert.strictEqual(pg.checkDeletable(p('//?/' + sys.replace(/[\\/]+/g, '/'))).code, 'CRITICAL');
+});
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);

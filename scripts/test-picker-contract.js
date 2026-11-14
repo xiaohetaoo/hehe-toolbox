@@ -156,4 +156,20 @@ t('zip-tool 与 archive-7z 的 pickProps 里包含 openDirectory', () => {
   }
 });
 
+t('dropzone 点击入口必须防重入（双击不叠两个对话框）', () => {
+  const s = readSrc('js/ui.js');
+  /* 背景：getFiles 是 async，至少要跨「双模二选一」与 DIALOG.OPEN 两个 await，
+   * 而 dz 上没有任何 busy 标志。用户双击拖拽区就会并发弹两个对话框，
+   * 取消其中一个后状态错位（文件列表去重兜住了数据，所以只判 P2）。 */
+  const at = s.indexOf('const getFiles = async');
+  assert.ok(at >= 0, '找不到 getFiles');
+  /* 标志声明在 getFiles 之前（同一作用域），所以切片要往前多取一点 */
+  const seg = s.slice(Math.max(0, at - 400), at + 1200);
+  /* 锁的是：入口没有 picking 标志 —— 双击并发弹框复发。 */
+  assert.ok(/let picking = false;/.test(seg), 'getFiles 前应有 picking 重入标志');
+  assert.ok(/if \(picking\) return;/.test(seg), '入口必须先判 picking');
+  /* 锁的是：标志没有在 finally 里复位 —— 点一次之后整个 picker 永久点不动。 */
+  assert.ok(/finally \{ picking = false; \}/.test(seg), 'picking 必须在 finally 里复位');
+});
+
 done();

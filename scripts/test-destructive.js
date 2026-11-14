@@ -1,5 +1,5 @@
 'use strict';
-const { t, done, readTree, readMain } = require('./lib/harness');
+const { t, done, readTree, readMain, readSrc } = require('./lib/harness');
 const { handlerIndex, invokeIndex } = require('./lib/seg-from-handler');
 const mainSrc = readMain({ raw: true });
 /* 第五轮审查：破坏性 bug 的回归测试。
@@ -287,6 +287,29 @@ t('P0 fs:scan-junk 的临时项只扫本应用产物', () => {
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/targets: \[c\.path\]/.test(fn.match(/ownOnly[\s\S]*?continue;/)[0] || ''), 'ownOnly 分支仍用了整个目录');
 });
+t('P0 fs:scan-junk 新增类别必须标清「默认不勾选 / 需要管理员」（第四轮）', () => {
+  const fn = handlerBody(readMain(), 'fs:scan-junk');
+  /* 锁的是：安装包类别被默认勾选 —— 用户很可能正是要装它们，
+   * 「一键清理」顺手删掉下载好的安装包，就是要用户重下几百 MB。 */
+  const inst = fn.match(/\{ id: 'installers'[\s\S]{0,400}?\}/);
+  assert.ok(inst, '找不到 installers 候选');
+  assert.ok(inst[0].includes('defaultOff: true'), 'installers 必须 defaultOff（默认不勾选）');
+  /* 锁的是：安装包扫描没有深度上限 —— 会把整个下载目录翻穿，
+   * 慢且会扫到用户放在下载目录里的项目压缩包。 */
+  assert.ok(inst[0].includes('depth: 2'), 'installers 需要限制扫描深度');
+  /* 锁的是：需要管理员的类别没标出来 —— 非管理员点清理只会拿到一串失败，
+   * 而界面没说「这是权限问题」。 */
+  for (const id of ['wupdate', 'wintemp', 'winlogs']) {
+    const i = fn.indexOf(`{ id: '${id}'`);
+    assert.ok(i >= 0, '找不到候选 ' + id);
+    assert.ok(/needsAdmin: true/.test(fn.slice(i, i + 300)), id + ' 必须标 needsAdmin');
+  }
+  /* 锁的是：界面把 defaultOff 丢掉 —— 复选框又变回「全部默认勾选」。 */
+  const ui = readSrc('js/tools/sys-tools.js');
+  assert.ok(/checked: !it\.defaultOff/.test(ui), '界面复选框必须尊重 defaultOff');
+  assert.ok(/it\.needsAdmin \?/.test(ui), '界面必须把「需要管理员」显示出来');
+});
+
 t('P0 fs:clean-junk 拒绝清理 %TEMP% 里的非本应用产物', () => {
   const fn = handlerBody(readMain(), 'fs:clean-junk');
   /* 锁的是：「P0 fs:clean-junk 拒绝清理 %TEMP% 里的非本应用产物」这一组回归。
@@ -981,6 +1004,7 @@ t('1c 界面：有失败时不许用 success 样式，且要列出原因', () =>
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/warn/.test(seg), '有失败时没有用 warn 样式（仍会显示成绿色成功）');
+  /* 锁的是：不许再出现"直接报成功"的单分支 —— 失败会被显示成绿色成功。 */
   // 反面：不许再出现"直接报成功"的单分支
   assert.ok(!/toast\(`已删除 \$\{r\.deleted\} 个空目录`, 'success'\);\s*\n\s*scanBtn\.click\(\);\s*\n\s*\} catch/
     .test(seg) || /nErr/.test(seg), '仍然是"无条件 success"');
@@ -997,6 +1021,7 @@ t('7a clean-junk 只接受本次扫描命中的路径', () => {
    * 第一次写的是 /junkScanCache/.test + /不在本次扫描结果内/.test，
    * 而把守卫改成 `if (false) {` 之后，**文案字符串还在源码里**（只是永不执行），
    * 断言照样绿（反向验证 MISSED 证实）。必须断言 guards 调用**本身**没被短路。 */
+  /* 锁的是：来源校验被短路/删掉 —— 任意路径都能被当成垃圾清掉。 */
   assert.ok(/junkScanCache\.paths\.has\(normForJunk\(abs\)\)/.test(seg),
     '没有真正的"是否在扫描结果内"判断');
   /* 锁的是：「7a clean-junk 只接受本次扫描命中的路径」这一组回归。

@@ -9,10 +9,11 @@ async function mediaFixture(run, realFfmpeg = null) {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hehe-media-session-'));
   const filename=path.join(ROOT,'ipc/media-ffmpeg.js'),localRequire=Module.createRequire(filename);
   const mod=new Module(filename,module);mod.filename=filename;mod.paths=Module._nodeModulePaths(path.dirname(filename));
-  const captured=[];
+  const captured=[];const procs=[];
   const spawn=(bin,args)=>{
     if (realFfmpeg) return require('child_process').spawn(bin,args,{windowsHide:true});
     captured.push(args);const proc=new EventEmitter();proc.pid=65000;proc.exitCode=null;
+    procs.push(proc);
     proc.stdout=new EventEmitter();proc.stderr=new EventEmitter();
     const finish=()=>{if(proc.exitCode!==null)return;proc.exitCode=0;proc.emit('exit',0);proc.emit('close',0);};
     proc.stdin={write:()=>setImmediate(finish)};proc.kill=()=>{setImmediate(finish);return true;};
@@ -39,7 +40,7 @@ async function mediaFixture(run, realFfmpeg = null) {
     storeSet:()=>{},moveFile:fs.promises.rename,uniqueTarget:()=>{},setLatestCancelable:()=>{},
     tempDir:()=>root,userDataDir:()=>root,pathGuard:require('../lib/path-guard'),tempNames:require('../lib/temp-names'),targetSize:require('../lib/target-size'),AdmZip:require('adm-zip'),downloadToFile:()=>{},
   });
-  try{await run({root,handlers,captured});}finally{rmDir(root);}
+  try{await run({root,handlers,captured,procs});}finally{rmDir(root);}
 }
 t('静音转换只移除音频，保留视频流',()=>mediaFixture(async({root,handlers,captured})=>{
   const input=path.join(root,'input.mp4');fs.writeFileSync(input,'fixture');
@@ -90,4 +91,28 @@ t('JSON 排序保留 __proto__、constructor 和嵌套字段',()=>{
   assert.strictEqual(Object.getPrototypeOf(output),Object.prototype);
   assert.deepStrictEqual(Object.keys(output.nested[0]),['__proto__','a','b']);
 });
+t('录制中途进程死亡时 STOP 必须降级，不能按体积报成功',()=>mediaFixture(async({root,handlers,procs})=>{
+  const owner={sender:{id:9}},out=path.join(root,'dead.mp4');
+  await handlers[CH.REC.START](owner,{outPath:out,fps:5});
+  /* 模拟 gdigrab 因 DPI 切换 / RDP 断开 / 安全桌面自行退出：
+   * 这时 mp4 只有半个文件头，但体积非 0 —— stat 判不出能不能播。 */
+  const p=procs[procs.length-1];
+  p.exitCode=1;p.emit('exit',1,null);p.emit('close',1,null);
+  const saved=await handlers[CH.REC.STOP](owner,false);
+  /* 锁的是：进程异常退出后仍返回「干净成功」—— 用户拿到的是打不开的 mp4，
+   * 却以为自己录完了。降级信息必须带出退出码，并指向可救的分段目录。 */
+  assert.strictEqual(saved.ok,true);
+  assert.ok(saved.degraded&&/中途退出/.test(saved.degraded),'应标记「录制进程中途退出」');
+  assert.ok(/分段保留/.test(saved.degraded),'降级信息要告诉用户分段在哪，便于手工恢复');
+}));
+t('正常的暂停/恢复/停止不能被误标成不完整',()=>mediaFixture(async({root,handlers})=>{
+  const owner={sender:{id:3}},out=path.join(root,'ok.mp4');
+  await handlers[CH.REC.START](owner,{outPath:out,fps:5});
+  await handlers[CH.REC.PAUSE](owner);
+  await handlers[CH.REC.RESUME](owner);
+  const saved=await handlers[CH.REC.STOP](owner,false);
+  /* 锁的是：把「我们让它停的」也记成异常退出 —— 每段暂停都会把成品标成
+   * 「可能不完整」，这条提示就失去意义了（同类误报的典型）。 */
+  assert.strictEqual(saved.degraded,null,'正常录制不该被标 degraded');
+}));
 done();

@@ -285,282 +285,282 @@ t('ownerIsMe 为 true 时一切正常', () => {
   assert.deepStrictEqual(r.codes, [], '不该有任何 codes');
 });
 
-t('单行 icacls：路径含空格 + 裸 SID 不再把路径吃进主体', () => {
-  const A = require('../lib/acl-repair.js');
-  const line = 'C:' + BS + 'my docs' + BS + 'a.txt S-1-4-500487088-111393684:(I)(W,D,DC)';
-  const r = A.parseIcacls(line, 'DOMAIN' + BS + 'admin');
-  assert.strictEqual(r.entries[0].principal, 'S-1-4-500487088-111393684',
-    '实际解析成 ' + r.entries[0].principal);
-});
-
-t('单行 icacls：路径含空格 + Everyone 不再把路径吃进主体', () => {
-  const A = require('../lib/acl-repair.js');
-  const r = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt Everyone:(I)(F)', 'me');
-  assert.strictEqual(r.entries[0].principal, 'Everyone', '实际 ' + r.entries[0].principal);
-});
-
-t('单行 icacls：BUILTIN\\Users / NT AUTHORITY\\SYSTEM 仍然正确', () => {
-  const A = require('../lib/acl-repair.js');
-  const a = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt BUILTIN' + BS + 'Users:(I)(RX)', 'me');
-  assert.strictEqual(a.entries[0].principal, 'BUILTIN' + BS + 'Users');
-  const b = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt NT AUTHORITY' + BS + 'SYSTEM:(I)(F)', 'me');
-  assert.strictEqual(b.entries[0].principal, 'NT AUTHORITY' + BS + 'SYSTEM');
-});
-
-t('多行 icacls：按续行缩进（路径长度+1）精确切主体列', () => {
-  const A = require('../lib/acl-repair.js');
-  const p = 'C:' + BS + 'my docs' + BS + 'folder' + BS + 'a.txt';   // 末段目录无扩展名
-  const pad = ' '.repeat(p.length + 1);
-  const sid = 'S-1-5-21-1111111111-2222222222-3333333333-4444';
-  const out = [
-    p + ' ' + sid + ':(I)(R)',
-    pad + 'BUILTIN' + BS + 'Users:(I)(RX)',
-    pad + 'Mandatory Label' + BS + 'Medium Mandatory Level:(I)(NW)',
-  ].join('\n');
-  const r = A.parseIcacls(out, 'me');
-  assert.strictEqual(r.entries[0].principal, sid, 'SID 行：' + r.entries[0].principal);
-  assert.strictEqual(r.entries[1].principal, 'BUILTIN' + BS + 'Users');
-  assert.strictEqual(r.entries[2].principal, 'Mandatory Label' + BS + 'Medium Mandatory Level',
-    'Mandatory Label 被切错：' + r.entries[2].principal);
-  assert.ok(!r.entries.some((e) => /docs/i.test(e.principal)),
-    '又把路径当主体了：' + r.entries.map((e) => e.principal).join(','));
-});
-
-t('没有续行时用调用方给的路径剥前缀（pathHint）', () => {
-  const A = require('../lib/acl-repair.js');
-  const r = A.parseIcacls('C:' + BS + 'my docs' + BS + 'folder Everyone:(I)(F)', 'me',
-    { path: 'C:' + BS + 'my docs' + BS + 'folder' });
-  assert.strictEqual(r.entries[0].principal, 'Everyone', '实际 ' + r.entries[0].principal);
-});
-
-t('含空格的多词组主体（Power Users 等）不能被截短', () => {
-  const A = require('../lib/acl-repair.js');
-  for (const raw of ['DOMAIN' + BS + 'Power Users', 'MyCompany' + BS + 'Domain Admins',
-    'DOMAIN' + BS + 'Remote Desktop Users', 'CREATOR OWNER']) {
-    const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt ' + raw + ':(I)(M)', 'me');
-    assert.strictEqual(r.entries[0].principal, raw, '被截成 ' + r.entries[0].principal);
-  }
-});
-
-t('tailLooksLikePath 只认「路径残留」形态', () => {
-  const A = require('../lib/acl-repair.js');
-  assert.strictEqual(A.tailLooksLikePath('a.txt Everyone'), true, '文件名残留应被认出');
-  assert.strictEqual(A.tailLooksLikePath('a.txt S-1-4-500487088-111393684'), true, 'SID 残留应被认出');
-  assert.strictEqual(A.tailLooksLikePath('Power Users'), false, '正常多词组名不该被误拒');
-  assert.strictEqual(A.tailLooksLikePath('Medium Mandatory Level'), false);
-});
-
-/* ================= ② 目标闸门 ================= */
-
-t('内建/系统主体不会靠「去域后缀」蹭成当前用户', () => {
-  const A = require('../lib/acl-repair.js');
-  const bad = [
-    ['BUILTIN' + BS + 'Users', 'MyCo' + BS + 'users'],
-    ['NT AUTHORITY' + BS + 'SYSTEM', 'MyCo' + BS + 'system'],
-    ['BUILTIN' + BS + 'Users', 'Users'],
-    ['MANDATORY LABEL' + BS + 'Medium Mandatory Level', 'MyCo' + BS + 'Medium Mandatory Level'],
-    ['DOMAIN' + BS + 'admin', 'BUILTIN' + BS + 'Administrators'],
-  ];
-  for (const [p, u] of bad) {
-    assert.strictEqual(A.principalEq(p, u), false, p + ' 与 ' + u + ' 不该判为同一账号');
-  }
-  /* 正常判定不受影响 */
-  assert.strictEqual(A.principalEq('XIAO' + BS + 'bob', 'bob'), true, '去域比较仍要工作');
-  assert.strictEqual(A.principalEq('BUILTIN' + BS + 'Users', 'BUILTIN' + BS + 'users'), true,
-    '逐字相同（只差大小写）仍是同一主体');
-  assert.strictEqual(A.principalEq('XIAO' + BS + 'bob', 'XIAO' + BS + 'bob'), true);
-});
-
-/* ================= ④ 电源门禁 ================= */
-
-t('link-doctor / acl-repair 改为部分锁（不再整页锁死）', () => {
-  const app = stripComments(read('js/app.js'));
-  assert.ok(/DELETE_ONLY_TOOLS = new Set\(\['local-notes', 'clipboard-history', 'link-doctor', 'acl-repair'\]\)/.test(app),
-    'DELETE_ONLY_TOOLS 没包含 link-doctor / acl-repair');
-  assert.ok(/requiresWholeToolLock\(toolId\)/.test(app), '部分锁的分支被别人改掉了');
-});
-
-t('部分锁提示卡复述「本工具的哪一项」而不是一句删除文案', () => {
-  const app = stripComments(read('js/app.js'));
-  assert.ok(/T\('danger\.partialNotice', \{ op: names \}\)/.test(app),
-    '提示卡没有按工具列出被锁的能力名');
-  assert.ok(/dangerousCapInfo\[id\]/.test(app), '没有取能力名（会退化成 id）');
-  assert.ok(!/T\('settings\.notice\.deleteOnly'\)/.test(app),
-    '标题仍是「删除功能默认关闭」，与链接清理/权限修复对不上');
-});
-
-/* ================= ⑧ danger.text 占位符 ================= */
-
-t('问题2：DOMAIN\\admin + BUILTIN\\Administrators(F) 时 hasFull 必须为 false', () => {
-  const A = require('../lib/acl-repair');
-  const out = [
-    'C:' + BS + 'x' + BS + 'a.txt BUILTIN' + BS + 'Administrators:(I)(F)',
-    '            BUILTIN' + BS + 'Users:(I)(RX)',
-  ].join('\n');
-  const r = A.parseIcacls(out, 'DOMAIN' + BS + 'admin');
-  assert.strictEqual(r.hasFull, false,
-    'hasFull 必须为 false —— admin 不能蹭上 Administrators 的完全控制');
-  assert.strictEqual(r.anyFull, true, 'anyFull 仍应为 true（Administrators 确实有 F）');
-});
-
-t('问题2：DOMAIN\\sys 与 DOMAIN\\user 同样不得蹭上系统/用户组', () => {
-  const A = require('../lib/acl-repair');
-  const out = [
-    'C:' + BS + 'x' + BS + 'a.txt NT AUTHORITY' + BS + 'SYSTEM:(I)(F)',
-    '            BUILTIN' + BS + 'Users:(I)(F)',
-  ].join('\n');
-  for (const u of ['DOMAIN' + BS + 'sys', 'DOMAIN' + BS + 'user']) {
-    const r = A.parseIcacls(out, u);
-    assert.strictEqual(r.hasFull, false, u + ' 不该被判成有完全控制');
-  }
-});
-
-t('问题2：真正属于自己的 ACE 仍要认出来（别矫枉过正）', () => {
-  const A = require('../lib/acl-repair');
-  const me = 'DOMAIN' + BS + 'me';
-  const out = 'C:' + BS + 'x' + BS + 'a.txt ' + me + ':(I)(F)';
-  const r = A.parseIcacls(out, me);
-  assert.strictEqual(r.hasFull, true, '自己的 (F) 必须被认出来');
-  /* 只写用户名（无域）也应匹配 */
-  const r2 = A.parseIcacls(out, 'me');
-  assert.strictEqual(r2.hasFull, true, '去掉域前缀后也应匹配');
-});
-
-t('问题2：deniedForMe 也不再用子串匹配', () => {
-  const A = require('../lib/acl-repair');
-  const out = 'C:' + BS + 'x' + BS + 'a.txt BUILTIN' + BS + 'Administrators:(DENY)(F)';
-  const r = A.parseIcacls(out, 'DOMAIN' + BS + 'admin');
-  assert.strictEqual(r.deniedForMe, false, 'admin 不该蹭上 Administrators 的 DENY 项');
-  const r2 = A.parseIcacls(out, 'BUILTIN' + BS + 'Administrators');
-  assert.strictEqual(r2.deniedForMe, true, '真的是 Administrators 时 DENY 应命中');
-});
-
-/* ================= 问题 3：含空格的域组主体不被截断 ================= */
-
-t('问题3：DOMAIN\\Power Users 解析成完整主体，不截成 Users', () => {
-  const A = require('../lib/acl-repair');
-  const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt DOMAIN' + BS + 'Power Users:(I)(M)');
-  assert.strictEqual(r.entries[0].principal, 'DOMAIN' + BS + 'Power Users',
-    '实际 ' + JSON.stringify(r.entries[0].principal));
-});
-
-t('问题3：NT AUTHORITY\\SYSTEM 保持不变（不被截成 AUTHORITY\\SYSTEM）', () => {
-  const A = require('../lib/acl-repair');
-  const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt NT AUTHORITY' + BS + 'SYSTEM:(I)(F)');
-  assert.strictEqual(r.entries[0].principal, 'NT AUTHORITY' + BS + 'SYSTEM',
-    '实际 ' + JSON.stringify(r.entries[0].principal));
-});
-
-t('问题3：Remote Desktop Users / Domain Admins / CREATOR OWNER 都完整', () => {
-  const A = require('../lib/acl-repair');
-  const samples = [
-    ['DOMAIN' + BS + 'Remote Desktop Users', 'DOMAIN' + BS + 'Remote Desktop Users'],
-    ['MyCompany' + BS + 'Domain Admins', 'MyCompany' + BS + 'Domain Admins'],
-    ['CREATOR OWNER', 'CREATOR OWNER'],
-    ['BUILTIN' + BS + 'Users', 'BUILTIN' + BS + 'Users'],
-  ];
-  for (const [raw, want] of samples) {
-    const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt ' + raw + ':(I)(F)');
-    assert.strictEqual(r.entries[0].principal, want, raw + ' -> ' + JSON.stringify(r.entries[0].principal));
-  }
-});
-
-t('问题3：路径里含空格时仍能把路径剥掉', () => {
-  const A = require('../lib/acl-repair');
-  const r = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt BUILTIN' + BS + 'Users:(I)(F)');
-  assert.strictEqual(r.entries[0].principal, 'BUILTIN' + BS + 'Users',
-    '实际 ' + JSON.stringify(r.entries[0].principal));
-});
-
-/* ================= 问题 4：家目录下的 Documents 不该被拦 ================= */
-
-t('额外项2：ownerIsMe 与 mine 共用同一个判定（principalEq）', () => {
-  const main = stripComments(mainSrc);
-  assert.ok(!/a\.endsWith\(''\\\\'' \+ b\.split/.test(main),
-    'ownerIsMe 仍在自己写后缀匹配');
-  assert.ok(/aclRepair\.principalEq\(/.test(main),
-    'ownerIsMe 应调用 lib 的 principalEq');
-  const A = require('../lib/acl-repair');
-  assert.strictEqual(typeof A.principalEq, 'function', 'principalEq 应已导出');
+t('单行 icacls：路径含空格 + 裸 SID 不再把路径吃进主体', () => {
+  const A = require('../lib/acl-repair.js');
+  const line = 'C:' + BS + 'my docs' + BS + 'a.txt S-1-4-500487088-111393684:(I)(W,D,DC)';
+  const r = A.parseIcacls(line, 'DOMAIN' + BS + 'admin');
+  assert.strictEqual(r.entries[0].principal, 'S-1-4-500487088-111393684',
+    '实际解析成 ' + r.entries[0].principal);
 });
 
-t('19 isRunningAsAdmin：查询失败不能永久缓存成 false', () => {
-  /* 【任务 5 之后这个函数在 ipc/dir-acl-links.js】这里显式读那个文件，
-   * 而不是复用 mainSrc —— mainSrc 固定是 main.js（见文件头的说明），
-   * 拿它切片会报「找不到 isRunningAsAdmin」。 */
-  const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'dir-acl-links.js'), 'utf8');
-  const i = movedSrc.indexOf('async function isRunningAsAdmin');
-  /* 【右边界用「下一个函数定义」而不是某段注释】
-   * 原来取的是 `/* 读当前所有者与 ACL 摘要` 那段说明注释 —— 搬文件时
-   * 那段长注释没有被一起带过去（它写在 main.js 里的位置被一并删掉了），
-   * 于是 indexOf 返回 -1、断言报「找不到 isRunningAsAdmin」。
-   * 改成配平花括号取整个函数体：与注释排布无关。 */
-  assert.ok(i > 0, '找不到 isRunningAsAdmin（应在 ipc/dir-acl-links.js 里）');
-  let body = '';
-  {
-    const open = movedSrc.indexOf('{', i);
-    let depth = 0, k = open;
-    for (; k < movedSrc.length; k++) {
-      if (movedSrc[k] === '{') depth++;
-      else if (movedSrc[k] === '}') { depth--; if (depth === 0) { k++; break; } }
-    }
-    assert.ok(depth === 0, 'isRunningAsAdmin 括号不配平');
-    body = movedSrc.slice(i, k);
-  }
-  assert.ok(!/catch \(err\) \{ _isAdminCache = false; \}/.test(body),
-    'catch 里写死 false 并永久缓存 —— 一次瞬时失败会让这个进程余生都自认不是管理员');
-  assert.ok(/return null/.test(body), '查询失败应返回 null（未知），由调用方区分处理');
-  /* 只有确定拿到 0/1 才缓存 */
-  assert.ok(/if \(v === '1' \|\| v === '0'\)/.test(body), '应只在拿到明确 0/1 时缓存');
-});
+t('单行 icacls：路径含空格 + Everyone 不再把路径吃进主体', () => {
+  const A = require('../lib/acl-repair.js');
+  const r = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt Everyone:(I)(F)', 'me');
+  assert.strictEqual(r.entries[0].principal, 'Everyone', '实际 ' + r.entries[0].principal);
+});
 
-t('19b acl:repair：把「未知」和「确定不是管理员」分开提示', () => {
-  /* 【任务 5 之后这个 handler 在 ipc/dir-acl-links.js，常量别名是 CH】
-   * 所以必须显式读那个文件 —— mainSrc 是 main.js。
-   * 三种形态都认：字面量 / dirMoveCh.<键> / CH.<键>。
-   * （只写字面量的话 indexOf 拿到 -1，slice(-1, …) 会把几乎整段吃进来，
-   *  断言退化成"扫全文件"—— 恰好还能过，但切片失去意义。） */
-  const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'dir-acl-links.js'), 'utf8');
-  const lit = handlerIndex(movedSrc, 'acl:repair');
-  const from = lit >= 0 ? lit
-    : movedSrc.indexOf('handle(dirMoveCh.ACL_LINKS.ACL_REPAIR,');
-  assert.ok(from > 0, '找不到 acl:repair 的注册（应在 ipc/dir-acl-links.js 里）');
-  /* 这个 handler 的右边界不取「下一个 handler」—— 那对排版太敏感。
-   * 用定长窗口即可：断言只在这个 handler 里找 admin === false / null 两处，
-   * 而它本身约 3.5k 字符。 */
-  const seg = movedSrc.slice(from, from + 4000);
-  assert.ok(/admin === false/.test(seg), '应显式区分 admin === false');
-  assert.ok(/admin === null/.test(seg), '应显式处理 admin === null（查询失败）');
-});
-
-/* ==================== 20. update:apply 单飞 ==================== */
+t('单行 icacls：BUILTIN\\Users / NT AUTHORITY\\SYSTEM 仍然正确', () => {
+  const A = require('../lib/acl-repair.js');
+  const a = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt BUILTIN' + BS + 'Users:(I)(RX)', 'me');
+  assert.strictEqual(a.entries[0].principal, 'BUILTIN' + BS + 'Users');
+  const b = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt NT AUTHORITY' + BS + 'SYSTEM:(I)(F)', 'me');
+  assert.strictEqual(b.entries[0].principal, 'NT AUTHORITY' + BS + 'SYSTEM');
+});
 
-t('28 acl-repair：(M)/(W) 算有写权限，不能报「缺少写入/删除权限」', () => {
-  const Ax = require(path.join(ROOT, 'lib', 'acl-repair'));
-  const B = String.fromCharCode(92);
-  const me = 'HOME' + B + 'u';
-  const parse = (perm) => Ax.parseIcacls('C:' + B + 'x' + B + 'a.txt ' + me + ':(' + perm + ')', me);
-  assert.strictEqual(parse('F').hasWrite, true, '(F) 应算有写权限');
-  assert.strictEqual(parse('M').hasWrite, true,
-    '(M) 修改权限能读能写能删，判成「没有写权限」会让用户白跑一趟提权流程');
-  assert.strictEqual(parse('W').hasWrite, true, '(W) 写权限至少能写');
-  assert.strictEqual(parse('RX').hasWrite, false, '只读不应算有写权限');
-  assert.strictEqual(parse('F').hasFull, true, 'hasFull 的语义（真正的完全控制）不能被放宽');
-  assert.strictEqual(parse('M').hasFull, false, '(M) 不是完全控制，hasFull 不应为 true');
-
-  /* 【关键：要验 diagnose 的最终结论，不能只验解析结果】
-   * 反向验证时发现过：只断言 hasWrite 的话，把 diagnose 里的判据改回 hasFull
-   * 测试仍然是绿的 —— 而用户看到的是界面上的那句「你缺少写入/删除权限」。 */
-  const dx = (perm) => Ax.diagnose({ exists: true, isDir: false, acl: parse(perm), ownerIsMe: true, isAdmin: false });
-  const m = dx('M');
-  assert.ok(!m.codes.includes('NO_WRITE'),
-    '有 (M) 权限时不该报 NO_WRITE（实际 codes=' + JSON.stringify(m.codes) + '）');
-  const w = dx('W');
-  assert.ok(!w.codes.includes('NO_WRITE'), '有 (W) 权限时不该报 NO_WRITE');
-  const rx = dx('RX');
-  assert.ok(rx.codes.includes('NO_WRITE'), '只有 (RX) 时应报 NO_WRITE（否则真问题被掩盖）');
-});
-
-/* ==================== 29. mojibake：不能把正常文本改坏 ==================== */
+t('多行 icacls：按续行缩进（路径长度+1）精确切主体列', () => {
+  const A = require('../lib/acl-repair.js');
+  const p = 'C:' + BS + 'my docs' + BS + 'folder' + BS + 'a.txt';   // 末段目录无扩展名
+  const pad = ' '.repeat(p.length + 1);
+  const sid = 'S-1-5-21-1111111111-2222222222-3333333333-4444';
+  const out = [
+    p + ' ' + sid + ':(I)(R)',
+    pad + 'BUILTIN' + BS + 'Users:(I)(RX)',
+    pad + 'Mandatory Label' + BS + 'Medium Mandatory Level:(I)(NW)',
+  ].join('\n');
+  const r = A.parseIcacls(out, 'me');
+  assert.strictEqual(r.entries[0].principal, sid, 'SID 行：' + r.entries[0].principal);
+  assert.strictEqual(r.entries[1].principal, 'BUILTIN' + BS + 'Users');
+  assert.strictEqual(r.entries[2].principal, 'Mandatory Label' + BS + 'Medium Mandatory Level',
+    'Mandatory Label 被切错：' + r.entries[2].principal);
+  assert.ok(!r.entries.some((e) => /docs/i.test(e.principal)),
+    '又把路径当主体了：' + r.entries.map((e) => e.principal).join(','));
+});
+
+t('没有续行时用调用方给的路径剥前缀（pathHint）', () => {
+  const A = require('../lib/acl-repair.js');
+  const r = A.parseIcacls('C:' + BS + 'my docs' + BS + 'folder Everyone:(I)(F)', 'me',
+    { path: 'C:' + BS + 'my docs' + BS + 'folder' });
+  assert.strictEqual(r.entries[0].principal, 'Everyone', '实际 ' + r.entries[0].principal);
+});
+
+t('含空格的多词组主体（Power Users 等）不能被截短', () => {
+  const A = require('../lib/acl-repair.js');
+  for (const raw of ['DOMAIN' + BS + 'Power Users', 'MyCompany' + BS + 'Domain Admins',
+    'DOMAIN' + BS + 'Remote Desktop Users', 'CREATOR OWNER']) {
+    const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt ' + raw + ':(I)(M)', 'me');
+    assert.strictEqual(r.entries[0].principal, raw, '被截成 ' + r.entries[0].principal);
+  }
+});
+
+t('tailLooksLikePath 只认「路径残留」形态', () => {
+  const A = require('../lib/acl-repair.js');
+  assert.strictEqual(A.tailLooksLikePath('a.txt Everyone'), true, '文件名残留应被认出');
+  assert.strictEqual(A.tailLooksLikePath('a.txt S-1-4-500487088-111393684'), true, 'SID 残留应被认出');
+  assert.strictEqual(A.tailLooksLikePath('Power Users'), false, '正常多词组名不该被误拒');
+  assert.strictEqual(A.tailLooksLikePath('Medium Mandatory Level'), false);
+});
+
+/* ================= ② 目标闸门 ================= */
+
+t('内建/系统主体不会靠「去域后缀」蹭成当前用户', () => {
+  const A = require('../lib/acl-repair.js');
+  const bad = [
+    ['BUILTIN' + BS + 'Users', 'MyCo' + BS + 'users'],
+    ['NT AUTHORITY' + BS + 'SYSTEM', 'MyCo' + BS + 'system'],
+    ['BUILTIN' + BS + 'Users', 'Users'],
+    ['MANDATORY LABEL' + BS + 'Medium Mandatory Level', 'MyCo' + BS + 'Medium Mandatory Level'],
+    ['DOMAIN' + BS + 'admin', 'BUILTIN' + BS + 'Administrators'],
+  ];
+  for (const [p, u] of bad) {
+    assert.strictEqual(A.principalEq(p, u), false, p + ' 与 ' + u + ' 不该判为同一账号');
+  }
+  /* 正常判定不受影响 */
+  assert.strictEqual(A.principalEq('XIAO' + BS + 'bob', 'bob'), true, '去域比较仍要工作');
+  assert.strictEqual(A.principalEq('BUILTIN' + BS + 'Users', 'BUILTIN' + BS + 'users'), true,
+    '逐字相同（只差大小写）仍是同一主体');
+  assert.strictEqual(A.principalEq('XIAO' + BS + 'bob', 'XIAO' + BS + 'bob'), true);
+});
+
+/* ================= ④ 电源门禁 ================= */
+
+t('link-doctor / acl-repair 改为部分锁（不再整页锁死）', () => {
+  const app = stripComments(read('js/app.js'));
+  assert.ok(/DELETE_ONLY_TOOLS = new Set\(\['local-notes', 'clipboard-history', 'link-doctor', 'acl-repair', 'restore-points', 'autostart'\]\)/.test(app),
+    'DELETE_ONLY_TOOLS 没包含 link-doctor / acl-repair');
+  assert.ok(/requiresWholeToolLock\(toolId\)/.test(app), '部分锁的分支被别人改掉了');
+});
+
+t('部分锁提示卡复述「本工具的哪一项」而不是一句删除文案', () => {
+  const app = stripComments(read('js/app.js'));
+  assert.ok(/T\('danger\.partialNotice', \{ op: names \}\)/.test(app),
+    '提示卡没有按工具列出被锁的能力名');
+  assert.ok(/dangerousCapInfo\[id\]/.test(app), '没有取能力名（会退化成 id）');
+  assert.ok(!/T\('settings\.notice\.deleteOnly'\)/.test(app),
+    '标题仍是「删除功能默认关闭」，与链接清理/权限修复对不上');
+});
+
+/* ================= ⑧ danger.text 占位符 ================= */
+
+t('问题2：DOMAIN\\admin + BUILTIN\\Administrators(F) 时 hasFull 必须为 false', () => {
+  const A = require('../lib/acl-repair');
+  const out = [
+    'C:' + BS + 'x' + BS + 'a.txt BUILTIN' + BS + 'Administrators:(I)(F)',
+    '            BUILTIN' + BS + 'Users:(I)(RX)',
+  ].join('\n');
+  const r = A.parseIcacls(out, 'DOMAIN' + BS + 'admin');
+  assert.strictEqual(r.hasFull, false,
+    'hasFull 必须为 false —— admin 不能蹭上 Administrators 的完全控制');
+  assert.strictEqual(r.anyFull, true, 'anyFull 仍应为 true（Administrators 确实有 F）');
+});
+
+t('问题2：DOMAIN\\sys 与 DOMAIN\\user 同样不得蹭上系统/用户组', () => {
+  const A = require('../lib/acl-repair');
+  const out = [
+    'C:' + BS + 'x' + BS + 'a.txt NT AUTHORITY' + BS + 'SYSTEM:(I)(F)',
+    '            BUILTIN' + BS + 'Users:(I)(F)',
+  ].join('\n');
+  for (const u of ['DOMAIN' + BS + 'sys', 'DOMAIN' + BS + 'user']) {
+    const r = A.parseIcacls(out, u);
+    assert.strictEqual(r.hasFull, false, u + ' 不该被判成有完全控制');
+  }
+});
+
+t('问题2：真正属于自己的 ACE 仍要认出来（别矫枉过正）', () => {
+  const A = require('../lib/acl-repair');
+  const me = 'DOMAIN' + BS + 'me';
+  const out = 'C:' + BS + 'x' + BS + 'a.txt ' + me + ':(I)(F)';
+  const r = A.parseIcacls(out, me);
+  assert.strictEqual(r.hasFull, true, '自己的 (F) 必须被认出来');
+  /* 只写用户名（无域）也应匹配 */
+  const r2 = A.parseIcacls(out, 'me');
+  assert.strictEqual(r2.hasFull, true, '去掉域前缀后也应匹配');
+});
+
+t('问题2：deniedForMe 也不再用子串匹配', () => {
+  const A = require('../lib/acl-repair');
+  const out = 'C:' + BS + 'x' + BS + 'a.txt BUILTIN' + BS + 'Administrators:(DENY)(F)';
+  const r = A.parseIcacls(out, 'DOMAIN' + BS + 'admin');
+  assert.strictEqual(r.deniedForMe, false, 'admin 不该蹭上 Administrators 的 DENY 项');
+  const r2 = A.parseIcacls(out, 'BUILTIN' + BS + 'Administrators');
+  assert.strictEqual(r2.deniedForMe, true, '真的是 Administrators 时 DENY 应命中');
+});
+
+/* ================= 问题 3：含空格的域组主体不被截断 ================= */
+
+t('问题3：DOMAIN\\Power Users 解析成完整主体，不截成 Users', () => {
+  const A = require('../lib/acl-repair');
+  const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt DOMAIN' + BS + 'Power Users:(I)(M)');
+  assert.strictEqual(r.entries[0].principal, 'DOMAIN' + BS + 'Power Users',
+    '实际 ' + JSON.stringify(r.entries[0].principal));
+});
+
+t('问题3：NT AUTHORITY\\SYSTEM 保持不变（不被截成 AUTHORITY\\SYSTEM）', () => {
+  const A = require('../lib/acl-repair');
+  const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt NT AUTHORITY' + BS + 'SYSTEM:(I)(F)');
+  assert.strictEqual(r.entries[0].principal, 'NT AUTHORITY' + BS + 'SYSTEM',
+    '实际 ' + JSON.stringify(r.entries[0].principal));
+});
+
+t('问题3：Remote Desktop Users / Domain Admins / CREATOR OWNER 都完整', () => {
+  const A = require('../lib/acl-repair');
+  const samples = [
+    ['DOMAIN' + BS + 'Remote Desktop Users', 'DOMAIN' + BS + 'Remote Desktop Users'],
+    ['MyCompany' + BS + 'Domain Admins', 'MyCompany' + BS + 'Domain Admins'],
+    ['CREATOR OWNER', 'CREATOR OWNER'],
+    ['BUILTIN' + BS + 'Users', 'BUILTIN' + BS + 'Users'],
+  ];
+  for (const [raw, want] of samples) {
+    const r = A.parseIcacls('C:' + BS + 'x' + BS + 'a.txt ' + raw + ':(I)(F)');
+    assert.strictEqual(r.entries[0].principal, want, raw + ' -> ' + JSON.stringify(r.entries[0].principal));
+  }
+});
+
+t('问题3：路径里含空格时仍能把路径剥掉', () => {
+  const A = require('../lib/acl-repair');
+  const r = A.parseIcacls('C:' + BS + 'my docs' + BS + 'a.txt BUILTIN' + BS + 'Users:(I)(F)');
+  assert.strictEqual(r.entries[0].principal, 'BUILTIN' + BS + 'Users',
+    '实际 ' + JSON.stringify(r.entries[0].principal));
+});
+
+/* ================= 问题 4：家目录下的 Documents 不该被拦 ================= */
+
+t('额外项2：ownerIsMe 与 mine 共用同一个判定（principalEq）', () => {
+  const main = stripComments(mainSrc);
+  assert.ok(!/a\.endsWith\(''\\\\'' \+ b\.split/.test(main),
+    'ownerIsMe 仍在自己写后缀匹配');
+  assert.ok(/aclRepair\.principalEq\(/.test(main),
+    'ownerIsMe 应调用 lib 的 principalEq');
+  const A = require('../lib/acl-repair');
+  assert.strictEqual(typeof A.principalEq, 'function', 'principalEq 应已导出');
+});
+
+t('19 isRunningAsAdmin：查询失败不能永久缓存成 false', () => {
+  /* 【任务 5 之后这个函数在 ipc/dir-acl-links.js】这里显式读那个文件，
+   * 而不是复用 mainSrc —— mainSrc 固定是 main.js（见文件头的说明），
+   * 拿它切片会报「找不到 isRunningAsAdmin」。 */
+  const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'dir-acl-links.js'), 'utf8');
+  const i = movedSrc.indexOf('async function isRunningAsAdmin');
+  /* 【右边界用「下一个函数定义」而不是某段注释】
+   * 原来取的是 `/* 读当前所有者与 ACL 摘要` 那段说明注释 —— 搬文件时
+   * 那段长注释没有被一起带过去（它写在 main.js 里的位置被一并删掉了），
+   * 于是 indexOf 返回 -1、断言报「找不到 isRunningAsAdmin」。
+   * 改成配平花括号取整个函数体：与注释排布无关。 */
+  assert.ok(i > 0, '找不到 isRunningAsAdmin（应在 ipc/dir-acl-links.js 里）');
+  let body = '';
+  {
+    const open = movedSrc.indexOf('{', i);
+    let depth = 0, k = open;
+    for (; k < movedSrc.length; k++) {
+      if (movedSrc[k] === '{') depth++;
+      else if (movedSrc[k] === '}') { depth--; if (depth === 0) { k++; break; } }
+    }
+    assert.ok(depth === 0, 'isRunningAsAdmin 括号不配平');
+    body = movedSrc.slice(i, k);
+  }
+  assert.ok(!/catch \(err\) \{ _isAdminCache = false; \}/.test(body),
+    'catch 里写死 false 并永久缓存 —— 一次瞬时失败会让这个进程余生都自认不是管理员');
+  assert.ok(/return null/.test(body), '查询失败应返回 null（未知），由调用方区分处理');
+  /* 只有确定拿到 0/1 才缓存 */
+  assert.ok(/if \(v === '1' \|\| v === '0'\)/.test(body), '应只在拿到明确 0/1 时缓存');
+});
+
+t('19b acl:repair：把「未知」和「确定不是管理员」分开提示', () => {
+  /* 【任务 5 之后这个 handler 在 ipc/dir-acl-links.js，常量别名是 CH】
+   * 所以必须显式读那个文件 —— mainSrc 是 main.js。
+   * 三种形态都认：字面量 / dirMoveCh.<键> / CH.<键>。
+   * （只写字面量的话 indexOf 拿到 -1，slice(-1, …) 会把几乎整段吃进来，
+   *  断言退化成"扫全文件"—— 恰好还能过，但切片失去意义。） */
+  const movedSrc = fs.readFileSync(path.join(ROOT, 'ipc', 'dir-acl-links.js'), 'utf8');
+  const lit = handlerIndex(movedSrc, 'acl:repair');
+  const from = lit >= 0 ? lit
+    : movedSrc.indexOf('handle(dirMoveCh.ACL_LINKS.ACL_REPAIR,');
+  assert.ok(from > 0, '找不到 acl:repair 的注册（应在 ipc/dir-acl-links.js 里）');
+  /* 这个 handler 的右边界不取「下一个 handler」—— 那对排版太敏感。
+   * 用定长窗口即可：断言只在这个 handler 里找 admin === false / null 两处，
+   * 而它本身约 3.5k 字符。 */
+  const seg = movedSrc.slice(from, from + 4000);
+  assert.ok(/admin === false/.test(seg), '应显式区分 admin === false');
+  assert.ok(/admin === null/.test(seg), '应显式处理 admin === null（查询失败）');
+});
+
+/* ==================== 20. update:apply 单飞 ==================== */
+
+t('28 acl-repair：(M)/(W) 算有写权限，不能报「缺少写入/删除权限」', () => {
+  const Ax = require(path.join(ROOT, 'lib', 'acl-repair'));
+  const B = String.fromCharCode(92);
+  const me = 'HOME' + B + 'u';
+  const parse = (perm) => Ax.parseIcacls('C:' + B + 'x' + B + 'a.txt ' + me + ':(' + perm + ')', me);
+  assert.strictEqual(parse('F').hasWrite, true, '(F) 应算有写权限');
+  assert.strictEqual(parse('M').hasWrite, true,
+    '(M) 修改权限能读能写能删，判成「没有写权限」会让用户白跑一趟提权流程');
+  assert.strictEqual(parse('W').hasWrite, true, '(W) 写权限至少能写');
+  assert.strictEqual(parse('RX').hasWrite, false, '只读不应算有写权限');
+  assert.strictEqual(parse('F').hasFull, true, 'hasFull 的语义（真正的完全控制）不能被放宽');
+  assert.strictEqual(parse('M').hasFull, false, '(M) 不是完全控制，hasFull 不应为 true');
+
+  /* 【关键：要验 diagnose 的最终结论，不能只验解析结果】
+   * 反向验证时发现过：只断言 hasWrite 的话，把 diagnose 里的判据改回 hasFull
+   * 测试仍然是绿的 —— 而用户看到的是界面上的那句「你缺少写入/删除权限」。 */
+  const dx = (perm) => Ax.diagnose({ exists: true, isDir: false, acl: parse(perm), ownerIsMe: true, isAdmin: false });
+  const m = dx('M');
+  assert.ok(!m.codes.includes('NO_WRITE'),
+    '有 (M) 权限时不该报 NO_WRITE（实际 codes=' + JSON.stringify(m.codes) + '）');
+  const w = dx('W');
+  assert.ok(!w.codes.includes('NO_WRITE'), '有 (W) 权限时不该报 NO_WRITE');
+  const rx = dx('RX');
+  assert.ok(rx.codes.includes('NO_WRITE'), '只有 (RX) 时应报 NO_WRITE（否则真问题被掩盖）');
+});
+
+/* ==================== 29. mojibake：不能把正常文本改坏 ==================== */
 
 done();
