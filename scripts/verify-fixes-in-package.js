@@ -252,6 +252,37 @@ const CHECKS_BY_VERSION = {
     ['lib/channels.js', 'N4 通道常量全量迁移 188/188',
       (s2) => /TOTAL: 188/.test(s2) && /MIGRATED: 188/.test(s2)],
   ],
+  /* v0.8.9：新增「开发环境」（便携运行时 + 用户环境管理）。 */
+  '0.8.9': [
+    ['js/tools/env-manager.js', 'E1 工具页进了包，且默认加入用户环境',
+      (s2) => /安装后加入当前用户环境（推荐）/.test(s2) && /ENV\.INSTALL/.test(s2)],
+    ['js/tools/env-manager.js', 'E2 保留仅本工具与官方安装器入口',
+      (s2) => /仅本工具箱使用/.test(s2) && /官方安装器/.test(s2)],
+    ['ipc/env-manager.js', 'E3 IPC 域在包里，七个通道齐全',
+      (s2) => ['APPLY', 'CATALOG', 'DETECT', 'INSTALL', 'REMOVE', 'UNAPPLY', 'OPEN_TERMINAL']
+        .every((k) => s2.indexOf('CH.ENV.' + k) !== -1)],
+    ['ipc/env-manager.js', 'E4 只写 User 作用域且不碰系统 PATH',
+      (s2) => {
+        /* 剥注释再判：说明文字里写了「不用 setx」「不碰系统 PATH」，
+         * 直接对全文搜会被自己的注释误伤。 */
+        const code = s2.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        return /['"]User['"]/.test(code) && !/\bsetx\b/i.test(code) && !/HKLM|HKEY_LOCAL_MACHINE/i.test(code);
+      }],
+    ['ipc/env-manager.js', 'E5 先校验 SHA-256 再解压',
+      (s2) => s2.indexOf('sha256File(archive)') !== -1
+        && s2.indexOf('sha256File(archive)') < s2.indexOf('await extractArchive(archive, staging, rt)')],
+    ['lib/env-catalog.js', 'E6 四个运行时与固定 SHA 都在包里',
+      (s2) => /22\.23\.5/.test(s2) && /21\.0\.13/.test(s2) && /3\.12\.16/.test(s2) && /16\.2\.0/.test(s2)
+        && (s2.match(/[a-f0-9]{64}/g) || []).length >= 4],
+    ['lib/env-path.js', 'E7 不重排用户 PATH、保留尾分号',
+      (s2) => /prependEntries/.test(s2) && /trailing \? ';' : ''/.test(s2)],
+    ['lib/env-detect.js', 'E8 检测解析在包里',
+      (s2) => /parsePyLauncher/.test(s2) && /parseJavaVersion/.test(s2)],
+    ['lib/channels.js', 'E9 通道常量 195',
+      (s2) => /TOTAL: 195/.test(s2) && /MIGRATED: 195/.test(s2) && /APPLY: 'env:apply'/.test(s2)],
+    ['index.html', 'E10 页面引入 env-manager.js',
+      (s2) => /js\/tools\/env-manager\.js/.test(s2)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];
