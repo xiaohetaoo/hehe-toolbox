@@ -174,7 +174,9 @@
       'coords-picker', 'qr-generate', 'qr-scan', 'random-gen',
       // 工具链是「跨工具」的编排入口，不属于任何单一分类，
       // 放在末尾：日常用它的人会通过 Ctrl+K 直达，不需要占网格首屏。
-      'tool-chain'
+      'tool-chain',
+      // 环境管理：低频但装完就一直用；与工具链同属"开发基础设施"，一起放末尾
+      'env-manager'
     ],
     media: [
       // 截图抓取：标注 + 录屏（最常用的两个动作）

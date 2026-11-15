@@ -1523,6 +1523,18 @@ const fsIpc = require('./ipc/fs-ops')(ipcCtx, {
 /* 从模块取回被其他域共用的实现（见上面那段说明） */
 const { writeFileAtomic, dirSizeFast, walkDir } = fsIpc;
 
+/* ================= IPC: 开发环境（便携运行时） ================= */
+/* 与 fs-ops 同一个纪律：门禁/推送/任务表都由 main 注入，模块不自己实现。
+ * downloadToFile 是函数声明（文件后面），此处引用靠提升，注册阶段不会真正调用。 */
+require('./ipc/env-manager')(ipcCtx, {
+  handle, send, jobs,
+  nextJobSeq: () => ++jobSeq,
+  setLatestCancelable: (fn) => { latestCancelable = fn; },
+  downloadToFile,
+  userDataDir: () => app.getPath('userData'),
+  runCmd, storeGet, storeSet, psSingleQuote, moveFile,
+});
+
 
 /* ================= IPC: exec / process ================= */
 /* 危险系统命令的识别：exec:run 是通用命令通道，本身不设高危门禁（快捷启动等功能要用它），

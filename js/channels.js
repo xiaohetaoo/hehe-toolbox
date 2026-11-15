@@ -104,6 +104,17 @@
       TOOL_CAPS: 'dangerous:tool-caps',
     },
 
+    /* ---- 开发环境（便携运行时下载与管理） ---- */
+    ENV: {
+      APPLY: 'env:apply',
+      CATALOG: 'env:catalog',
+      DETECT: 'env:detect',
+      INSTALL: 'env:install',
+      OPEN_TERMINAL: 'env:open-terminal',
+      REMOVE: 'env:remove',
+      UNAPPLY: 'env:unapply',
+    },
+
     /* ---- 系统打开/保存对话框 ---- */
     DIALOG: {
       OPEN: 'dialog:open',

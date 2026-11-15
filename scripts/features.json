@@ -288,7 +288,12 @@
     "src": [
       "js/cmdk.js",
       "js/tools/chain.js",
-      "js/tools/dev.js"
+      "js/tools/dev.js",
+      "js/tools/env-manager.js",
+      "ipc/env-manager.js",
+      "lib/env-catalog.js",
+      "lib/env-path.js",
+      "lib/env-detect.js"
     ],
     "tests": [
       "test-cmdk.js",
@@ -301,7 +306,12 @@
       "test-sanitize.js",
       "test-lib.js",
       "test-concat-list.js",
-      "test-color-picker.js"
+      "test-color-picker.js",
+      "test-env-catalog.js",
+      "test-env-path.js",
+      "test-env-detect.js",
+      "test-env-manager-impl.js",
+      "test-env-manager-state.js"
     ]
   },
   "life": {
