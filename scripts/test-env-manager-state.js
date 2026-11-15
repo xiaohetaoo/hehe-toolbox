@@ -3,8 +3,10 @@
  *
  * 做法：给 ipc/env-manager.js 注入一个**内存版用户环境**（userEnvIO），
  * 于是可以真的跑 apply/unapply 的状态机与备份/还原逻辑，而不碰本机真实 PATH。
- * 这是 v0.8.8 收尾时学到的：只靠"真机跑一遍"会撞上 PATH 被去重/二次转义的坑，
- * 状态机本身必须能被反复、可断言地测。
+ * 第五轮审查补的三件事也在这里钉住：
+ *   · 值类型（REG_EXPAND_SZ / %VAR%）必须原样保留；
+ *   · 并发 apply 必须串行，不能丢更新；
+ *   · 撤销逐字还原（含重复项、尾分号）。
  */
 const { t, done } = require('./lib/harness');
 const assert = require('assert');
@@ -22,7 +24,7 @@ function fixture() {
   const store = new Map();
   const handlers = new Map();
   let seq = 0;
-  const user = { path: INITIAL_PATH, vars: { JAVA_HOME: INITIAL_JAVA } };
+  const user = { path: INITIAL_PATH, pathKind: 'String', vars: { JAVA_HOME: INITIAL_JAVA }, varKinds: { JAVA_HOME: 'String' } };
   const nodeRt = envCatalog.findRuntime('node');
   const jdkRt = envCatalog.findRuntime('jdk');
   const nodeDir = envCatalog.installLayout(ud, nodeRt).dir;
@@ -41,12 +43,20 @@ function fixture() {
     storeGet: (k, d) => (store.has(k) ? store.get(k) : d),
     storeSet: (k, v) => { store.set(k, v); return true; },
     psSingleQuote: (s) => "'" + String(s).replace(/'/g, "''") + "'",
+    moveFile: async (src, dst) => { await fs.promises.rename(src, dst); return { moved: true, copied: false }; },
     userEnvIO: {
-      read: async () => ({ path: user.path, vars: Object.assign({}, user.vars) }),
-      write: async ({ pathValue, vars, removeVars }) => {
-        if (pathValue != null) user.path = pathValue;
-        for (const [k, v] of Object.entries(vars || {})) user.vars[k] = v;
-        for (const k of removeVars || []) delete user.vars[k];
+      /* 模拟一点延迟：没有串行锁时两个 apply 会交错、后写覆盖先写 */
+      read: async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        return {
+          path: user.path, pathKind: user.pathKind,
+          vars: Object.assign({}, user.vars), varKinds: Object.assign({}, user.varKinds),
+        };
+      },
+      write: async ({ pathValue, pathKind, vars, removeVars }) => {
+        if (pathValue != null) { user.path = pathValue; user.pathKind = pathKind || 'String'; }
+        for (const v of vars || []) { user.vars[v.name] = v.value; user.varKinds[v.name] = v.kind || 'String'; }
+        for (const k of removeVars || []) { delete user.vars[k]; delete user.varKinds[k]; }
       },
     },
   });
@@ -66,7 +76,6 @@ function fixture() {
       assert.deepStrictEqual(r.runtimes.map((x) => x.id).sort(), ['jdk', 'mingw', 'node', 'python']);
       assert.strictEqual(r.applied, null);
       const byId = Object.fromEntries(r.runtimes.map((x) => [x.id, x]));
-      /* 锁的是：已安装/未安装状态串了 —— 界面会给出错误的「已安装」。 */
       assert.ok(byId.node.installed && byId.node.installed.dir, 'node 应显示已安装');
       assert.strictEqual(byId.python.installed, null, 'python 未安装应为 null');
     } finally { f.cleanup(); }
@@ -77,10 +86,8 @@ function fixture() {
     try {
       const r = await f.call('env:apply', ['node']);
       assert.deepStrictEqual(r.appliedIds, ['node']);
-      /* 锁的是：应用后把用户 PATH 去重/重排 —— v0.8.8 真机踩过（长度反而变短）。 */
       assert.strictEqual(f.user.path, f.nodeDir + ';' + INITIAL_PATH);
       assert.ok(f.user.path.endsWith('C:\\tools;C:\\tools'), '重复项必须保留');
-      /* 锁的是：没把 bin 放到最前面 —— 系统旧版本仍会优先命中。 */
       assert.strictEqual(f.user.path.split(';')[0], f.nodeDir);
     } finally { f.cleanup(); }
   });
@@ -90,7 +97,6 @@ function fixture() {
     try {
       await f.call('env:apply', ['node']);
       await f.call('env:apply', ['jdk']);
-      /* 锁的是：JAVA_HOME 指向 bin 或没设置 —— Maven/Gradle 找不到。 */
       assert.strictEqual(f.user.vars.JAVA_HOME, f.jdkDir);
       assert.ok(f.user.path.includes(f.nodeDir) && f.user.path.includes(f.jdkDir));
     } finally { f.cleanup(); }
@@ -114,12 +120,10 @@ function fixture() {
       await f.call('env:apply', ['node']);
       await f.call('env:apply', ['jdk']);
       const r = await f.call('env:unapply');
-      /* 锁的是：还原成"去重后的 PATH"—— 用户原值里有重复项，必须一模一样回来。 */
       assert.strictEqual(f.user.path, INITIAL_PATH, '撤销后 PATH 必须与初始值逐字一致');
       assert.strictEqual(f.user.vars.JAVA_HOME, INITIAL_JAVA, 'JAVA_HOME 必须还原');
       assert.ok(r.restoredVars.includes('JAVA_HOME'));
-      const st = f.store.get('envApplied');
-      assert.ok(!st, '取消应用后状态应清空');
+      assert.ok(!f.store.get('envApplied'), '取消应用后状态应清空');
       assert.ok(!f.store.get('envVarsBackup'), '备份也应清掉');
     } finally { f.cleanup(); }
   });
@@ -130,7 +134,6 @@ function fixture() {
       await f.call('env:apply', ['node']);
       const r = await f.call('env:remove', 'node');
       assert.deepStrictEqual(r, { removed: true });
-      /* 锁的是：删了目录却把 PATH 项留着 —— 新终端里 node 直接坏掉。 */
       assert.ok(!f.user.path.includes(f.nodeDir), 'PATH 里不能残留已删除的目录');
       assert.ok(!fs.existsSync(f.nodeDir), '安装目录应被删除');
       assert.ok(!f.store.get('envInstalled').node, 'manifest 条目应删除');
@@ -143,7 +146,6 @@ function fixture() {
       const r = await f.call('env:apply', ['python']);
       assert.deepStrictEqual(r.appliedIds, []);
       assert.ok(r.warnings.length > 0, '应提示"先安装"');
-      /* 锁的是：未安装时仍然改了 PATH —— 用户会看到一条不存在的路径。 */
       assert.strictEqual(f.user.path, INITIAL_PATH);
     } finally { f.cleanup(); }
   });
@@ -155,8 +157,51 @@ function fixture() {
       await f.call('env:apply', ['node']);
       assert.ok(f.user.path.endsWith(';'), '应用后尾分号应保留');
       await f.call('env:unapply');
-      /* 锁的是：撤销后尾分号丢了 —— 真机 E2E 抓到过，PATH 与原始值差 1 个字符。 */
       assert.strictEqual(f.user.path, INITIAL_PATH + ';');
+    } finally { f.cleanup(); }
+  });
+
+  await t('ES9 值类型：REG_EXPAND_SZ 与 %VAR% 引用必须原样保留', async () => {
+    const f = fixture();
+    try {
+      const orig = '%USERPROFILE%\\bin;' + INITIAL_PATH;
+      f.user.path = orig;
+      f.user.pathKind = 'ExpandString';
+      f.user.varKinds.JAVA_HOME = 'ExpandString';
+      f.user.vars.JAVA_HOME = '%JDK_HOME%';
+      await f.call('env:apply', ['jdk']);
+      /* 锁的是：写回时把 ExpandString 降级成 String、或把 %VAR% 展开成字面量。 */
+      assert.strictEqual(f.user.pathKind, 'ExpandString', 'PATH 值类型必须保留');
+      assert.ok(f.user.path.includes('%USERPROFILE%\\bin'), '%VAR% 引用必须保留');
+      assert.strictEqual(f.user.varKinds.JAVA_HOME, 'ExpandString', 'JAVA_HOME 类型必须保留');
+      await f.call('env:unapply');
+      assert.strictEqual(f.user.path, orig, '撤销后必须逐字还原（含 %VAR%）');
+      assert.strictEqual(f.user.pathKind, 'ExpandString', '撤销后类型仍须是 ExpandString');
+      assert.strictEqual(f.user.vars.JAVA_HOME, '%JDK_HOME%', 'JAVA_HOME 原值必须还原');
+    } finally { f.cleanup(); }
+  });
+
+  await t('ES10 并发：两个 apply 同时发起，不能丢更新', async () => {
+    const f = fixture();
+    try {
+      /* 锁的是：read-改-write 交错 —— 后写覆盖先写，最终只有一个目录进 PATH。 */
+      await Promise.all([f.call('env:apply', ['node']), f.call('env:apply', ['jdk'])]);
+      assert.ok(f.user.path.includes(f.nodeDir), 'node 目录不能丢');
+      assert.ok(f.user.path.includes(f.jdkDir + '\\bin'), 'jdk 的 bin 目录不能丢');
+      const dirs = f.user.path.split(';');
+      assert.strictEqual(dirs.filter((x) => x === f.nodeDir).length, 1, 'node 目录只应出现一次');
+      assert.strictEqual(dirs.filter((x) => x === f.jdkDir + '\\bin').length, 1, 'jdk 目录只应出现一次');
+    } finally { f.cleanup(); }
+  });
+
+  await t('ES11 旧版备份形状（纯字符串）也能正确还原', async () => {
+    const f = fixture();
+    try {
+      /* 模拟上一版存下的 { JAVA_HOME: 'C:\\old-jdk' } */
+      f.store.set('envVarsBackup', { JAVA_HOME: INITIAL_JAVA, at: Date.now() });
+      await f.call('env:apply', ['jdk']);
+      await f.call('env:unapply');
+      assert.strictEqual(f.user.vars.JAVA_HOME, INITIAL_JAVA);
     } finally { f.cleanup(); }
   });
 

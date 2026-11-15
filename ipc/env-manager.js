@@ -9,6 +9,17 @@
  *   · 不加新高危能力：用户明确要求"默认加入用户环境"，而这一步可撤销、
  *     且只影响当前账户；界面侧必须二次确认并如实说明影响。
  *   · 运行时目录与 SHA 都来自 lib/env-catalog.js（有单测），这里不做"猜版本"。
+ *
+ * ============ 第五轮审查修掉的四个隐患（改这里前先读） ============
+ *   1. readUserEnv 必须给 PowerShell 加强制 UTF-8 输出：默认 OEM 代码页会把
+ *      含中文的 PATH 读成乱码，写回即损坏用户 PATH（实测复现）。
+ *   2. PATH 可能是 REG_EXPAND_SZ（含 %USERPROFILE% 一类引用）。读要用
+ *      DoNotExpandEnvironmentNames，写要按原类型写回，不能用 .NET
+ *      SetEnvironmentVariable（它恒写 REG_SZ，会把引用变字面量）。
+ *   3. apply/unapply/manifest 是"读-改-写"三段，必须串行；否则两个操作
+ *      基于同一份旧 PATH 各写一次，后写覆盖先写（丢失更新）。
+ *   4. 下载缓存不能"非空即信"：完整但哈希不符的包要能区分并给出可读错误，
+ *      而不是无限重下同一个错包。
  */
 
 const fs = require('fs');
@@ -44,6 +55,22 @@ module.exports = function register(ctx, deps) {
     return a && typeof a === 'object' ? a : null;
   };
   const appliedSet = (a) => storeSet('envApplied', a || null);
+
+  /* ---------- 串行锁：用户环境写与 manifest 更新必须排队 ---------- */
+  let envLockChain = Promise.resolve();
+  /**
+   * @template T
+   * @param {() => T | Promise<T>} fn
+   * @returns {Promise<T>}
+   */
+  function withEnvLock(fn) {
+    const run = envLockChain.then(fn, fn);
+    envLockChain = run.then(() => {}, () => {});
+    return run;
+  }
+  /* 同一运行时的安装不能并行（两次解压/落盘会互相覆盖） */
+  const installing = new Set();
+  let detectCache = null;
 
   async function sha256File(file) {
     return new Promise((resolve, reject) => {
@@ -85,8 +112,7 @@ module.exports = function register(ctx, deps) {
       return;
     }
     if (rt.archive === 'tar.gz') {
-      /* 7za 不能直接把 tar.gz 解到目标并丢顶层；分两步：gz → tar → 目录。
-       * 中途产物放 staging 的同级临时目录，最后一起清掉。 */
+      /* 7za 不能直接把 tar.gz 解到目标并丢顶层；分两步：gz → tar → 目录。 */
       const gzOut = path.join(staging, '.gz');
       await fsp.mkdir(gzOut, { recursive: true });
       let r = await runCmd(sevenZa, ['x', archive, '-o' + gzOut, '-y', '-bd'], { timeout: 300000 });
@@ -110,38 +136,74 @@ module.exports = function register(ctx, deps) {
   }
 
   /* ---------- 用户环境读写（HKCU only） ---------- */
-  const BACKUP_KEY = 'envVarsBackup'; // { JAVA_HOME: string|null }
+  /* 备份存「变量名 → { value, kind }」。kind 用于撤销时按原类型还原。 */
+  const BACKUP_KEY = 'envVarsBackup';
 
   async function readUserEnv() {
     if (userEnvIO && typeof userEnvIO.read === 'function') return userEnvIO.read();
-    const script = '[pscustomobject]@{ Path=[Environment]::GetEnvironmentVariable("Path","User"); JAVA_HOME=[Environment]::GetEnvironmentVariable("JAVA_HOME","User") } | ConvertTo-Json -Compress';
+    /* 【必须强制 UTF-8 输出】PowerShell 5.1 默认按 OEM 代码页（中文系统 GBK）写
+     * stdout，而 runCmd 按 utf8 解码 —— 含中文的 PATH 会读成乱码，随后写回就把
+     * 用户 PATH 损坏（第五轮审查实测复现）。与 main.js 的 ps() 同一处理。
+     *
+     * 【必须取未展开原值】PATH 可能是 REG_EXPAND_SZ（含 %USERPROFILE% 一类引用）；
+     * 展开后再写回会把引用变字面量。DoNotExpandEnvironmentNames 拿原始字符串，
+     * 同时把值类型读出来，写回时原样保留。 */
+    const script = [
+      '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;',
+      '$k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment");',
+      '$opt = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames;',
+      'function GetRaw($n) {',
+      '  if ($null -eq $k -or -not ($k.GetValueNames() -contains $n)) { return [pscustomobject]@{ v=$null; kind="String" } }',
+      '  return [pscustomobject]@{ v=$k.GetValue($n, $null, $opt); kind=$k.GetValueKind($n).ToString() }',
+      '}',
+      '$p = GetRaw "Path"; $j = GetRaw "JAVA_HOME";',
+      '[pscustomobject]@{ path=$p.v; pathKind=$p.kind; javaHome=$j.v; javaHomeKind=$j.kind } | ConvertTo-Json -Compress',
+    ].join(' ');
     const r = await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 20000 });
     if (r.code !== 0) throw new Error('读取用户环境变量失败（' + String(r.stderr || '').split(/\r?\n/).slice(-1) + '）');
     try {
       const j = JSON.parse(String(r.stdout || '{}'));
-      return { path: String(j.Path || ''), vars: { JAVA_HOME: j.JAVA_HOME == null ? '' : String(j.JAVA_HOME) } };
+      return {
+        path: j.path == null ? '' : String(j.path),
+        pathKind: j.pathKind === 'ExpandString' ? 'ExpandString' : 'String',
+        vars: { JAVA_HOME: j.javaHome == null ? '' : String(j.javaHome) },
+        varKinds: { JAVA_HOME: j.javaHomeKind === 'ExpandString' ? 'ExpandString' : 'String' },
+      };
     } catch (e) {
       throw new Error('解析用户环境变量失败');
     }
   }
 
-  async function writeUserEnv({ pathValue = null, vars = {}, removeVars = [] } = {}) {
+  /**
+   * @param {{pathValue?:string|null, pathKind?:'String'|'ExpandString',
+   *          vars?:{name:string,value:string,kind:string}[],
+   *          removeVars?:string[]}} spec
+   */
+  async function writeUserEnv({ pathValue = null, pathKind = 'String', vars = [], removeVars = [] } = {}) {
     if (userEnvIO && typeof userEnvIO.write === 'function') {
-      return userEnvIO.write({ pathValue, vars, removeVars });
+      return userEnvIO.write({ pathValue, pathKind, vars, removeVars });
     }
-    const lines = ['$ErrorActionPreference = "Stop"'];
-    if (pathValue != null) {
-      lines.push('[Environment]::SetEnvironmentVariable("Path", ' + psSingleQuote(pathValue) + ', "User")');
-    }
-    for (const [k, v] of Object.entries(vars || {})) {
-      lines.push('[Environment]::SetEnvironmentVariable(' + psSingleQuote(k) + ', ' + psSingleQuote(v) + ', "User")');
-    }
-    for (const k of removeVars || []) {
-      lines.push('[Environment]::SetEnvironmentVariable(' + psSingleQuote(k) + ', $null, "User")');
-    }
-    /* 广播 WM_SETTINGCHANGE，让新开的资源管理器/终端拿到新环境。
-     * 不广播的话：改完注册表，用户从任务栏新开 cmd 仍然读到旧 PATH。 */
-    lines.push(
+    const dir = ENV_ROOT();
+    await fsp.mkdir(dir, { recursive: true });
+    const base = '.env-write-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+    const jsonPath = path.join(dir, base + '.json');
+    const scriptPath = path.join(dir, base + '.ps1');
+    await fsp.writeFile(jsonPath, JSON.stringify({ pathValue, pathKind, vars, removeVars }), 'utf8');
+    /* 【按原类型写回】.NET 的 SetEnvironmentVariable 恒写 REG_SZ；
+     * 用户 PATH 若是 REG_EXPAND_SZ，写回会静默把 %VAR% 变成字面量。
+     * 这里用注册表提供程序按类型写，值本身保持读到的未展开原文。 */
+    const lines = [
+      '$ErrorActionPreference = "Stop"',
+      '$spec = Get-Content -Raw -Encoding UTF8 ' + psSingleQuote(jsonPath) + ' | ConvertFrom-Json',
+      'function SetUserVar($name, $value, $kind) {',
+      '  if ($null -eq $value -or [string]$value -eq "") { Remove-ItemProperty -Path "HKCU:\\Environment" -Name $name -ErrorAction SilentlyContinue; return }',
+      '  if ($kind -eq "ExpandString") { Set-ItemProperty -Path "HKCU:\\Environment" -Name $name -Value ([string]$value) -Type ExpandString }',
+      '  else { Set-ItemProperty -Path "HKCU:\\Environment" -Name $name -Value ([string]$value) -Type String }',
+      '}',
+      'if ($null -ne $spec.pathValue) { SetUserVar "Path" $spec.pathValue $spec.pathKind }',
+      'foreach ($v in @($spec.vars)) { SetUserVar $v.name $v.value $v.kind }',
+      'foreach ($n in @($spec.removeVars)) { if ($n) { Remove-ItemProperty -Path "HKCU:\\Environment" -Name $n -ErrorAction SilentlyContinue } }',
+      /* 广播 WM_SETTINGCHANGE：不广播的话，用户从任务栏新开 cmd 仍然读到旧 PATH */
       'Add-Type -TypeDefinition @"',
       'using System;',
       'using System.Runtime.InteropServices;',
@@ -151,20 +213,28 @@ module.exports = function register(ctx, deps) {
       '}',
       '"@',
       '$r=[UIntPtr]::Zero',
-      '[HeheEnvBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, "Environment", 2, 3000, [ref]$r) | Out-Null'
-    );
-    const dir = ENV_ROOT();
-    await fsp.mkdir(dir, { recursive: true });
-    const script = path.join(dir, '.env-write-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex') + '.ps1');
-    await fsp.writeFile(script, psScript.withBom(lines.join('\r\n')), 'utf8');
+      '[HeheEnvBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, "Environment", 2, 3000, [ref]$r) | Out-Null',
+    ];
+    await fsp.writeFile(scriptPath, psScript.withBom(lines.join('\r\n')), 'utf8');
     try {
-      const r = await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], { timeout: 30000 });
+      const r = await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { timeout: 30000 });
       if (r.code !== 0) {
         throw new Error('写入用户环境失败：' + String(r.stderr || r.stdout || '').trim().split(/\r?\n/).slice(-2).join(' '));
       }
     } finally {
-      await fsp.rm(script, { force: true }).catch(() => {});
+      await fsp.rm(scriptPath, { force: true }).catch(() => {});
+      await fsp.rm(jsonPath, { force: true }).catch(() => {});
     }
+  }
+
+  function normalizeBackupEntry(v) {
+    /* 兼容旧版备份形状（纯字符串） */
+    if (v == null) return { value: '', kind: 'String' };
+    if (typeof v === 'string') return { value: v, kind: 'String' };
+    return {
+      value: String(v.value == null ? '' : v.value),
+      kind: v.kind === 'ExpandString' ? 'ExpandString' : 'String',
+    };
   }
 
   function entriesFor(id) {
@@ -178,38 +248,57 @@ module.exports = function register(ctx, deps) {
   }
 
   /** 把若干运行时加入当前用户环境（幂等） */
-  async function applyIds(ids) {
+  async function applyIdsRaw(ids) {
     const warnings = [];
     const list = [...new Set((ids || []).filter((x) => manifestGet()[x]))];
     if (!list.length) return { appliedIds: [], warnings: ['没有可加入的环境（先安装）'] };
     const cur = await readUserEnv();
-    /* 备份原始 JAVA_HOME 一次（撤销时还原）；PATH 不整段备份，
-     * 撤销时按"我们加的目录"精确摘除，避免覆盖用户后来的手工修改。 */
-    const backup = storeGet(BACKUP_KEY, null);
-    if (!backup || typeof backup !== 'object') {
-      storeSet(BACKUP_KEY, { JAVA_HOME: cur.vars.JAVA_HOME, at: Date.now() });
+    /* 备份原始值（含类型）：**每个变量在第一次被我们覆盖前**记下来。
+     * 注意不能只在第一次 apply 建一次空表就完事 —— 先加 node（无变量）再加
+     * jdk 时，JAVA_HOME 会没有原始值，撤销就还原不回去（第五轮测试抓到）。 */
+    const backupRoot = storeGet(BACKUP_KEY, null);
+    let backupVars = {};
+    if (backupRoot && typeof backupRoot === 'object') {
+      if (backupRoot.vars && typeof backupRoot.vars === 'object') backupVars = Object.assign({}, backupRoot.vars);
+      else {
+        for (const [k, v] of Object.entries(backupRoot)) {
+          if (k === 'at') continue;
+          backupVars[k] = normalizeBackupEntry(v);
+        }
+      }
     }
+    let backupChanged = !(backupRoot && typeof backupRoot === 'object');
+    for (const id of list) {
+      for (const k of Object.keys(entriesFor(id).vars)) {
+        if (k in backupVars) continue;
+        backupVars[k] = { value: (cur.vars || {})[k] || '', kind: (cur.varKinds || {})[k] || 'String' };
+        backupChanged = true;
+      }
+    }
+    if (backupChanged) storeSet(BACKUP_KEY, { vars: backupVars, at: Date.now() });
     const all = list.flatMap((id) => entriesFor(id).dirs);
     const prep = envPath.prependEntries(cur.path, all);
     if (envPath.pathTooLong(prep.value)) warnings.push('用户 PATH 已超过 2000 字符，部分程序可能截断');
-    const vars = {};
+    const vars = [];
     for (const id of list) {
-      for (const [k, v] of Object.entries(entriesFor(id).vars)) vars[k] = v;
+      for (const [k, v] of Object.entries(entriesFor(id).vars)) {
+        vars.push({ name: k, value: v, kind: (cur.varKinds || {})[k] || 'String' });
+      }
     }
-    await writeUserEnv({ pathValue: prep.value, vars });
+    await writeUserEnv({ pathValue: prep.value, pathKind: cur.pathKind || 'String', vars });
     const prev = appliedGet() || { ids: [] };
     appliedSet({
       ids: [...new Set([...(prev.ids || []), ...list])],
       entries: [...new Set([...(prev.entries || []), ...prep.added])],
-      vars,
+      vars: Object.fromEntries(vars.map((v) => [v.name, v.value])),
       pathLength: prep.value.length,
       at: Date.now(),
     });
     return { appliedIds: list, pathLength: prep.value.length, warnings };
   }
 
-  /** 撤销：摘掉我们加的目录；JAVA_HOME 只在仍是我们的值时才还原 */
-  async function unapplyIds(only) {
+  /** 撤销：摘掉我们加的目录；变量只在仍是我们的值时才还原 */
+  async function unapplyIdsRaw(only) {
     const st = appliedGet();
     if (!st) return { removed: 0, restoredVars: [], warnings: [] };
     const allIds = st.ids || [];
@@ -221,17 +310,19 @@ module.exports = function register(ctx, deps) {
     const rem = envPath.removeEntries(cur.path, removeDirs);
     /* 只撤销部分 id 时，把仍启用的目录重新前置，避免顺序被搅乱 */
     const nextPath = keepIds.length ? envPath.prependEntries(rem.value, keepDirs).value : rem.value;
-    const backup = storeGet(BACKUP_KEY, null) || {};
-    const varsToWrite = {};
+    const backupRoot = storeGet(BACKUP_KEY, null) || {};
+    const backupVars = (backupRoot.vars && typeof backupRoot.vars === 'object') ? backupRoot.vars : backupRoot;
+    const varsToWrite = [];
     const varsToRemove = [];
     const restored = [];
     const ourVars = removeIds.reduce((acc, id) => Object.assign(acc, entriesFor(id).vars), {});
     for (const [k, ours] of Object.entries(ourVars)) {
-      if (cur.vars[k] !== ours) continue;   // 用户自己改过 → 不动，也不回滚
-      if (backup[k]) { varsToWrite[k] = backup[k]; restored.push(k); }
+      if ((cur.vars || {})[k] !== ours) continue;   // 用户自己改过 → 不动，也不回滚
+      const b = normalizeBackupEntry(backupVars[k]);
+      if (b.value) { varsToWrite.push({ name: k, value: b.value, kind: b.kind }); restored.push(k); }
       else varsToRemove.push(k);
     }
-    await writeUserEnv({ pathValue: nextPath, vars: varsToWrite, removeVars: varsToRemove });
+    await writeUserEnv({ pathValue: nextPath, pathKind: cur.pathKind || 'String', vars: varsToWrite, removeVars: varsToRemove });
     if (keepIds.length) {
       const keepVars = keepIds.reduce((acc, id) => Object.assign(acc, entriesFor(id).vars), {});
       appliedSet({ ids: keepIds, entries: keepDirs, vars: keepVars, at: Date.now() });
@@ -241,6 +332,30 @@ module.exports = function register(ctx, deps) {
     }
     return { removed: rem.removed.length, restoredVars: restored, warnings: [] };
   }
+
+  /* 对外一律排队执行，避免「读-改-写」交错丢更新 */
+  const applyIds = (ids) => withEnvLock(() => applyIdsRaw(ids));
+  const unapplyIds = (only) => withEnvLock(() => unapplyIdsRaw(only));
+
+  /* ---------- 残留清理（启动时跑一次） ---------- */
+  async function sweepEnvRoot() {
+    const root = ENV_ROOT();
+    const now = Date.now();
+    const STALE = 10 * 60 * 1000;   // 正在安装的 staging/old 不会超过 10 分钟
+    let entries;
+    try { entries = await fsp.readdir(root, { withFileTypes: true }); } catch (e) { return; }
+    for (const ent of entries) {
+      const full = path.join(root, ent.name);
+      const stale = now - ((await fsp.stat(full).catch(() => null)) || { mtimeMs: now }).mtimeMs > STALE;
+      if (!stale) continue;
+      if (ent.isDirectory() && (/^\.staging-/.test(ent.name) || /\.old-\d+$/.test(ent.name))) {
+        await fsp.rm(full, { recursive: true, force: true }).catch(() => {});
+      } else if (ent.isFile() && (/^\.env-write-/.test(ent.name) || /^\.term-/.test(ent.name))) {
+        await fsp.rm(full, { force: true }).catch(() => {});
+      }
+    }
+  }
+  sweepEnvRoot().catch(() => {});
 
   /* ---------- 命令探测 ---------- */
   async function safeCmd(cmd, args, timeout) {
@@ -253,36 +368,45 @@ module.exports = function register(ctx, deps) {
   }
   async function whereAll(exe) {
     const r = await safeCmd('where', [exe], 6000);
-    return envDetect.parseWherePaths(r.stdout);
+    /* WindowsApps 里的 python.exe 是「应用执行别名」，运行它会拉起商店。
+     * 探测时跳过它，避免用户只是打开页面就被弹商店。 */
+    return envDetect.parseWherePaths(r.stdout).filter((p) => !/\\WindowsApps\\/i.test(p));
+  }
+
+  async function detectPython() {
+    const pyPaths = await whereAll('python');
+    const pyLauncher = envDetect.parsePyLauncher((await safeCmd('py', ['-0p'], 6000)).stdout);
+    let version = '';
+    /* 优先用 py 启动器登记的真实解释器，避免跑 WindowsApps 别名 */
+    const target = (pyLauncher.find((x) => x.isDefault) || pyLauncher[0] || {}).path || pyPaths[0];
+    if (target) version = ((await safeCmd(target, ['--version'], 5000)).stdout || '').trim();
+    return Object.assign(envDetect.summarize('python', { paths: pyPaths, version, source: pyLauncher.length ? 'py 启动器' : '' }), { launcher: pyLauncher });
+  }
+  async function detectNode() {
+    const paths = await whereAll('node');
+    const version = paths.length ? envDetect.parseNodeVersion((await safeCmd(paths[0], ['-v'], 5000)).stdout) : '';
+    return envDetect.summarize('node', { paths, version });
+  }
+  async function detectJava() {
+    const paths = await whereAll('java');
+    let version = '';
+    if (paths.length) {
+      const r = await safeCmd(paths[0], ['-version'], 5000);
+      version = envDetect.parseJavaVersion(r.stderr + r.stdout);
+    }
+    return envDetect.summarize('jdk', { paths, version });
+  }
+  async function detectGcc() {
+    const gccPaths = await whereAll('gcc');
+    const gxxPaths = gccPaths.length ? [] : await whereAll('g++');
+    const target = gccPaths[0] || gxxPaths[0] || '';
+    const version = target ? envDetect.parseGccVersion((await safeCmd(target, ['--version'], 5000)).stdout) : '';
+    return envDetect.summarize('mingw', { paths: gccPaths.concat(gxxPaths), version });
   }
 
   async function detectAll() {
-    const detected = [];
-    const pyPaths = await whereAll('python');
-    const pyLauncher = envDetect.parsePyLauncher((await safeCmd('py', ['-0p'], 6000)).stdout);
-    let pyVersion = '';
-    if (pyPaths.length) pyVersion = ((await safeCmd(pyPaths[0], ['--version'], 5000)).stdout || '').trim();
-    detected.push(Object.assign(envDetect.summarize('python', { paths: pyPaths, version: pyVersion, source: pyLauncher.length ? 'py 启动器' : '' }), { launcher: pyLauncher }));
-
-    const nodePaths = await whereAll('node');
-    const nodeVersion = nodePaths.length ? envDetect.parseNodeVersion((await safeCmd(nodePaths[0], ['-v'], 5000)).stdout) : '';
-    detected.push(envDetect.summarize('node', { paths: nodePaths, version: nodeVersion }));
-
-    const javaPaths = await whereAll('java');
-    let javaVersion = '';
-    if (javaPaths.length) {
-      const r = await safeCmd(javaPaths[0], ['-version'], 5000);
-      javaVersion = envDetect.parseJavaVersion(r.stderr + r.stdout);
-    }
-    detected.push(envDetect.summarize('jdk', { paths: javaPaths, version: javaVersion }));
-
-    const gccPaths = await whereAll('gcc');
-    const gxxPaths = gccPaths.length ? [] : await whereAll('g++');
-    let gccVersion = '';
-    if (gccPaths.length) gccVersion = envDetect.parseGccVersion((await safeCmd(gccPaths[0], ['--version'], 5000)).stdout);
-    else if (gxxPaths.length) gccVersion = envDetect.parseGccVersion((await safeCmd(gxxPaths[0], ['--version'], 5000)).stdout);
-    detected.push(envDetect.summarize('mingw', { paths: gccPaths.concat(gxxPaths), version: gccVersion }));
-
+    /* 四组并行：串行时最坏要等 4×6s 超时，页面一直「检测中」。 */
+    const detected = await Promise.all([detectPython(), detectNode(), detectJava(), detectGcc()]);
     return { detected };
   }
 
@@ -300,11 +424,19 @@ module.exports = function register(ctx, deps) {
     };
   });
 
-  handle(CH.ENV.DETECT, () => detectAll());
+  handle(CH.ENV.DETECT, async (e, force) => {
+    /* 60 秒缓存：安装/加环境后界面会 force 重探，避免读到旧结果。 */
+    if (!force && detectCache && Date.now() - detectCache.at < 60000) return detectCache.data;
+    const data = await detectAll();
+    detectCache = { at: Date.now(), data };
+    return data;
+  });
 
   handle(CH.ENV.INSTALL, async (e, id, opts = {}) => {
     const rt = envCatalog.findRuntime(id);
     if (!rt) throw new Error('未知的运行时：' + id);
+    if (installing.has(id)) throw new Error('该环境正在安装，请稍候');
+    installing.add(id);
     const layout = envCatalog.installLayout(userDataDir(), rt);
     const cur = manifestGet()[id];
     const jobId = 'env' + nextJobSeq();
@@ -313,71 +445,96 @@ module.exports = function register(ctx, deps) {
     setLatestCancelable(() => ctrl.abort());
     try {
       if (cur && cur.version === rt.version && fs.existsSync(cur.dir)) {
-        let applied = false;
-        const warnings = [];
-        if (opts.applyPath !== false) {
-          const a = await applyIds([id]);
-          applied = a.appliedIds.includes(id);
-          warnings.push(...(a.warnings || []));
-        }
-        return { id, version: rt.version, dir: cur.dir, already: true, applied, warnings };
+        const a = opts.applyPath !== false ? await applyIds([id]) : { appliedIds: [], warnings: [] };
+        return { id, version: rt.version, dir: cur.dir, already: true, applied: a.appliedIds.includes(id), warnings: a.warnings || [] };
       }
       const downloads = path.join(ENV_ROOT(), 'downloads');
       await fsp.mkdir(downloads, { recursive: true });
       const archive = path.join(downloads, rt.id + '-' + envCatalog.safeVersion(rt.version) + extOf(rt));
-      if (!(await exists(archive)) || (await fsp.stat(archive)).size === 0) {
-        await downloadToFile(rt.url, archive, jobId, ctrl, rt.name + ' ' + rt.version);
+      /* 【缓存不能"非空即信"】先校验缓存；哈希不符就删掉重下（镜像/中断都可能
+       * 留下完整但内容错误的包）。重下后仍不符则明确报错，不做无限重试。 */
+      let useCache = (await exists(archive)) && (await fsp.stat(archive)).size > 0;
+      if (useCache && (await sha256File(archive)) !== rt.sha256) {
+        await fsp.rm(archive, { force: true }).catch(() => {});
+        useCache = false;
       }
+      if (!useCache) await downloadToFile(rt.url, archive, jobId, ctrl, rt.name + ' ' + rt.version);
       if (ctrl.signal.aborted) throw new Error('已取消');
       const digest = await sha256File(archive);
       if (digest !== rt.sha256) {
         await fsp.rm(archive, { force: true }).catch(() => {});
-        throw new Error('下载包校验失败（SHA-256 不符），已删除，请重试');
+        throw new Error('下载包校验失败（SHA-256 不符：期望 ' + rt.sha256.slice(0, 8) + '…，实际 ' + digest.slice(0, 8) + '…）。'
+          + '可能是镜像文件被替换，请稍后重试或反馈。');
       }
       const staging = path.join(ENV_ROOT(), '.staging-' + jobId);
       await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
       await fsp.mkdir(staging, { recursive: true });
-      await extractArchive(archive, staging, rt);
-      const root = await payloadRoot(staging, rt.stripTop);
-      await fsp.mkdir(path.dirname(layout.dir), { recursive: true });
-      const trash = layout.dir + '.old-' + Date.now();
-      if (fs.existsSync(layout.dir)) await moveFile(layout.dir, trash);
       try {
-        await moveFile(root, layout.dir);
-      } catch (err) {
-        if (fs.existsSync(trash)) await moveFile(trash, layout.dir).catch(() => {});
-        throw err;
+        await extractArchive(archive, staging, rt);
+        if (ctrl.signal.aborted) throw new Error('已取消');
+        const root = await payloadRoot(staging, rt.stripTop);
+        await fsp.mkdir(path.dirname(layout.dir), { recursive: true });
+        const trash = layout.dir + '.old-' + Date.now();
+        if (fs.existsSync(layout.dir)) await moveFile(layout.dir, trash);
+        try {
+          await moveFile(root, layout.dir);
+        } catch (err) {
+          if (fs.existsSync(trash)) await moveFile(trash, layout.dir).catch(() => {});
+          throw err;
+        }
+        if (fs.existsSync(trash)) await fsp.rm(trash, { recursive: true, force: true }).catch(() => {});
+      } finally {
+        await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
       }
-      if (fs.existsSync(trash)) await fsp.rm(trash, { recursive: true, force: true }).catch(() => {});
-      await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
-      const m = manifestGet();
-      m[id] = { version: rt.version, dir: layout.dir, sha256: rt.sha256, at: Date.now() };
-      manifestSet(m);
-      let applied = false;
-      const warnings = [];
-      if (opts.applyPath !== false) {
-        const a = await applyIds([id]);
-        applied = a.appliedIds.includes(id);
-        warnings.push(...(a.warnings || []));
-      }
-      return { id, version: rt.version, dir: layout.dir, already: false, applied, warnings };
+      /* manifest 与「加入环境」放在同一把锁里，避免与撤销/删除交错 */
+      const a = await withEnvLock(async () => {
+        const m = manifestGet();
+        m[id] = { version: rt.version, dir: layout.dir, sha256: rt.sha256, at: Date.now() };
+        manifestSet(m);
+        if (opts.applyPath === false) return { appliedIds: [], warnings: [] };
+        return applyIdsRaw([id]);
+      });
+      return { id, version: rt.version, dir: layout.dir, already: false, applied: a.appliedIds.includes(id), warnings: a.warnings || [] };
     } finally {
+      installing.delete(id);
       jobs.delete(jobId);
     }
   });
 
-  handle(CH.ENV.REMOVE, async (e, id) => {
+  handle(CH.ENV.REMOVE, (e, id) => withEnvLock(async () => {
     const rt = envCatalog.findRuntime(id);
     if (!rt) throw new Error('未知的运行时：' + id);
     const m = manifestGet()[id];
     if (!m) return { removed: false };
     const a = appliedGet();
-    if (a && (a.ids || []).includes(id)) await unapplyIds([id]);
-    await fsp.rm(m.dir, { recursive: true, force: true }).catch(() => {});
+    if (a && (a.ids || []).includes(id)) await unapplyIdsRaw([id]);
+    try {
+      await fsp.rm(m.dir, { recursive: true, force: true });
+    } catch (err) {
+      /* 目录删不掉（常是里面的 exe 正在被终端占用）：保留 manifest 让用户重试，
+       * 而不是删了记录、留下一个再也删不掉的目录。 */
+      throw new Error('删除失败（文件可能正在使用）：' + String((err && err.message) || err));
+    }
     const next = manifestGet();
     delete next[id];
     manifestSet(next);
     return { removed: true };
+  }));
+
+  handle(CH.ENV.CLEAN, async () => {
+    const dir = path.join(ENV_ROOT(), 'downloads');
+    let removed = 0, freed = 0;
+    const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      const full = path.join(dir, ent.name);
+      const st = await fsp.stat(full).catch(() => null);
+      if (!st) continue;
+      await fsp.rm(full, { force: true }).catch(() => {});
+      removed++;
+      freed += st.size;
+    }
+    return { removed, freed };
   });
 
   handle(CH.ENV.APPLY, (e, ids) => applyIds(Array.isArray(ids) ? ids : []));
@@ -393,12 +550,27 @@ module.exports = function register(ctx, deps) {
     const curPath = process.env.Path || process.env.PATH || '';
     const env = Object.assign({}, process.env, vars, { Path: envPath.prependEntries(curPath, dirs).value });
     const label = installed.map((x) => x + ' ' + m[x].version).join(', ');
-    const child = spawn('cmd.exe', ['/k', 'echo 已加载开发环境：' + label.replace(/["\r\n]/g, '') + ' & echo 当前终端已带好 PATH / JAVA_HOME，关闭窗口即退出。'],
+    /* 【不再把内容拼进 cmd 命令行】改用临时 .cmd 脚本：避免 & | ^ 之类的
+     * 命令拼接面与中文 echo 的代码页问题；脚本只做提示与切码页。 */
+    const dir = ENV_ROOT();
+    await fsp.mkdir(dir, { recursive: true });
+    const scriptPath = path.join(dir, '.term-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex') + '.cmd');
+    const safeLabel = label.replace(/[^\w.\-+,() ]/g, '');
+    await fsp.writeFile(scriptPath, [
+      '@echo off',
+      'chcp 65001 >nul',
+      'echo Toolchain environment loaded: ' + safeLabel,
+      'echo PATH / JAVA_HOME are ready in this window. Close it to exit.',
+      'cd /d "%USERPROFILE%"',
+    ].join('\r\n'), 'utf8');
+    const child = spawn('cmd.exe', ['/k', scriptPath],
       { env, detached: true, stdio: 'ignore', windowsHide: false, cwd: os.homedir() });
     child.on('error', () => {});
     child.unref();
+    /* cmd 启动后会一次性读完脚本，15 秒后删掉即可（启动清扫也会兜底） */
+    setTimeout(() => { fsp.rm(scriptPath, { force: true }).catch(() => {}); }, 15000).unref();
     return { opened: true, env: label };
   });
 
-  return { detectAll }; // 供测试/其它域复用（与 fs-ops 的导出风格一致）
+  return { detectAll, readUserEnv }; // 供测试/其它域复用（与 fs-ops 的导出风格一致）
 };

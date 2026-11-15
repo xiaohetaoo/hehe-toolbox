@@ -81,7 +81,7 @@ t('插值：{p} 在两种语言下都被替换，缺失变量时保留占位符'
  * 都只看这三个文件，新迁的文件既不校验也不计入。
  * 【更好的做法是从源码自动发现「用了 TT 的文件」】见文件末尾那条断言：
  * 它拿 MIGRATED 与自动扫描结果比对，漏登记会直接红。 */
-const MIGRATED = ['js/tools/qr.js', 'js/tools/hash.js', 'js/tools/media/exif-view.js', 'js/tools/media/snip-tool.js', 'js/tools/text-codec.js', 'js/tools/diff3.js'];
+const MIGRATED = ['js/tools/qr.js', 'js/tools/hash.js', 'js/tools/media/exif-view.js', 'js/tools/media/snip-tool.js', 'js/tools/text-codec.js', 'js/tools/diff3.js', 'js/tools/env-manager.js'];
 function callSites(rel) {
   /* 先剥注释：文件头那段说明里就写着 TT('qr', '中文原文')，
    * 不剥的话「中文原文」这个占位词会被当成一条真实调用点。

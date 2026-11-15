@@ -283,6 +283,31 @@ const CHECKS_BY_VERSION = {
     ['index.html', 'E10 页面引入 env-manager.js',
       (s2) => /js\/tools\/env-manager\.js/.test(s2)],
   ],
+  /* v0.9.0：第五轮审查后的开发环境修复与加固。 */
+  '0.9.0': [
+    ['ipc/env-manager.js', 'F1 读用户环境强制 UTF-8 + 未展开原值',
+      (s2) => /\[Console\]::OutputEncoding=\[System\.Text\.Encoding\]::UTF8/.test(s2)
+        && /DoNotExpandEnvironmentNames/.test(s2)],
+    ['ipc/env-manager.js', 'F2 按注册表原类型写回（不再用 .NET API）',
+      (s2) => /-Type ExpandString/.test(s2) && !/\[Environment\]::SetEnvironmentVariable\(/.test(s2)],
+    ['ipc/env-manager.js', 'F3 串行锁 + 同运行时安装互斥',
+      (s2) => /withEnvLock/.test(s2) && /installing\.has\(id\)/.test(s2)],
+    ['ipc/env-manager.js', 'F4 缓存先校验 SHA，不符重下',
+      (s2) => /useCache && \(await sha256File\(archive\)\) !== rt\.sha256/.test(s2)],
+    ['ipc/env-manager.js', 'F5 残留清扫 + 安装包清理通道',
+      (s2) => /sweepEnvRoot/.test(s2) && /CH\.ENV\.CLEAN/.test(s2)],
+    ['ipc/env-manager.js', 'F6 探测并行 + 终端走临时 .cmd',
+      (s2) => /Promise\.all\(\[detectPython\(\), detectNode\(\), detectJava\(\), detectGcc\(\)\]\)/.test(s2)
+        && /\.term-/.test(s2)],
+    ['lib/channels.js', 'F7 通道常量 196',
+      (s2) => /TOTAL: 196/.test(s2) && /MIGRATED: 196/.test(s2) && /CLEAN: 'env:clean'/.test(s2)],
+    ['js/tools/i18n.js', 'F8 开发环境正文已双语（env 域）',
+      (s2) => /env: \{/.test(s2) && /安装后加入当前用户环境（推荐）/.test(s2)],
+    ['js/tools/env-manager.js', 'F9 工具页标记 i18n 且走 T()',
+      (s2) => /i18n: true/.test(s2) && /TT\('env', zh, vars\)/.test(s2)],
+    ['main.js', 'F10 跨卷目录搬运走递归复制',
+      (s2) => /st\.isDirectory\(\)/.test(s2) && /fsp\.cp\(src, dst, \{ recursive: true, force: true \}\)/.test(s2)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];

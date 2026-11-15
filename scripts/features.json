@@ -311,7 +311,8 @@
       "test-env-path.js",
       "test-env-detect.js",
       "test-env-manager-impl.js",
-      "test-env-manager-state.js"
+      "test-env-manager-state.js",
+      "test-env-userenv-read.js"
     ]
   },
   "life": {

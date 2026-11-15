@@ -108,6 +108,7 @@
     ENV: {
       APPLY: 'env:apply',
       CATALOG: 'env:catalog',
+      CLEAN: 'env:clean',
       DETECT: 'env:detect',
       INSTALL: 'env:install',
       OPEN_TERMINAL: 'env:open-terminal',

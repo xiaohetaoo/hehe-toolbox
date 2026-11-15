@@ -526,6 +526,20 @@ async function moveFile(src, dst) {
   } catch (err) {
     if (err && err.code === 'EXDEV') {
       const st = await fsp.stat(src);
+      /* 【copyFile 只能搬文件，搬目录会 EPERM（实测）】
+       * env-manager 安装时 moveFile 的源是「解压出来的目录」，一旦
+       * HEHE_TEST_DATA/挂载点/符号链接导致跨卷，走旧分支必失败，
+       * 回滚那一步同样失败 → 安装半残。目录必须用递归复制。 */
+      if (st.isDirectory()) {
+        await fsp.cp(src, dst, { recursive: true, force: true });
+        const dstSt = await fsp.stat(dst).catch(() => null);
+        if (!dstSt || !dstSt.isDirectory()) {
+          await fsp.rm(dst, { recursive: true, force: true }).catch(() => {});
+          throw new Error('跨盘搬运失败：目录复制后目标不存在');
+        }
+        await fsp.rm(src, { recursive: true, force: true }).catch(() => {});
+        return { moved: true, copied: true };
+      }
       await fsp.copyFile(src, dst);
       const dstSt = await fsp.stat(dst).catch(() => null);
       if (!dstSt || dstSt.size !== st.size) {

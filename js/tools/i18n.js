@@ -181,6 +181,92 @@
       '模式': 'Mode',
       '输入文本…': 'Enter text…',
     },
+    env: {
+      '安装后加入当前用户环境（推荐）': "Add to this user's environment (recommended)",
+      '仅本工具箱使用（不改环境变量）': 'This app only (no environment changes)',
+      '停止下载': 'Stop download',
+      '没有进行中的下载': 'No download in progress',
+      '已请求停止': 'Stop requested',
+      '下载中 {pct}% · {mb} MB': 'Downloading {pct}% · {mb} MB',
+      '下载完成，校验与解压中…': 'Download complete; verifying and extracting…',
+      '读取环境清单…': 'Loading runtime list…',
+      '读取失败：': 'Failed to load: ',
+      '检测本机已有环境…': 'Detecting installed runtimes…',
+      '本机已检测到的环境': 'Detected on this machine',
+      '{n} 项': '{n} found',
+      '无': 'none',
+      '没有检测到已安装的 Python / Java / Node / GCC —— 直接往下安装即可':
+        'No Python / Java / Node / GCC detected — install one below',
+      '版本未知': 'Version unknown',
+      '工具箱已装': 'Installed by this app',
+      '仅本机': 'System only',
+      '加入用户环境后，新开的终端会优先使用工具箱里的版本；系统原有版本不会被删除或修改。':
+        'Once added, new terminals prefer the toolbox version; existing installs are not removed or modified.',
+      '检测到已有版本': 'Existing versions detected',
+      '· {name}：本机 {ver}（{path}）': '· {name}: system {ver} ({path})',
+      '加入用户环境后，新终端会优先使用工具箱版本（旧版本仍在，只是不在 PATH 最前面）。不想改变现有行为就选「仅本工具箱使用」。':
+        'After adding, new terminals prefer the toolbox version (the old one stays, just not first in PATH). Choose "This app only" to keep current behavior.',
+      '已安装': 'Installed',
+      '已删除': 'Deleted',
+      '加入用户环境': 'Add to user environment',
+      '从用户环境移除': 'Remove from user environment',
+      '没有可加入的环境': 'Nothing to add (install first)',
+      '已加入用户环境': 'Added to user environment',
+      '删除': 'Delete',
+      '下载安装': 'Download & install',
+      '加入环境': 'Add to environment',
+      '从环境移除': 'Remove from environment',
+      '官方安装器': 'Official installer',
+      '本机已装：{ver}（{path}）': 'System: {ver} ({path})',
+      '已有操作进行中': 'Another operation is in progress',
+      '将下载并安装 {name} {ver}（{fmt}，来源已在清单里固定并校验 SHA-256）。':
+        'Will download and install {name} {ver} ({fmt}); the source is pinned and SHA-256 verified.',
+      '安装后会把它的 bin 目录加入「当前用户」的 PATH（Java 还会设 JAVA_HOME）——新开的终端会优先使用它。系统 PATH 不会被修改，随时可撤销。':
+        "After install its bin directory is added to the current user's PATH (Java also sets JAVA_HOME) — new terminals prefer it. System PATH is not modified; you can undo anytime.",
+      '不会修改任何环境变量；之后可以用「打开带环境的终端」使用它（或随时再点「加入环境」）。':
+        'No environment variables are changed; use "Open terminal with environment" instead (or click "Add to environment" later).',
+      '注意：本机已检测到 {name} {ver}，加入后新终端会优先使用工具箱版本。':
+        'Note: {name} {ver} was detected on this machine; after adding, new terminals prefer the toolbox version.',
+      '确定继续？': 'Continue?',
+      '安装 {name}': 'Install {name}',
+      '开始下载': 'Start download',
+      '准备下载…': 'Preparing download…',
+      '已安装，无需重复下载': 'Already installed; no re-download needed',
+      '已安装 {name} {ver}': 'Installed {name} {ver}',
+      '，并已加入用户环境': ', and added to the user environment',
+      '删除 {name}': 'Delete {name}',
+      '将删除工具箱里的 {name} {ver}（只删工具箱自己的目录）。\n如果它已加入用户环境，会同时从 PATH 里移除。系统里另行安装的版本不受影响。':
+        'This removes {name} {ver} from the toolbox (only its own directory).\nIf it was added to the user environment it is also removed from PATH. Other system installs are unaffected.',
+      '将把 {name} 的 bin 目录前置到「当前用户」的 PATH':
+        "Prepends {name}'s bin directory to the current user's PATH",
+      '，并设置 JAVA_HOME': ' and sets JAVA_HOME',
+      '。\n\n新开的终端会优先使用它；系统 PATH 不会改动。':
+        '.\n\nNew terminals prefer it; the system PATH is unchanged.',
+      '将把 {name} 的目录从当前用户 PATH 里移除（只删我们加的那几项）。':
+        "Removes {name}'s directory from the current user's PATH (only entries we added).",
+      'JAVA_HOME 如果仍是工具箱设置的值，会还原为之前的设置。\n':
+        'JAVA_HOME is restored to its previous value if it is still the toolbox value.\n',
+      '已装的文件会保留。': 'Installed files are kept.',
+      '已从用户环境移除': 'Removed from user environment',
+      '没有官方入口': 'No official link available',
+      '打开带环境的终端': 'Open terminal with environment',
+      '撤销全部环境修改': 'Undo all environment changes',
+      '将把工具箱加进用户 PATH 的所有目录移除，并还原 JAVA_HOME（如果仍是工具箱设置的）。\n\n已安装的文件会保留。':
+        'Removes every toolbox directory from the user PATH and restores JAVA_HOME (if still set by the toolbox).\n\nInstalled files are kept.',
+      '撤销': 'Undo',
+      '已撤销': 'Undone',
+      '清理安装包': 'Clean installer cache',
+      '将删除已下载的安装包缓存（不影响已安装的环境；下次安装会重新下载）。':
+        'Deletes downloaded installer packages (installed environments are unaffected; the next install downloads again).',
+      '清理': 'Clean',
+      '已清理 {n} 个安装包，释放 {size}': 'Cleaned {n} installer(s), freed {size}',
+      '没有可清理的安装包': 'No installer cache to clean',
+      '开发环境': 'Dev Environments',
+      '刷新': 'Refresh',
+      '安装方式': 'Install mode',
+      '只下载官方便携构建（版本与 SHA-256 固定）。默认加入当前用户环境；系统 PATH 不会被修改。需要「所有软件/安装器都能识别」的环境时，点「官方安装器」走厂商安装程序。':
+        'Only official portable builds are downloaded (version and SHA-256 pinned). Adds to the current user environment by default; the system PATH is never modified. For environments that all software/installers must detect, use "Official installer".',
+    },
   };
 
   /**
