@@ -115,4 +115,18 @@ t('RP7 创建还原点的描述必须先净化（换行会变成 PS 语句分隔
   assert.ok(/slice\(0, 100\)/.test(seg), '描述长度要截断');
 });
 
+t('RP8 删除模式必须白名单，不能 fail-open 到「删全部」', () => {
+  const main = readSrc('main.js');
+  const at = main.indexOf("handle(CH.SYS.RESTORE_DELETE");
+  assert.ok(at >= 0, '找不到 restore-delete');
+  const seg = main.slice(at, at + 1100);
+  /* 锁的是：mode==='oldest' ? '/oldest' : '/all' —— 任何拼错的值/undefined
+   * 都会删光该卷全部卷影副本（不可恢复）。破坏性分支必须 fail-closed。 */
+  assert.ok(!/mode === 'oldest' \? '\/oldest' : '\/all'/.test(seg),
+    '禁止「非 oldest 一律 /all」的 fail-open 兜底');
+  /* 锁的是：all 没被显式白名单、非法 mode 没被拒绝 —— 又变回 fail-open。 */
+  assert.ok(/mode === 'all' \? '\/all' : null/.test(seg), 'all 必须显式白名单');
+  assert.ok(/if \(!flag\) throw new Error/.test(seg), '非法 mode 必须拒绝');
+});
+
 done();

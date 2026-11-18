@@ -327,4 +327,37 @@ t('25c resolveInside / resolveTarget：盘符根不能误判为越界', () => {
 
 /* ==================== 26. power-gate 包装剥离 ==================== */
 
+t('25d ensureDirectoryInsideTracked：只记录本次新建的目录（EEXIST 的不算）', async () => {
+  /* 锁的是：zip:extract 失败回滚依赖「新建清单」——判据必须在 mkdir 的
+   * EEXIST 分支上拿。若把用户已有目录也记进去，回滚会 rmdir 掉用户自己的
+   * 目录（数据事故）；若漏记新建的，CRC 错后残留空目录（第十轮审查）。
+   * 行为断言：临时目录里先放一个已有子目录，再走一次 tracked 创建，
+   * 清单必须只包含新建的、不含已有的；由深到浅 rmdir 后新建树应消失、
+   * 已有目录必须还在。 */
+  const fsx = require('fs');
+  const fsp = fsx.promises;
+  const osx = require('os');
+  const root = fsx.mkdtempSync(path.join(osx.tmpdir(), 'pgtrack-'));
+  try {
+    const existed = path.join(root, 'existing');
+    await fsp.mkdir(existed);
+    const created = [];
+    await guard.ensureDirectoryInsideTracked(root, 'existing', created);
+    assert.deepStrictEqual(created, [], '已有目录不该被记成新建');
+    await guard.ensureDirectoryInsideTracked(root, path.join('a', 'b', 'c'), created);
+    /* root 由 mkdtempSync 建的、本就存在 → 不记；a、a\b、a\b\c 三个是新建 → 全记 */
+    assert.strictEqual(created.length, 3, '新建的 a/b/c 三层应各记一条：' + created.join(','));
+    // 由深到浅逐个 rmdir：c 先删，b/a 随后；全部应为空目录所以能删干净
+    for (let i = created.length - 1; i >= 0; i--) {
+      try { await fsp.rmdir(created[i]); } catch (e) { throw new Error('rmdir 失败 ' + created[i] + ': ' + e.message); }
+    }
+    assert.ok(!fsx.existsSync(path.join(root, 'a')), '新建树应被清干净');
+    assert.ok(fsx.existsSync(existed), '用户已有目录必须原样保留');
+  } finally {
+    fsx.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ==================== 26. power-gate 包装剥离 ==================== */
+
 done();

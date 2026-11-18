@@ -2117,7 +2117,13 @@ handle(CH.SYS.RESTORE_DELETE, async (e, mode) => {
    * 注意 /all 会删掉**该卷上的全部卷影副本**，包括备份软件/文件历史用的 ——
    * 界面文案必须把这句话说清楚，不能只说「删除还原点」。 */
   const drive = systemDriveRoot();
-  const flag = mode === 'oldest' ? '/oldest' : '/all';
+  /* 【mode 必须白名单，不能"非 oldest 一律 /all"】
+   * 原写法 `mode === 'oldest' ? '/oldest' : '/all'` 是 fail-open 到**更破坏性**的分支：
+   * 任何手误（拼错 'oldest'、传了 undefined、未来新增入口传了别的值）都会
+   * 删光该卷全部卷影副本（含备份软件/文件历史用的），且不可恢复。
+   * 破坏性操作的兜底必须 fail-closed —— 只认界面明确的两个值，其余一律拒绝。 */
+  const flag = mode === 'oldest' ? '/oldest' : (mode === 'all' ? '/all' : null);
+  if (!flag) throw new Error('删除模式无效（只支持 oldest 或 all），已拒绝操作');
   const r = await psSoft(`vssadmin delete shadows /for=${drive} ${flag} /quiet`, 120000);
   if (r.failed || r.code !== 0) throw new Error('删除还原点失败：需要以管理员身份运行');
   return true;

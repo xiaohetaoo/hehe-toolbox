@@ -2766,6 +2766,13 @@
 
     const tip = div('field-hint', { style: { marginTop: '14px' } }, T('danger.tip'));
     body.appendChild(tip);
+    /* 【开发环境不走门禁，必须在这里说明而不是让用户/后来的审查者猜】
+     * "改用户 PATH 却不在高危清单里"看起来像漏洞，实际是产品决策
+     * （默认加入 + 可撤销 + 只写 HKCU + 改前备份）。不写明，下一个人
+     * 会把它当缺陷加回门禁 —— 那会把「默认加入用户环境」的默认行为挡死。
+     * 审查记录 docs/review-round5.md P2-9 与交接文档坑 31 都指向这里。 */
+    const envNote = div('field-hint', { style: { marginTop: '4px' } }, T('danger.envNote'));
+    body.appendChild(envNote);
   }
   async function drawData(body, token) {
     let userData = T('settings.browserMode');

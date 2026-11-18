@@ -883,7 +883,7 @@ body {
 .btn-text { color: var(--primary); padding: 0 8px; }
 .btn-text:hover:not(:disabled) { color: var(--primary-hover); background: var(--primary-light); }
 .btn-danger { background: var(--danger); color: #fff; }
-.btn-danger:hover:not(:disabled) { background: #F76560; }
+.btn-danger:hover:not(:disabled) { background: var(--danger); filter: brightness(1.06); }
 .btn-danger-plain { background: transparent; color: var(--danger); }
 .btn-danger-plain:hover:not(:disabled) { background: rgba(245, 63, 63, 0.08); }
 .btn-sm { height: 26px; padding: 0 10px; font-size: 12px; }
@@ -1038,6 +1038,9 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .file-list .hash-result { flex-basis: 100%; min-width: 0; margin-top: 2px; }
 
 /* 终端输出 */
+/* 【配色固定为深底彩字，不走主题槽位】终端语义上是「控制台仿真」：
+ * 深底/绿字/蓝高亮/红错误是所有终端的通用约定，用户对它有稳定预期；
+ * 跟随主题反而在浅色主题下变成「白底绿字」没法读。 */
 .term {
   background: #1D2129; color: #7EE787; font-family: Consolas, "Courier New", monospace; font-size: 12.5px;
   border-radius: 8px; padding: 12px; overflow: auto; line-height: 1.55; white-space: pre-wrap; word-break: break-all;

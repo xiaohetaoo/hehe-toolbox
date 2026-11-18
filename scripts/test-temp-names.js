@@ -9,7 +9,7 @@ const assert = require('assert');
 const path = require('path');
 const T = require('../lib/temp-names');
 
-const { t, done, readMain } = require('./lib/harness');
+const { t, done, readMain, readSrc } = require('./lib/harness');
 /* 主进程源码：迁移来的 17 号用例要扫全项目查裸 rename。 */
 const mainSrc = readMain({ raw: true });
 
@@ -129,6 +129,36 @@ t('10d 不该被误判成我们的临时产物', () => {
   assert.deepStrictEqual(wrong, [], '这些普通文件被误判成临时产物（清理会误删）：' + wrong.join(', '));
 });
 
+t('RT1 批量重命名的暂存名：渲染层拼的形态必须被白名单命中', () => {
+  /* 锁的是：file-tools.js 批量重命名两阶段执行的临时名 `.hehe-ren-<ts>-<seq><ext>`。
+   * 它由**渲染层**手拼（渲染层拿不到 require，lib/temp-names.js 依赖 node 模块，
+   * 无法 <script> 引入），所以"生成"与"白名单"分居两个文件 —— 正是本文件头
+   * 描述的那类事故形态（.hehe-7zx- 带点漏登记的翻版）。
+   * 行为断言（白名单命中样例）之外，还必须用源码断言锁两件事：
+   *   ① 渲染层拼名模板仍是 `.hehe-ren-`（若改成别的形态，白名单就又认不出 ——
+   *      行为层无法发现，因为测试样例是自己造的、不经过渲染层真实拼接）；
+   *   ② 时间戳来自批次级变量（同批可辨识、排序不漂移）。
+   * 这是「无法行为化」的典型：渲染层拼接逻辑只能在真实页面里触发，CI 跑不了。 */
+  const src = readSrc('js/tools/file-tools.js');
+  /* 锁的是：拼接模板被改名（.hehe-ren- 前缀丢失）→ 白名单全部失配。 */
+  const m = src.match(/\\\.hehe-ren-['"]?\s*\+\s*(\w+)/);
+  assert.ok(m, 'file-tools.js 里找不到 .hehe-ren- 临时名拼接（可能已改走生成器，请同步改本用例）');
+  /* 白名单必须命中渲染层实际产出的三种形态：常见扩展名 / 多位序号 / 无扩展名 */
+  const samples = [
+    '.hehe-ren-1794909921285-1.jpg',
+    '.hehe-ren-1794909921285-12.txt',
+    '.hehe-ren-1794909921285-3',
+  ];
+  for (const s of samples) {
+    assert.ok(T.isOwnTempName(s), '白名单认不出重命名暂存名（崩溃后永久残留）：' + s);
+  }
+  /* 锁的是：形态相近但非本应用产物被误收 —— 清理会误删用户文件。 */
+  assert.ok(!T.isOwnTempName('.hehe-ren-x-1.jpg'), '时间戳位置混入字母不应命中');
+  assert.ok(!T.isOwnTempName('.hehe-ren-12345-1.jpg'), '时间戳位数不足（<10）不应命中');
+  /* 锁的是：批次级时间戳变量被改回逐文件 Date.now()。 */
+  assert.ok(/REN_TS/.test(src), '临时名时间戳应来自批次级变量 REN_TS，而不是逐文件 Date.now()');
+});
+
 t('10e OWN_TEMP_PATTERNS 非空且每条都是正则', () => {
   assert.ok(T.OWN_TEMP_PATTERNS.length > 0, '白名单不能是空的');
   for (const re of T.OWN_TEMP_PATTERNS) assert.ok(re instanceof RegExp, '白名单里混进了非正则');
@@ -154,6 +184,9 @@ t('17 全项目：凡是从 %TEMP% 提交到用户输出目录的地方，都不
     'fsp.rename(dst, back)',            // 7z 解压失败回滚：把条目搬回 staging（同卷）
   ];
   const hits = [...mainSrc.matchAll(/fsp\.rename\(([^)]*)\)/g)].map((m) => 'fsp.rename(' + m[1] + ')');
+  /* 锁的是：fsp.rename 的调用清单出现新成员 —— 新调用若跨卷（源在 %TEMP%、
+   * 目标在用户盘）必须走 moveFile。这是"调用点清单"型源码断言：能列全的前提
+   * 是跑全部 handler，行为断言构造不出来。 */
   const unknown = [...new Set(hits)].filter((h) => !allowed.includes(h));
   assert.deepStrictEqual(unknown, [],
     '出现了未分类的 fsp.rename：' + unknown.join(' | ') +

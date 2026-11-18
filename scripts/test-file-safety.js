@@ -74,8 +74,12 @@ t('解压磁盘写满时清理当前半截文件，保留用户原有文件', ()
       } };
     };
   } });
-  const zip = zipAt(root, [['data.txt', 'COMPLETE']]);
+  const zip = zipAt(root, [['sub/deep/data.txt', 'COMPLETE']]);
   await assert.rejects(() => handlers(fsp)[CH.ZIP.EXTRACT]({}, zip, dest), { code: 'ENOSPC' });
+  /* 锁的是：失败回滚必须把「本次新建的目录」也清掉（第十轮记录、本轮修复）。
+   * 旧实现只删 writtenPaths（文件），sub/deep 空目录留在用户目标里；
+   * 用户已有的 data.txt 原样保留。 */
+  assert.ok(!fs.existsSync(path.join(dest, 'sub')), '新建的目录树应被回滚清掉');
   assert.deepStrictEqual(fs.readdirSync(dest), ['data.txt']);
   assert.strictEqual(await fs.promises.readFile(path.join(dest, 'data.txt'), 'utf8'), 'ORIGINAL');
 }));

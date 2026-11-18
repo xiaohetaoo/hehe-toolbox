@@ -1240,8 +1240,20 @@ handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
         归档内容就混进了用户已有目录。
     所以：目录条目一律复用（不编号），只有文件在冲突时加序号。
      3) 中途失败要回滚，不能留半成品（与 seven:extract 行为一致） */
+  /* 目录条目与文件条目路由到同一父目录
+     若目录 sub/ 因冲突改名成 sub(1)/，而文件 sub/b.txt 仍写进原来的 sub/，
+     归档内容就混进了用户已有目录。
+   所以：目录条目一律复用（不编号），只有文件在冲突时加序号。
+    3) 中途失败要回滚，不能留半成品（与 seven:extract 行为一致）
+       ——【回滚必须包含目录】第六/十轮审查：原回滚只删 writtenPaths（文件），
+       dirFor 建的目录留在原地，CRC 错时目标目录里多出一串空目录。
+       现在用 ensureDirectoryInsideTracked 记录「本次新建」的目录
+       （EEXIST 的不算，那是用户已有的），失败时**由深到浅** rmdir ——
+       只能 rmdir 不能 rm -r：目录里可能有用户放进来的东西（极少但可能），
+       非空就留着，交给用户处理。 */
+  const createdDirs = [];   // 本次新建的目录，append 顺序即创建顺序
   const dirFor = async (rel) => {
-    return pathGuard.ensureDirectoryInside(outDir, rel);
+    return pathGuard.ensureDirectoryInsideTracked(outDir, rel, createdDirs);
   };
   const writtenPaths = [];
   try {
@@ -1275,6 +1287,11 @@ handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
     return { outDir, entries: written };
   } catch (err) {
     for (const p of writtenPaths) { try { await fsp.rm(p, { force: true }); } catch (e) {} }
+    /* 回滚目录：由深到浅 rmdir。非空（里面有并发写入的东西）就留着，
+     * rmdir 的 ENOTEMPTY 被吞掉 —— 留一个非空目录比误删内容安全。 */
+    for (let i = createdDirs.length - 1; i >= 0; i--) {
+      try { await fsp.rmdir(createdDirs[i]); } catch (e) {}
+    }
     throw err;
   }
 });

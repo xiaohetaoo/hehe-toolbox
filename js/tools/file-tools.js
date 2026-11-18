@@ -39,6 +39,37 @@
       let dirMode = false;
       // 目录加载是「批量灌入」，要跳过 onChange 的 dirMode 重置
       let selfLoad = false;
+
+      /* 【上次批量重命名的崩溃残留，进来先提示一键恢复】
+       * 两阶段执行中途崩溃/断电时，文件留在 .hehe-ren-* 隐藏临时名下（带前导点，
+       * 资源管理器默认不显示），用户看到的是"文件不见了"。执行前写入 store 的
+       * renameStaged 登记表此刻还留着没完成的条目 —— 渲染时检查它：
+       * 有残留就给出可读的说明与「一键恢复」按钮（把每个临时名改回原名）。
+       * 恢复按条目逐个尝试，失败的留在列表里下次再试；全部处理完清空登记表。 */
+      (async () => {
+        try {
+          const reg = await invoke(Channels.CHANNELS.STORE.GET, 'renameStaged', []);
+          const pending = (Array.isArray(reg) ? reg : []).filter((x) => x && x.tmp && !x.done);
+          if (!pending.length) return;
+          const lines = pending.map((x) => '· ' + x.tmp + '\n  → ' + x.from).join('\n');
+          if (!(await confirmBox({
+            title: '上次重命名未完成',
+            message: '检测到上次批量重命名中途被打断，' + pending.length + ' 个文件还停在临时名下：\n\n'
+              + lines + '\n\n是否把它们全部恢复成原来的文件名？（也可以之后手动去掉文件名的 .hehe-ren-… 前缀部分）',
+            okText: '一键恢复',
+          }))) return;
+          let restored = 0;
+          const stillPending = [];
+          for (const x of pending) {
+            try { await invoke(Channels.CHANNELS.FS.RENAME, x.tmp, x.from, false); restored++; }
+            catch (e) { stillPending.push(x); }
+          }
+          await invoke(Channels.CHANNELS.STORE.SET, 'renameStaged', stillPending);
+          toast(restored ? '已恢复 ' + restored + ' 个文件' + (stillPending.length ? '，' + stillPending.length + ' 个失败（可能已被移动）' : '')
+            : '恢复失败：文件可能已被移动或删除', restored ? 'success' : 'warn');
+        } catch (e) { /* 恢复是增强功能，失败不影响工具本身 */ }
+      })();
+
       const picker = filePicker({
         text: '选择或拖入要重命名的文件（可多选）',
         onChange: (items) => {
@@ -340,16 +371,36 @@
          * 任何一步失败都能回滚临时名，不会留下半改状态。 */
         const plan = files.map((p, i) => ({ from: p, to: newName(p, i) })).filter((x) => x.from !== x.to);
         const staged = [];   // { tmp, from, to }
+        /* 【临时名形态必须与 lib/temp-names.js 的白名单保持一致】
+         * 渲染层拿不到 require（nodeIntegration:false），lib/temp-names.js 又
+         * 依赖 node 的 path/crypto，不能像 fail-text 那样用 <script> 引入。
+         * 所以这里只能本地拼名字 —— 但**形态**必须与白名单正则
+         * `/^\.hehe-ren-\d{10,}-\d+/i` 完全一致：`.hehe-ren-<13位时间戳>-<序号><ext>`。
+         * 中途崩溃/断电时文件会留在这种隐藏临时名下，白名单认得出它，
+         * 排查/未来的用户目录清扫才不会漏。scripts/test-temp-names.js 的
+         * RT1 用例同时锁住两边：白名单要能命中渲染层拼出来的名字。
+         * （此前手拼的形态白名单不认识，是第十轮审查修掉的真实缺陷。） */
+        const REN_TS = Date.now();
         let tmpSeq = 0;
+        /* 【崩溃恢复登记】两阶段执行中途崩溃/断电时，文件留在 .hehe-ren-* 隐藏
+         * 临时名下且无法自愈（没有进程在跑回滚）。执行前把「暂存名 → 原名」
+         * 清单写进 store；全部成功后清空。下次启动批量重命名页渲染时若发现
+         * 登记表非空，提示用户一键恢复（见 renderRenameRecovery）。 */
+        const stagedReg = plan.map((x, i) => ({ tmp: '', from: x.from, to: x.to, seq: i + 1 }));
+        await invoke(Channels.CHANNELS.STORE.SET, 'renameStaged', stagedReg);
         prog.show();
         try {
           for (const item of plan) {
             tmpSeq++;
             const dir = item.from.replace(/[\\/][^\\/]*$/, '');
-            const tmp = dir + '/.hehe-ren-' + Date.now() + '-' + tmpSeq + (item.from.match(/\.[^.\\/]+$/)?.[0] || '');
+            const tmp = dir + '\\.hehe-ren-' + REN_TS + '-' + tmpSeq
+              + (item.from.match(/\.[^.\\/]+$/)?.[0] || '');
             try {
               await invoke(Channels.CHANNELS.FS.RENAME, item.from, tmp, false);
               staged.push({ tmp, from: item.from, to: item.to });
+              const reg = stagedReg.find((x) => x.seq === tmpSeq);
+              if (reg) reg.tmp = tmp;
+              await invoke(Channels.CHANNELS.STORE.SET, 'renameStaged', stagedReg);
             } catch (e) {
               failures.push({ from: item.from, to: item.to, err: e.message });
             }
@@ -360,13 +411,26 @@
             try {
               await invoke(Channels.CHANNELS.FS.RENAME, s.tmp, s.to, false);
               ok++;
+              const reg = stagedReg.find((x) => x.tmp === s.tmp);
+              if (reg) reg.done = true;
             } catch (e) {
               /* 改名失败 → 把临时名还原回原名，别把文件留在 .hehe-ren- 下 */
               try { await invoke(Channels.CHANNELS.FS.RENAME, s.tmp, s.from, false); } catch (e2) {}
+              const reg = stagedReg.find((x) => x.tmp === s.tmp);
+              if (reg) reg.done = true;
               failures.push({ from: s.from, to: s.to, err: e.message });
             }
+            await invoke(Channels.CHANNELS.STORE.SET, 'renameStaged', stagedReg);
           }
-        } finally { prog.hide(); }
+        } finally {
+          prog.hide();
+          /* 每一步都记账后，收尾时把已完成的条目清掉：登记表里只剩「真的
+           * 中途崩掉、既没改成目标名也没还原原名」的条目。全成功即空表。 */
+          try {
+            const rest = stagedReg.filter((x) => x.tmp && !x.done);
+            await invoke(Channels.CHANNELS.STORE.SET, 'renameStaged', rest);
+          } catch (e) {}
+        }
         // 失败原因必须可见（原来只进 console.error），否则用户只看到「失败 1」，
         // 不知道是哪个文件、为什么，也无法判断批量操作后的半成功状态。
         if (failures.length) {

@@ -308,6 +308,26 @@ const CHECKS_BY_VERSION = {
     ['main.js', 'F10 跨卷目录搬运走递归复制',
       (s2) => /st\.isDirectory\(\)/.test(s2) && /fsp\.cp\(src, dst, \{ recursive: true, force: true \}\)/.test(s2)],
   ],
+  /* v0.9.1：第六～十一轮审查修复。 */
+  '0.9.1': [
+    ['lib/power-gate.js', 'G1 Get-Command 间接执行判据',
+      (s2) => /get-command\|gcm/.test(s2) && s2.indexOf('[&.]') !== -1],
+    ['main.js', 'G2 restore-delete 模式白名单（无 fail-open）',
+      (s2) => /mode === 'all' \? '\/all' : null/.test(s2)
+        && !/mode === 'oldest' \? '\/oldest' : '\/all'/.test(s2)],
+    ['lib/temp-names.js', 'G3 重命名暂存名进白名单',
+      (s2) => /RENAME_TMP/.test(s2) && /\\\.hehe-ren-\\d\{10,\}/.test(s2)],
+    ['js/tools/file-tools.js', 'G4 崩溃恢复登记 + 一键恢复',
+      (s2) => /renameStaged/.test(s2) && /上次重命名未完成/.test(s2)],
+    ['lib/path-guard.js', 'G5 新建目录记录（EEXIST 不算）',
+      (s2) => /ensureDirectoryInsideTracked/.test(s2) && /freshlyMade/.test(s2)],
+    ['ipc/fs-ops.js', 'G6 ZIP 回滚由深到浅 rmdir',
+      (s2) => /createdDirs\.length - 1/.test(s2) && /rmdir\(createdDirs\[i\]\)/.test(s2)],
+    ['css/app.css', 'G7 btn-danger hover 跟随主题',
+      (s2) => /\.btn-danger:hover:not\(:disabled\) \{ background: var\(--danger\);/.test(s2)],
+    ['js/app.js', 'G8 设置页开发环境门禁说明',
+      (s2) => /danger\.envNote/.test(s2)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];

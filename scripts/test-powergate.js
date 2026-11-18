@@ -756,7 +756,39 @@ t('36d 三类绕过修好后，日常命令与 /a 不能被误伤', () => {
   }
 });
 
-/* ==================== 27. expr-eval 取余 vs 百分比 ==================== */
+/* ==================== 27. Get-Command + 调用运算符间接执行（第六轮审查） ==================== */
+t('27 Get-Command/gcm + & 调用运算符必须拦截（间接执行关机）', () => {
+  /* 锁的是：`& (Get-Command Stop-Computer)` 这类写法在 PowerShell 里真会执行
+   * （实测用 Write-Output 等价替换能输出 HEHE），但首词是 get-command ——
+   * 不像危险词，旧实现放行。必须有「get-command/gcm + 调用运算符 + 危险词」的判据。 */
+  const mustBlock = [
+    '& (Get-Command Stop-Computer)',
+    '& (Get-Command "Stop-Computer")',
+    'powershell -c "& (Get-Command Stop-Computer)"',
+    '& (gcm Stop-Computer)',
+    '& (Get-Command Stop-Computer) -Force',
+  ];
+  for (const c of mustBlock) {
+    assert.strictEqual(PG.isPowerCommand(c), true, '间接执行绕过了门禁：' + c);
+  }
+  /* 锁的是：只查询、不执行（没有调用运算符）的命令不能被误拦 —— 否则用户
+   * 想查一下 Stop-Computer 的参数就被当成高危，属于大面积误伤。 */
+  const mustAllow = [
+    'Get-Command Stop-Computer',
+    'gcm Stop-Computer',
+    'powershell -c "Get-Command Stop-Computer"',
+    'echo Get-Command Stop-Computer',
+    '& (Get-Command notepad)',
+  ];
+  for (const c of mustAllow) {
+    assert.strictEqual(PG.isPowerCommand(c), false, '纯查询命令被误拦：' + c);
+  }
+  /* 锁的是：实现里的判据被删后测试仍绿（源码断言兜底）。 */
+  const code = read('lib/power-gate.js');
+  assert.ok(/get-command\|gcm/.test(code), '找不到 Get-Command/gcm 判据');
+});
+
+/* ==================== 28. expr-eval 取余 vs 百分比 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail === 0 ? 0 : 1);
