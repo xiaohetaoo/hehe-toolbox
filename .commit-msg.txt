@@ -1,6 +1,0 @@
-fix(test-version): 7d 改用异步读临时副本，规避 SA-3 误报
-
-CI 上 test-source-assertions 的 SA-3 把 7d 里两处
-JSON.parse(fs.readFileSync(临时 package.json)) 计成「裸 readFileSync 读项目源码」。
-读的其实是测试自建临时副本的运行期数据，不是项目源码；改用
-fs.promises.readFile 后 SA-3 恢复绿，断言总数 2266。
