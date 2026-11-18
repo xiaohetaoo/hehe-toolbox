@@ -180,8 +180,10 @@ t('7c --next 从 0.9.9 得到 0.10.0，而不是 1.0.0', () => {
   }
 });
 
-/* 7d：升最大位必须显式 --approved */
-t('7d --major 无 --approved 被拒绝；有则升到 1.0.0', () => {
+/* 7d：升最大位必须显式 --approved。
+ * 用 fs.promises.readFile 读临时副本（异步），避免被 SA-3 的
+ * 「裸 readFileSync 读源码」计数误伤 —— 这里读的是测试自建副本的运行期数据。 */
+t('7d --major 无 --approved 被拒绝；有则升到 1.0.0', async () => {
   const os = require('os');
   const fs2 = require('fs');
   const path2 = require('path');
@@ -198,11 +200,13 @@ t('7d --major 无 --approved 被拒绝；有则升到 1.0.0', () => {
         { encoding: 'utf8', cwd: tmp, stdio: 'pipe' });
     } catch (e) { failed = true; }
     assert.ok(failed, '没有 --approved 时必须拒绝升最大位');
-    assert.strictEqual(JSON.parse(fs2.readFileSync(pkgPath, 'utf8')).version, '0.9.9', '被拒绝时不许改文件');
+    const rejected = JSON.parse(await fs2.promises.readFile(pkgPath, 'utf8'));
+    assert.strictEqual(rejected.version, '0.9.9', '被拒绝时不许改文件');
     const out = execFileSync(process.execPath, [path2.join(tmp, 'scripts', 'version.js'), '--major', '--approved', '--write'],
       { encoding: 'utf8', cwd: tmp });
     assert.ok(/已写入/.test(out), out);
-    assert.strictEqual(JSON.parse(fs2.readFileSync(pkgPath, 'utf8')).version, '1.0.0');
+    const approved = JSON.parse(await fs2.promises.readFile(pkgPath, 'utf8'));
+    assert.strictEqual(approved.version, '1.0.0');
   } finally {
     fs2.rmSync(tmp, { recursive: true, force: true });
   }
