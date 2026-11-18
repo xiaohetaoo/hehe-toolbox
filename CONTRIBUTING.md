@@ -153,22 +153,28 @@ CI 会统计 `register({` 的数量，少于 90 个直接失败（防批量误�
 发布流程：
 
 ```bash
-# 1. 升版本（注意：version:bump 只打印，不写文件）
-npm run version:bump        # 输出 0.3.10
-# 手工改 package.json 的 version
+# 1. 升版本（version:bump 只打印，加 --write 才落盘）
+node scripts/version.js --next            # 预览：0.9.9 的下一个是 0.10.0
+node scripts/version.js --next --write    # 写入 package.json + 同步 lock
+# 升最大位（0.x → 1.x）必须得到用户明确允许：
+node scripts/version.js --major --approved --write
 
 # 2. 写发布说明
-#    docs/release-notes/v0.3.10.md（会作为 Release 正文）
+#    docs/release-notes/vX.Y.Z.md（会作为 Release 正文，≥400 字）
 
 # 3. 本地验证并构建
 npm run lint && npm run typecheck && npm test
 npm run dist                # 产物落在 dist/
 
-# 4. 推送，等 CI 绿，再打 tag
+# 4. 问过用户后再推送，等 CI 绿，再打 tag
 git push origin main
-git tag -a v0.3.10 -m "核核工具箱 v0.3.10"
-git push origin v0.3.10     # 触发 Release 工作流
+git tag -a vX.Y.Z -m "核核工具箱 vX.Y.Z"
+git push origin vX.Y.Z      # 触发 Release 工作流
 ```
+
+**版本号规则**：末位 0–9，满 10 向中位进 1（`0.0.9 → 0.1.0`）；中位可 ≥10
+（**`0.9.9 → 0.10.0`**，不是 1.0.0）；最大位只有用户允许才升。
+详见工作区 `hehe-toolbox.md` 与 `scripts/version.js`。
 
 **顺序很重要：先等 CI 绿再打 tag。** tag 一旦推送就会触发完整的构建+发布，
 打出去就收不回来了。

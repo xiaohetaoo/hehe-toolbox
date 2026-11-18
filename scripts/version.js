@@ -1,22 +1,25 @@
 #!/usr/bin/env node
 'use strict';
-/* 版本号规则校验 + 进位换算。
+/* 版本号规则校验 + 进位换算（2026-11-18 按用户最新规则修订）。
  *
- * 【规则】每一段都只能是个位数（0–9），满 10 就向前一段进位：
+ * 【规则】x.y.z，从 0.0.1 开始；**末位每满 10 向中位进 1**：
  *   0.0.9  -> 0.1.0
  *   0.1.9  -> 0.2.0
- *   0.9.9  -> 1.0.0
- *   0.0.14 -> 0.1.4   （末位 14 满 10 进 1 到中位，末位留 4）
+ *   0.9.9  -> 0.10.0     ← 关键变化（旧实现给 1.0.0，与用户规则冲突）
+ *   0.10.9 -> 0.11.0
+ *   0.0.14 -> 0.1.4
  *
- * 换句话说：版本号按「三段十进制、每段 0–9」书写，绝不出现 0.0.14 这种
- * 某一段 ≥10 的形态。历史上确实出现过 0.0.13、0.0.14，所以需要这个校验。
+ * 中位（y）**可以 ≥10**，不向最大位进位；最大位（x = major）只能由用户
+ * 明确允许后升：CLI 里必须同时给 `--major` 与 `--approved`，否则拒绝。
+ * 这就是用户原话「我的允许才能升最大的版本号」在脚本层的落实。
  *
  * 用法：
  *   node scripts/version.js                 # 校验当前 package.json
- *   node scripts/version.js 0.8.0-1         # 支持数字修订后缀（SemVer 预发布版本）
- *   node scripts/version.js 0.0.14          # 校验指定版本号
+ *   node scripts/version.js 0.10.0          # 校验指定版本号
+ *   node scripts/version.js --next          # 当前版本 +1（只动末位/中位）
  *   node scripts/version.js --bump 0.0.14   # 按规则进位（输出 0.1.4）
- *   node scripts/version.js --next          # 当前版本 +1 并规范化
+ *   node scripts/version.js --major --approved   # 升最大位（需用户明确允许）
+ *   加 --write 才真的写 package.json；默认只预览。
  */
 const fs = require('fs');
 const path = require('path');
@@ -24,44 +27,26 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const pkgPath = path.join(ROOT, 'package.json');
 
-/* 把「可能超 9 的十进制写法」规范化成每段 0–9 的形态。
- *
- * 做法：从末位往前，把当前段整体（不只是余数）折进高位，最后统一取余。
- * 关键坑：不能「先取余再把商进高位」—— 从末位往前走时，末位的进位会加到
- * 已经处理过的中位上，那一轮就不会再对中位做进位，于是
- * 0.0.99 会得到 0.9.9（数值接近但形态不规范，本应是 1.0.0）。
- * 正确写法是把整段累加进高位，等循环结束后再逐位取余。 */
+/* 把「末位可能超 9 的写法」规范化：只做末位 → 中位的进位。
+ * 中位不向最大位进位（用户规则：0.9.9 → 0.10.0）。
+ * 例：0.0.14 → 0.1.4；0.9.10 → 0.10.0；0.0.100 → 0.10.0。 */
 function normalize(parts) {
-  const p = parts.slice(0, 3).map((x) => Math.floor(Number(x) || 0));
+  const p = parts.slice(0, 3).map((x) => Math.max(0, Math.floor(Number(x) || 0)));
   while (p.length < 3) p.push(0);
-  // 先累加进位：从末位往前，把当前段整体折进高位
-  for (let i = p.length - 1; i > 0; i--) {
-    if (p[i] > 9) {
-      p[i - 1] += Math.floor(p[i] / 10);
-      p[i] = p[i] % 10;
-    }
-  }
-  // 此时低位已规范，但高位可能因进位而 >9，需要再走一遍直到稳定
-  // （0.0.99 → 末位 99 折成 中位+9,末位9 → 中位 10 → 再进 → 1.0.0）
-  let changed = true;
-  let guard = 0;
-  while (changed && guard++ < 100) {
-    changed = false;
-    for (let i = p.length - 1; i > 0; i--) {
-      if (p[i] > 9) {
-        p[i - 1] += Math.floor(p[i] / 10);
-        p[i] = p[i] % 10;
-        changed = true;
-      }
-    }
-  }
-  // 最高位允许继续增长（1.0.0 之上是 1.0.1；不会往第 4 段加）
+  /* 末位整段折进中位，再取余 —— 不能先取余再进位（0.0.99 会算错）。 */
+  p[1] += Math.floor(p[2] / 10);
+  p[2] = p[2] % 10;
   return p;
 }
 
+/* 合规判据：三段都是整数，**末位 0–9**；中位允许 ≥10（如 0.10.0）。
+ * 最大位不设上限（升它由 CLI 的 --approved 把关，不在校验层拦）。 */
 function isValid(parts) {
   if (!Array.isArray(parts) || ![3, 4].includes(parts.length)) return false;
-  return parts.slice(0, 3).every((x) => Number.isInteger(x) && x >= 0 && x <= 9)
+  const [x, y, z] = parts;
+  return Number.isInteger(x) && x >= 0
+    && Number.isInteger(y) && y >= 0
+    && Number.isInteger(z) && z >= 0 && z <= 9
     && (parts.length === 3 || (Number.isSafeInteger(parts[3]) && parts[3] >= 0));
 }
 
@@ -79,28 +64,42 @@ function parse(v) {
 
 function fmt(p) { return p.slice(0, 3).join('.') + (p.length === 4 ? '-' + p[3] : ''); }
 
-/* 版本 +1：末位加一，然后按规则进位规范化 */
+/* 版本 +1：末位加一，按规则向前进位（只进到中位）。 */
 function bump(parts) {
   const p = parts.slice(0, 3);
   p[2] += 1;
   return normalize(p);
 }
 
+/* 升最大位：x+1，中位/末位归零。**调用方必须已获得用户允许**。 */
+function bumpMajor(parts) {
+  const p = parts.slice(0, 3);
+  p[0] += 1;
+  p[1] = 0;
+  p[2] = 0;
+  return p;
+}
+
 function main() {
   const args = process.argv.slice(2);
 
-  /* 【--next / --bump 默认只打印，加 --write 才真的写】
-   *
-   * 原实现只打印，但脚本名叫 `version:bump`，行为却是「只算不写」——
-   * 名字在骗人。发版时（v0.3.9）我照输出敲了一遍才发现它没写文件。
-   *
-   * 为什么默认不写：版本号通常要和发布说明（docs/release-notes/vX.Y.Z.md）
-   * 一起改，自动写包容易让人只改了版本、忘了写说明。所以保持「看一眼再确认」，
-   * 但把话说清楚 —— 输出里明确告知有没有落盘。 */
-  if (args[0] === '--bump' || args[0] === '--next') {
+  const isBump = args[0] === '--bump' || args[0] === '--next' || args[0] === '--major';
+  if (isBump) {
     const doWrite = args.includes('--write');
+    const wantMajor = args[0] === '--major';
+    /* 【最大位必须用户明确允许】用户规则：我的允许才能升最大的版本号。
+     * 只给 --major 而没有 --approved 一律拒绝，避免"顺手"升到 1.x。 */
+    if (wantMajor && !args.includes('--approved')) {
+      console.error(
+        '✗ 升最大版本号需要用户明确允许。\n' +
+        '  请先在对话里取得用户同意，再加 --approved 重试：\n' +
+        '    node scripts/version.js --major --approved --write\n' +
+        '  只升末位/中位用 --next 即可（0.9.9 → 0.10.0）。'
+      );
+      process.exit(1);
+    }
     let base;
-    if (args[0] === '--next') {
+    if (args[0] === '--next' || wantMajor) {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
       base = parse(pkg.version);
       if (!base) { console.error('package.json 里的 version 无法解析'); process.exit(1); }
@@ -108,14 +107,13 @@ function main() {
       base = parse(args[1]);
       if (!base) { console.error('用法：node scripts/version.js --bump <x.y.z>'); process.exit(1); }
     }
-    const next = fmt(bump(base));
+    const next = fmt(wantMajor ? bumpMajor(base) : bump(base));
     if (!doWrite) {
       console.log(next);
       console.log('（仅预览，未写入 package.json。加 --write 才会落盘）');
       return;
     }
-    /* 只替换 version 字段，不重排 package.json 的其他内容 ——
-     * JSON.parse + stringify 会把格式全改一遍，让这次 diff 看起来像动了整个文件。 */
+    /* 只替换 version 字段，不重排 package.json 的其他内容。 */
     const raw = fs.readFileSync(pkgPath, 'utf8');
     const updated = raw.replace(/("version"\s*:\s*)"[^"]*"/, '$1"' + next + '"');
     if (updated === raw) {
@@ -143,7 +141,7 @@ function main() {
   const fixed = fmt(normalize(parts));
   console.error(
     `✗ 版本号不合规：${ver}\n` +
-    `  规则：每一段只能是 0–9，满 10 向前进位。\n` +
+    `  规则：末位 0–9（满 10 向中位进 1），中位可 ≥10，最大位需用户允许才升。\n` +
     `  应写为：${fixed}\n` +
     `  （旧的 ${ver} → 新的 ${fixed}）`
   );
@@ -151,4 +149,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { normalize, isValid, parse, bump, fmt };
+module.exports = { normalize, isValid, parse, bump, bumpMajor, fmt };
