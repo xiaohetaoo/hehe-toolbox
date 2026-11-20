@@ -8,37 +8,20 @@
 
   /* 从 URL 推出安全的保存文件名。
    *
-   * 原实现：name = decodeURIComponent(url.split('?')[0].split('/').pop())
-   *   恶意/特殊 URL 里的 %2F..%2F..%2F 会被还原成 /../../，
-   *   拼到 userData 后面就逃出目录，覆盖任意位置的文件。
-   *   例如 .../a%2F..%2F..%2FWindows%2Fwin.ini -> 可以写到 C:\Windows 附近。
+   * 【实现已搬到 lib/safe-name.js】原来内联在这里，测试只能「从源码切出函数体
+   * 再求值」，那种做法在 CI 上因换行/剥注释差异失败过（v0.9.2）。
+   * 现在是纯函数模块，渲染层由 index.html 的 <script> 挂到 window.SafeName，
+   * 测试直接 require 同一份 —— 行为断言，不再切源码。
    *
-   * 现在：先解码，然后只取 basename，并逐项挡掉 Windows 危险名。
-   * 与主进程 lib/path-guard.js 的 checkFileName 保持同一套规则。 */
-  const BAD_NAME_BASE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
-  function safeNameFromUrl(url) {
-    let raw = '';
-    try { raw = decodeURIComponent(String(url).split('?')[0].split('#')[0].split('/').pop() || ''); } catch (e) { raw = ''; }
-    // 只保留最后一段（挡掉解码后出现的 / 和 \）
-    raw = raw.split(/[\\/]/).pop() || '';
-    /* 【不要再无条件剥前导点】原写法 `.replace(/^\.+/, '')` 把 `.bashrc` /
-     * `.gitignore` / `.env` 改成了 `bashrc` / `gitignore` / `env` —— 下载下来
-     * 的隐藏配置文件当场变成普通文件，用户拿到的名字和线上文件名不一致。
-     * 这里只剥「纯点」这种无意义形态（`.` / `..` / `...`），保留正常的点开头名。
-     * 尾部的点与空格仍要剥：那是 Windows 不允许的（会被系统静默吞掉）。 */
-    raw = raw.replace(/[\x00-\x1f<>:"|?*]/g, '_').replace(/[. ]+$/, '');
-    if (/^\.+$/.test(raw)) return 'download.bin';
-    if (!raw) return 'download.bin';
-    // 保留设备名但改成可用的名字
-    const base = raw.split('.')[0];
-    if (BAD_NAME_BASE.test(base)) raw = '_' + raw;
-    if (raw.length > 180) {
-      const dot = raw.lastIndexOf('.');
-      const ext = dot > 0 ? raw.slice(dot) : '';
-      raw = raw.slice(0, 180 - ext.length) + ext;
-    }
-    return raw;
-  }
+   * 规则要点（详见 lib/safe-name.js 注释）：
+   *   · 先解码再只取最后一段，挡掉 %2F..%2F 路径穿越；
+   *   · 点开头的隐藏文件名保留（.bashrc / .gitignore / .env 不能被改名）；
+   *   · Windows 设备名加前缀、超长截断保留扩展名。 */
+  const safeNameFromUrl = (window.SafeName && window.SafeName.fromUrl)
+    || ((u) => {   /* 兜底：库未加载时给一个不穿越的实现（宁可保守） */
+      const seg = String(u || '').split('?')[0].split('#')[0].split('/').pop() || '';
+      return seg.replace(/[\\/]/g, '_') || 'download.bin';
+    });
 
   /* ---------- 网络信息查询 ---------- */
   register({

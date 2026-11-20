@@ -373,20 +373,16 @@
            与 "note.md" 在资源管理器里同名但实际是两个文件
          - 纯点名称（".." -> "....md"）让用户困惑
          规则与主进程 lib/path-guard.js 的 checkFileName 保持一致。 */
-      const DEVICE_BASE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+      /* 【笔记名净化统一走 lib/safe-name.js】
+       * 这里原来内联了一份：换非法字符 → 去皮部点 → 去尾随点空格 → 挡设备名
+       * → 截断 → 加 .md。与「从 URL 推下载文件名」是同一套规则的变体，
+       * 两份实现迟早分叉（历史上就是各自补各自的漏洞）。
+       * 现在 fromTitle 是唯一实现，Node 侧测试直接 require 它做行为断言。 */
       function safeNoteName(raw) {
-        let s = String(raw || '').trim() || '未命名';
-        // 非法字符与控制字符统一换成下划线
-        s = s.replace(/[\x00-\x1f\\/:*?"<>|]/g, '_');
-        // 去掉首部的点（避免隐藏文件与 ".." 变形）
-        s = s.replace(/^\.+/, '');
-        // 去掉尾随的点和空格（Windows 会截断，导致两个不同名字指向同一文件）
-        s = s.replace(/[. ]+$/, '');
-        if (!s) s = '未命名';
-        // Windows 保留设备名（带扩展名也会命中，如 CON.md）
-        if (DEVICE_BASE.test(s.split('.')[0])) s = '_' + s;
-        if (s.length > 120) s = s.slice(0, 120);
-        return s + '.md';
+        if (window.SafeName && window.SafeName.fromTitle) return window.SafeName.fromTitle(raw, '.md');
+        /* 兜底：库未加载时用最保守的净化（宁可名字难看也不要写到别处） */
+        const s = String(raw || '').trim().replace(/[\x00-\x1f\\/:*?"<>|]/g, '_') || '未命名';
+        return s.slice(0, 120) + '.md';
       }
       async function save() {
         const name = safeNoteName(titleIn.value);

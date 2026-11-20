@@ -51,6 +51,11 @@
        「按拍摄时间批量重命名」需要同一套解析，复制一份必然分叉，
        所以抽成 lib 并在此引入。必须排在 js/tools/*.js 之前。 -->
   <script src="lib/exif.js"></script>
+  <!-- lib/safe-name.js：从 URL/标题推导安全文件名（UMD，挂 window.SafeName）。
+       原实现内联在网络工具页里，测试只能从源码切函数体再求值，CI 上因换行
+       与剥注释差异失败过。抽成纯函数后渲染层与测试共用同一实现。
+       必须排在所有工具脚本之前（下面的 net-error / net-tools 序列不受影响）。 -->
+  <script src="lib/safe-name.js"></script>
   <!-- lib/pinyin.js：搜索的拼音首字母支持（打 yssc 找到「压缩」）。
        UMD 同上，挂到 window.Pinyin。零依赖 —— 用 Intl.Collator('zh-CN')
        的拼音排序做区间判定，不背拼音数据表。

@@ -348,18 +348,29 @@ t('stripComments：保留块注释内部的换行（行号必须与原文一一�
  * 这里用**真实文件**做输入，因为编造的简化样例不一定能复现这种状态错位。
  */
 t('stripComments：正则字面量里的引号不能被当成字符串开头', () => {
-  const netSrc = fs.readFileSync(path.join(ROOT, 'js', 'tools', 'net-tools.js'), 'utf8');
+  /* 【输入文件在 v0.9.2 变更】这条正则
+   *   /[\x00-\x1f<>:"|?*]/g
+   * 原先在 js/tools/net-tools.js，随 safeNameFromUrl 一起搬到了
+   * lib/safe-name.js。断言的是「stripComments 遇到正则里的引号不能跑偏」这个
+   * 能力本身，与文件位置无关 —— 换到新位置继续用真实文件当输入。 */
+  const netSrc = fs.readFileSync(path.join(ROOT, 'lib', 'safe-name.js'), 'utf8');
   const stripped = stripComments(netSrc);
-  // 1) 该剥的注释必须真的被剥掉（这条在修复前是红的）
-  assert.ok(!stripped.includes('必须按前缀认领'),
+  // 1) 该剥的注释必须真的被剥掉（这句注释文字在 safe-name.js 里真实存在）
+  assert.ok(!stripped.includes('必须挡住'),
     '正则字面量里的引号把扫描状态带偏了：后续块注释没被剥掉');
   // 2) 正则字面量本身要原样保留（不能被当成注释或字符串删掉）
   assert.ok(stripped.includes('x00-'),
     '正则字面量被剥掉了（剥注释不能动代码）');
-  // 3) 剥完还能正确提取字符串字面量（状态没乱）
-  const lits = stringLiterals(stripped).map((x) => x.text);
-  assert.ok(lits.includes('网速测试') || lits.includes('测速'),
-    '剥注释后字面量提取异常，状态位错乱：前 10 个 = ' + JSON.stringify(lits.slice(0, 10)));
+  // 3) 剥完状态没乱：整段仍可被解析（引号/注释配对正确的最硬证据）
+  /* 【为什么不用 stringLiterals 计数】它对「正则字面量里同时含 " 和 ' 且后面还有
+   * split('/')」这种组合本身不可靠（会切断后续单引号），那是提取器的局限，
+   * 不是 stripComments 的错。判「状态有没有乱」最直接的是能不能整体解析：
+   * 引号或注释配对错位一定导致 SyntaxError。 */
+  let parseErr = null;
+  try { new Function(stripped); } catch (e) { parseErr = e.message; }
+  assert.ok(!parseErr, '剥注释后无法解析，扫描状态被带偏：' + parseErr);
+  // 4) 代码本体里的关键字符串仍在（没有被当成注释吃掉）
+  assert.ok(stripped.includes("'download.bin'"), '关键字符串被剥掉了');
 });
 
 t('regexAllowed：除号与正则要能分开', () => {

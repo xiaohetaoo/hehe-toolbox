@@ -603,33 +603,24 @@ t('P2 path-guard 测试已接入 npm test', () => {
 
 /* P0-1 下载器文件名路径穿越 */
 t('P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）', () => {
+  /* 【v0.9.2 起改成行为断言】
+   * 实现已从 js/tools/net-tools.js 抽到 lib/safe-name.js（纯函数），
+   * 所以不再从源码里切函数体（那种断言在搬迁后会直接崩在 [0] 上），
+   * 改为直接调用真实实现验证「穿越被挡」这个行为本身 —— 更准也更抗重构。 */
+  const { fromUrl } = require('../lib/safe-name');
   const s = read('js/tools/net-tools.js');
-  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(s.includes('safeNameFromUrl'), '没有安全文件名函数');
-  // 旧的裸 decodeURIComponent 拼接必须消失
-  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
+  assert.ok(s.includes('safeNameFromUrl'), '渲染层没有接安全文件名函数');
+  assert.ok(s.includes('SafeName'), '渲染层没有引用 lib/safe-name.js 的实现');
+  /* 旧的裸 decodeURIComponent 拼接必须消失 */
   const code = s.split(/\r?\n/).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(!/decodeURIComponent\(url\.split\('\?'\)\[0\]\.split\('\/'\)\.pop\(\)/.test(code),
     '仍在直接用 URL 末段当文件名');
-  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  const fn = s.match(/function safeNameFromUrl[\s\S]*?\n  \}/)[0];
-  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(fn.includes('split(/[\\\\/]/)'), '没有取 basename');
-  /* 锁的是：「P0 下载文件名不从 URL 直接取（防 %2F..%2F 穿越）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(fn.includes('BAD_NAME_BASE'), '没有挡 Windows 设备名');
+  /* 行为：穿越、设备名、纯点回退三种形态都要正确 */
+  const evil = fromUrl('https://x.com/a%2F..%2F..%2F..%2FWindows%2Fwin.ini');
+  assert.ok(!evil.includes('/') && !evil.includes('\\'), '穿越未被挡住: ' + evil);
+  assert.strictEqual(evil, 'win.ini');
+  assert.strictEqual(fromUrl('https://x.com/CON'), '_CON', '没有挡 Windows 设备名');
+  assert.strictEqual(fromUrl('https://x.com/'), 'download.bin', '空末段未回退默认名');
 });
 
 /* P0-2 Office 转换覆盖同基名文件 */
@@ -669,14 +660,17 @@ t('P0 office:convert LibreOffice 分支先转临时目录再挪', () => {
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(seg.includes('uniqueTarget') || seg.includes('fsOps.uniquePath'),
     '没有唯一化输出名');
-  /* 提交动作可能是 moveFile（跨盘时裸 rename 会 EXDEV）而不是 fsp.rename，
-   * 所以两种都接受 —— 断言的是「有个把临时产物挪到最终位置的动作」。 */
+  /* 锁的是：「P0 office:convert LibreOffice 分支先转临时目录再挪」这一组回归。
+   * 提交动作可能是 moveFile（跨盘裸 rename 会 EXDEV）或 fsp.rename，两种都接受。 */
   assert.ok(seg.includes('moveFile(') || seg.includes('fsp.rename('), '没有「转完再挪」的提交动作');
 });
 
 /* P0-3 PDF 拆分/转图片固定命名 */
 t('P0 PDF 拆分输出目录带时间戳', () => {
   const s = read('js/tools/office.js');
+  /* 锁的是：「P0 PDF 拆分输出目录带时间戳」这一组回归。
+   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
+   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(/-split-' \+ stamp/.test(s), '拆分目录没有时间戳');
   /* 锁的是：「P0 PDF 拆分输出目录带时间戳」这一组回归。
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
@@ -725,24 +719,19 @@ t('P0 writeFileAtomic 不用「先 rm 后 rename」', () => {
 
 /* P1-4 笔记文件名过滤 */
 t('P1 笔记文件名挡住设备名与尾随点', () => {
-  const s = read('js/tools/text-tools.js');
-  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(s.includes('safeNoteName'), '没有安全文件名函数');
-  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  const fn = s.match(/function safeNoteName[\s\S]*?\n      \}/)[0];
-  assert.ok(fn.includes('DEVICE_BASE'), '没有挡 Windows 设备名');
-  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/\[\. \]\+\$/.test(fn), '没有去尾随点/空格');
-  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(fn.includes('replace(/^\\.+/, \'\')'), '没有去首部点');
+  /* 【v0.9.2 起复用 lib/safe-name.js 的 fromTitle】
+   * 这里原本对 text-tools.js 里内联的 safeNoteName 做源码断言（切函数体、
+   * 查 DEVICE_BASE / 尾随点正则）。实现已抽到 lib，行为断言更准且抗重构。 */
+  const { fromTitle } = require('../lib/safe-name');
+  assert.strictEqual(fromTitle('CON', '.md'), '_CON.md', '没有挡 Windows 设备名');
+  assert.strictEqual(fromTitle('nul', '.md'), '_nul.md', '没有挡 Windows 设备名');
+  assert.strictEqual(fromTitle('note.', '.md'), 'note.md', '没有去尾随点');
+  assert.strictEqual(fromTitle('note ', '.md'), 'note.md', '没有去尾随空格');
+  assert.strictEqual(fromTitle('..', '.md'), '未命名.md', '没有挡住纯点标题');
+  assert.strictEqual(fromTitle('a/b', '.md'), 'a_b.md', '没有替换路径分隔符');
+  /* 锁的是：「P1 笔记文件名挡住设备名与尾随点」这一组回归——渲染层必须真的
+   * 走 lib/safe-name.js，而不是自己又写一份（两份实现会各自补各自的漏洞）。 */
+  assert.ok(read('js/tools/text-tools.js').includes('SafeName'), '笔记名没有复用 lib/safe-name.js');
 });
 
 /* P1-5 批量改后缀 */
@@ -935,6 +924,7 @@ t('P2 ffmpeg:audio-cut 拒绝输出等于输入', () => {
    * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
    * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
   assert.ok(seg.includes('输出文件不能与源文件相同'), '没有自我覆盖检查');
+  /* 锁的是：「P2 ffmpeg:audio-cut 拒绝输出等于输入」这一组回归——覆盖闸门必须也在。 */
   assert.ok(seg.includes('checkOverwritable'), '没有覆盖闸门');
 });
 
