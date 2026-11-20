@@ -21,9 +21,14 @@
     try { raw = decodeURIComponent(String(url).split('?')[0].split('#')[0].split('/').pop() || ''); } catch (e) { raw = ''; }
     // 只保留最后一段（挡掉解码后出现的 / 和 \）
     raw = raw.split(/[\\/]/).pop() || '';
-    // 去掉控制字符与 Windows 非法字符
-    raw = raw.replace(/[\x00-\x1f<>:"|?*]/g, '_').replace(/^\.+/, '').replace(/[. ]+$/, '');
-    if (!raw || raw === '.' || raw === '..') return 'download.bin';
+    /* 【不要再无条件剥前导点】原写法 `.replace(/^\.+/, '')` 把 `.bashrc` /
+     * `.gitignore` / `.env` 改成了 `bashrc` / `gitignore` / `env` —— 下载下来
+     * 的隐藏配置文件当场变成普通文件，用户拿到的名字和线上文件名不一致。
+     * 这里只剥「纯点」这种无意义形态（`.` / `..` / `...`），保留正常的点开头名。
+     * 尾部的点与空格仍要剥：那是 Windows 不允许的（会被系统静默吞掉）。 */
+    raw = raw.replace(/[\x00-\x1f<>:"|?*]/g, '_').replace(/[. ]+$/, '');
+    if (/^\.+$/.test(raw)) return 'download.bin';
+    if (!raw) return 'download.bin';
     // 保留设备名但改成可用的名字
     const base = raw.split('.')[0];
     if (BAD_NAME_BASE.test(base)) raw = '_' + raw;

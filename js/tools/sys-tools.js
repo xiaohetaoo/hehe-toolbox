@@ -147,7 +147,14 @@
             h('div', { class: 'progress', style: { flex: '1' } }, h('div', { class: 'progress-fill', style: { width: usedPct + '%', background: usedPct >= 90 ? 'var(--danger)' : usedPct >= 70 ? 'var(--warning)' : 'var(--primary)' } })),
             h('span', { class: 'field-hint', style: { width: '180px' } }, `${fmtBytes(p.size - p.free)} / ${fmtBytes(p.size)}（${usedPct.toFixed(0)}%）`)));
         }
-      }).catch(() => {});
+      }).catch((e) => {
+        /* 【不能只写 .catch(() => {})】
+         * 读硬件信息失败时（WMI 被策略禁用、磁盘刚拔出等），原来这条空 catch
+         * 会让「磁盘用量」卡片永远是空白 —— 用户看着一个空卡片，既不知道是
+         * 还在加载、还是这台机器没有磁盘、还是查询失败。如实写一句原因。 */
+        diskBox.innerHTML = '';
+        diskBox.appendChild(div('field-err', '✗ 读取磁盘分区失败：' + ((e && e.message) || String(e))));
+      });
       page.appendChild(div('card', div('card-title', 'CPU 使用率'), h('div', { style: { marginBottom: '8px' } }, cpuNow, h('span', { class: 'stat-unit' }, '%')), cpuCanvas));
       page.appendChild(div('card', div('card-title', '内存使用率'), h('div', { style: { marginBottom: '8px' } }, memNow, h('span', { class: 'stat-unit' }, '%')), memCanvas));
       page.appendChild(div('card', div('card-title', '磁盘用量'), diskBox));

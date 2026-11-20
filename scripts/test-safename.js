@@ -7,24 +7,22 @@ const t = (name, fn) => {
   catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
 };
 const assert = require('assert');
+const { readSrc } = require('./lib/harness');
 
-/* 复刻 net-tools.js 的 safeNameFromUrl */
-const BAD_NAME_BASE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
-function safeNameFromUrl(url) {
-  let raw = '';
-  try { raw = decodeURIComponent(String(url).split('?')[0].split('#')[0].split('/').pop() || ''); } catch (e) { raw = ''; }
-  raw = raw.split(/[\\/]/).pop() || '';
-  raw = raw.replace(/[\x00-\x1f<>:"|?*]/g, '_').replace(/^\.+/, '').replace(/[. ]+$/, '');
-  if (!raw || raw === '.' || raw === '..') return 'download.bin';
-  const base = raw.split('.')[0];
-  if (BAD_NAME_BASE.test(base)) raw = '_' + raw;
-  if (raw.length > 180) {
-    const dot = raw.lastIndexOf('.');
-    const ext = dot > 0 ? raw.slice(dot) : '';
-    raw = raw.slice(0, 180 - ext.length) + ext;
-  }
-  return raw;
-}
+/* 【从源码抽真实实现，不再复刻】
+ * 原来这里手抄了一份 safeNameFromUrl —— 副本与实现必然分叉：
+ * 实现修了「无条件剥前导点导致 .bashrc 变成 bashrc」之后，副本仍是旧逻辑，
+ * 于是测试照样绿、真实行为仍是错的（这就是「测副本造成的假绿」）。
+ * 现在用 readSrc（剥注释后不影响求值）把函数体原样切出来求值，
+ * 测的就是线上跑的那份代码。
+ * 锁的是：net-tools.js 里 safeNameFromUrl 的实现（函数名与形态变了要同步改本断言）。 */
+const netSrc = readSrc('js/tools/net-tools.js');
+const fnStart = netSrc.indexOf('function safeNameFromUrl(');
+assert.ok(fnStart >= 0, 'net-tools.js 里找不到 safeNameFromUrl');
+const fnEnd = netSrc.indexOf('\n  }\n', fnStart) + 4;
+const fnBody = netSrc.slice(fnStart, fnEnd);
+const badNameBase = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const safeNameFromUrl = new Function('BAD_NAME_BASE', fnBody + '\nreturn safeNameFromUrl;')(badNameBase);
 
 /* 复刻 text-tools.js 的 safeNoteName */
 const DEVICE_BASE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
@@ -49,12 +47,15 @@ t('带 query 的 URL 忽略参数', () => {
 t('%2F..%2F 穿越被挡成单层文件名', () => {
   const evil = 'https://x.com/a%2F..%2F..%2F..%2FWindows%2Fwin.ini';
   const got = safeNameFromUrl(evil);
+  /* 锁的是：%2F 解码后的路径穿越必须被「只留最后一段」挡掉（历史回归：
+   * 早期实现拼 userData 就能写到 userData 之外）。行为断言直接对真实函数。 */
   assert.ok(!got.includes('/'), '仍含斜杠: ' + got);
   assert.ok(!got.includes('\\'), '仍含反斜杠: ' + got);
   assert.strictEqual(got, 'win.ini');
 });
 t('%5C 反斜杠穿越被挡', () => {
   const got = safeNameFromUrl('https://x.com/a%5C..%5C..%5Cevil.bat');
+  /* 锁的是：%5C（反斜杠）解码后同样可能穿越，必须与 %2F 同等对待。 */
   assert.ok(!got.includes('\\'), '仍含反斜杠: ' + got);
 });
 t('Windows 设备名被改写', () => {
@@ -73,6 +74,23 @@ t('超长名被截断且保留扩展名', () => {
   const got = safeNameFromUrl('https://x.com/' + 'a'.repeat(300) + '.zip');
   assert.ok(got.length <= 180, '长度 ' + got.length);
   assert.ok(got.endsWith('.zip'), '扩展名丢了: ' + got);
+});
+/* 【点开头的隐藏文件名必须保留】原实现无条件 .replace(/^\.+/, '')，
+ * 把 .bashrc / .gitignore / .env 剥成 bashrc / gitignore / env ——
+ * 下载下来的隐藏配置文件当场改名，用户拿到的名字与线上不一致。 */
+t('点开头的隐藏文件名保留前导点', () => {
+  /* 锁的是：历史回归——实现曾用 `.replace(/^\.+/, '')` 无条件剥前导点，
+   * 把 .bashrc 剥成 bashrc。剥「纯点」与剥「正常点开头名」必须区分开。 */
+  assert.strictEqual(safeNameFromUrl('https://x.com/.bashrc'), '.bashrc');
+  assert.strictEqual(safeNameFromUrl('https://x.com/.gitignore'), '.gitignore');
+  assert.strictEqual(safeNameFromUrl('https://x.com/.env'), '.env');
+  assert.strictEqual(safeNameFromUrl('https://x.com/.env.local'), '.env.local');
+});
+t('纯点名仍回退默认名（不能变成空名或穿越）', () => {
+  /* 锁的是：剥前导点的放宽不能把 `..` / `...` 也放行 —— 纯点形态无意义，必须回退默认名。 */
+  for (const u of ['https://x.com/.', 'https://x.com/..', 'https://x.com/...', 'https://x.com/']) {
+    assert.strictEqual(safeNameFromUrl(u), 'download.bin', u + ' 应回退');
+  }
 });
 
 /* ---------- 笔记名 ---------- */
@@ -108,6 +126,8 @@ t('超长标题被截断', () => {
 t('笔记名不含任何 Windows 非法字符', () => {
   for (const ch of ['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
     const got = safeNoteName('a' + ch + 'b');
+    /* 锁的是：笔记名会拼进 userData 路径写盘，9 个 Windows 非法字符一个都不能漏
+     * （历史回归形态：新增字符替换规则时漏了某个字符，写盘在含该字符的标题下失败）。 */
     assert.ok(!got.includes(ch), ch + ' 未被替换: ' + got);
   }
 });

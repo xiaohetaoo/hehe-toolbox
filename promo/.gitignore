@@ -1,0 +1,5 @@
+# 宣传片工程：只提交源码与素材，不提交依赖与渲染产物
+node_modules/
+out/
+.remotion/
+*.log
