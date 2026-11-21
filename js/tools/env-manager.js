@@ -90,7 +90,17 @@
         detectBox.appendChild(window.ui.loadingBlock(T('检测本机已有环境…')));
         try {
           detected = (await invoke(Channels.CHANNELS.ENV.DETECT, !!force)).detected || [];
-        } catch (e) { detected = []; }
+        } catch (e) {
+          detected = [];
+          /* 【与 R11-2 同类】空 catch 会把「检测失败」伪装成「没有已装环境」：
+           * 用户看到「没有检测到…」就可能直接去装，而实际只是检测命令被策略挡了。
+           * 如实写出原因；旧冲突警告一并清掉（检测失败时它已不可信）。 */
+          detectBox.innerHTML = '';
+          detectBox.appendChild(div('field-err', '✗ ' + T('检测本机环境失败：') + ((e && e.message) || String(e))));
+          warnBox.innerHTML = '';
+          draw();
+          return;
+        }
         drawDetect();
         draw();  /* 重新绘制卡片里的「本机已装」提示 */
       }

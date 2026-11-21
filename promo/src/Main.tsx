@@ -100,15 +100,15 @@ const Chip: React.FC<{ children: React.ReactNode; accent?: boolean }> = ({ child
 /* 【整窗必须完整可见】
  * 上一版 zoom 到 1.16 + rotY 透视，卡片的左右边缘被裁掉 —— 观众第一眼
  * 看到的「软件界面」是残缺的。开场这一段的任务是"让人看清这是什么"，
- * 所以 zoom 上限锁在 1.0（1.0 = 整屏页面刚好装进 1920×1080），
- * 只在最后轻微推近到 1.03 保留一点呼吸感，且**不加透视**（透视会切角）。 */
+ * 所以 zoom 锁死 1.0（1.0 = 整屏页面刚好装进 1920×1080），只做轻微
+ * 平移（cx/cy 漂移 25/16px）保留呼吸感，且**不加透视**（透视会切角）。 */
 const Opening: React.FC = () => {
   const f = useCurrentFrame();
   /* 【整窗完整可见 + 尽量大】
    * 卡片宽 1000 → 高 562.5（16:9），从 (860,120) 放到 (1860,682.5)：
-   * 右边界 1860 < 1920、下边界 682.5 < 1080，且 zoom 恒 ≤1.03 ——
-   * zoom 1.03 时整窗内容仍全部落在卡片内（PageCam 只缩放页面，
-   * 卡片外框由 Stage 固定，所以 1.03 只让页面轻微溢出，不会切掉窗口边框）。
+   * 右边界 1860 < 1920、下边界 682.5 < 1080，且 zoom 恒为 1.0 ——
+   * 整窗内容全部落在卡片内（PageCam 只缩放页面，卡片外框由 Stage 固定，
+   * 1.0 时页面刚好铺满，不会切掉窗口边框）。
    * 之前用 860 宽是怕挤压左侧标题，实测 1000 宽 + 800 宽的标题栏仍有余量。 */
   const keys = smoothKeys(126, { cx: 960, cy: 540, zoom: 1.0 }, { cx: 985, cy: 556, zoom: 1.0 }, 30);
   const card = rect('home', '.home-cat', 4);
@@ -457,11 +457,14 @@ const SFX: Cue[] = [
   [800, 'sparkle', 0.26],
 ];
 
-/* 【不用 <Sequence> 包 <Audio>】
- * 实测报错：渲染时 staticFile 解析出的路径带 webpack 临时目录前缀，
- * Sequence 的 layout="none" 组合会让 Audio 在错误时机解析 public 资源，
- * 报 404（public/audio/sfx/whoosh-quick.mp3 could not be found）。
- * 改用 <Audio> 自带的 trimAfter / startFrom 控制时长，路径解析走同一条链。 */
+/* 【音轨实际由 scripts/mix-audio.js 外部混】
+ * 本机 Remotion 4.0.484 在 Windows 上预处理音轨报 Permission denied
+ * （remotion-audio-mixing\0.wav 父目录不存在），所以渲染一律 --muted，
+ * 这里的 <Audio> 只作为时间线声明存在。外部混音脚本从下面这张 SFX 表
+ * 读帧位/音量/时长（含「无 dur 默认截 90 帧」规则），两边必须同规则。
+ * 曾试过不用 Sequence 包 Audio（注释里写过 trimAfter/startFrom 方案），
+ * 实测 staticFile 在 Sequence layout="none" 组合下报 404，最终回到
+ * Sequence + --muted + 外部混音这条稳定链路。 */
 const SfxTrack: React.FC = () => (
   <>
     {SFX.map(([from, name, volume, dur], i) => (

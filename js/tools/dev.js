@@ -505,7 +505,12 @@
       const bodyTa = h('textarea', { class: 'pane-ta', placeholder: '请求体（JSON 或文本）…', style: { minHeight: '100px' } });
       const respStatus = h('span', { class: 'field-hint' }, '');
       const respTa = h('textarea', { class: 'pane-ta readonly mono', readonly: true, placeholder: '响应…', style: { minHeight: '260px' } });
-      async function send() {
+      /* 【send 必须防重入】HTTP 请求动辄几秒，用户看不到进度就会连点「发送」；
+       * 两个请求并发返回时，后完成的覆盖先完成的 —— 界面上响应区显示的
+       * 可能是第一次请求的结果，而状态行写着第二次的状态，请求与响应对不上。
+       * 项目约定统一走 ui.guard()（并发挡掉、任何 return/throw 都复位），
+       * 这类 bug 历史上出现过 7 次，见 ui.js guard 的说明。 */
+      const send = window.ui.guard(async () => {
         const url = urlIn.value.trim();
         if (!url) return toast('请输入 URL', 'warn');
         respStatus.textContent = '请求中…';
@@ -522,7 +527,7 @@
           respStatus.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           respTa.value = '';
         }
-      }
+      });
       page.appendChild(div('card', div('card-title', '请求'),
         div('form-row', methodSel, urlIn, btn('发送', 'btn-primary', send, 'send')),
         div('form-row', h('span', { class: 'form-label' }, 'Headers'), headersTa),

@@ -88,15 +88,21 @@ t('hostsToScan 生成 254 个地址且不含 0/255', () => {
   assert.ok(!list.some((x) => x.endsWith('.0') || x.endsWith('.255')), '不该含 .0 或 .255');
 });
 
-/* ---------- 结果合并 ---------- */
+/* ---------- 结果合并 ----------
+ * 【v0.9.2 起本机始终出现在列表里】（selfIp 传了就一定有一行 isSelf=true，
+ * 防火墙拦 ICMP 时 ARP/ping 都可能不命中本机）。下面各用例的断言
+ * 要么把本机行计入，要么在排除本机后验证其余设备。 */
 t('合并 ARP 与 ping：ARP 优先（信息更全）', () => {
   const r = L.mergeDevices({
     arp: [{ ip: '192.168.1.1', mac: 'b0-be-76-12-ab-34', type: '动态' }],
     pinged: ['192.168.1.1'],
     selfIp: '192.168.1.100',
   });
-  assert.strictEqual(r.length, 1);
-  assert.strictEqual(r[0].source, 'arp+ping', '同时出现在两处应标记 arp+ping');
+  assert.strictEqual(r.length, 2, '本机行 + 设备行');
+  const dev = r.find((x) => x.ip === '192.168.1.1');
+  assert.strictEqual(dev.source, 'arp+ping', '同时出现在两处应标记 arp+ping');
+  const self = r.find((x) => x.isSelf);
+  assert.strictEqual(self.ip, '192.168.1.100', '本机行必须存在');
 });
 
 t('只在 ping 通、ARP 里没有的设备也会被列出来（MAC 未知）', () => {
@@ -105,9 +111,10 @@ t('只在 ping 通、ARP 里没有的设备也会被列出来（MAC 未知）', 
     pinged: ['192.168.1.7'],
     selfIp: '192.168.1.100',
   });
-  assert.strictEqual(r.length, 1);
-  assert.strictEqual(r[0].mac, null, 'MAC 应为 null 而不是编一个');
-  assert.strictEqual(r[0].source, 'ping');
+  const dev = r.find((x) => x.ip === '192.168.1.7');
+  assert.ok(dev, '设备行必须存在');
+  assert.strictEqual(dev.mac, null, 'MAC 应为 null 而不是编一个');
+  assert.strictEqual(dev.source, 'ping');
 });
 
 t('本机排在最前面', () => {
@@ -129,17 +136,20 @@ t('其余设备按 IP 数值升序（10 排在 9 后面，不是按字符串）'
     ],
     pinged: [], selfIp: '192.168.1.100',
   });
-  const ips = r.map((x) => x.ip);
+  /* 排序断言排除本机行（本机恒排最前，是 R12-4 的行为）。 */
+  const ips = r.filter((x) => !x.isSelf).map((x) => x.ip);
   assert.deepStrictEqual(ips, ['192.168.1.2', '192.168.1.9', '192.168.1.10'],
     '应按数值排序，实际 ' + ips.join(','));
 });
 
-t('合并时过滤 .255 与 .0', () => {
+t('合并时过滤 .255 与 .0（本机行除外）', () => {
   const r = L.mergeDevices({
     arp: [{ ip: '192.168.1.255', mac: 'aa-bb-cc-dd-ee-ff' }],
     pinged: ['192.168.1.0'], selfIp: '192.168.1.100',
   });
-  assert.strictEqual(r.length, 0, '网络边界地址不该被当成设备');
+  const others = r.filter((x) => !x.isSelf);
+  assert.strictEqual(others.length, 0, '网络边界地址不该被当成设备');
+  assert.strictEqual(r.length, 1, '只剩本机行');
 });
 
 t('主机名能被带上', () => {
@@ -153,10 +163,17 @@ t('主机名能被带上', () => {
 
 /* ---------- 诚实提示 ---------- */
 t('提示里明确说明「结果可能不全」及原因', () => {
+  /* 锁的是：caveats 文案四要素——「可能不全」「防火墙挡 ping」「休眠不在表里」
+   * 「只扫 /24」。这是对用户的诚实承诺，少一条都会让人误判扫描结果；
+   * 文案内容只能源码断言（它不经过任何运行时分支）。 */
   const c = L.caveats({ arpOnly: 2, pingOnly: 1 }).join(' ');
+  /* 锁的是：「结果可能不全」这句必须出现。 */
   assert.ok(/可能不全/.test(c), '应提示可能不全');
+  /* 锁的是：必须解释防火墙会挡 ping（最常见的漏扫误因）。 */
   assert.ok(/防火墙/.test(c), '应解释防火墙会挡 ping');
+  /* 锁的是：必须解释休眠设备不在 ARP 表里。 */
   assert.ok(/休眠/.test(c), '应解释休眠设备可能不在表里');
+  /* 锁的是：必须说明只扫 /24（不是全网段）。 */
   assert.ok(/\/24/.test(c), '应说明只扫 /24');
 });
 
@@ -189,7 +206,10 @@ t('parseIpconfig 收集全部 IPv4 而不是只取第一个', () => {
 });
 
 t('parseIpconfig 带上所属网卡名', () => {
+  /* 锁的是：ipconfig 多网卡解析必须把「地址 → 网卡」对应起来 ——
+   * 多网卡默认选网段就靠这个归属（配合 pickScanTarget 的私有段挑选）。 */
   const list = L.parseIpconfig(REAL_IPCONFIG);
+  /* 锁的是：VMware/WLAN 两行是真实机器上的多网卡形态。 */
   assert.ok(/VMware/i.test(list[1].adapter), '第二个应归属 VMware 网卡，实际 ' + list[1].adapter);
   assert.ok(/WLAN|无线/i.test(list[2].adapter), '第三个应归属 WLAN，实际 ' + list[2].adapter);
 });
@@ -226,15 +246,21 @@ t('isPrivateIp 拒绝非私有段（172.32 不属 172.16/12）', () => {
   assert.strictEqual(L.isPrivateIp('203.0.113.5'), false);
 });
 
-t('lan-scan 文案与实现一致：是 TCP 80 探测，不是 ping/ICMP', () => {
-  const ui = read('js/tools/lan-scan.js');
-  assert.ok(!/挡 ICMP|不回应 ICMP|仅 ping/.test(ui), '界面仍把探测说成 ping/ICMP');
-  assert.ok(/TCP 80 端口探测/.test(ui), '界面应说明是 TCP 80 探测');
-  const lib = read('lib/lan-scan.js');
-  assert.ok(!/Windows 防火墙默认会挡掉 ping/.test(lib), 'lib 的 caveats 仍说 ping');
-  assert.ok(/TCP 80 端口探测/.test(lib), 'lib 的 caveats 应说明 TCP 80');
-  /* 而实现确实是 TCP 80 */
-  assert.ok(/s\.connect\(80, ip\)/.test(stripComments(mainSrc)), '实现应仍是 TCP 80');
-});
+t('lan-scan 文案与实现一致：是 TCP 80 探测，不是 ping/ICMP', () => {
+  /* 锁的是：「探测方式」的文案一致性——渲染层与 lib 的 caveats 都必须说
+   * TCP 80 端口探测，不能残留 ping/ICMP 说法（历史遗留：实现改了文案没跟上，
+   * 用户会以为漏扫是因为没回应 ping）。文案与实现接线只能源码断言。 */
+  const ui = read('js/tools/lan-scan.js');
+  /* 锁的是：渲染层不得残留 ping/ICMP 说法。 */
+  assert.ok(!/挡 ICMP|不回应 ICMP|仅 ping/.test(ui), '界面仍把探测说成 ping/ICMP');
+  /* 锁的是：渲染层必须写明 TCP 80。 */
+  assert.ok(/TCP 80 端口探测/.test(ui), '界面应说明是 TCP 80 探测');
+  /* 锁的是：lib 的 caveats 同一口径。 */
+  const lib = read('lib/lan-scan.js');
+  assert.ok(!/Windows 防火墙默认会挡掉 ping/.test(lib), 'lib 的 caveats 仍说 ping');
+  assert.ok(/TCP 80 端口探测/.test(lib), 'lib 的 caveats 应说明 TCP 80');
+  /* 锁的是：而实现确实是 TCP 80（文案说 80 就必须真是 80）。 */
+  assert.ok(/s\.connect\(80, ip\)/.test(stripComments(mainSrc)), '实现应仍是 TCP 80');
+});
 
 done();

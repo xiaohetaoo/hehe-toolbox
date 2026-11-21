@@ -192,6 +192,7 @@
       '读取环境清单…': 'Loading runtime list…',
       '读取失败：': 'Failed to load: ',
       '检测本机已有环境…': 'Detecting installed runtimes…',
+      '检测本机环境失败：': 'Failed to detect runtimes: ',
       '本机已检测到的环境': 'Detected on this machine',
       '{n} 项': '{n} found',
       '无': 'none',

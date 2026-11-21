@@ -253,7 +253,10 @@ module.exports = [
    * 【环境】node + 允许 require。scripts/ 里全是 CommonJS 脚本。
    * ============================================================ */
   {
-    files: ['scripts/**/*.js'],
+    /* promo/scripts/ 是宣传片工程的 Node 工具脚本（混音等），与 scripts/ 同待遇：
+     * 不查的话 `eslint .` 会按无环境声明的默认规则报一片 no-undef（require/process），
+     * 实测 13 条直接把 lint 门禁打红（2026-11-20，mix-audio.js 入库时踩到）。 */
+    files: ['scripts/**/*.js', 'promo/scripts/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'commonjs',

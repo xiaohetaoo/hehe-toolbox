@@ -8,12 +8,9 @@
  * 实现已抽到 lib/safe-name.js（纯函数，渲染层与 Node 共用），
  * 这里 require 的就是线上跑的那份，既不是副本也不需要切源码。 */
 
-let pass = 0, fail = 0;
-const t = (name, fn) => {
-  try { fn(); pass++; console.log('PASS  ' + name); }
-  catch (e) { fail++; console.log('FAIL  ' + name + '  -> ' + e.message); }
-};
-const assert = require('assert');
+/* 【骨架用共享 harness】项目约定所有测试脚本共用 scripts/lib/harness.js，
+ * 不再各自手写 t()（输出格式逐字一致：PASS 双空格 / FAIL '  -> ' / 结果行）。 */
+const { t, done, assert } = require('./lib/harness');
 const { fromUrl: safeNameFromUrl, fromTitle: safeNoteNameRaw } = require('../lib/safe-name');
 
 const safeNoteName = (s) => safeNoteNameRaw(s, '.md');
@@ -55,6 +52,14 @@ t('超长名被截断且保留扩展名', () => {
   const got = safeNameFromUrl('https://x.com/' + 'a'.repeat(300) + '.zip');
   assert.ok(got.length <= 180, '长度 ' + got.length);
   assert.ok(got.endsWith('.zip'), '扩展名丢了: ' + got);
+});
+/* 【锁的是】扩展名本身超预算时 keep 为负，slice(0, 负数) 从尾部数，
+ * 拼回 ext 反而更长（修复前实测 482 > 180）——长度契约必须无条件成立。 */
+t('扩展名超长时仍不超长度上限（负 keep 边界）', () => {
+  const got = safeNameFromUrl('https://x.com/x.' + 'b'.repeat(300));
+  assert.ok(got.length <= 180, '长度 ' + got.length);
+  const got2 = safeNameFromUrl('https://x.com/' + 'c'.repeat(179) + '.' + 'd'.repeat(50));
+  assert.ok(got2.length <= 180, '长度 ' + got2.length);
 });
 t('非法百分号编码不抛异常', () => {
   const got = safeNameFromUrl('https://x.com/%zz.bin');
@@ -108,6 +113,12 @@ t('超长标题被截断且保留 .md', () => {
   assert.ok(got.length <= 123, '长度 ' + got.length);
   assert.ok(got.endsWith('.md'));
 });
+/* 【锁的是】fromTitle 的负 max 边界：suffix 超预算时 slice(0, 负数)
+ * 从尾部数反而更长（修复前实测 320 > 120）。长度契约无条件成立。 */
+t('超长自定义扩展名仍不超长度上限（负 max 边界）', () => {
+  const got = safeNoteNameRaw('t'.repeat(200), '.' + 'e'.repeat(150));
+  assert.ok(got.length <= 120, '长度 ' + got.length);
+});
 t('笔记名不含任何 Windows 非法字符', () => {
   for (const ch of ['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
     const got = safeNoteName('a' + ch + 'b');
@@ -119,5 +130,4 @@ t('自定义扩展名生效', () => {
   assert.strictEqual(safeNoteNameRaw('笔记', ''), '笔记');
 });
 
-console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
-process.exit(fail === 0 ? 0 : 1);
+done();

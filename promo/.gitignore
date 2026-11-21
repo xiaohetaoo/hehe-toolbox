@@ -3,3 +3,6 @@ node_modules/
 out/
 .remotion/
 *.log
+
+# ffmpeg 二进制（61MB，按需放置，不入库）
+.ffmpeg/

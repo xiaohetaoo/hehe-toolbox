@@ -31,7 +31,12 @@
       });
       const status = h('span', { class: 'field-hint' }, '');
 
-      const mergeBtn = btn('合并为一个 PDF', 'btn-primary', async () => {
+      /* 【四个操作共用一个防重入闸】合并/提取/拆分/旋转都是 pdf-lib 的长任务
+       * （大文件合并要几十秒），连点会并发跑两份 pdf-lib、互相抢 UI 线程，
+       * 还可能对同一个输出路径弹两次保存框。项目约定统一走 ui.guard()：
+       * 并发第二次直接挡掉、任何 return/throw 都会复位。 */
+      const guard = window.ui.guard;
+      const mergeBtn = btn('合并为一个 PDF', 'btn-primary', guard(async () => {
         if (picker.count < 2) return toast('合并至少需要 2 个 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
@@ -48,10 +53,10 @@
           await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
           toast('合并完成：' + outPath, 'success');
         } catch (e) { toast('合并失败：' + e.message, 'error'); }
-      }, 'link');
+      }), 'link');
 
       const pageIn = h('input', { class: 'input input-sm mono', placeholder: '页码范围，如 1-3,5', style: { width: '160px' } });
-      const extractBtn = btn('提取页面', 'btn-secondary', async () => {
+      const extractBtn = btn('提取页面', 'btn-secondary', guard(async () => {
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
@@ -70,10 +75,10 @@
           await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
           toast(`已提取 ${parsed.pages.length} 页`, 'success');
         } catch (e) { toast('提取失败：' + e.message, 'error'); }
-      }, 'file-text');
+      }), 'file-text');
 
       const splitEvery = h('input', { type: 'number', class: 'input input-sm', value: '1', min: '1', style: { width: '70px' } });
-      const splitBtn = btn('拆分 PDF', 'btn-secondary', async () => {
+      const splitBtn = btn('拆分 PDF', 'btn-secondary', guard(async () => {
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
@@ -97,10 +102,10 @@
           }
           toast(`已拆分为 ${Math.ceil(n / per)} 个文件：${dir}`, 'success');
         } catch (e) { toast('拆分失败：' + e.message, 'error'); }
-      }, 'scissors');
+      }), 'scissors');
 
       const rotSel = h('select', { class: 'select input-sm' }, h('option', { value: '90' }, '90°'), h('option', { value: '180' }, '180°'), h('option', { value: '270' }, '270°'));
-      const rotBtn = btn('旋转全部页面', 'btn-secondary', async () => {
+      const rotBtn = btn('旋转全部页面', 'btn-secondary', guard(async () => {
         if (!picker.count) return toast('请先选择 PDF', 'warn');
         try {
           const { PDFDocument, degrees } = window.PDFLib;
@@ -114,7 +119,7 @@
           await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
           toast('旋转完成', 'success');
         } catch (e) { toast('旋转失败：' + e.message, 'error'); }
-      }, 'refresh');
+      }), 'refresh');
 
       function parseRanges(v, maxPage) {
         const set = [];
@@ -178,7 +183,9 @@
           row.appendChild(down);
         }
       });
-      const btn2 = btn('转换为 PDF', 'btn-primary', async () => {
+      /* 【防重入】图片逐张读取 + pdf-lib 组装是大任务，连点会并发两份组装、
+       * 还可能对同一输出路径弹两次保存框。与其他 PDF 操作共用 ui.guard() 约定。 */
+      const btn2 = btn('转换为 PDF', 'btn-primary', window.ui.guard(async () => {
         if (!picker.count) return toast('请先选择图片', 'warn');
         try {
           const { PDFDocument } = window.PDFLib;
@@ -200,7 +207,7 @@
           await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, btoa(bin));
           toast('已生成：' + outPath, 'success');
         } catch (e) { toast('转换失败：' + e.message, 'error'); }
-      }, 'file-text');
+      }), 'file-text');
       page.appendChild(div('card', div('card-title', '选择图片'), picker.el, div('form-row', btn2)));
     }
   });
@@ -286,7 +293,7 @@
       });
       const status = h('span', { class: 'field-hint' }, '');
       const view = div('doc-preview-box', { style: { maxHeight: '70vh', overflow: 'auto', padding: '8px', background: 'var(--bg-2)', borderRadius: '8px', marginTop: '8px' } });
-      async function preview() {
+      async function previewRun() {
         if (!filePath) return toast('请先选择文档', 'warn');
         view.innerHTML = '';
         const ext = filePath.split('.').pop().toLowerCase();
@@ -311,6 +318,9 @@
           toast(`不支持预览 .${ext} 文件；可预览 PDF / TXT / MD / Word / Excel / PPT`, 'warn');
         } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
       }
+      /* 【防重入】Office 转 PDF 要拉起 LibreOffice（首次可达十几秒），
+       * 连点会并发拉起两个 soffice 进程、预览框内容互相覆盖。 */
+      const preview = window.ui.guard(previewRun);
       async function renderPdf(p) {
         if (!window.pdfjsLib) return toast('pdf.js 未加载', 'error');
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
@@ -369,7 +379,7 @@
       fromSel.value = 'zh';
       const ta = h('textarea', { class: 'pane-ta', placeholder: '输入要翻译的文本…', style: { minHeight: '140px' } });
       const out = h('textarea', { class: 'pane-ta readonly', readonly: true, style: { minHeight: '140px' } });
-      async function go() {
+      async function goRun() {
         if (!ta.value.trim()) return;
         out.value = '翻译中…';
         try {
@@ -389,6 +399,9 @@
           } else out.value = '翻译失败：' + (j.responseDetails || '未知错误');
         } catch (e) { out.value = '翻译失败（需要联网）：' + e.message; }
       }
+      /* 【防重入】8 秒超时窗口内连点会并发多个请求，返回顺序不定，
+       * 译文区可能显示成上一次请求的结果。 */
+      const go = window.ui.guard(goRun);
       page.appendChild(div('card', div('card-title', '原文'),
         div('form-row', h('span', { class: 'form-label' }, '语言'), fromSel, h('span', null, '→'), toSel,
           btn('翻译', 'btn-primary', go, 'globe'), h('span', { class: 'field-hint' }, '使用公共翻译引擎，点击时才联网')),

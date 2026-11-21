@@ -188,13 +188,21 @@
               render: (row) => h('span', { style: { fontSize: '12px' } }, row.name || '—'),
             },
             {
-              key: 'source', title: '发现方式', width: '100px',
+              key: 'source', title: '发现方式', width: '110px',
               render: (row) => {
                 /* 内部数据里这两个值仍叫 ping（历史字段名，改动会牵动合并逻辑与
                  * 单测），但界面上必须说清它其实是 TCP 80 端口探测 ——
-                 * 写「Ping」会让用户以为漏扫是因为没回应 ICMP。 */
-                const label = { 'arp': '仅 ARP', 'ping': '仅 80 端口', 'arp+ping': 'ARP + 80 端口' }[row.source] || row.source;
-                const cls = row.source === 'arp' ? 'tag-orange' : 'tag-green';
+                 * 写「Ping」会让用户以为漏扫是因为没回应 ICMP。
+                 * self 是 v0.9.2 起新增的：本机始终列出（防火墙拦 ICMP 时
+                 * ARP/ping 都可能不命中本机，用户会找不到"哪一行是我"）。 */
+                const label = {
+                  'arp': '仅 ARP',
+                  'ping': '仅 80 端口',
+                  'arp+ping': 'ARP + 80 端口',
+                  'self': '本机',
+                }[row.source] || row.source;
+                const cls = row.source === 'arp' ? 'tag-orange'
+                  : row.source === 'self' ? 'tag-blue' : 'tag-green';
                 return h('span', { class: 'tag ' + cls }, label);
               },
             },
