@@ -75,8 +75,8 @@ ipc/
 ## 开发与质量
 
 ```bash
-npm test           # 全部测试（197 个脚本 / 2204 条断言，约 6 分钟）
-npm run test:unit  # 纯 node 的测试（不启 Electron、不 spawn 外部进程，164 个脚本，约 1.5 分钟）
+npm test           # 全部测试（206 个脚本 / 2278 条断言，约 6 分钟）
+npm run test:unit  # 纯 node 的测试（不启 Electron、不 spawn 外部进程，173 个脚本，约 1.5 分钟）
 npm run test:ui    # 启 Electron / 调外部命令的测试（33 个脚本，约 4.5 分钟）
 npm run lint       # ESLint 静态检查（退出码 0 = 通过）
 npm run typecheck  # tsc -p jsconfig.json（checkJs，不出产物，退出码 0 = 通过）
