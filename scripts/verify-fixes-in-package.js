@@ -20,7 +20,19 @@ const os = require('os');
 const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const Z7 = path.join(ROOT, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe');
+/* 【7z 的选择顺序：系统 7-Zip 优先】
+ * 7zip-bin 的 7za.exe 会被 360 等安全软件拦（解压时报「拒绝访问」，
+ * 2026-11-21 实测，与打包拦截是同一类；见交接文档坑 11），系统自装的
+ * 7z.exe 不在拦截名单里。两个都试，谁在用谁。 */
+function findSevenZip() {
+  const cands = [
+    'C:\\Program Files\\7-Zip\\7z.exe',
+    path.join(ROOT, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'),
+  ];
+  for (const c of cands) if (fs.existsSync(c)) return c;
+  throw new Error('找不到 7z：请安装 7-Zip 或 npm install 7zip-bin');
+}
+const Z7 = findSevenZip();
 
 const version = process.argv[2] || require(path.join(ROOT, 'package.json')).version;
 const ZIP = path.join(ROOT, 'dist', 'hehe-toolbox-' + version + '-win-x64.zip');
@@ -327,6 +339,29 @@ const CHECKS_BY_VERSION = {
       (s2) => /\.btn-danger:hover:not\(:disabled\) \{ background: var\(--danger\);/.test(s2)],
     ['js/app.js', 'G8 设置页开发环境门禁说明',
       (s2) => /danger\.envNote/.test(s2)],
+  ],
+  /* v0.9.2 + v0.9.3：safe-name 抽离与第十二轮审查修复。 */
+  '0.9.2': [
+    ['lib/safe-name.js', 'H1 safe-name 纯函数模块存在',
+      (s2) => /fromUrl/.test(s2) && /fromTitle/.test(s2)],
+    ['js/tools/net-tools.js', 'H2 渲染层接 window.SafeName',
+      (s2) => /SafeName && window\.SafeName\.fromUrl/.test(s2)],
+    ['lib/safe-name.js', 'H3 隐藏文件名保留前导点（只剥纯点）',
+      (s2) => /\^\\\.\+\$/.test(s2) && !/replace\(\^\\\.\+\(/.test(s2)],
+  ],
+  '0.9.3': [
+    ['js/tools/dev.js', 'J1 http-client send 接 ui.guard',
+      (s2) => /const send = window\.ui\.guard\(async/.test(s2)],
+    ['js/tools/office.js', 'J2 七处长任务接防重入',
+      (s2) => (s2.match(/guard\(async|window\.ui\.guard\(/g) || []).length >= 7],
+    ['lib/hw-encode.js', 'J3 cqFor 回退对齐界面默认 crf23',
+      (s2) => /CQ_FALLBACK_CRF = 23/.test(s2)],
+    ['lib/lan-scan.js', 'J4 mergeDevices 始终列出本机',
+      (s2) => /source: 'self'/.test(s2) && /isSelf: true/.test(s2)],
+    ['js/tools/lan-scan.js', 'J5 渲染层「本机」标签',
+      (s2) => /'self': '本机'/.test(s2)],
+    ['js/tools/env-manager.js', 'J6 环境检测失败如实报错（不再伪装成没有已装环境）',
+      (s2) => /检测本机环境失败/.test(s2)],
   ],
 };
 
