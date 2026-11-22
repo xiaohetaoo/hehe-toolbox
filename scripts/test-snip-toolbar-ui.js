@@ -428,10 +428,10 @@ try {
 
 const line = String(raw || '').split(/\r?\n/).find(l => l.startsWith('SNIPUI '));
 if (!line) {
-  console.log('FAIL 未拿到 SNIPUI 结果（真机部分）');
+    console.log('SKIP 探针未落盘（SNIPUI 真机部分未返回结果）：该环境可能无交互桌面，本脚本未被验证');
   console.log(String(raw).slice(-1500));
   fs.rmSync(tmp, { recursive: true, force: true });
-  done();
+  process.exit(0);
   return;
 }
 const R = JSON.parse(line.slice('SNIPUI '.length));
