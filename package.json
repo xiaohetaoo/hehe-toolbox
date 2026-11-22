@@ -20,7 +20,9 @@
     "test:count": "node scripts/check-assertion-count.js",
     "test:count:write": "node scripts/check-assertion-count.js --write",
     "typecheck": "tsc -p jsconfig.json",
-    "test:list": "node scripts/run-tests.js --list"
+    "test:list": "node scripts/run-tests.js --list",
+    "dist:fetch": "node scripts/fetch-dist.js",
+    "dist:verify": "node scripts/verify-fixes-in-package.js"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",

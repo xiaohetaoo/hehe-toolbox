@@ -363,6 +363,45 @@ const CHECKS_BY_VERSION = {
     ['js/tools/env-manager.js', 'J6 环境检测失败如实报错（不再伪装成没有已装环境）',
       (s2) => /检测本机环境失败/.test(s2)],
   ],
+  /* v0.9.4：取消/生命周期收口 + 测试环境根治。 */
+  '0.9.4': [
+    /* ---- P0 两处「假成功」 ---- */
+    ['main.js', 'K1 runCmd 按退出码判定（非零默认抛，防"有输出就算成功"）',
+      (s2) => /if \(code !== 0 && !opts\.allowNonZero\)/.test(s2)
+        && /allowNonZero/.test(s2)],
+    ['js/tools/sys-tools.js', 'K2 定时关机检查退出码（非零不 arm）',
+      (s2) => /code !== 0/.test(s2) && /退出码/.test(s2)],
+    ['js/tools/sys-tools.js', 'K3 取消定时先收集真实结果，全成功才清状态',
+      (s2) => /const failures = \[\]/.test(s2) && /failures\.length/.test(s2)
+        && /可能仍在生效/.test(s2)],
+    /* ---- P1 取消窗口 ---- */
+    ['lib/run-token.js', 'K4 per-run token 判据模块存在',
+      (s2) => /isCurrentRun/.test(s2) && /planStaleCleanup/.test(s2)],
+    ['js/tools/net-tools.js', 'K5 下载页用 downloadRunSeq（不用布尔 pageDead）',
+      (s2) => /downloadRunSeq/.test(s2) && !/pageDead = false/.test(s2)],
+    ['js/tools/media/screen-rec.js', 'K6 录屏用 token 而非布尔 destroyed',
+      (s2) => /recordingRunToken/.test(s2) && /previewGeneration/.test(s2)
+        && !/destroyed = true/.test(s2)],
+    /* ---- 媒体任务离开即停 ---- */
+    ['js/tools/media/video-press.js', 'K7 压制页离开时 kill 任务',
+      (s2) => /function pageCleanup\(\)/.test(s2) && /JOB\.KILL/.test(s2)],
+    ['js/tools/media/video-trim.js', 'K8 裁剪页离开时 kill 任务',
+      (s2) => /function pageCleanup\(\)/.test(s2) && /JOB\.KILL/.test(s2)],
+    ['js/tools/media/av-convert.js', 'K9 转码页离开时 kill 任务',
+      (s2) => /function pageCleanup\(\)/.test(s2) && /JOB\.KILL/.test(s2)],
+    ['js/tools/media/img-compress.js', 'K10 图片压缩离开后不再写新文件',
+      (s2) => /imgRunSeq/.test(s2) && /cancelFlag \|\| runToken !== imgRunSeq/.test(s2)],
+    /* ---- 其它生命周期 ---- */
+    ['js/tools/sys-tools.js', 'K11 系统定时 onEnter 过期分支清状态',
+      (s2) => /已触发（已结束）/.test(s2)],
+    ['js/tools/lan-scan.js', 'K12 局域网扫描离开后复位状态与按钮',
+      (s2) => /scanRunSeq\+\+/.test(s2) && /作废/.test(s2)],
+    /* ---- 测试环境根治（这一版的核心收益之一） ----
+     * 【不放在这里】`scripts/` 不会打进产物（asar 里只有运行时文件），
+     * 所以对 scripts/lib/electron-launch.js 做产物校验必然 SKIP。
+     * 它的守卫由 test-source-assertions 与 test-round16-behavior 负责，
+     * 不需要在「产物内容」这一层重复。 */
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];

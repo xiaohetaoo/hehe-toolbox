@@ -1,0 +1,28 @@
+chore: 补齐 dist 到 0.9.4 + 固化「每版补产物」流程
+
+新增 scripts/fetch-dist.js（npm run dist:fetch <tag>）
+  · 从 GitHub Release 拉全部资产到 dist/，SHA256 逐字节对 API digest 校验
+  · 幂等：已存在且哈希一致时跳过，不重复下载
+  · 流式哈希（不把 150MB 文件读进内存）
+  · 自动删除旧版本产物
+  · 60 秒无数据即中止（上次 fetch 流挂死的教训）
+
+verify-fixes-in-package.js 补 0.9.4 的 12 项检查（K1~K12），覆盖本版全部
+修复点：runCmd 退出码判定、定时关机检查 code、取消收集真实结果、
+run-token 模块、下载/录屏 token、三个媒体页离开即 kill、
+图片压缩离开停写、onEnter 过期清状态、局域网扫描复位。
+（不放 K13 检查 scripts/lib/electron-launch.js：scripts/ 不进产物，
+在那里校验必然 SKIP，改由 test-source-assertions 守卫。）
+
+package.json 加两个可复用命令：
+  npm run dist:fetch <tag>   拉取并校验产物
+  npm run dist:verify        校验产物内容含本版修复
+
+dist 现状（0.9.4，SHA256 与 GitHub API digest 一致）：
+  hehe-toolbox-0.9.4-win-x64.zip          153.90 MB
+  hehe-toolbox-Portable-0.9.4.exe          99.14 MB
+
+验证：产物校验 12 通过 / 0 失败；
+     test-packaged-assets 从环境跳过恢复为全部通过（+27 条）；
+     全量 209 脚本 / 2341 PASS / 0 失败 / 7 环境跳过（exit 0）；
+     基线重拍 2341（209 文件），check-assertion-count exit 0。
