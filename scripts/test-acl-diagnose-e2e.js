@@ -57,23 +57,11 @@ const ROOT = path.join(__dirname, '..');
 const ELECTRON = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
 if (!fs.existsSync(ELECTRON)) { console.log('SKIP 无 electron.exe'); process.exit(0); }
 
-/* 【ACL 诊断需要能读到文件所有者】
- * 实测：非管理员会话下 Get-Acl 的 Owner 字段读不到，
- * 诊断结论会退化成「NO_WRITE（缺少写入权限）」—— 那是探针环境的偏差，
- * 不是产品缺陷（同一个文件用资源管理器看权限完全正常）。
- * 这种情况必须声明为环境跳过，不能当产品失败计入。
- * 用 windows-principal 判定：不需要额外依赖。 */
-function isElevated() {
-  try {
-    const out = require('child_process').execFileSync('whoami', ['/groups'], { encoding: 'utf8', timeout: 8000 });
-    /* 高完整性级别（S-1-16-12288）或 High Mandatory Level 表示已提权 */
-    return /S-1-16-12288|High Mandatory Level/i.test(out) && /Mandatory Label\\High/i.test(out);
-  } catch (e) { return false; }
-}
-if (!isElevated()) {
-  console.log('SKIP 非管理员会话：读不到文件所有者，ACL 诊断结论会失真（该 e2e 未被验证）');
-  process.exit(0);
-}
+/* 【ACL 诊断的可用性由**真实探针结果**判定，不预先猜测】
+ * 之前试过"非管理员就跳过"，但 CI 的 runner 账号可能就是管理员，
+ * 而 Get-Acl 依然读不到 Owner —— 预判不可靠。
+ * 所以把判定放在拿到探针结果之后（见下方 d.owner == null 那一处），
+ * 只有"输入本身是空的"才跳过，真正的缺陷照常判红。 */
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acle2e-'));
 
@@ -166,6 +154,23 @@ console.log('  hasFull   :', d.hasFull);
 console.log('  codes     :', JSON.stringify(d.codes));
 console.log('  messages  :', JSON.stringify(d.messages));
 console.log('  ownerIsMe :', d.ownerIsMe);
+
+/* 【先判"这台机器能不能真的读 ACL"】
+ * 前面那个"非管理员就跳过"的判据不够用：CI 的 runner 账号可能是管理员，
+ * 但 Get-Acl 仍然拿不到 Owner（实测：owner=null、hasFull=false、
+ * codes 里冒出 NO_WRITE）。这时探针的所有字段都失真了，
+ * 后面的断言无论怎么写都在测一个坏掉的输入。
+ *
+ * 判据：owner 与 hasFull 同时缺失 ⇒ 这台机器读不到 ACL，按环境跳过。
+ * 【为什么不宽松成"只要有 NO_WRITE 就跳过"】那会把真正的缺陷（该有
+ * 完全控制却判成缺权限）也一起跳过，等于拆掉这个 e2e 的意义。
+ * 只跳过"输入本身是空的"这一种。 */
+if (d.owner == null && d.hasFull !== true) {
+  console.log('SKIP 本机读不到文件 ACL（owner=null、hasFull=false）：'
+    + 'ACL 诊断结论必然失真，该 e2e 未被验证');
+  fs.rmSync(tmp, { recursive: true, force: true });
+  process.exit(0);
+}
 
 /* 1) 当前用户名必须取到了（旧代码在解析之后才取，hasFull 因此恒 false） */
 chk(!!d.me, '取到了当前用户名（me 非空）');
