@@ -1,6 +1,6 @@
 # hehe-toolbox（核核工具箱）项目约定
 
-> 工作区：`D:\zcode\hehe` · 版本：`0.9.3` · 更新：2026-11-21
+> 工作区：`D:\zcode\hehe` · 版本：`0.9.4` · 更新：2026-11-22
 > 本文件记录**项目重要事项与协作约定**（协作规则第 3 条）。
 > 完整交接文档在 `D:\dsh\hehe-tool.md`（架构、逐域说明、踩坑大全、发版流程）。
 
@@ -43,7 +43,7 @@
 
 ## 三、发版流程（与协作约定 1 配合）
 
-1. 本地全绿：`npm test`（205 脚本 / 2265 断言；dist 与 package 同版本时 2292）+ `npm run lint` + `npm run typecheck`；
+1. 本地全绿：`npm test`（209 脚本 / 2314 断言；dist 与 package 同版本时会多跑 test-packaged-assets 的 27 条）+ `npm run lint` + `npm run typecheck`；
 2. 升版本：`node scripts/version.js --next --write` + 同步 `package-lock.json`；
 3. 写 `docs/release-notes/vX.Y.Z.md`（≥400 字）；
 4. commit → **先问用户** → push → 等 CI 绿；
@@ -74,20 +74,24 @@
 | `scripts/` | 测试 / 构建 / 发布脚本 |
 | `docs/review-round*.md` | 历轮审查记录（含证据与排除的误报） |
 | `docs/release-notes/` | 每版发布说明 |
-| `dist/` | 产物固定位置（勿删；当前为 0.9.3 的 Portable exe + zip） |
+| `dist/` | 产物固定位置（勿删；当前为 0.9.3 的 Portable exe + zip，0.9.4 待下载） |
 | `D:\dsh\hehe-tool.md` | 完整交接文档（外部，用户指定维护） |
 
-## 六、当前状态（2026-11-21 核对）
+## 六、当前状态（2026-11-22 核对）
 
-- 版本 `0.9.3`，tag `v0.9.3` → `e6c39a8`；`HEAD` 为 `b83f161`
-  （tag 之后 1 个提交：产物校验支持 0.9.3 + 系统 7z 优先）。
-- 工作区干净，`main` 与 `origin/main` 同步；远端 `git@github.com:xiaohetaoo/hehe-toolbox.git`。
-- `dist/` 已有 0.9.3 两个产物：
-  `hehe-toolbox-Portable-0.9.3.exe`（103.9 MB）、`hehe-toolbox-0.9.3-win-x64.zip`（161.4 MB）。
-- 质量门禁：最近一次全量 `206 脚本 / 2278 条断言 / 0 失败 / 4 环境跳过`（332.7s），
-  lint 0、typecheck 0；断言基线 `scripts/assertions-baseline.json` = 2278。
-- 工具数 111（`js/tools/*.js` 29 个文件 + `js/tools/media/` 19 个文件，registry id 111）。
-- 文档：`docs/decisions/` 15 篇平台结论，`docs/review-round*.md` 12 轮审查，
-  `docs/release-notes/` 39 篇；交接文档 `D:\dsh\hehe-tool.md`（81.5 KB，第 11 章已记 v0.9.3）。
-- 待办：无新增；第十二轮审查结论建议后续转为「新功能提交时按需审查」。
-- 文档同步：README 已更新到 206 脚本 / 2278 断言（unit 173 + ui 33），工具数 111 无漂移。
+- 版本 `0.9.4`，tag `v0.9.4` → `ead70cd`；HEAD 与 origin/main 同步。
+- Release：https://github.com/xiaohetaoo/hehe-toolbox/releases/tag/v0.9.4
+  （zip 161.38 MB + Portable 103.96 MB，正文 4189 字，
+  Release workflow run 45000454196 success）。
+- **v0.9.4 内容**：P0 定时关机/重启「假成功」（runCmd 改按退出码判定）+
+  取消定时「可能没取消却报已取消」；P1 止损取消窗口（8 个长任务页面统一
+  per-run 序号）、媒体离开即停、下载过期分支收尾；测试环境根治
+  （19 个 E2E 失败归零，根因是 Chromium 沙箱 + %TEMP% 被拦）。
+- 质量门禁：`npm test` **209 脚本 / 2314 PASS / 0 失败 / 8 环境跳过**，
+  lint 0、typecheck 0；断言基线 **2314**（209 文件）。
+- 工具数 111；`lib/` 49 个模块（新增 `run-token`）、
+  `scripts/lib/` 新增 `electron-launch`。
+- 测试环境：`scripts/lib/electron-launch` 记录了 E2E 必需的
+  `--no-sandbox` 等参数与 TEMP 重定向的根因，换机器先看它。
+- 待办：`dist/` 需补齐 0.9.4 两个产物（下载后跑 verify-fixes-in-package）；
+  P3-7 批处理「续跑 vs 即停」策略待产品决定。
