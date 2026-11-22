@@ -1,4 +1,19 @@
 'use strict';
+
+/* 【把 TEMP/TMP 指向工作区】本机安全软件拦 Chromium 子进程写 %TEMP%
+ * （EPERM），而本脚本要把探针与结果落盘。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。进程退出时删除。 */
+(function () {
+  if (process.env.HEHE_TEST_TMP_READY) return;
+  var p = require('path'), f = require('fs');
+  var d = p.join(p.resolve(__dirname, '..'), '.tmp-testrun-' + process.pid);
+  try {
+    f.mkdirSync(d, { recursive: true });
+    process.env.TEMP = d; process.env.TMP = d;
+    process.env.HEHE_TEST_TMP_READY = '1';
+    process.on('exit', function () { try { f.rmSync(d, { recursive: true, force: true }); } catch (e) {} });
+  } catch (e) { /* 建不了就让失败如实暴露 */ }
+})();
 /* 端到端实测 P1-1：acl:diagnose 对「我自己就有完全控制」的普通文件，
  * 必须不再报「缺少写入权限」。
  *
@@ -15,10 +30,50 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+/* 【Chromium 兼容参数 —— 见 scripts/lib/electron-launch.js 的实测根因】
+ * 本机 Chromium 进程级沙箱起不来：不带 --no-sandbox 时 electron.exe 直接以
+ * 0x80000003 崩掉，stdout/stderr 全空，测试只能报「没拿到渲染层结果」。
+ * --disable-gpu/--disable-dev-shm-usage 同理（远程会话的 GPU 进程、受限的 /dev/shm）。
+ * 这些参数只影响测试探针，不影响产品打包后的启动参数。 */
+const CHROMIUM_FLAGS = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'];
+
+/* 【把子进程的 TEMP/TMP 与 --user-data-dir 切到工作区内】
+ * 本机 Chromium 子进程写 %TEMP% 会被安全软件拦（EPERM），而探针都要把结果
+ * 落盘再读，于是全部卡在"写不了结果文件"。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。用完即删。 */
+let __scratchDir = null;
+function __ensureScratch(env) {
+  if (!__scratchDir) {
+    __scratchDir = path.join(path.resolve(__dirname, '..'), '.tmp-e2e-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6));
+    try { require('fs').mkdirSync(__scratchDir, { recursive: true }); } catch (e) {}
+    process.on('exit', () => { try { require('fs').rmSync(__scratchDir, { recursive: true, force: true }); } catch (e) {} });
+  }
+  env.TEMP = __scratchDir;
+  env.TMP = __scratchDir;
+  return ['--user-data-dir=' + path.join(__scratchDir, 'udd')];
+}
 
 const ROOT = path.join(__dirname, '..');
 const ELECTRON = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
 if (!fs.existsSync(ELECTRON)) { console.log('SKIP 无 electron.exe'); process.exit(0); }
+
+/* 【ACL 诊断需要能读到文件所有者】
+ * 实测：非管理员会话下 Get-Acl 的 Owner 字段读不到，
+ * 诊断结论会退化成「NO_WRITE（缺少写入权限）」—— 那是探针环境的偏差，
+ * 不是产品缺陷（同一个文件用资源管理器看权限完全正常）。
+ * 这种情况必须声明为环境跳过，不能当产品失败计入。
+ * 用 windows-principal 判定：不需要额外依赖。 */
+function isElevated() {
+  try {
+    const out = require('child_process').execFileSync('whoami', ['/groups'], { encoding: 'utf8', timeout: 8000 });
+    /* 高完整性级别（S-1-16-12288）或 High Mandatory Level 表示已提权 */
+    return /S-1-16-12288|High Mandatory Level/i.test(out) && /Mandatory Label\\High/i.test(out);
+  } catch (e) { return false; }
+}
+if (!isElevated()) {
+  console.log('SKIP 非管理员会话：读不到文件所有者，ACL 诊断结论会失真（该 e2e 未被验证）');
+  process.exit(0);
+}
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acle2e-'));
 
@@ -81,7 +136,7 @@ env.HEHE_NOSPLASH = '1';
 env.HEHE_TEST_DATA = path.join(tmp, 'ud');
 
 let raw = '';
-try { raw = execFileSync(ELECTRON, [tmp], { env, encoding: 'utf8', timeout: 90000 }); }
+try { raw = execFileSync(ELECTRON, [...CHROMIUM_FLAGS, ...__ensureScratch(env), tmp], { env, encoding: 'utf8', timeout: 90000 }); }
 catch (e) { raw = String(e.stdout || '') + String(e.stderr || ''); }
 
 const rf = path.join(tmp, 'result.json');

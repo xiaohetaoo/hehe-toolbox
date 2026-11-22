@@ -33,6 +33,24 @@ const { execFileSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const SCRIPTS = path.join(ROOT, 'scripts');
 
+/* ============ 把整棵测试树的临时目录挪进工作区 ============
+ * 【为什么必须这么做】本机安全软件会拦 Chromium 子进程写 %TEMP%
+ * （实测 `EPERM: operation not permitted`），而几十个 E2E 探针都要把结果
+ * 落盘再读 —— 于是全部卡在"写不了结果文件"，测试只能报「没拿到渲染层结果」，
+ * 与产品回归混在一起看不出来。
+ *
+ * 修法不是逐个改 78 个脚本里的 `os.tmpdir()`（152 处，必然漏），
+ * 而是在**唯一入口**改掉子进程的 TEMP/TMP：run-tests 用 execFileSync
+ * 不传 env，默认继承本进程环境，所以这里改一次就覆盖全部子进程。
+ * 目录建在工作区内、进程退出时删除，符合"临时文件不放工作区外"的约定。 */
+const TEST_TMP = path.join(ROOT, '.tmp-testrun-' + process.pid);
+try { fs.mkdirSync(TEST_TMP, { recursive: true }); } catch (e) { /* 建不了就让子进程用自己的 */ }
+if (fs.existsSync(TEST_TMP)) {
+  process.env.TEMP = TEST_TMP;
+  process.env.TMP = TEST_TMP;
+  process.on('exit', () => { try { fs.rmSync(TEST_TMP, { recursive: true, force: true }); } catch (e) {} });
+}
+
 /* 【必须单独列出的文件】
  * 不是"懒得自动判断"，而是这些文件的运行条件确实特殊，
  * 自动判断看不出来（它们语法上就是普通 Node 脚本）。 */

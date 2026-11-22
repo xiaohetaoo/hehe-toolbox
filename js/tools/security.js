@@ -246,7 +246,30 @@
         return r.drop.length;
       }
       let watching = false, timer = null, lastClip = '';
-      window.App.onCleanup(() => { watching = false; if (timer) { clearTimeout(timer); timer = null; } });
+      /* 【清理必须把 UI 也复位】
+       * 原来只把 watching/timer 置停，开关控件仍显示「开」。
+       * 保活复用后（见下一条 onEnter）界面会显示"开着但其实没在采"，
+       * 而且用户若以为还开着就不会重新打开。
+       * 这里把开关打回 off —— 用 .set(false) 同时同步 class 与 aria-checked
+       * （switchEl 有两份状态，只改 class 会让读屏播报与实际相反）。 */
+      function stopWatch() {
+        watching = false;
+        if (timer) { clearTimeout(timer); timer = null; }
+        try { watchSw.set(false); } catch (e) {}
+      }
+      window.App.onCleanup(stopWatch);
+      /* 【复用回来时再复位一次】
+       * 理论上 stopWatch 在离开时已经执行过、开关已经是关的；
+       * 但保活复用的是**同一块 DOM**，而 switchEl 的内部状态与 DOM class
+       * 分属两份数据 —— 任何一次渲染层重建（如语言切换）都可能让视觉与
+       * 实际分叉。这里在每次复用回来时按真实状态重刷一次，成本极低
+       * （只是一个 class + aria 属性），但能杜绝"显示开着却没在采"。
+       * 注意：**不能自动重新开启**——用户切走时它是关的，回来也该是关的。 */
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          if (!watching) { try { watchSw.set(false); } catch (e) {} }
+        });
+      }
       let history = [];
       /* 【两条裁剪路径必须共用同一个上限】
        * 原来文本路径写 `history.slice(0, 200)`、图片路径调 `trimHistory(history, 100)`

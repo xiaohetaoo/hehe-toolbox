@@ -51,6 +51,24 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
+
+/* ============ 手跑单个测试时也把 TEMP 挪进工作区 ============
+ * 走 `npm test` 时 run-tests.js 已经设好了；但开发时经常直接
+ * `node scripts/test-xxx.js`，那条路径没有 run-tests 参与，
+ * %TEMP% 仍会被安全软件拦（Chromium 子进程写结果文件报 EPERM）。
+ * harness 是所有测试的公共 require，在这里补一次最省事、不会漏。
+ * 【只在 Node 主进程里生效】它影响的是随后 spawn 的子进程环境。 */
+if (!process.env.HEHE_TEST_TMP_READY) {
+  const tmp = path.join(ROOT, '.tmp-testrun-' + process.pid);
+  try {
+    fs.mkdirSync(tmp, { recursive: true });
+    process.env.TEMP = tmp;
+    process.env.TMP = tmp;
+    process.env.HEHE_TEST_TMP_READY = '1';
+    process.on('exit', () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {} });
+  } catch (e) { /* 建不了就保持原样，让失败如实暴露 */ }
+}
+
 const srcScan = require(path.join(ROOT, 'lib', 'src-scan'));
 
 /* 读项目内源码。默认剥注释 —— 源码断言几乎都要在"没有注释干扰"的文本上做，

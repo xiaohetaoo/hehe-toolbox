@@ -56,9 +56,18 @@ function segFromFn(needle, label) {
 }
 
 
-t('11a runCmd：默认「非零不抛」，打开 throwOnNonZero 后必须抛', async () => {
-  /* 【不用注释当右边界】原实现靠「命令行脱敏」那条注释定位 runCmd 的结束，
-   * 注释一改就报「找不到 runCmd」。改用括号配平。 */
+t('11a runCmd：非零退出码默认必须抛（防"假成功"），allowNonZero 才返回结果', async () => {
+  /* 【语义已在 R16 修正，本用例随之更新】
+   * 旧语义是"默认非零不抛"，理由是"很多命令用非零码表达没查到"。
+   * 但那条设计有个严重副作用：**只要进程打印过任何东西**，非零退出就会被
+   * resolve 成 {code}，而绝大多数调用方 `await runCmd(...)` 就当成功继续。
+   * 于是 `shutdown /s /t 1800` 被系统拒绝（1116 无权限 / 1190 已有计划）时，
+   * 界面照样启动倒计时并承诺关机 —— 定时关机"假成功"。
+   * 现在改成：
+   *   · 默认按退出码判定，非零一律 reject（带 stdout/stderr/code）；
+   *   · 确实需要"非零也要拿结果"的查询类调用显式传 allowNonZero: true
+   *     （reg query / where / sc query 等 7 处已逐一标注理由）。
+   * 本用例锁的正是这两条新契约。 */
   const build = () => {
     const sanitize = loadSanitize();
     return new Function('execFile', 'sanitizeCmdError', 'TextDecoder', 'Buffer',
@@ -67,15 +76,33 @@ t('11a runCmd：默认「非零不抛」，打开 throwOnNonZero 后必须抛', 
   };
   const runCmd = build();
 
-  /* 用 node -e 'process.exit(3)' 造一个「有输出 + 非零退出码」的真实进程 */
-  const r = await runCmd(process.execPath, ['-e', 'console.log("out"); process.exit(3)'], { timeout: 10000 });
-  assert.strictEqual(r.code, 3, '默认路径应把退出码如实返回而不是抛');
-  assert.ok(String(r.stdout).includes('out'), '默认路径应带回输出');
-
+  /* ---- 默认路径：非零必须抛 ---- */
   await assert.rejects(
-    () => runCmd(process.execPath, ['-e', 'console.log("out"); process.exit(3)'], { timeout: 10000, throwOnNonZero: true }),
-    /Command failed|process\.exit/,
-    'throwOnNonZero 打开后，非零退出码必须变成异常');
+    () => runCmd(process.execPath, ['-e', 'console.log("out"); process.exit(3)'], { timeout: 10000 }),
+    (e) => {
+      /* 锁的是：非零退出被当成成功（定时关机"假成功"的根因）。 */
+      assert.ok(e, '非零退出码必须抛错');
+      /* 锁的是：错误对象里丢了退出码（调用方无法区分 1116/1190）。 */
+      assert.strictEqual(e.code, 3, '错误对象必须带上退出码，实际 ' + e.code);
+      /* 锁的是：错误对象里丢了程序的输出（排错时最需要它）。 */
+      assert.ok(String(e.stdout || '').includes('out'), '错误对象必须带上 stdout');
+      return true;
+    },
+    '非零退出码默认必须抛错（否则会出现"假成功"）'
+  );
+
+  /* ---- allowNonZero：显式要求时才返回结果 ---- */
+  const r = await runCmd(process.execPath, ['-e', 'console.log("out"); process.exit(3)'],
+    { timeout: 10000, allowNonZero: true });
+  /* 锁的是：查询类调用拿不到结果（reg query/where 会在"查不到"时非零）。 */
+  assert.strictEqual(r.code, 3, 'allowNonZero 时应把退出码如实返回');
+  assert.ok(String(r.stdout).includes('out'), 'allowNonZero 时应带回输出');
+
+  /* ---- 零退出：两条路径都正常返回 ---- */
+  const ok = await runCmd(process.execPath, ['-e', 'console.log("fine")'], { timeout: 10000 });
+  assert.strictEqual(ok.code, 0);
+  /* 锁的是：正常成功被错误地抛成失败。 */
+  assert.ok(String(ok.stdout).includes('fine'));
 });
 
 t('11b office:status 必须用 throwOnNonZero，否则恒返回 office:true', () => {

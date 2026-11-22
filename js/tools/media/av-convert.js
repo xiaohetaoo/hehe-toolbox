@@ -50,7 +50,30 @@ register({
         }
       });
       const startBtn = btn('开始转换', 'btn-primary', run, 'send');
-      const cancelBtn = btn('取消', 'btn-danger-plain', () => { if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); }, 'square');
+      /* 【per-run 序号 + 页面级清理】（同 video-press / video-trim 的三点理由）
+       * ① 取消/离开立刻递增序号；
+       * ② 清理在 render 时注册（原来在 await STATUS 之后才注册，切页窗口里
+       *    旧页面没有清理，稍后的注册会挂到新页面队列上）；
+       * ③ 离开页面必须 kill（与下载/搜索同一口径）。 */
+      let convRunSeq = 0;
+      let pageUnsub = null;
+      function pageCleanup() {
+        convRunSeq++;
+        if (runJobId) { invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); runJobId = null; }
+        if (pageUnsub) { try { pageUnsub(); } catch (e) {} pageUnsub = null; }
+        running = false;
+        try {
+          startBtn.disabled = false; cancelBtn.disabled = true;
+          picker.setLocked(false);
+        } catch (e) {}
+      }
+      window.App.onCleanup(pageCleanup);
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          try { if (!running) { startBtn.disabled = false; cancelBtn.disabled = true; } } catch (e) {}
+        });
+      }
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(); }, 'square');
       cancelBtn.disabled = true;
       // 目标格式变了只刷新行上的「→ XXX」标签，不重建列表（重建会丢掉进度状态）
       fmtSel.addEventListener('change', () => picker.list.refresh());
@@ -68,6 +91,7 @@ register({
          *   · finally 里先结束的那轮会把 running/按钮全部复位，
          *     而另一个任务还在跑 —— 用户此时能再点第三次。
          * 所以先占位、再用 try/finally 保证每条早退路径都复位。 */
+        const runToken = ++convRunSeq;
         running = true; startBtn.disabled = true;
         let unsub = null;
         try {
@@ -77,6 +101,7 @@ register({
             window.App.openTool('ffmpeg-setup');
             return;
           }
+          if (runToken !== convRunSeq) return;   // 预检期间被取消/切页
           cancelBtn.disabled = false;
           picker.setLocked(true);
           status.textContent = '';
@@ -104,7 +129,9 @@ register({
             if (j.done && tag) { tag.textContent = j.ok ? '✓ 完成' : '✗ 失败'; tag.className = 'tag ' + (j.ok ? 'tag-green' : 'tag-red'); }
           } catch (e) {}
           });
-          if (window.App && App.onCleanup) App.onCleanup(unsub);
+          /* 【交给页面级清理，不在这里追加 App.onCleanup】见 pageCleanup 的说明 */
+          pageUnsub = unsub;
+          if (runToken !== convRunSeq) return;
           try {
           const r = await invoke(Channels.CHANNELS.FFMPEG.CONVERT, {
             items: picker.paths, outDir,
@@ -131,12 +158,16 @@ register({
           toast(e.message, 'error');
           }
         } finally {
-          /* 【复位必须无条件执行】上面每一条早退路径（未选文件之外的：
-           * FFmpeg 未安装、参数无效、异常）都要走到这里，否则按钮会永久禁用。
-           * unsub 可能还是 null（在 subscribe 之前就早退了），要判一下。 */
-          running = false; startBtn.disabled = false; cancelBtn.disabled = true;
-          try { picker.setLocked(false); } catch (e) {}
+          /* 【过期的那趟不许改界面】（取消/切页后界面属于下一趟） */
+          if (runToken === convRunSeq) {
+            /* 【复位必须无条件执行】上面每一条早退路径（未选文件之外的：
+             * FFmpeg 未安装、参数无效、异常）都要走到这里，否则按钮会永久禁用。
+             * unsub 可能还是 null（在 subscribe 之前就早退了），要判一下。 */
+            running = false; startBtn.disabled = false; cancelBtn.disabled = true;
+            try { picker.setLocked(false); } catch (e) {}
+          }
           if (unsub) { try { unsub(); } catch (e) {} }
+          if (pageUnsub === unsub) pageUnsub = null;
         }
       }
       page.appendChild(div('card', div('card-title', '选择文件'), picker.el));

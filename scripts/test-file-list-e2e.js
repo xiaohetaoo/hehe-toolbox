@@ -1,3 +1,18 @@
+
+/* 【把 TEMP/TMP 指向工作区】本机安全软件拦 Chromium 子进程写 %TEMP%
+ * （EPERM），而本脚本要把探针与结果落盘。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。进程退出时删除。 */
+(function () {
+  if (process.env.HEHE_TEST_TMP_READY) return;
+  var p = require('path'), f = require('fs');
+  var d = p.join(p.resolve(__dirname, '..'), '.tmp-testrun-' + process.pid);
+  try {
+    f.mkdirSync(d, { recursive: true });
+    process.env.TEMP = d; process.env.TMP = d;
+    process.env.HEHE_TEST_TMP_READY = '1';
+    process.on('exit', function () { try { f.rmSync(d, { recursive: true, force: true }); } catch (e) {} });
+  } catch (e) { /* 建不了就让失败如实暴露 */ }
+})();
 /* 端到端验证「待处理文件列表」这个新组件的行为。
  *
  * 【为什么必须用真 Electron】
@@ -15,6 +30,28 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
+/* 【Chromium 兼容参数 —— 见 scripts/lib/electron-launch.js 的实测根因】
+ * 本机 Chromium 进程级沙箱起不来：不带 --no-sandbox 时 electron.exe 直接以
+ * 0x80000003 崩掉，stdout/stderr 全空，测试只能报「没拿到渲染层结果」。
+ * --disable-gpu/--disable-dev-shm-usage 同理（远程会话的 GPU 进程、受限的 /dev/shm）。
+ * 这些参数只影响测试探针，不影响产品打包后的启动参数。 */
+const CHROMIUM_FLAGS = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'];
+
+/* 【把子进程的 TEMP/TMP 与 --user-data-dir 切到工作区内】
+ * 本机 Chromium 子进程写 %TEMP% 会被安全软件拦（EPERM），而探针都要把结果
+ * 落盘再读，于是全部卡在"写不了结果文件"。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。用完即删。 */
+let __scratchDir = null;
+function __ensureScratch(env) {
+  if (!__scratchDir) {
+    __scratchDir = path.join(path.resolve(__dirname, '..'), '.tmp-e2e-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6));
+    try { require('fs').mkdirSync(__scratchDir, { recursive: true }); } catch (e) {}
+    process.on('exit', () => { try { require('fs').rmSync(__scratchDir, { recursive: true, force: true }); } catch (e) {} });
+  }
+  env.TEMP = __scratchDir;
+  env.TMP = __scratchDir;
+  return ['--user-data-dir=' + path.join(__scratchDir, 'udd')];
+}
 
 const ROOT = path.resolve(__dirname, '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'filelist-e2e-'));
@@ -244,7 +281,7 @@ env.HEHE_NOSPLASH = '1';
 
 let raw = '';
 try {
-  raw = execFileSync(ELECTRON_EXE, [scriptPath], { env, encoding: 'utf8', timeout: 180000 });
+  raw = execFileSync(ELECTRON_EXE, [...CHROMIUM_FLAGS, ...__ensureScratch(env), scriptPath], { env, encoding: 'utf8', timeout: 180000 });
 } catch (e) { raw = String(e.stdout || '') + String(e.stderr || ''); }
 
 const line = String(raw || '').split(/\r?\n/).find((l) => l.startsWith('FL_RESULT'));

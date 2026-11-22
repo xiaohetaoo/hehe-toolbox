@@ -45,6 +45,9 @@
       const resultBox = div('');
 
       let unsub = null;
+      /* 扫描的 per-run 序号（见 doScanOnce 里的说明）。
+       * 离开页面与复用回来各 +1，保证任何旧扫描的 token 都落后于当前值。 */
+      let scanRunSeq = 0;
 
       /* 【手写守卫换成统一收口】
        * 这段原来是 `if (state.running) return; state.running = true;` +
@@ -58,6 +61,16 @@
       });
 
       async function doScanOnce() {
+        /* 【per-run token】LAN.SCAN 是**阻塞式** handler（扫完才 resolve），
+         * 中途没有 job id 可 kill。所以"离开页面就停扫"做不到硬取消，
+         * 只能用序号让迟到的结果作废：
+         *   · cleanup 递增序号 → 旧扫描返回时发现序号变了，不写 state、
+         *     不渲染、不改状态行（页面已经不在了，也没人会看）；
+         *   · 复用回来后新扫描领新序号，旧的那次绝不会覆盖它 ——
+         *     注释里承诺的「同一时刻只会有一次扫描」由此成立。
+         * 这比"尽力 kill"更诚实：主进程那边会扫完（约 10–30 秒），
+         * 但界面上不会再出现"两次扫描结果互相覆盖"。 */
+        const runToken = ++scanRunSeq;
         prog.show(); prog.set(0);
         status.textContent = '正在扫描本机所在网段…（约 10–30 秒）';
         resultBox.innerHTML = '';
@@ -92,16 +105,28 @@
         try {
           /* 带上用户选定的网卡地址（没选就传空，由主进程按私有网段默认挑） */
           const r = await invoke(Channels.CHANNELS.LAN.SCAN, state.ip ? { ip: state.ip } : {});
+          /* 【过期就直接丢】这趟扫描期间用户可能离开了页面或又点了一次扫描。
+           * 不判的话，旧结果会覆盖新扫描的中间状态（两者都写 state.result
+           * 与 resultBox），界面在两次结果之间来回闪。 */
+          if (runToken !== scanRunSeq) return;
           state.result = r;
           render();
           syncIfaceSel(r);
           status.textContent = '完成：发现 ' + r.devices.length + ' 台设备';
         } catch (e) {
+          if (runToken !== scanRunSeq) return;   // 过期的失败不弹错
           status.textContent = '✗ ' + e.message;
           toast(e.message, 'error');
         } finally {
           if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
           prog.hide();
+          /* 【按钮必须在这里恢复】doScan 走了 guard：这个 async 函数返回后
+           * guard 才解锁，但按钮的 disabled 是 doScanOnce 自己置的，
+           * 没人恢复就会一直灰着 —— 用户以为扫描没结束。
+           * 只在这一趟仍有效时才恢复，避免旧扫描把新扫描的按钮解开。 */
+          if (runToken === scanRunSeq) {
+            try { scanBtn.disabled = false; } catch (e) {}
+          }
         }
       }
 
@@ -226,8 +251,38 @@
       page.appendChild(resultBox);
 
       window.App.onCleanup(() => {
+        /* 递增序号：在飞的扫描返回时作废（LAN.SCAN 阻塞且无 job id，
+         * 无法硬取消 —— 见 doScanOnce 里的说明）。 */
+        scanRunSeq++;
         if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+        /* 【界面必须完整复位，不只是隐藏进度条】
+         * LAN.SCAN 是阻塞式、没有 job id，cleanup 杀不掉它。
+         * 原来只 prog.hide()，于是用户返回时看到：
+         *   · 状态行还写着「正在扫描本机所在网段…（约 10–30 秒）」；
+         *   · 「开始扫描」按钮仍是灰的（doScanOnce 里置的 disabled 没人恢复）；
+         *   · 进度条却已经不在了 —— 既没进度、也点不动、文案还说在扫描，
+         *     用户唯一的判断就是"卡死了"。
+         * 现在把文案、按钮、进度三样一起归位，并说清后台会怎样收尾。 */
+        try {
+          prog.hide();
+          scanBtn.disabled = false;
+          status.textContent = '已离开页面，上一轮扫描结果作废（后台会自行收尾）';
+        } catch (e) {}
       });
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          scanRunSeq++;
+          /* 复用回来：把状态行与按钮恢复到"可以重新扫描"的一致状态。
+           * 不自动重启扫描 —— 用户离开时那次已经被作废了。 */
+          try {
+            scanBtn.disabled = false;
+            prog.hide();
+            if (/正在扫描|扫描中|反查主机名/.test(status.textContent || '')) {
+              status.textContent = '上一次扫描已中断，可重新开始';
+            }
+          } catch (e) {}
+        });
+      }
     },
   });
 })();

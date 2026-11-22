@@ -1435,6 +1435,19 @@
       if (!oldest || v.stamp < oldest.stamp) { oldest = v; oldestKey = k; }
     }
     if (oldestKey === null) return;
+    /* 【淘汰必须连带清理】被淘汰的页面既不会复用、也不会再走到
+     * renderContent 的清理分支 —— 它的清理函数（若有）必须在这里执行，
+     * 否则里面捕获的 timer/订阅就成了孤儿。
+     * 【消费后置空】正常离开时 runPageCleanup 已经跑过一遍，rec.cleanups
+     * 里装的是**副本**；这里再跑一次目前是幂等的（各清理函数都自己置空
+     * timer/订阅），但将来只要有一个非幂等的清理，就会变成双发。
+     * 执行完立刻清空，语义变成"这些清理已被消费"，杜绝双重执行。 */
+    if (oldest && Array.isArray(oldest.cleanups)) {
+      for (const fn of oldest.cleanups) {
+        try { fn(); } catch (e) { console.warn('cleanup(evict)', e); }
+      }
+      oldest.cleanups = [];
+    }
     keepAlive.delete(oldestKey);
   }
 
@@ -1508,6 +1521,16 @@
 
   /* 页面级清理：切换页面时清理上一个工具页注册的定时器/监听，防止资源泄漏 */
   let pageCleanupFns = [];
+  /* 【入场钩子：只在「保活复用」时跑，首次 render 不跑】
+   * 有些东西切页时被拆掉、但复用时要重新接上 —— 最典型的是
+   * `sched:once-fired` 这类一次性事件订阅：初次 render 时注册、
+   * 切页时退订，复用路径不重新 render，于是定时任务真的触发时
+   * 这个页面再也收不到，界面永远停在旧数据上。
+   *
+   * 与 onCleanup 分开而不是合成一个：清理函数是「离开时把东西关掉」，
+   * 入场钩子是「回来时把该开的重新开（但不要重启用户已经关掉的东西）」，
+   * 两者语义不同，混在一起会诱导把 reset 逻辑写进错的那一边。 */
+  let pageEnterFns = [];
   /* 注册页面卸载清理函数。
    * 【幂等保护】同一个函数重复注册会被去重：某些流程（如「检查更新」失败后重试）
    * 可能在同一次页面生命周期里多次调用，不去重就会重复执行清理。 */
@@ -1515,9 +1538,17 @@
     if (typeof fn !== 'function') return;
     if (pageCleanupFns.indexOf(fn) === -1) pageCleanupFns.push(fn);
   }
+  /* 注册「保活复用时」要跑一次的钩子（见 pageEnterFns 的说明）。 */
+  function onEnter(fn) {
+    if (typeof fn !== 'function') return;
+    if (pageEnterFns.indexOf(fn) === -1) pageEnterFns.push(fn);
+  }
   function runPageCleanup() {
     pageCleanupFns.forEach(f => { try { f(); } catch (e) { console.warn('cleanup', e); } });
     pageCleanupFns = [];
+    /* 入场钩子随页面一起作废：它们属于「刚才那一页」的生命周期。
+     * 复用时由保活记录里的副本重新装回（见 renderContent 的复用分支）。 */
+    pageEnterFns = [];
   }
   /* 首帧入场：只在**整个进程的第一次**渲染时播放一次。
      每次切页面都重放会显得多余（用户点了下菜单，内容自己又淡入一遍），
@@ -1531,8 +1562,22 @@
      *   ① 抓现场（滚动位置；DOM 本身会被保活引用着，不会丢）
      *   ② 清理定时器/订阅（既定设计，不因保活而改变）
      * ⚠️ 用 prevView 而不是 state.view —— 见 snapshotCurrentPage 的说明。 */
+    /* 【先抓下这一页的清理函数，再清空】
+     * 保活复用的页面需要能再次被清理（否则第二次切走时没有任何清理函数，
+     * 后台任务就永远停不下来）。清理队列是全局单例，runPageCleanup 之后
+     * 就空了，所以必须在调用**之前**留一份到保活记录里。 */
+    const leavingView = prevView;
+    const leavingCleanups = pageCleanupFns.slice();
+    const leavingEnters = pageEnterFns.slice();
     snapshotCurrentPage(prevView && prevView.type, prevView && prevView.toolId);
     runPageCleanup();
+    if (leavingView && leavingView.type === 'tool' && leavingView.toolId) {
+      const rec = keepAlive.get('tool:' + leavingView.toolId);
+      if (rec) {
+        rec.cleanups = leavingCleanups;
+        rec.enters = leavingEnters;
+      }
+    }
     /* 【必须在清空 prevView 之前留一份】
      * 下面"是不是原地重绘"的判据要看它。写成先清空再读，
      * cameFrom 永远是 null，判据退化成"每次重绘都丢保活" ——
@@ -1576,10 +1621,39 @@
       rec.stamp = ++keepAliveSeq;
       contentEl.innerHTML = '';
       contentEl.appendChild(rec.el);
+      /* 【复用时必须把清理函数装回全局队列】
+       * 这是「保活页第二次切走时后台任务停不下来」的根因：
+       * runPageCleanup 在离开时已把全局队列清空，复用路径又绕过 renderToolPage，
+       * 于是这次回来之后队列是空的 —— 用户重新开启的录屏/剪贴板监听/自动刷新
+       * 再也没有任何函数能在离开时把它们关掉。
+       * 装回的是**上一次离开时保存的副本**（见上方 leavingCleanups）：
+       * 它们闭包捕获的 timer/watching/recording 变量与这块 DOM 属于同一代，
+       * 因此对「重新开启」产生的新 timer 依然有效（变量是 let，闭包读的是当前值）。 */
+      if (Array.isArray(rec.cleanups) && rec.cleanups.length) {
+        for (const fn of rec.cleanups) {
+          if (pageCleanupFns.indexOf(fn) === -1) pageCleanupFns.push(fn);
+        }
+      }
+      /* 入场钩子：复用路径不 render，一次性事件订阅要在这里补回。
+       * 传 toolId 让钩子能区分用途（多数钩子不看参数）。 */
+      if (Array.isArray(rec.enters) && rec.enters.length) {
+        for (const fn of rec.enters) {
+          if (pageEnterFns.indexOf(fn) === -1) pageEnterFns.push(fn);
+        }
+      }
       /* 滚动位置要等浏览器算完布局才生效，所以放到下一帧。 */
       const top = rec.scrollTop || 0;
       contentEl.scrollTop = top;
       requestAnimationFrame(() => { contentEl.scrollTop = top; });
+      /* 【跑入场钩子：让页面把瞬时状态复位、把一次性订阅接回】
+       * 放在 DOM 贴回之后、下一帧之前 —— 钩子里可能要读 DOM 尺寸。
+       * 失败不能影响切页本身（一个工具的钩子坏了不该让整页白屏），
+       * 但必须记日志，不能静默（静默等于把「复位没生效」变成不可见缺陷）。 */
+      if (Array.isArray(rec.enters) && rec.enters.length) {
+        for (const fn of rec.enters) {
+          try { fn(v.toolId); } catch (e) { console.warn('[lifecycle] onEnter 失败', v.toolId, e); }
+        }
+      }
       /* 【保活复用也要接住全局拖拽/剪贴板面板送来的内容】
        * 复用路径不 render，page 里 filePicker 建立时安排的
        * setTimeout(0) 早就跑完了 —— 如果不在这里补一次，
@@ -1666,6 +1740,10 @@
       el: page,
       scrollTop: 0,   // 由 snapshotCurrentPage 在离开时填
       stamp: ++keepAliveSeq,
+      /* 这一代的清理函数/入场钩子副本：离开时填（见 renderContent 的
+       * leavingCleanups），复用时装回全局队列。首次登记时是空的。 */
+      cleanups: [],
+      enters: [],
     });
     while (keepAlive.size > KEEPALIVE_MAX) evictOne();
   }
@@ -3089,7 +3167,7 @@
 
   /* ============ 启动 ============ */
   window.App = {
-    openTool, showView, toggleFavorite, setStatus, state, refresh, onCleanup,
+    openTool, showView, toggleFavorite, setStatus, state, refresh, onCleanup, onEnter,
     applyLang,
     openSettings,
     /* 【命令面板要用的两个开关】

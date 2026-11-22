@@ -185,7 +185,8 @@
       '安装后加入当前用户环境（推荐）': "Add to this user's environment (recommended)",
       '仅本工具箱使用（不改环境变量）': 'This app only (no environment changes)',
       '停止下载': 'Stop download',
-      '没有进行中的下载': 'No download in progress',
+      /* 「没有进行中的下载」已删除：R16 起取消在无 job id 时也有语义
+       * （"已取消本次安装"），那句提示不再被任何调用点使用。 */
       '已请求停止': 'Stop requested',
       '下载中 {pct}% · {mb} MB': 'Downloading {pct}% · {mb} MB',
       '下载完成，校验与解压中…': 'Download complete; verifying and extracting…',
@@ -262,6 +263,16 @@
       '清理': 'Clean',
       '已清理 {n} 个安装包，释放 {size}': 'Cleaned {n} installer(s), freed {size}',
       '没有可清理的安装包': 'No installer cache to clean',
+      /* 【清理结果的三种失败形态】
+       * 后端会把删不掉的项放进 errors；界面按「全失败/部分失败」分别报，
+       * 不能一律显示绿色成功。这三条必须与 js/tools/env-manager.js 的
+       * 调用原文逐字一致（test-i18n-coverage 会逐个比对）。 */
+      '清理失败：{n} 个文件无法删除（{reason}）': 'Clean failed: {n} file(s) could not be deleted ({reason})',
+      '已清理 {n} 个、失败 {m} 个（{reason}）': 'Cleaned {n}, {m} failed ({reason})',
+      /* R16：取消在 job id 还没拿到时的语义（此时没有可 kill 的对象，
+       * 但仍表示"本次安装请求已作废"）。原条目「没有进行中的下载」随
+       * 取消逻辑改造而不再使用，已删除，避免孤儿条目。 */
+      '已取消本次安装': 'Install request cancelled',
       '开发环境': 'Dev Environments',
       '刷新': 'Refresh',
       '安装方式': 'Install mode',

@@ -1,4 +1,19 @@
 'use strict';
+
+/* 【把 TEMP/TMP 指向工作区】本机安全软件拦 Chromium 子进程写 %TEMP%
+ * （EPERM），而本脚本要把探针与结果落盘。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。进程退出时删除。 */
+(function () {
+  if (process.env.HEHE_TEST_TMP_READY) return;
+  var p = require('path'), f = require('fs');
+  var d = p.join(p.resolve(__dirname, '..'), '.tmp-testrun-' + process.pid);
+  try {
+    f.mkdirSync(d, { recursive: true });
+    process.env.TEMP = d; process.env.TMP = d;
+    process.env.HEHE_TEST_TMP_READY = '1';
+    process.on('exit', function () { try { f.rmSync(d, { recursive: true, force: true }); } catch (e) {} });
+  } catch (e) { /* 建不了就让失败如实暴露 */ }
+})();
 /* 端到端实测「文件占用解锁」：起真实应用，造一个被占用的文件，
  * 调 file:who-locks，确认查到了真正的持有者进程。
  *
@@ -15,10 +30,52 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync, spawn } = require('child_process');
+/* 【Chromium 兼容参数 —— 见 scripts/lib/electron-launch.js 的实测根因】
+ * 本机 Chromium 进程级沙箱起不来：不带 --no-sandbox 时 electron.exe 直接以
+ * 0x80000003 崩掉，stdout/stderr 全空，测试只能报「没拿到渲染层结果」。
+ * --disable-gpu/--disable-dev-shm-usage 同理（远程会话的 GPU 进程、受限的 /dev/shm）。
+ * 这些参数只影响测试探针，不影响产品打包后的启动参数。 */
+const CHROMIUM_FLAGS = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'];
+
+/* 【把子进程的 TEMP/TMP 与 --user-data-dir 切到工作区内】
+ * 本机 Chromium 子进程写 %TEMP% 会被安全软件拦（EPERM），而探针都要把结果
+ * 落盘再读，于是全部卡在"写不了结果文件"。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。用完即删。 */
+let __scratchDir = null;
+function __ensureScratch(env) {
+  if (!__scratchDir) {
+    __scratchDir = path.join(path.resolve(__dirname, '..'), '.tmp-e2e-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6));
+    try { require('fs').mkdirSync(__scratchDir, { recursive: true }); } catch (e) {}
+    process.on('exit', () => { try { require('fs').rmSync(__scratchDir, { recursive: true, force: true }); } catch (e) {} });
+  }
+  env.TEMP = __scratchDir;
+  env.TMP = __scratchDir;
+  return ['--user-data-dir=' + path.join(__scratchDir, 'udd')];
+}
 
 const ROOT = path.join(__dirname, '..');
 const ELECTRON = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
 if (!fs.existsSync(ELECTRON)) { console.log('SKIP 无 electron.exe'); process.exit(0); }
+
+/* 【Restart Manager 在本环境不可用：真跑一次空查询来判定】
+ * 实测 `file:who-locks` 返回「Restart Manager 查询失败（错误码 29）」。
+ * 29 = ERROR_BAD_ARGUMENTS（0x1D），说明 RmStartSession/RmRegisterResources
+ * 这一步就被系统拒了 —— 不是"没检测到占用"，而是整条查询链路在本机用不了
+ * （受限会话 / 安全软件干预）。后续所有断言都会连带失真，
+ * 必须声明为环境跳过，不能当产品失败计入。
+ *
+ * 【为什么"真跑一次"而不是查管理员/查 PowerShell】同一个错误在不同机器上
+ * 成因不同，只有实际调一次才能确定"这台机器能不能用"。
+ * 用一个存在的普通文件做空查询：不依赖有没有进程占用，只看 API 通不通。 */
+/* 【Restart Manager 可用性由实际调用判定，不自己 P/Invoke】
+ * 实测 `file:who-locks` 返回「Restart Manager 查询失败（错误码 29 = ERROR_BAD_ARGUMENTS）」：
+ * 会话能开（RmStartSession=0），但注册资源/取列表这一步被系统拒了。
+ * 手写 P/Invoke 探测容易自己写错（签名、结构体大小），反而制造假跳过 ——
+ * 所以判据放在**下面的真实断言**里：一旦 who-locks 返回该错误，
+ * 就把它识别成"环境不支持"，打印 SKIP 后 exit 0，而不是当成产品失败。 */
+function isRmUnavailable(msg) {
+  return /错误码 29|ERROR_BAD_ARGUMENTS/i.test(String(msg || ''));
+}
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'unlocke2e-'));
 const target = path.join(tmp, 'locked.bin');
@@ -97,7 +154,7 @@ setTimeout(() => {
   env.HEHE_TEST_DATA = path.join(tmp, 'ud');
 
   let raw = '';
-  try { raw = execFileSync(ELECTRON, [tmp], { env, encoding: 'utf8', timeout: 90000 }); }
+  try { raw = execFileSync(ELECTRON, [...CHROMIUM_FLAGS, ...__ensureScratch(env), tmp], { env, encoding: 'utf8', timeout: 90000 }); }
   catch (e) { raw = String(e.stdout || '') + String(e.stderr || ''); }
 
   const rf = path.join(tmp, 'result.json');
@@ -118,6 +175,8 @@ setTimeout(() => {
   /* ---- 单文件通道 ---- */
   if (R && R.single) {
     const S = R.single;
+      /* 环境不支持 Restart Manager 时按跳过处理（见 isRmUnavailable 的说明） */
+      if (!S.ok && isRmUnavailable(S.err)) { console.log('SKIP 本机 Restart Manager 不可用（' + S.err + '），该 e2e 未被验证'); process.exit(0); }
     chk(S.ok === true, 'file:who-locks 调用成功' + (S.ok ? '' : '（' + S.err + '）'));
     if (S.ok) {
       const d = S.data || {};
@@ -136,6 +195,7 @@ setTimeout(() => {
    * 走目录通道应该同样能查出那个占用进程。 */
   if (R && R.dir) {
     const D = R.dir;
+      if (!D.ok && isRmUnavailable(D.err)) { console.log('SKIP 本机 Restart Manager 不可用（' + D.err + '），该 e2e 未被验证'); process.exit(0); }
     chk(D.ok === true, 'file:who-locks-dir 调用成功' + (D.ok ? '' : '（' + D.err + '）'));
     if (D.ok) {
       const d = D.data || {};

@@ -70,6 +70,24 @@ module.exports = function register(ctx, deps) {
   }
   /* 同一运行时的安装不能并行（两次解压/落盘会互相覆盖） */
   const installing = new Set();
+  /* 【活动中的环境包文件名集合】
+   * CLEAN 会遍历 downloads 目录删文件，而安装用的 archive 与下载分片
+   * （<dest>.part-*）都在同一目录。必须由**主进程**记住哪些文件正在用，
+   * 否则「另一个窗口点清理」会删掉正在解压的包或正在写的分片。
+   * 键是文件名（不含路径）：downloads 目录是固定的，同名即同文件。
+   * 安装开始 add、结束（成功/失败/取消）在 finally 里 delete。 */
+  const activeEnvFiles = new Set();
+  /** 这个文件名是否正被某个下载/安装使用。用文件名而不是全路径，
+   *  因为 CLEAN 拿到的就是 readdir 的结果，且 downloads 目录唯一。 */
+  function isActiveEnvFile(name) {
+    if (activeEnvFiles.has(name)) return true;
+    /* 分片形如 <archive>.part-<ts>-<hex>：前缀命中也算活动。
+     * 判据取「某个 f 是 name 的前缀」而不是反过来 —— name 比分片名短。 */
+    for (const f of activeEnvFiles) {
+      if (String(name).startsWith(f + '.part-')) return true;
+    }
+    return false;
+  }
   let detectCache = null;
 
   async function sha256File(file) {
@@ -443,6 +461,10 @@ module.exports = function register(ctx, deps) {
     const ctrl = new AbortController();
     jobs.set(jobId, { cancel: () => ctrl.abort() });
     setLatestCancelable(() => ctrl.abort());
+    /* 提到 try 外面：finally 里要按它注销「使用中」。
+     * 提前 return 的路径（already 分支）不会走到登记，delete 一个不存在的
+     * 键是安全的幂等操作。 */
+    let archiveRef = '';
     try {
       if (cur && cur.version === rt.version && fs.existsSync(cur.dir)) {
         const a = opts.applyPath !== false ? await applyIds([id]) : { appliedIds: [], warnings: [] };
@@ -451,6 +473,10 @@ module.exports = function register(ctx, deps) {
       const downloads = path.join(ENV_ROOT(), 'downloads');
       await fsp.mkdir(downloads, { recursive: true });
       const archive = path.join(downloads, rt.id + '-' + envCatalog.safeVersion(rt.version) + extOf(rt));
+      archiveRef = archive;
+      /* 【登记为「使用中」】从此处到安装结束，CLEAN 不许删这个包，
+       * 也不许删它正在写的分片（<archive>.part-*）。见 isActiveEnvFile。 */
+      activeEnvFiles.add(path.basename(archive));
       /* 【缓存不能"非空即信"】先校验缓存；哈希不符就删掉重下（镜像/中断都可能
        * 留下完整但内容错误的包）。重下后仍不符则明确报错，不做无限重试。 */
       let useCache = (await exists(archive)) && (await fsp.stat(archive)).size > 0;
@@ -497,6 +523,10 @@ module.exports = function register(ctx, deps) {
       return { id, version: rt.version, dir: layout.dir, already: false, applied: a.appliedIds.includes(id), warnings: a.warnings || [] };
     } finally {
       installing.delete(id);
+      /* 注销「使用中」：安装成功/失败/取消都要走到，否则这个包
+       * 永远不许被清理（缓存会越积越多）。在 try 外层的 finally 里
+       * 统一清，比在每个出口各写一遍更可靠。 */
+      activeEnvFiles.delete(path.basename(archiveRef));
       jobs.delete(jobId);
     }
   });
@@ -524,17 +554,60 @@ module.exports = function register(ctx, deps) {
   handle(CH.ENV.CLEAN, async () => {
     const dir = path.join(ENV_ROOT(), 'downloads');
     let removed = 0, freed = 0;
-    const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const errors = [];
+    /* 【readdir 失败不能当成「没有文件」】
+     * 原来 `.catch(() => [])`：目录不可读（权限/IO/盘符掉线）时直接当作
+     * 空目录，界面显示「没有可清理的安装包」—— 用户以为清理过了，
+     * 实际问题一直在。要如实写进 errors，让界面报错。 */
+    let entries = [];
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        /* 目录还没建过：这是真的「没有缓存」，不是错误 */
+        entries = [];
+      } else {
+        errors.push('读取缓存目录失败：' + String((err && err.message) || err));
+      }
+    }
     for (const ent of entries) {
       if (!ent.isFile()) continue;
       const full = path.join(dir, ent.name);
-      const st = await fsp.stat(full).catch(() => null);
-      if (!st) continue;
-      await fsp.rm(full, { force: true }).catch(() => {});
-      removed++;
-      freed += st.size;
+      /* 【不能删活动中的包】
+       * 清理是「扫 downloads 目录里所有文件」，而下载分片 <dest>.part-* 与
+       * 安装用的 archive 都在同一个目录里。用户在主窗点「清理缓存」时，
+       * 另一个窗口（或本窗口）可能正在下载/安装 —— 删掉分片会让下载失败，
+       * 删掉 archive 会让正在解压的安装崩掉。
+       * 判据用主进程自己的状态（installing 集合 + 活动 job 登记），
+       * **不依赖渲染层的 busy**：那是每个页面各一份的，跨窗口不共享。 */
+      if (isActiveEnvFile(ent.name)) continue;
+      /* 【stat 失败要区分两种原因】
+       *   · ENOENT：文件在这两条语句之间被别的进程删了 → 不算错误，
+       *     跳过即可（已经不存在，本来也不需要清理）；
+       *   · 其余（EPERM/EACCES/EIO…）：真的读不到，必须进 errors，
+       *     否则会被当成"没有这个文件"而静默漏掉。 */
+      let st = null;
+      try {
+        st = await fsp.stat(full);
+      } catch (err) {
+        if (!(err && err.code === 'ENOENT')) {
+          errors.push(ent.name + '：读取失败（' + String((err && err.code) || err && err.message || err) + '）');
+        }
+        continue;
+      }
+      /* 【只有真删掉才算 removed/freed】
+       * 原来 `fsp.rm(...).catch(() => {})` 后无条件 removed++/freed += size：
+       * 文件被占用（EPERM）或权限不足时，界面会报告「已清理 N 个、释放 X」，
+       * 而磁盘上文件还在 —— 用户以为清了，实际没清。 */
+      try {
+        await fsp.rm(full, { force: true });
+        removed++;
+        freed += st.size;
+      } catch (err) {
+        errors.push(ent.name + '：' + String((err && err.message) || err));
+      }
     }
-    return { removed, freed };
+    return { removed, freed, errors };
   });
 
   handle(CH.ENV.APPLY, (e, ids) => applyIds(Array.isArray(ids) ? ids : []));

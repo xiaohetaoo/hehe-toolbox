@@ -218,9 +218,33 @@
       prog.hide();
       const status = div('field-hint', '');
       const goBtn = btn('开始裁剪', 'btn-primary', run, 'scissors');
-      const cancelBtn = btn('取消', 'btn-danger-plain', () => {
-        if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {});
-      }, 'square');
+      /* 【per-run 序号 + 页面级清理】（同 video-press 的三点理由）
+       * ① 取消/离开立刻递增序号，在飞的 run() 在下一个检查点作废；
+       * ② 清理在 render 时就注册 —— 原来在 await STATUS / UNIQUE_PATH
+       *    之后才 App.onCleanup(unsub)，用户在这段窗口切页时旧页面没有
+       *    任何清理，稍后的注册会挂到**新页面**的队列上；
+       * ③ 离开页面必须 kill（与下载/搜索同一口径）。 */
+      let trimRunSeq = 0;
+      let pageUnsub = null;
+      function pageCleanup() {
+        trimRunSeq++;
+        if (runJobId) { invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); runJobId = null; }
+        if (pageUnsub) { try { pageUnsub(); } catch (e) {} pageUnsub = null; }
+        running = false;
+        try {
+          goBtn.disabled = false; cancelBtn.disabled = true;
+          picker.setLocked(false);
+          prog.hide();
+          if (status.textContent && !/^完成|^失败/.test(status.textContent)) status.textContent = '已离开页面，裁剪已取消';
+        } catch (e) {}
+      }
+      window.App.onCleanup(pageCleanup);
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          try { if (!running) { goBtn.disabled = false; cancelBtn.disabled = true; } } catch (e) {}
+        });
+      }
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(); }, 'square');
       cancelBtn.disabled = true;
 
       async function run() {
@@ -233,10 +257,12 @@
          * 而模块级 runJobId 只留得下后一个 —— 取消只能杀掉一个，
          * 另一路继续跑完，用户看到"取消了但文件还在变大"。
          * 参数校验失败时也要复位，所以统一用 try/finally 收口。 */
+        const runToken = ++trimRunSeq;
         running = true; goBtn.disabled = true;
         let unsub = null;
         try {
           const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
+          if (runToken !== trimRunSeq) return;   // 预检期间被取消/切页
           if (!st.ffmpeg) {
           toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
           window.App.openTool('ffmpeg-setup');
@@ -272,7 +298,11 @@
             if (j.pct != null) prog.set(j.pct);
           } catch (e) {}
         });
-          if (window.App && App.onCleanup) App.onCleanup(unsub);
+          /* 【交给页面级清理，不在这里追加 App.onCleanup】
+           * 见 pageCleanup 的说明：在这里注册会挂到"当前页面"的全局队列，
+           * 用户已切页时就成了新页面的负担。 */
+          pageUnsub = unsub;
+          if (runToken !== trimRunSeq) return;
         try {
           const r = await invoke(Channels.CHANNELS.FFMPEG.TRIM, {
             input: src, out, start, duration: du, mode
@@ -283,11 +313,18 @@
            * 实测：请求从 3.0s 切 2 秒，copy 模式下成品是 3.08 秒。
            * 界面若只回显用户填的 2.00 秒，他下次就不敢信这个工具了。 */
           const actual = r.duration ? fmtClock(r.duration) : fmtClock(du);
-          const drift = r.duration ? Math.abs(r.duration - du) : 0;
+          /* 【方向必须如实：短了就说短了】
+           * 原来用 Math.abs 再固定写「长了」。快速模式吸附关键帧后
+           * 实际**常常比请求短**，界面却一律说长了 —— 描述与事实相反，
+           * 用户会以为是"成品超长"而去反复调整参数。
+           * 现在用带符号差值：>0 长了、<0 短了、|差| < 0.15s 不提示。
+           * 展示同时保留实际时长（actual）与请求时长（fmtClock(du)）。 */
+          const drift = r.duration ? (r.duration - du) : 0;
           status.textContent = '完成：' + actual + '，' + fmtBytes(r.size) + ' → ' + r.out;
-          if (drift > 0.15) {
-            status.textContent += '（比请求的 ' + fmtClock(du) + ' 长了 ' + drift.toFixed(2) + ' 秒，' +
-              '快速模式会把起点吸附到最近的关键帧）';
+          if (Math.abs(drift) > 0.15) {
+            const dirWord = drift > 0 ? '长了' : '短了';
+            status.textContent += '（比请求的 ' + fmtClock(du) + ' ' + dirWord + ' '
+              + Math.abs(drift).toFixed(2) + ' 秒，快速模式会把起点吸附到最近的关键帧）';
             status.style.color = 'var(--warning)';
           }
           toast('裁剪完成', 'success');
@@ -297,12 +334,16 @@
           toast(e.message, 'error');
         }
         } finally {
-          /* 复位必须无条件执行 —— 包括"参数无效"这类早退路径，
-           * 否则按钮会永久禁用、用户以为工具坏了。 */
-          running = false; goBtn.disabled = false; cancelBtn.disabled = true;
-          try { picker.setLocked(false); } catch (e) {}
-          try { prog.hide(); } catch (e) {}
+          /* 【过期的那趟不许改界面】用户点了取消或切走了，界面属于下一趟。 */
+          if (runToken === trimRunSeq) {
+            /* 复位必须无条件执行 —— 包括"参数无效"这类早退路径，
+             * 否则按钮会永久禁用、用户以为工具坏了。 */
+            running = false; goBtn.disabled = false; cancelBtn.disabled = true;
+            try { picker.setLocked(false); } catch (e) {}
+            try { prog.hide(); } catch (e) {}
+          }
           if (unsub) { try { unsub(); } catch (e) {} }
+          if (pageUnsub === unsub) pageUnsub = null;
         }
       }
 

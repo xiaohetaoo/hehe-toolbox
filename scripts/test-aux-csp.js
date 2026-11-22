@@ -1,4 +1,19 @@
 'use strict';
+
+/* 【把 TEMP/TMP 指向工作区】本机安全软件拦 Chromium 子进程写 %TEMP%
+ * （EPERM），而本脚本要把探针与结果落盘。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。进程退出时删除。 */
+(function () {
+  if (process.env.HEHE_TEST_TMP_READY) return;
+  var p = require('path'), f = require('fs');
+  var d = p.join(p.resolve(__dirname, '..'), '.tmp-testrun-' + process.pid);
+  try {
+    f.mkdirSync(d, { recursive: true });
+    process.env.TEMP = d; process.env.TMP = d;
+    process.env.HEHE_TEST_TMP_READY = '1';
+    process.on('exit', function () { try { f.rmSync(d, { recursive: true, force: true }); } catch (e) {} });
+  } catch (e) { /* 建不了就让失败如实暴露 */ }
+})();
 /* P0-7 回归：三个辅助窗口（snip/pin/ruler）必须
  *   (a) 有 CSP（安全基线一致）
  *   (b) CSP 里允许加载 file:// 本地图片（否则截图标注/贴图/标尺全废）

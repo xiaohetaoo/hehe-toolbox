@@ -470,26 +470,28 @@ t('11b 行为验证：rec:audio-devices reject 时清理回调仍被注册', asy
 });
 
 t('11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）', () => {
+  /* 【本用例从布尔 destroyed 迁移到 per-run generation】
+   * 用户明确否决了布尔复位方案：「destroyed 置 true 后没有复位」会让
+   * 保活复用回来时摄像头预览永久不可用；而 onEnter 复位成 false 又引入
+   * 新竞态（旧 getUserMedia 返回时拿到新状态的通行证）。
+   * 现在用 previewGeneration 序号：每次 startPreview/stopPreview 递增，
+   * 异步返回时序号不一致就关掉刚拿到的流。本用例验的仍是同一件事 ——
+   * 「迟到的 getUserMedia 不得让摄像头一直亮着」。 */
   const code = stripComments(readTree('js/tools/media'));
   const fn = extractFn(code, 'async function startPreview(');
-  /* 锁的是：「11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/destroyed/.test(fn), 'startPreview 里没有 destroyed 判断');
-  /* 锁的是：「11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  const n = (fn.match(/destroyed/g) || []).length;
-  assert.ok(n >= 3, 'destroyed 判断太少（至少要在入口、await 之后、拿到 stream 之后各查一次），实际 ' + n + ' 处');
-  /* 锁的是：「11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/getTracks\(\)[\s\S]{0,80}stop/.test(fn),
-    '拿到 stream 后发现页面已销毁，必须把 track 停掉，否则摄像头一直亮着');
-  /* 锁的是：「11c 页面销毁后不再启动摄像头预览（避免迟到的 getUserMedia 亮灯不灭）」这一组回归。
-   * 只能用源码断言：要验的是实现的形态（有某个判断 / 没有某种写法），
-   * 真实行为需要 Electron、真实设备或竞态才能观察到。 */
-  assert.ok(/destroyed\s*=\s*true/.test(code), '清理回调里没有置 destroyed 标志');
+  /* 锁的是：startPreview 里缺少 generation 比对（迟到的流会被当成有效）。 */
+  assert.ok(/previewGeneration/.test(fn), 'startPreview 里没有 previewGeneration 判断');
+  /* 锁的是：比对次数不足 —— 必须在 resolveDeviceId 的 await 之后、
+   * 以及 getUserMedia 的 await 之后各查一次（两处都可能跨越页面生命周期）。 */
+  const n = (fn.match(/previewGeneration/g) || []).length;
+  assert.ok(n >= 2, 'generation 判断太少（入口领值 + 每个 await 之后各查一次），实际 ' + n + ' 处');
+  /* 锁的是：拿到 stream 后发现过期却不关流（摄像头一直亮着）。 */
+  assert.ok(/getTracks\(\)[\s\S]{0,120}stop/.test(fn),
+    '拿到 stream 后发现已过期，必须把 track 停掉，否则摄像头一直亮着');
+  /* 锁的是：清理回调没有递增 generation（旧请求不会被作废）。 */
+  assert.ok(/previewGeneration\+\+/.test(code), 'stopPreview/清理里没有递增 previewGeneration');
+  /* 锁的是：退回布尔 destroyed 方案（复用后预览永久不可用）。 */
+  assert.ok(!/destroyed\s*=\s*true/.test(code), '仍在用布尔 destroyed 标志');
 });
 t('7a rec:stop 的 GIF 目标：任何扩展名都不能与录像输出同名', () => {
   const f = extractGifTarget();

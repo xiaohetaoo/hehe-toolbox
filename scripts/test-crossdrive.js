@@ -27,6 +27,26 @@ const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sev-'));
 const srcFile = path.join(srcDir, 'a.txt');
 fs.writeFileSync(srcFile, 'HELLO-WORLD');
 const arc = path.join(srcDir, 't.7z');
+/* 【先探测 7za 能不能用，不能用就明确跳过】
+ * 本机 360 等安全软件会拦 7zip-bin 的 7za.exe：任何子命令都报
+ * `System ERROR: 拒绝访问`（连 a 建包都失败）。这不是代码缺陷，也不能
+ * 为让测试翻绿而换成系统 7z.exe —— 本用例验的正是产品实际使用的那个
+ * 二进制的跨盘行为。按环境受限处理，与 test-archive-resources.js 同一做法。 */
+{
+  const probeDir = fs.mkdtempSync(path.join(srcDir, 'probe-'));
+  fs.writeFileSync(path.join(probeDir, 'p.txt'), 'x');
+  let probeErr = null;
+  try {
+    const r = require('child_process').spawnSync(sevenZa,
+      ['a', path.join(probeDir, 'p.7z'), 'p.txt'], { cwd: probeDir, encoding: 'utf8' });
+    if (r.status !== 0 || /ERROR/i.test(String(r.stderr || ''))) probeErr = String(r.stderr || 'status ' + r.status);
+  } catch (e) { probeErr = String(e.message || e); }
+  if (probeErr) {
+    console.log('SKIP  7za 无法执行（多为安全软件拦截）：' + probeErr.split(/\r?\n/)[0]);
+    try { fs.rmSync(srcDir, { recursive: true, force: true }); } catch (e) {}
+    process.exit(0);
+  }
+}
 execFileSync(sevenZa, ['a', arc, srcFile], { stdio: 'ignore' });
 
 console.log('压缩包位于', tmpRoot, '，大小', fs.statSync(arc).size, 'bytes');

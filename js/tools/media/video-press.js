@@ -23,8 +23,17 @@ register({
       const speedSel = h('select', { class: 'select input-sm' },
         h('option', { value: 'veryfast' }, '中速'), h('option', { value: 'ultrafast' }, '快速（体积略大）'),
         h('option', { value: 'medium' }, '较慢（体积更小）'), h('option', { value: 'slow' }, '慢（体积最小）'));
-      const scaleSel = h('select', { class: 'select input-sm' },
-        h('option', { value: '' }, '保持原分辨率'), h('option', { value: '1920' }, '限 1080p'), h('option', { value: '1280' }, '限 720p'), h('option', { value: '854' }, '限 480p'));
+      /* 【这三个值是「长边上限」，不是目标尺寸】见 ipc/media-ffmpeg.js 的 buildArgs：
+       * 实际把画面等比装进「上限×上限」的方框里（force_original_aspect_ratio=decrease），
+       * 源本来就小的时候**原样保留**，绝不放大；宽高强制取偶数避免编码失败。
+       * 【文案要短】窄窗时下拉框与旁边的标签在同一行，带括号的长文案会把这一行挤爆、
+       * 出现控件孤行。详细规则放 title（悬停可见），正文只留「限 N p」。 */
+      const scaleSel = h('select', {
+        class: 'select input-sm',
+        title: '只缩小不放大：源比上限小时保持原尺寸；竖屏按高不超过上限；宽高自动取偶数',
+      },
+      h('option', { value: '' }, '保持原分辨率'), h('option', { value: '1920' }, '限 1080p'),
+      h('option', { value: '1280' }, '限 720p'), h('option', { value: '854' }, '限 480p'));
       const fpsIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '帧率', style: { width: '64px' } });
       const audioSel = h('select', { class: 'select input-sm' },
         h('option', { value: '128k' }, '音频重编码 128k'), h('option', { value: '96k' }, '音频重编码 96k'),
@@ -54,8 +63,41 @@ register({
       const status = h('span', { class: 'field-hint' }, '');
       let running = false;
       let runJobId = null; // 本页任务的 job id：按 id 精确取消，避免 cancel-latest 取消到别的任务
+      /* 【per-run 序号 + 页面级清理】三件事必须一起做：
+       *   ① 序号：停止/取消立刻递增，让在飞的 run() 在下一个检查点作废；
+       *   ② 清理在**render 时**就注册（不能等 await STATUS 之后）——
+       *      否则用户在这段预检 await 期间切页时，旧页面没有任何 cleanup，
+       *      稍后 App.onCleanup(unsub) 会挂到**新页面**的全局队列里，
+       *      旧订阅没人退、新页面离开时还替旧页面退订，归属全乱；
+       *   ③ 离开页面必须 kill（与下载/搜索同一口径）——
+       *      否则切走后 ffmpeg 继续写盘，而页面已没有任何进度与取消入口。 */
+      let pressRunSeq = 0;
+      let pageUnsub = null;       // 当前 job:stream 的退订函数（由 run 写入）
+      function pageCleanup() {
+        pressRunSeq++;            // 在飞的 run() 到此作废
+        if (runJobId) { invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); runJobId = null; }
+        if (pageUnsub) { try { pageUnsub(); } catch (e) {} pageUnsub = null; }
+        running = false;
+        try {
+          startBtn.disabled = false; cancelBtn.disabled = true;
+          picker.setLocked(false);
+          if (status.textContent && !/^完成|^✗/.test(status.textContent)) status.textContent = '已离开页面，压制已取消';
+        } catch (e) {}
+      }
+      window.App.onCleanup(pageCleanup);
+      /* 复用回来：把界面恢复到"没有任务在跑"的一致状态（不自动重启任务） */
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          try {
+            if (!running) { startBtn.disabled = false; cancelBtn.disabled = true; }
+          } catch (e) {}
+        });
+      }
       const startBtn = btn('开始压制', 'btn-primary', run, 'send');
-      const cancelBtn = btn('取消', 'btn-danger-plain', () => { if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); }, 'square');
+      /* 【取消必须立刻生效】只在 runJobId 存在时才 kill 的话，
+       * invoke 还没返回的那段时间点取消完全无效，而 run 恢复后 token 未变，
+       * 任务照样起来。递增序号 + 复位界面 + 退订，三件一起做。 */
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(); }, 'square');
       cancelBtn.disabled = true;
       function applyPreset() {
         const v = presetSel.value;
@@ -69,17 +111,24 @@ register({
       async function run() {
         if (!picker.count) return toast('请先选择视频', 'warn');
         if (running) return;
+        /* 【领序号（第一个 await 之前）】pageCleanup 与 cancelBtn 都会递增它，
+         * 于是用户点取消/切页之后，本函数后续每个 checkPoint 都会发现自己过期。 */
+        const runToken = ++pressRunSeq;
         /* 【防重入标志必须在第一个 await 之前置位】理由见 av-convert.js 同一处：
          * 两次 IPC 往返回来之前按钮一直可点，连点会起两个 ffmpeg 任务。 */
         running = true; startBtn.disabled = true;
         let unsub = null;
         try {
         const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
+        /* 【每个 await 之后都要判 token】过期就直接走（finally 会收尾，
+         * 但那时 token 已变，不能改界面）。 */
+        if (runToken !== pressRunSeq) return;
         if (!st.ffmpeg) {
           toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
           window.App.openTool('ffmpeg-setup');
           return;
         }
+        if (runToken !== pressRunSeq) return;
         cancelBtn.disabled = false;
         picker.setLocked(true);
         status.textContent = '';
@@ -123,7 +172,15 @@ register({
             if (j.done && tag) { tag.textContent = j.ok ? '✓ 完成' : '✗ 失败'; tag.className = 'tag ' + (j.ok ? 'tag-green' : 'tag-red'); }
           } catch (e) {}
         });
-        if (window.App && App.onCleanup) App.onCleanup(unsub);
+        /* 【把订阅交给页面级清理，绝不在这里追加 App.onCleanup】
+         * pageCleanup 已在 render 时注册，这里只更新它要退订的对象。
+         * 原来在这里调 App.onCleanup(unsub) 有两个问题：
+         *   ① 若用户已在 STATUS 的 await 期间切页，这次注册会被塞进
+         *      **新页面**的全局队列（旧页面没人管、新页面替旧页面退订）；
+         *   ② 与"离开即 kill"的口径不一致：只退订不杀任务，
+         *      切走后 ffmpeg 继续写盘而页面没有任何进度与取消入口。 */
+        pageUnsub = unsub;
+        if (runToken !== pressRunSeq) return;   // 注册订阅后再判一次
         try {
           const r = await invoke(Channels.CHANNELS.FFMPEG.PRESS, {
             items: picker.paths, outDir,
@@ -165,10 +222,15 @@ register({
           toast(e.message, 'error');
         }
         } finally {
-          /* 复位必须无条件执行（早退路径也要走到），unsub 可能还是 null。 */
-          running = false; startBtn.disabled = false; cancelBtn.disabled = true;
-          try { picker.setLocked(false); } catch (e) {}
+          /* 【过期的那趟不许改界面】它已经不再是"当前任务"：
+           * 用户点了取消或切走了，界面属于下一趟（或已复位成空闲）。
+           * 只做自己这一份资源的释放（退订自己建的订阅）。 */
+          if (runToken === pressRunSeq) {
+            running = false; startBtn.disabled = false; cancelBtn.disabled = true;
+            try { picker.setLocked(false); } catch (e) {}
+          }
           if (unsub) { try { unsub(); } catch (e) {} }
+          if (pageUnsub === unsub) pageUnsub = null;
         }
       }
       page.appendChild(div('card', div('card-title', '选择视频'), picker.el));

@@ -8,6 +8,28 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
+/* 【Chromium 兼容参数 —— 见 scripts/lib/electron-launch.js 的实测根因】
+ * 本机 Chromium 进程级沙箱起不来：不带 --no-sandbox 时 electron.exe 直接以
+ * 0x80000003 崩掉，stdout/stderr 全空，测试只能报「没拿到渲染层结果」。
+ * --disable-gpu/--disable-dev-shm-usage 同理（远程会话的 GPU 进程、受限的 /dev/shm）。
+ * 这些参数只影响测试探针，不影响产品打包后的启动参数。 */
+const CHROMIUM_FLAGS = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'];
+
+/* 【把子进程的 TEMP/TMP 与 --user-data-dir 切到工作区内】
+ * 本机 Chromium 子进程写 %TEMP% 会被安全软件拦（EPERM），而探针都要把结果
+ * 落盘再读，于是全部卡在"写不了结果文件"。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。用完即删。 */
+let __scratchDir = null;
+function __ensureScratch(env) {
+  if (!__scratchDir) {
+    __scratchDir = path.join(path.resolve(__dirname, '..'), '.tmp-e2e-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6));
+    try { require('fs').mkdirSync(__scratchDir, { recursive: true }); } catch (e) {}
+    process.on('exit', () => { try { require('fs').rmSync(__scratchDir, { recursive: true, force: true }); } catch (e) {} });
+  }
+  env.TEMP = __scratchDir;
+  env.TMP = __scratchDir;
+  return ['--user-data-dir=' + path.join(__scratchDir, 'udd')];
+}
 const { readSrc } = require('./lib/harness');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -204,7 +226,7 @@ env.HEHE_NOSPLASH = '1';
 
 let raw = '';
 try {
-  raw = execFileSync(EXE, [path.join(tmp, 'runner.js')], { env, encoding: 'utf8', timeout: 120000 });
+  raw = execFileSync(EXE, [...CHROMIUM_FLAGS, ...__ensureScratch(env), path.join(tmp, 'runner.js')], { env, encoding: 'utf8', timeout: 120000 });
 } catch (e) { raw = String(e.stdout || '') + String(e.stderr || ''); }
 
 if (!fs.existsSync(OUT)) {

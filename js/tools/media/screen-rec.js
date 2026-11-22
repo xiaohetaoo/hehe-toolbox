@@ -44,8 +44,23 @@ register({
        * 而这段代码所属的页面已经销毁，再也没有人会去停它。
        * 所以用一个标记把这条路堵上：destroyed 之后不再启动预览，
        * 并且拿到 stream 时若发现已销毁，立刻把它关掉。 */
-      let destroyed = false;
+      /* 【两套 per-run token】
+       * ① recordingRunToken —— start() 里跨了 FFMPEG.STATUS / DIALOG.SAVE /
+       *    REC.START 三个 await，用户可能在任一时刻离开页面。离开时递增
+       *    序号；异步返回后若序号不一致，说明「这趟已经作废」：
+       *      · 不能把 recording 置真、不能改界面；
+       *      · 如果 REC.START 真的已经启动，必须立刻 REC.STOP 收尾，
+       *        否则录屏会偷偷在后台跑（用户以为没开始）。
+       * ② previewGeneration —— startPreview() 里 getUserMedia 可能跨越页面
+       *    生命周期。每次调用递增；返回时序号不一致就把刚拿到的 stream
+       *    关掉（不能留着，摄像头的指示灯会一直亮）。
+       * 用序号而不是布尔 destroyed：布尔复位后无法区分「旧请求」与「新请求」，
+       * 复用回来时旧请求会拿到新状态的通行证。 */
+      let recordingRunToken = 0;
+      let previewGeneration = 0;
       async function stopPreview() {
+        /* 递增 generation：任何在飞的 getUserMedia 回来时都会发现自己过期 */
+        previewGeneration++;
         if (previewStream) { previewStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} }); previewStream = null; }
         camPreview.srcObject = null;
         camPreview.style.display = 'none';
@@ -79,21 +94,26 @@ register({
       }
       async function startPreview(dshowName) {
         await stopPreview();
-        if (destroyed) return;   // 页面已销毁就别再开摄像头了
+        /* stopPreview 已经递增过 generation，这里领当下的值 */
+        const gen = previewGeneration;
         if (!dshowName) { camPreviewHint.textContent = '选择摄像头后在此预览'; return; }
         try {
           const realId = await resolveDeviceId(dshowName);
-          if (destroyed) return;   // resolveDeviceId 里要等权限，可能已经切走了
+          /* resolveDeviceId 里要等权限，可能已经离开页面/换过设备 */
+          if (gen !== previewGeneration) return;
           if (!realId) {
             // 不静默回落到默认摄像头：那会预览一个跟录制不同的设备，比不预览更误导
             camPreviewHint.textContent = '预览不可用：浏览器未匹配到该摄像头（名称不一致），录制不受影响';
             return;
           }
           const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: realId } }, audio: false });
-          /* 拿到 stream 时再查一次 destroyed：这个 await 可能跨越了整个页面生命周期。
-           * 已销毁的话直接关掉，否则摄像头会一直亮着 —— 而此刻页面已经没了，
-           * 除了重启程序没有任何办法把它关掉。 */
-          if (destroyed) { stream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} }); return; }
+          /* 【拿到 stream 时再比一次 generation】这个 await 可能跨越了整个
+           * 页面生命周期（或用户又切了别的摄像头）。过期就把刚拿到的流关掉 ——
+           * 否则摄像头指示灯一直亮，而此刻没有任何界面能关它。 */
+          if (gen !== previewGeneration) {
+            stream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+            return;
+          }
           previewStream = stream;
           camPreview.srcObject = previewStream;
           camPreview.style.display = 'block';
@@ -116,7 +136,8 @@ register({
       const resumeBtn = btn('继续', 'btn-secondary', () => ctl(false), 'play');
       const stopBtn = btn('停止并保存', 'btn-danger-plain', stop, 'stop');
       pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
-      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
+      /* region 现在被 onEnter 的 status 文案与区域标签读取，已不是"只赋值未使用"，
+       * 所以不再需要 eslint-disable。 */
       let recording = false, paused = false, region = null;
       const camOn = () => {
         /* 这里没挂 no-shadow 压制 —— 因为 eslint 并不认为这里有遮蔽
@@ -166,9 +187,11 @@ register({
        * 而 JS 已经找不到那个 stream 了（页面已销毁），只能去设备管理器禁用。
        * 所以把它提到 then 外面，跟同级其它清理注册放一起：
        * 无论枚举成败，离开页面时都会停掉预览。
-       * 同时置 destroyed：getUserMedia 的 await 可能还没回来，
-       * 光停「当时已知的」stream 挡不住那个迟到的结果（见 startPreview）。 */
-      window.App.onCleanup(() => { destroyed = true; stopPreview(); });
+       * 同时递增 previewGeneration：getUserMedia 的 await 可能还没回来，
+       * 光停「当时已知的」stream 挡不住那个迟到的结果（见 startPreview）。
+       * 【不要在这里写 stopPreview 之外的清理】停录与按钮复位在文件末尾
+       * 那一处 cleanup 里统一做（那里也递增 token），两处都写会重复 STOP。 */
+      window.App.onCleanup(() => { stopPreview(); });
       [fpsSel, audioSel, camPosSel, camSizeSel].forEach(el => el.addEventListener('change', saveRecPrefs));
       gifChk.addEventListener('change', saveRecPrefs);
       async function pickRegion() {
@@ -205,24 +228,41 @@ register({
         } catch (e) { toast(e.message, 'error'); }
       }
       async function start() {
+        /* 【领序号：这一趟录制请求的有效凭证】 */
+        const runToken = ++recordingRunToken;
         const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
+        /* 每个 await 之后都要复查：过期就直接退出，不弹框、不改界面 */
+        if (runToken !== recordingRunToken) return;
         if (!st.ffmpeg) { toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn'); window.App.openTool('ffmpeg-setup'); return; }
         const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: '录屏-' + window.TimeStamp.localStampDash() + '.mp4', filters: [{ name: 'MP4', extensions: ['mp4'] }] });
         if (!p) return;
+        if (runToken !== recordingRunToken) return;
         try {
           // 摄像头是独占设备：录制前必须先释放预览流，否则 ffmpeg 打不开设备
           await stopPreview();
+          if (runToken !== recordingRunToken) return;
           /* overwrite: true —— 这个路径来自上面的 dialog:save，用户若选了已存在的
            * 文件，Windows 原生保存框已经弹过「要替换它吗？」并拿到了「是」。
            * 不传这个标志就会在 rec:start 里被二次否决，想覆盖旧录像只能手动改名。 */
           await invoke(Channels.CHANNELS.REC.START, { outPath: p, fps: +fpsSel.value, rect: region, audio: audioSel.value || null,
             overwrite: true,
             camera: camSel.value || null, camPos: camPosSel.value, camScale: +camSizeSel.value });
+          /* 【最关键的复查】REC.START 的 await 之后才发现页面已离开 ——
+           * 录制其实已经真的开始了。必须立刻停掉并保留文件（用户可能已经
+           * 录了几秒），否则它在后台一直录，而界面上什么都没显示。 */
+          if (runToken !== recordingRunToken) {
+            try { await invoke(Channels.CHANNELS.REC.STOP, false); } catch (e) {}
+            return;
+          }
           recording = true; paused = false;
           startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
           status.textContent = '录制中…' + (region ? `（${region.w}×${region.h}）` : '（全屏）') + (audioSel.value ? ' + 麦克风' : '') + (camSel.value ? ' + 摄像头画中画' : '');
           camPreviewHint.textContent = '录制中（预览已让给录制）';
-        } catch (e) { toast(e.message, 'error'); if (camSel.value) startPreview(camSel.value); }
+        } catch (e) {
+          /* 过期的请求不弹错（用户已经不在这一页了） */
+          if (runToken !== recordingRunToken) return;
+          toast(e.message, 'error'); if (camSel.value) startPreview(camSel.value);
+        }
       }
       /* 参数是布尔而不是通道名：原来把两个通道名当普通字符串传进来、
        * 函数里再比一次，等于让通道名以「数据」的形式在渲染层多存在一份，
@@ -252,7 +292,78 @@ register({
         // 录制结束把摄像头交还给预览
         if (camSel.value) startPreview(camSel.value);
       }
-      window.App.onCleanup(() => { if (recording) invoke(Channels.CHANNELS.REC.STOP, false).catch(() => {}); });
+      /* 【离开页面必须停录，并把 UI 复位成「可以重新开始」】
+       * 原来只发 REC.STOP 就完事，三件事全没做：
+       *   ① recording 仍是 true → 保活复用后界面显示「录制中…」、开始按钮禁用；
+       *   ② 再点「停止」会对**已经结束的**录制再发一次 REC.STOP（二次 STOP，
+       *      主进程那边要么报错要么重复封装）；
+       *   ③ 摄像头预览/暂停按钮状态保持上一次的样子。
+       * 现在：发 STOP（尽力而为）+ 立刻把本地状态与所有按钮复位。
+       * 【为什么先把 recording 置 false 再发 STOP】
+       * invoke 是异步的，若等它返回再置位，用户在这段时间里切回来会看到
+       * 仍是「录制中」；而 stop() 里有 `if (!recording) return` 守卫，
+       * 提前置 false 正好也挡住了重复 STOP。 */
+      window.App.onCleanup(() => {
+        /* 【先递增两套序号】任何在飞的 start()/startPreview() 立刻作废：
+         * 它们的 await 返回时会发现 token 变了，于是：
+         *   · start() 若已把 REC.START 发出去，会自己发 STOP 收尾；
+         *   · startPreview() 会把刚拿到的 stream 关掉。
+         * 【必须在发 STOP 之前递增】否则同一 tick 内返回的旧请求
+         * 仍会通过检查并把 recording 置真。 */
+        recordingRunToken++;
+        previewGeneration++;
+        /* 停止预览：离开页面时摄像头不该继续占用（也让之后的 getUserMedia 失效） */
+        try { stopPreview(); } catch (e) {}
+        if (!recording) {
+          /* 没在录，但界面可能停在「录制中…」（旧请求刚把它刷上去），一并复位 */
+          try {
+            startBtn.disabled = false;
+            pauseBtn.disabled = resumeBtn.disabled = stopBtn.disabled = true;
+            paused = false;
+            if (/录制中|正在封装/.test(status.textContent || '')) status.textContent = '已离开页面，录制已停止';
+            camPreviewHint.textContent = '已离开页面，预览已释放';
+          } catch (e) {}
+          return;
+        }
+        recording = false;
+        try {
+          pauseBtn.disabled = true; resumeBtn.disabled = true; stopBtn.disabled = true;
+          startBtn.disabled = false;
+          paused = false;
+          status.textContent = '已离开页面，录制已停止';
+          /* 【提示文案必须跟着复位】原来一直停在
+           * 「录制中（预览已让给录制）」—— 而录制已经停了、预览也已经释放，
+           * 复用回来后用户看到这句话会以为还在录。 */
+          camPreviewHint.textContent = '已离开页面，预览已释放';
+        } catch (e) {}
+        invoke(Channels.CHANNELS.REC.STOP, false).catch((e) => {
+          /* 【不能静默】停不下来意味着后台还在录 —— 这是必须让用户知道的事
+           * （规则第 5 条：解决不了要报告）。用 toast 明示。 */
+          try { toast('停止录制失败：' + ((e && e.message) || e), 'error', 8000); } catch (e2) {}
+        });
+      });
+      /* 【复用回来时按真实状态重刷，并把摄像头预览恢复起来】
+       * 保活复用的是同一块 DOM；cleanup 已经把预览释放掉了（stopPreview），
+       * 但 DOM 里 camPreview 还留着上一轮的残留状态。不重新启动预览的话，
+       * 返回页面后选着摄像头的用户会看到一个永久黑掉的预览框 ——
+       * 因为 destroyed 那套旧方案从不复位，预览再也起不来。 */
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          try {
+            const on = !!recording;
+            startBtn.disabled = on;
+            stopBtn.disabled = !on;
+            pauseBtn.disabled = !on || paused;
+            resumeBtn.disabled = !on || !paused;
+            if (!on && /录制中|正在封装/.test(status.textContent || '')) status.textContent = '已离开页面，录制已停止';
+            /* 恢复预览：录制没在跑时才恢复（录制要独占设备） */
+            if (!on) {
+              if (camSel.value) startPreview(camSel.value);
+              else camPreviewHint.textContent = '选择摄像头后在此预览';
+            }
+          } catch (e) {}
+        });
+      }
       page.appendChild(div('card', div('card-title', '录制'),
         div('form-row', h('span', { class: 'form-label' }, '帧率'), fpsSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '区域'), regionBtn, clearRegionBtn, regionLabel),

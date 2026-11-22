@@ -57,6 +57,33 @@ register({
       const status = h('span', { class: 'field-hint' }, '');
       let running = false;
       let cancelFlag = false;
+      /* 【per-run 序号 + 页面级清理】图片压缩原来是**唯一没有注册任何
+       * onCleanup 的批量工具**：用户切页后循环继续跑，逐张读图、编码、
+       * 写盘，而页面上既没有进度也没有停止入口。
+       * 现在两点收口：
+       *   ① cleanup 置 cancelFlag（循环每个文件开头检查它，见 run 的 for），
+       *      所以"离开后不得再写新文件"；
+       *   ② 递增序号让在飞的 run() 在下一个检查点退出（并在 finally
+       *      只管自己那一代，不碰新界面的按钮）。 */
+      let imgRunSeq = 0;
+      let pageProg = null;
+      function pageCleanup() {
+        imgRunSeq++;
+        cancelFlag = true;
+        running = false;
+        try {
+          startBtn.disabled = false; stopBtn.disabled = true;
+          picker.setLocked(false);
+          if (pageProg) pageProg.hide();
+          if (status.textContent && !/^完成/.test(status.textContent)) status.textContent = '已离开页面，压缩已停止';
+        } catch (e) {}
+      }
+      window.App.onCleanup(pageCleanup);
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          try { if (!running) { startBtn.disabled = false; stopBtn.disabled = true; } } catch (e) {}
+        });
+      }
       const startBtn = btn('开始压缩', 'btn-primary', run, 'send');
       const stopBtn = btn('停止', 'btn-danger-plain', () => { cancelFlag = true; stopBtn.disabled = true; }, 'square');
       stopBtn.disabled = true;
@@ -143,16 +170,22 @@ register({
       async function run() {
         if (!picker.count) return toast('请先选择图片', 'warn');
         if (running) return;
+        const runToken = ++imgRunSeq;
         cancelFlag = false;
         running = true; startBtn.disabled = true;
         picker.setLocked(true);
+        pageProg = prog;
         prog.show(); status.textContent = '';
         const paths = picker.paths.slice();
         const outDir = outDirIn.value.trim() || (paths[0].replace(/[\\/][^\\/]+$/, '') + '/hehe-compressed');
         try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) {}
-        let totalBefore = 0, totalAfter = 0, ok = 0, fail = 0;
+        let totalBefore = 0, totalAfter = 0, ok = 0, fail = 0, missCount = 0;
         for (let i = 0; i < paths.length; i++) {
-          if (cancelFlag) break;   // 用户点了停止
+          /* 【两个中断条件】
+           *   · cancelFlag —— 用户点了停止，或页面已经离开（cleanup 置位）；
+           *   · runToken  —— 这一趟已被新一代取代（重开压缩/复用回来后）
+           * 任一成立就**不再写新文件**，这是"离开后不得继续落盘"的保证。 */
+          if (cancelFlag || runToken !== imgRunSeq) break;
           prog.set((i + 1) / paths.length * 100);
           const p = paths[i];
           const name = p.split(/[\\/]/).pop();
@@ -180,17 +213,106 @@ register({
             } else {
               du = drawTo(img, mime, Math.min(100, Math.max(10, parseInt(qualityIn.value) || defQuality)) / 100, 1);
             }
-            const ext = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png';
+            /* 【绝不能输出比原图更大的文件】
+             * target 模式：源图本来就 ≤ 目标时，encodeTarget 会去找
+             * 「≤目标的最大质量」—— 那可能比原图**大**（100KB 源 + 200KB 目标
+             * 能得到 150~190KB）。smart 模式：q60 仍大于原图时也照样写盘。
+             * 判据统一在 lib/img-pick.js（纯函数，可单测）。
+             * 保留原图时直接读原文件字节 —— 不重新编码，做到逐字节等同。 */
+            const candBytes = dataUrlBytes(du);
+            const targetBytesAbs = modeSel.value === 'target' ? (parseInt(targetIn.value) || 200) * 1024 : undefined;
+            const decision = (window.ImgPick || {}).decideOutcome
+              ? window.ImgPick.decideOutcome({
+                origBytes: orig,
+                mode: modeSel.value,
+                targetBytes: targetBytesAbs,
+                candidate: { bytes: candBytes },
+              })
+              : { useOriginal: candBytes >= orig, alreadyFits: false, reason: '' };
+            let outB64, outExt, alreadyFits = decision.alreadyFits;
+            /* 【用户明确选了输出格式时，不能静默复制原格式】
+             * 场景：target 模式 + 原图已达标（假设是个 80KB 的 PNG），
+             * 而用户把「输出格式」选成了 WebP。原来直接复制 PNG 原文件，
+             * 输出目录里躺着一个 .png —— 用户会以为自己选错了。
+             * 规则：
+             *   · 格式选「智能」 → 允许保留原格式（智能本来就是"看情况"）；
+             *   · 格式显式指定（JPG/WebP/PNG）且与原图不同 → 必须转码，
+             *     即便结果比原图大（用户要的是那个格式）；此时不再套用
+             *     "绝不输出更大文件"的判据，但界面要如实标出体积变化。
+             *   · 同格式或智能 → 保留原图的判据照旧生效。 */
+            const origExt = '.' + (p.split('.').pop() || 'img').toLowerCase();
+            const wantExt = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png';
+            const fmtExpl = fmtSel.value !== 'smart';
+            const fmtDiff = wantExt !== origExt && !(origExt === '.jpeg' && wantExt === '.jpg');
+            const mustConvert = fmtExpl && fmtDiff;
+            const useOrig = decision.useOriginal && !mustConvert;
+            if (useOrig) {
+              const raw = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, p);
+              outB64 = raw.b64;
+              outExt = origExt;
+            } else {
+              outB64 = du.split(',')[1];
+              outExt = wantExt;
+              /* 强制转格式时不再是「已达标（保留原格式）」 */
+              if (mustConvert) alreadyFits = false;
+            }
             // 同名不同扩展（a.png + a.jpg → 都是 a.jpg）时自动加序号，避免互相覆盖
-            let outPath = outDir.replace(/[\\/]$/, '') + '/' + name.replace(/\.\w+$/, '') + ext;
+            let outPath = outDir.replace(/[\\/]$/, '') + '/' + name.replace(/\.\w+$/, '') + outExt;
             outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, outPath);
-            await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, du.split(',')[1]);
+            await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, outB64);
             const newSize = (await invoke(Channels.CHANNELS.FS.STAT, outPath)).size;
+            /* 【兜底再验一次】上面判的是 dataUrl 的字节数，而写盘的是 base64 解码后的
+             * 结果；两者理论上一致，但让写盘后实测的 newSize 再兜一次底更稳
+             * （文件系统层面的大小才是最终事实）。万一仍然变大，删掉候选、如实报错。
+             * 【强制转格式时例外】用户明确要 JPG/WebP，转出来变大也是他的选择 ——
+             * 此时不删文件，但在界面上标出"体积变大"（橙色），不能报绿色成功。 */
+            if (newSize > orig && !mustConvert) {
+              try { await invoke(Channels.CHANNELS.FS.DELETE, outPath); } catch (e) {}
+              throw new Error(`压缩结果（${fmtBytes(newSize)}）比原图（${fmtBytes(orig)}）更大，已放弃`);
+            }
+            /* 【target 模式未达目标：不能显示绿色成功】
+             * encodeTarget 从 q95 往下找不到 ≤ 目标的档位时会返回"能压到的最小结果"，
+             * 那个结果仍可能高于目标。界面原来只看有没有变小（pct >= 0 就绿），
+             * 用户以为达标了，实际拿去上传仍然超限。 */
+            const targetMissed = modeSel.value === 'target'
+              && targetBytesAbs > 0 && newSize > targetBytesAbs;
+            if (targetMissed) missCount++;
             ok++; totalBefore += orig; totalAfter += newSize;
             const pct = Math.round((1 - newSize / orig) * 100);
             const sizeEl = row && row.querySelector('.comp-size'), tagEl = row && row.querySelector('.tag');
             if (sizeEl) sizeEl.textContent = `${fmtBytes(orig)} → ${fmtBytes(newSize)}`;
-            if (tagEl) { tagEl.textContent = pct >= 0 ? `-${pct}%` : `+${-pct}%`; tagEl.className = 'tag ' + (pct >= 0 ? 'tag-green' : 'tag-orange'); }
+            if (tagEl) {
+              /* 【标签必须与真实结果一致】按优先级：
+               *   1. 未达目标 → 橙色 + 实际体积（用户要知道没达成）
+               *   2. 原图本来就达标 → 「已达标」（蓝色）
+               *   3. 用户指定的格式导致变大 → 橙色 + 增幅
+               *   4. **保留原图但并非"已达标"** → 「已保留原图」（灰/蓝）
+               *   5. 正常压缩 → 绿色 -N%
+               * 【第 4 条是本轮补的】smart/target 模式下候选不比原图小时会保留
+               * 原图（decision.useOriginal），此时 newSize === orig，pct = 0。
+               * 原来落到最后的 else 分支显示绿色 `-0%` —— 用户看到绿色以为
+               * 压成功了一点点，实际是"原样输出、没有任何压缩"。 */
+              const keptOriginalNotFits = useOrig && !alreadyFits && !targetMissed && !mustConvert;
+              if (targetMissed) {
+                /* 橙色 + 实际体积：用户必须知道没达成，以及实际是多少 */
+                tagEl.textContent = '未达目标 ' + fmtBytes(newSize);
+                tagEl.className = 'tag tag-orange';
+                const errEl = row && row.querySelector('.comp-err');
+                if (errEl) errEl.textContent = `目标 ${fmtBytes(targetBytesAbs)}，实际 ${fmtBytes(newSize)}（已降到最小可行质量仍超标）`;
+              } else if (alreadyFits) { tagEl.textContent = '已达标'; tagEl.className = 'tag tag-blue'; }
+              else if (mustConvert && newSize > orig) {
+                /* 用户要的格式导致变大：如实标橙色，不能说成功 */
+                tagEl.textContent = '转换后变大 +' + (-pct) + '%';
+                tagEl.className = 'tag tag-orange';
+              } else if (keptOriginalNotFits) {
+                /* 候选压不更小 → 保留原图。用灰色"已保留原图"而不是绿色 -0%：
+                 * 这不是"压缩成功"，而是"压不动所以没动"。 */
+                tagEl.textContent = '已保留原图';
+                tagEl.className = 'tag tag-gray';
+                const errEl = row && row.querySelector('.comp-err');
+                if (errEl) errEl.textContent = (decision.reason || '编码结果不比原图小') + '，已输出原文件';
+              } else { tagEl.textContent = pct >= 0 ? `-${pct}%` : `+${-pct}%`; tagEl.className = 'tag ' + (pct >= 0 ? 'tag-green' : 'tag-orange'); }
+            }
           } catch (e) {
             fail++;
             if (row) {
@@ -201,10 +323,17 @@ register({
             }
           }
         }
+        /* 【只有当前这趟才改界面】过期（用户离开/重开）时界面属于别人，
+         * 这里保持原样；pageProg 也要清掉，避免 cleanup 操作已过期的元素。 */
+        if (runToken !== imgRunSeq) { if (pageProg === prog) pageProg = null; return; }
         prog.hide(); running = false; startBtn.disabled = false; picker.setLocked(false);
         stopBtn.disabled = true; cancelFlag = false;
-        status.textContent = totalBefore ? `完成：成功 ${ok}，失败 ${fail}，合计 ${fmtBytes(totalBefore)} → ${fmtBytes(totalAfter)}（节省 ${fmtBytes(Math.max(0, totalBefore - totalAfter))}），输出目录 ${outDir}` : '';
-        toast(`压缩完成（${ok} 成功 / ${fail} 失败）`, fail ? 'warn' : 'success');
+        if (pageProg === prog) pageProg = null;
+        /* 【汇总行不能笼统说"完成"】若有文件未达目标，用户只看到绿色总数
+         * 会以为全部达标。这里把未达标数单独列出来。 */
+        const missedNote = missCount ? `，其中 ${missCount} 个未达目标` : '';
+        status.textContent = totalBefore ? `完成：成功 ${ok}，失败 ${fail}${missedNote}，合计 ${fmtBytes(totalBefore)} → ${fmtBytes(totalAfter)}（节省 ${fmtBytes(Math.max(0, totalBefore - totalAfter))}），输出目录 ${outDir}` : '';
+        toast(`压缩完成（${ok} 成功 / ${fail} 失败${missedNote}）`, fail || missCount ? 'warn' : 'success');
       }
       page.appendChild(div('card', div('card-title', '选择图片'), picker.el));
       page.appendChild(div('card', div('card-title', '压缩参数'),

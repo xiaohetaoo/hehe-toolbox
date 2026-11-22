@@ -35,31 +35,78 @@
       let catalog = null;
       let detected = [];
       let lastJob = null;
+      /* 安装/下载的 per-run 序号（见 cancelBtn 的说明） */
+      let installRunSeq = 0;
       let busy = false;
 
       const modeSel = h('select', { class: 'select input-sm' },
         h('option', { value: 'user' }, T('安装后加入当前用户环境（推荐）')),
         h('option', { value: 'private' }, T('仅本工具箱使用（不改环境变量）')));
-      /* 下载动辄几十上百 MB，必须能停 */
+      /* 下载动辄几十上百 MB，必须能停。
+       * 【取消必须立刻生效】ENV.INSTALL 是阻塞式 handler（装完才返回），
+       * lastJob 要等首条 job:stream 才被认领 —— 在那之前的取消窗口里
+       * `if (!lastJob) return` 什么都不做，而 installEnv 恢复后任务照旧在跑。
+       * 现在：取消先递增 installRunSeq（让 installEnv 的收尾判定过期），
+       * 有 lastJob 就 kill，并立刻恢复界面可用状态。 */
       const cancelBtn = btn(T('停止下载'), 'btn-sm btn-text', async () => {
-        if (!lastJob) return toast(T('没有进行中的下载'), 'warn');
-        try { await invoke(Channels.CHANNELS.JOB.KILL, lastJob); toast(T('已请求停止'), 'info'); }
-        catch (e) { toast(e.message, 'error'); }
+        installRunSeq++;
+        const job = lastJob;
+        lastJob = null;
+        if (job) {
+          try {
+            await invoke(Channels.CHANNELS.JOB.KILL, job);
+            toast(T('已请求停止'), 'info');
+          } catch (e) { toast(e.message, 'error'); }
+        } else {
+          /* 还没有 job id：说明主进程还没开始下载。取消语义仍然成立 ——
+           * installEnv 的收尾会因为序号变化而丢弃本次结果。 */
+          toast(T('已取消本次安装'), 'info');
+        }
+        /* 界面立刻回到可用：不等 installEnv 的 await 返回 */
+        try {
+          progressLine.textContent = '';
+          cancelBtn.disabled = true;
+          setBusy(false);
+        } catch (e) {}
       }, 'stop');
       cancelBtn.disabled = true;
 
-      /* 下载/解压阶段都会发 job:stream；前缀 env 已在 job-id 表登记 */
-      const unsub = window.JobPrefix && window.JobPrefix.subscribe
-        ? window.JobPrefix.subscribe('env', (d) => {
+      /* 下载/解压阶段都会发 job:stream；前缀 env 已在 job-id 表登记。
+       * 【订阅必须可重入】cleanup 会退订，而保活复用时页面不重新 render ——
+       * 不退订会泄漏，退订后不重绑则返回后进度永久冻结（安装其实还在跑，
+       * 用户却看不到任何变化，以为卡死）。抽成 bindEnvProgress()。 */
+      let unsubEnv = null;
+      function bindEnvProgress() {
+        if (unsubEnv) { try { unsubEnv(); } catch (e) {} unsubEnv = null; }
+        if (!(window.JobPrefix && window.JobPrefix.subscribe)) return;
+        unsubEnv = window.JobPrefix.subscribe('env', (d) => {
           try {
             const j = JSON.parse(d.data || '{}');
             if (d.id) lastJob = d.id;
             if (j.pct != null) progressLine.textContent = T('下载中 {pct}% · {mb} MB', { pct: (j.pct || 0).toFixed(0), mb: (j.mb || 0).toFixed(1) });
             else if (j.done) progressLine.textContent = T('下载完成，校验与解压中…');
           } catch (e) { /* 进度是增强，解析失败不影响主流程 */ }
-        })
-        : null;
-      if (unsub) window.App.onCleanup(() => { try { unsub(); } catch (e) {} });
+        });
+      }
+      bindEnvProgress();
+      if (unsubEnv) window.App.onCleanup(() => { if (unsubEnv) { try { unsubEnv(); } catch (e) {} unsubEnv = null; } });
+      /* 【复用回来：重绑进度订阅，并把清单/安装状态重新拉一遍】
+       * 离开期间安装可能已经完成或失败，不重拉就一直是旧状态。 */
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          bindEnvProgress();
+          /* 【loadCatalog 完成后必须重刷 busy】loadCatalog 会
+           * `listBox.innerHTML = ''` 再 append 全新按钮 —— 新按钮默认是
+           * **启用**态，而 busy 仍然是 true（安装还在跑）。
+           * 结果：安装进行中返回页面，按钮看起来全部可点，用户一点就
+           * "已有操作进行中"（或更糟：连点触发重复安装）。
+           * 必须在重建之后再 setBusy(busy) 一次，让视觉与真实状态一致。 */
+          Promise.resolve()
+            .then(() => loadCatalog(false))
+            .catch(() => {})
+            .then(() => { try { if (busy) setBusy(true); } catch (e) {} });
+        });
+      }
 
       /* 串行：环境操作在 IPC 侧也排队，但界面同时禁用按钮，避免用户连点 */
       function setBusy(v) {
@@ -206,22 +253,34 @@
         lines.push('', T('确定继续？'));
         if (!(await confirmBox({ title: T('安装 {name}', { name: r.name }), message: lines.join('\n'), okText: T('开始下载') }))) return;
         progressLine.textContent = T('准备下载…');
+        const runToken = ++installRunSeq;
         setBusy(true);
         cancelBtn.disabled = false;
         try {
           const res = await invoke(Channels.CHANNELS.ENV.INSTALL, r.id, { applyPath: mode === 'user' });
+          /* 【过期就别改界面】用户已点了停止（或离开页面）——这次的安装结果
+           * 不属于当前界面。但仍要刷新清单：主进程那边可能真的装完了。 */
+          if (runToken !== installRunSeq) {
+            progressLine.textContent = '';
+            try { await loadCatalog(true); } catch (e) {}
+            return;
+          }
           progressLine.textContent = '';
           toast((res.already ? T('已安装，无需重复下载') : T('已安装 {name} {ver}', { name: r.name, ver: res.version }))
             + (res.applied ? T('，并已加入用户环境') : ''), 'success', 5000);
           if (res.warnings && res.warnings.length) toast(res.warnings[0], 'warn', 7000);
           await loadCatalog(true);
         } catch (e) {
+          /* 过期的失败不弹错（用户已经取消/离开了） */
+          if (runToken !== installRunSeq) { progressLine.textContent = ''; return; }
           progressLine.textContent = '';
           toast(e.message, 'error', 8000);
         } finally {
-          cancelBtn.disabled = true;
-          lastJob = null;
-          setBusy(false);
+          if (runToken === installRunSeq) {
+            cancelBtn.disabled = true;
+            lastJob = null;
+            setBusy(false);
+          }
         }
       }
 
@@ -312,9 +371,29 @@
         setBusy(true);
         try {
           const r = await invoke(Channels.CHANNELS.ENV.CLEAN);
-          toast(r.removed
-            ? T('已清理 {n} 个安装包，释放 {size}', { n: r.removed, size: fmtBytes(r.freed) })
-            : T('没有可清理的安装包'), 'success');
+          /* 【必须读 r.errors】
+           * 后端现在把「删除失败的项」放进 errors（原来 fsp.rm 的失败被
+           * catch 吞掉后仍 removed++，界面照样报「已清理 N 个」绿色成功）。
+           * 三种情况要说清：
+           *   · 全部失败 → 红色错误，不能报「没有可清理」也不能报成功
+           *     （「没有可清理」会让用户以为文件本来就不存在）；
+           *   · 部分失败 → 黄色警告 + 具体条数与首个原因；
+           *   · 全部成功且删了东西 → 绿色成功；
+           *   · 没有文件可清理 → 普通提示（不是成功，也不是失败）。 */
+          const errs = Array.isArray(r.errors) ? r.errors : [];
+          const removed = Number(r.removed) || 0;
+          if (errs.length && removed === 0) {
+            /* 全部失败：明确是错误，并给出第一条原因 */
+            toast(T('清理失败：{n} 个文件无法删除（{reason}）', { n: errs.length, reason: errs[0] }), 'error', 8000);
+          } else if (errs.length) {
+            /* 部分失败：说清成功几条、失败几条 */
+            toast(T('已清理 {n} 个、失败 {m} 个（{reason}）', { n: removed, m: errs.length, reason: errs[0] }), 'warn', 8000);
+          } else if (removed > 0) {
+            toast(T('已清理 {n} 个安装包，释放 {size}', { n: removed, size: fmtBytes(r.freed) }), 'success');
+          } else {
+            /* 真的没有文件：既不是成功也不是失败，用 info 不用 success 绿 */
+            toast(T('没有可清理的安装包'), 'info');
+          }
         } catch (e) { toast(e.message, 'error'); }
         finally { setBusy(false); }
       }, 'trash');

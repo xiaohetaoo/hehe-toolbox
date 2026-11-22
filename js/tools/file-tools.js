@@ -11,6 +11,12 @@
    * 但 file-tools.js 里已经有 require 的用法吗？没有 —— 这里改用
    * index.html 引入 + window.ExifLib，与 fail-text 保持同一种形态。 */
   const exifLib = window.ExifLib;
+  /* 「这份异步结果还算不算数」的判据（lib/run-token.js，UMD 挂 window.RunToken）。
+   * 与 exifLib 同一个形态：index.html 用 <script> 引入，这里读 window。
+   * 兜底：万一脚本没加载（老版本 index.html），退化成内联比较 ——
+   * 语义完全相同，只是少了那份单测覆盖。 */
+  const isCurrentRun = (window.RunToken && window.RunToken.isCurrentRun)
+    || ((capturedAt, current) => Number(capturedAt) === Number(current) && Number.isFinite(Number(capturedAt)));
   const MOD = 'file';
 
   /* 拼「批量操作失败明细」的文本 —— 实现在 lib/fail-text.js（任务 2）。
@@ -414,11 +420,31 @@
               const reg = stagedReg.find((x) => x.tmp === s.tmp);
               if (reg) reg.done = true;
             } catch (e) {
-              /* 改名失败 → 把临时名还原回原名，别把文件留在 .hehe-ren- 下 */
-              try { await invoke(Channels.CHANNELS.FS.RENAME, s.tmp, s.from, false); } catch (e2) {}
+              /* 【改名失败 → 尝试还原原名；只有还原成功才能标 done】
+               * 原来无条件 reg.done = true，于是「目标改名失败 + 还原也失败」
+               * （文件被占用/杀软锁）时登记被清掉，文件永久留在隐藏临时名
+               * .hehe-ren-* 下且再也无法一键恢复 —— 收尾只保留
+               * `x.tmp && !x.done`，恢复页只筛 `!x.done`，两边都看不到它了。
+               * 现在：还原失败必须保留 tmp 且 done=false（保留 from/to），
+               * 让恢复页下次还能把 tmp→from。 */
+              let restored = false;
+              try {
+                await invoke(Channels.CHANNELS.FS.RENAME, s.tmp, s.from, false);
+                restored = true;
+              } catch (e2) {
+                /* 【第二个错误不能吞】两个都失败意味着文件卡在临时名上，
+                 * 用户必须知道这一点、并且知道去哪恢复。 */
+                failures.push({
+                  from: s.from, to: s.to,
+                  err: e.message + '；且无法还原原名：' + ((e2 && e2.message) || e2)
+                    + '（文件暂存为 ' + s.tmp + '，可在本工具的重命名恢复里处理）',
+                });
+              }
               const reg = stagedReg.find((x) => x.tmp === s.tmp);
-              if (reg) reg.done = true;
-              failures.push({ from: s.from, to: s.to, err: e.message });
+              /* 只有还原成功才标 done（此时文件回到原名，登记可以清） */
+              if (reg && restored) reg.done = true;
+              /* 还原失败：reg 保持 done=false，tmp/from/to 原样保留 —— 恢复页能列出来 */
+              if (restored) failures.push({ from: s.from, to: s.to, err: e.message });
             }
             await invoke(Channels.CHANNELS.STORE.SET, 'renameStaged', stagedReg);
           }
@@ -899,6 +925,9 @@
       const listBox = div('');
       const quickBtn = btn('快速扫描（无需管理员）', 'btn-secondary btn-sm', startQuick, 'folder');
       let env = null, builtInfo = {}, searchTimer = 0, quickJob = null, quickUnsub = null, seq = 0;
+      /* 快扫的 per-run 序号（见 startQuick 里的说明）。每次开跑 +1，
+       * 离开页面与复用回来也各 +1 —— 保证任何旧请求的 token 都落后于当前值。 */
+      let quickRunSeq = 0;
       async function refreshEnv() {
         env = await invoke(Channels.CHANNELS.SEARCH.ENV).catch(() => null);
         builtInfo = (await invoke(Channels.CHANNELS.SEARCH.INDEX_STATUS).catch(() => ({}))) || {};
@@ -1009,6 +1038,14 @@
         if (!root) return toast('未找到可扫描的分区', 'warn');
         clearTimeout(searchTimer); seq++;
         stopQuick();
+        /* 【per-run token】每次开跑都领一个新序号。异步 invoke 返回时用
+         * 它判断「这趟还算不算数」：
+         *   · 序号没变 → 是本趟，可以接管 jobId；
+         *   · 序号变了（期间又搜了一次 / 切页了）→ 这趟的结果作废，
+         *     且它刚建出来的任务必须立刻杀掉，否则成为孤儿扫描。
+         * 用序号而不是布尔 pageDead：布尔复位后无法区分「旧请求」与
+         * 「新请求」，会把新任务的 id 当成旧的杀掉（或反过来漏杀）。 */
+        const runToken = ++quickRunSeq;
         listBox.innerHTML = ''; statsLine.textContent = '正在扫描…';
         engTag.textContent = '快速扫描中'; engTag.className = 'tag tag-orange';
         let rowCount = 0;
@@ -1030,13 +1067,31 @@
           } catch (e) {}
         });
         invoke(Channels.CHANNELS.SEARCH.QUICK, { root, q, limit: +limitSel.value }).then((r) => {
+          if (runToken !== quickRunSeq) {
+            /* 这趟已经过期（用户又搜了一次或离开了页面）：任务刚建出来，
+             * 必须立刻杀掉，否则它在后台扫完整个盘却没有任何界面收尾。 */
+            if (r && r.id) invoke(Channels.CHANNELS.JOB.KILL, r.id).catch(() => {});
+            return;
+          }
           quickJob = r.id;
-          if (pageDead && quickJob) invoke(Channels.CHANNELS.JOB.KILL, quickJob).catch(() => {});
-        }).catch((e) => { toast(e.message, 'error'); engTag.textContent = '就绪'; engTag.className = 'tag tag-gray'; });
+        }).catch((e) => {
+          if (runToken !== quickRunSeq) return;   // 过期的那趟不弹错
+          toast(e.message, 'error'); engTag.textContent = '就绪'; engTag.className = 'tag tag-gray';
+        });
       }
       inBox.addEventListener('input', schedule);
-      let pageDead = false; // 页面销毁后到达的 quick 任务 id 也要杀掉，避免孤儿扫描
-      window.App.onCleanup(() => { pageDead = true; stopQuick(); });
+      /* 【离开页面：递增序号让飞行中的请求作废，并复位界面】
+       * 只置一个布尔的话，复用回来后无法区分新旧请求（旧方案 pageDead
+       * 复位导致旧 invoke 返回的 job 被杀不到，成为后台孤儿扫描）。 */
+      window.App.onCleanup(() => {
+        quickRunSeq++;
+        stopQuick();
+        engTag.textContent = '就绪'; engTag.className = 'tag tag-gray';
+        statsLine.textContent = '';
+      });
+      /* 复用回来：界面状态由 cleanup 已复位，这里只确保序号继续前进
+       * （不与上一轮复用同一个值，否则刚复用时旧请求会被误认成本趟）。 */
+      if (window.App.onEnter) window.App.onEnter(() => { quickRunSeq++; });
       refreshEnv();
       page.appendChild(div('card', div('card-title', '搜索引擎'), envLine, volRow, hint));
       page.appendChild(div('card', div('card-title', '搜索'),
@@ -1079,15 +1134,43 @@
        * startImpl 内部对 startBtn.disabled 的读写都在点击之后才发生，
        * 那时占位早已替换成真按钮，不存在 null 解引用。 */
       let startBtn = h('span');
-      const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); }, 'square');
+      /* 【停止必须"立刻生效"，不能等 jobId】见 doStop 的说明。 */
+      function doStop() {
+        /* 【序号先递增】这是"取消"的唯一硬手段：
+         * 后续所有 await 返回点都会发现 token 过期，于是不写界面、
+         * 且把自己拿到的 job id 杀掉。不递增的话，在 jobId 还是 null
+         * 的那段时间里点停止**完全没有作用**，等 invoke 返回后 token 未变，
+         * 任务照样启动 —— 用户已经点了停止却停不下来。 */
+        searchRunSeq++;
+        if (jobId) { invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); jobId = null; }
+        if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+        /* 立刻复位界面：用户点了停止就该马上看到停止的样子，
+         * 而不是等异步回来（那时可能已经不在这一页了）。 */
+        try {
+          startBtn.disabled = false; stopBtn.disabled = true;
+          status.textContent = '已停止';
+        } catch (e) {}
+      }
+      const stopBtn = btn('停止', 'btn-danger-plain', doStop, 'square');
       stopBtn.disabled = true;
       const listBox = div('');
-      let jobId = null, unsub = null, pageDead = false;
+      let jobId = null, unsub = null;
+      /* 【per-run token】同快扫：每次搜索领一个序号，
+       * 异步返回时序号不符就杀掉刚建出来的任务（旧方案 pageDead 复位后
+       * 无法区分新旧请求，会漏杀或误杀）。 */
+      let searchRunSeq = 0;
       window.App.onCleanup(() => {
-        pageDead = true;
-        if (unsub) try { unsub(); } catch (e) {}
-        if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
+        searchRunSeq++;
+        if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+        if (jobId) { invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); jobId = null; }
+        /* 【界面必须复位】否则复用回来时按钮还停在「搜索中」的灰态、
+         * 状态行还写着「搜索中…」，而任务早已被杀。 */
+        try {
+          startBtn.disabled = false; stopBtn.disabled = true;
+          status.textContent = '已离开页面，搜索已停止';
+        } catch (e) {}
       });
+      if (window.App.onEnter) window.App.onEnter(() => { searchRunSeq++; });
       // 持久单表流式追加
       let resTbody = null;
       const COLS = [
@@ -1119,6 +1202,7 @@
         const q = inBox.value.trim();
         if (!q) return toast('请输入搜索内容', 'warn');
         if (regexChk.checked) { try { new RegExp(q); } catch (e) { return toast('正则无效：' + e.message, 'error'); } }
+        const runToken = ++searchRunSeq;
         resTbody = null; listBox.innerHTML = ''; status.textContent = '搜索中…';
         startBtn.disabled = true; stopBtn.disabled = false;
         /* 上一轮如果还在（正常路径已经退订过，这里兜底），先退掉再挂新的，
@@ -1147,6 +1231,18 @@
         try {
           r = await invoke(Channels.CHANNELS.CONTENT.SEARCH, { root, q, useRegex: regexChk.checked, ci: ciChk.checked, exts: extIn.value.trim(), limit: 1000 });
         } catch (e) {
+          /* 【过期的那趟不能碰任何状态】这条 catch 里的每个动作
+           * （退订 unsub、复位按钮、jobId = null、弹错误 toast）都是
+           * **全局单例**级别的改动。如果旧搜索的 invoke 在新搜索启动之后
+           * 才 reject，它会：
+           *   · 退掉**新搜索**的订阅 → 新搜索的进度事件全丢；
+           *   · 把按钮复位成"可点" → 用户以为搜索已结束；
+           *   · 把 jobId 置 null → 新搜索再也停不掉（停止按钮杀掉的是 null）。
+           * 新搜索就此静默死亡。所以必须先比 token：
+           * 过期直接 return，什么都不碰（连 toast 都不弹 —— 那是上一趟的错误，
+           * 用户已经在看新一趟了）。快扫的 catch 早就是这个口径。
+           * 判定走 lib/run-token.js（纯函数、有单测），不在这里手写比较。 */
+          if (!isCurrentRun(runToken, searchRunSeq)) return;
           try { if (unsub) { unsub(); unsub = null; } } catch (e2) {}
           startBtn.disabled = false; stopBtn.disabled = true;
           jobId = null;
@@ -1154,8 +1250,14 @@
           toast((e && e.message) || String(e), 'error');
           return;
         }
+        /* 【这趟是否还有效】无效说明用户又搜了一次或已离开页面：
+         * 刚建出来的任务必须立刻杀掉，否则它在后台跑完却没人收尾，
+         * 界面也不会再有任何更新（订阅已被下一趟覆盖或已退订）。 */
+        if (runToken !== searchRunSeq) {
+          if (r && r.id) invoke(Channels.CHANNELS.JOB.KILL, r.id).catch(() => {});
+          return;
+        }
         jobId = r.id;
-        if (pageDead && jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       }
       /* 【防重入走统一 guard，不手写 running 标志】
        * startBtn.disabled = true 只挡鼠标点击；inBox 的 keydown 直接调 start()，

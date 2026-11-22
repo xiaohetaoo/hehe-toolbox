@@ -81,16 +81,28 @@ function makeStub() {
 function buildStart() {
   const body = extractStart();
   const st = makeStub();
+  /* 【把 per-run 序号也注入】R14 起 start() 用 downloadRunSeq 判断
+   * 「这次 invoke 返回的结果还算不算数」（用户明确要求用 token 而不是
+   * 布尔 pageDead）。本测试只抠 start 的函数体，所以要提供同名的
+   * 外层变量；用一个可变盒子承接，start 里的 ++ 会改到它。 */
+  const runSeqBox = { v: 0 };
   const wrapper = new Function(
     'urlIn', 'fileIn', 'prog', 'status', 'startBtn', 'stopBtn', 'invoke', 'toast',
     'window', 'Channels', 'App', 'jobId', 'unsub', 'pageDead', 'safeNameFromUrl', 'div', 'h',
     /* JobPrefix 是裸标识符（不是 window.JobPrefix）—— 在 IIFE 里由外层作用域提供 */
     '_JobPrefix',
-    `let _jobId = jobId, _unsub = unsub, _dead = pageDead;
+    '_runSeq',
+    /* 【dropSub 必须注入】start() 里现在用内联退订，但下载完成分支
+     * 仍通过外层 dropSub 收口；给它一份等价的桩即可。
+     * 【序号不能用 let 声明】start 里会 `++downloadRunSeq`，
+     * 所以这里用一个 getter/setter 桥接到外部盒子，避免与参数重名。 */
+    `let downloadRunSeq = _runSeq.v;
+     const _ref = { get jobId() { return jobId; }, get unsub() { return unsub; }, get dead() { return pageDead; } };
      ${body}
+     _runSeq.v = downloadRunSeq;
      return {
        start,
-       state: () => ({ jobId: _jobId, unsub: _unsub, dead: _dead })
+       state: () => _ref
      };`
   );
   /* 注意：函数体里的 jobId/unsub 是外层 let 变量，上面用 _jobId 等别名承接。
@@ -99,13 +111,15 @@ function buildStart() {
     start: null,
     state: null
   };
+  /* runSeq 盒子：桥接 start 内部的 downloadRunSeq（见上方 wrapper 说明） */
   const ret = wrapper(
     st.urlIn, st.fileIn, st.prog, st.status, st.startBtn, st.stopBtn, st.invoke, st.toast,
     { api: st.api, JobPrefix: st.JobPrefix, App: { onCleanup() {} } },
     { CHANNELS: { NET: { DOWNLOAD: 'net:download' }, JOB: { KILL: 'job:kill' }, APP: { GET_INFO: 'app:get-info' }, DIALOG: { SAVE: 'dialog:save' } } },
     { onCleanup() {} }, null, null, false,
     () => 'a.bin', () => ({}), () => ({}),
-    st.JobPrefix
+    st.JobPrefix,
+    runSeqBox
   );
   apiObj.start = ret.start;
   apiObj.state = ret.state;

@@ -79,11 +79,34 @@
       const term = div('term', '');
       const statsEl = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px', margin: '12px 0' } });
       let jobId = null, chart = window.ui.lineChart(canvas, { max: null });
+      /* 【per-run token】start() 里 await EXEC.STREAM 期间用户可能离开页面
+       * 或再点一次「开始」。离开/重开都递增序号，旧请求返回时发现序号不符：
+       *   · 界面一律不碰（那是新一趟的界面）；
+       *   · 它刚建出来的 job 必须立刻 KILL，否则 ping -t 会在后台一直跑
+       *     （永不自行退出），而没有任何界面能取消它。 */
+      let pingRunSeq = 0;
       window.App.onCleanup(() => {
+        pingRunSeq++;
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
-        if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
+        if (jobId) { invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); jobId = null; }
+        /* 【界面必须复位】原来只杀 job 不动界面：复用回来后
+         * 「开始 Ping」是灰的、「停止 Ping」是亮的，而实际上什么都没在跑
+         * —— 点停止没有对象，点开始又点不动，页面等于废了。 */
+        try {
+          running = false;
+          startBtn.disabled = false; stopBtn.disabled = true;
+        } catch (e) {}
       });
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          /* 复用回来：序号前进（让任何在飞的旧请求作废），界面按「没在跑」复位 */
+          pingRunSeq++;
+          try {
+            if (!jobId) { running = false; startBtn.disabled = false; stopBtn.disabled = true; }
+          } catch (e) {}
+        });
+      }
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let latencies = [], sent = 0, recv = 0, running = false;
       let unsubStream, unsubExit;
@@ -106,14 +129,19 @@
         if (!isDesktop) return toast('桌面端可用', 'warn');
         const host = hostIn.value.trim();
         if (!host) return;
+        /* 【领序号】这一趟 ping 的有效凭证（见 pingRunSeq 的说明） */
+        const runToken = ++pingRunSeq;
         // ping -t 永不自行退出：重复点「开始」必须先杀掉上一个，
         // 否则残留进程一直跑，而 stop() 只认最新的 jobId，旧进程再也取消不掉。
         if (jobId) { try { await invoke(Channels.CHANNELS.JOB.KILL, jobId); } catch (e) {} jobId = null; }
+        if (runToken !== pingRunSeq) return;   // 杀旧 job 期间又变了，这趟作废
         running = true; sent = 0; recv = 0; latencies = [];
         term.innerHTML = ''; startBtn.disabled = true; stopBtn.disabled = false;
+        let newJobId;
         try {
-          jobId = await invoke(Channels.CHANNELS.EXEC.STREAM, { command: 'ping', args: ['-t', host] });
+          newJobId = await invoke(Channels.CHANNELS.EXEC.STREAM, { command: 'ping', args: ['-t', host] });
         } catch (e) {
+          if (runToken !== pingRunSeq) return;   // 过期不弹错
           // 原来没兜底：exec 失败时按钮永久 disabled、状态停在「进行中」，只能切页恢复
           running = false; startBtn.disabled = false; stopBtn.disabled = true;
           /* 【修 bug】这里原先写 `status.textContent = ...`，但 Ping 页面的 render
@@ -130,6 +158,13 @@
           toast((e && e.message) || String(e), 'error');
           return;
         }
+        /* 【过期就必须杀掉刚建出来的 job】ping -t 不会自己退出，
+         * 漏杀就是一个永久驻留的进程（用户只能在任务管理器里找）。 */
+        if (runToken !== pingRunSeq) {
+          if (newJobId) invoke(Channels.CHANNELS.JOB.KILL, newJobId).catch(() => {});
+          return;
+        }
+        jobId = newJobId;
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
         unsubStream = on('job:stream', (d) => {
@@ -161,7 +196,15 @@
         unsubExit = on('job:exit', (d) => { if (d.id === jobId) { running = false; startBtn.disabled = false; stopBtn.disabled = true; } });
       }
       async function stop() {
-        if (jobId) { try { await invoke(Channels.CHANNELS.JOB.KILL, jobId); } catch (e) {} }
+        /* 【停止必须立刻生效，不能只在 jobId 存在时才做点什么】
+         * start() 里 await EXEC.STREAM 期间 jobId 仍是 null；这段时间点停止，
+         * 原来的 `if (jobId) kill` 什么都不做，而 start 恢复后 token 未变，
+         * 于是 ping -t 照样起来（永不自行退出）。必须：①递增序号让
+         * start 的后续步骤作废；②有 id 就杀；③立刻复位界面。 */
+        pingRunSeq++;
+        if (jobId) { try { await invoke(Channels.CHANNELS.JOB.KILL, jobId); } catch (e) {} jobId = null; }
+        if (unsubStream) { try { unsubStream(); } catch (e) {} unsubStream = null; }
+        if (unsubExit) { try { unsubExit(); } catch (e) {} unsubExit = null; }
         running = false;
         startBtn.disabled = false; stopBtn.disabled = true;
       }
@@ -184,24 +227,62 @@
       const noDns = h('input', { type: 'checkbox', class: 'checkbox' });
       const term = div('term', '');
       let jobId = null, unsubStream, unsubExit;
+      /* 【停止追踪必须立刻生效】（同 Ping 的说明）
+       * 原实现只 `if (jobId) kill`：在 start 的 await 窗口里 jobId 还是 null，
+       * 点停止完全无效，而 start 恢复后 token 未变 → tracert 照样起来。
+       * tracert 单次跑几十秒且没有别的入口取消，所以这里要：递增序号、
+       * 有 id 就杀、退订、立刻复位按钮。 */
+      const stopBtn = btn('停止追踪', 'btn-danger-plain', () => {
+        traceRunSeq++;
+        if (jobId) { try { invoke(Channels.CHANNELS.JOB.KILL, jobId); } catch (e) {} jobId = null; }
+        if (unsubStream) { try { unsubStream(); } catch (e) {} unsubStream = null; }
+        if (unsubExit) { try { unsubExit(); } catch (e) {} unsubExit = null; }
+        startBtn.disabled = false; stopBtn.disabled = true;
+      }, 'square');
+      stopBtn.disabled = true;
+      /* 【per-run token】同 Ping：EXEC.STREAM 的 await 期间用户可能离开页面，
+       * 旧请求返回时必须把自己的 job 杀掉。 */
+      let traceRunSeq = 0;
       window.App.onCleanup(() => {
+        traceRunSeq++;
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
-        if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
+        if (jobId) { invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); jobId = null; }
+        /* 【必须复位按钮】原来只杀 job：复用回来后「开始追踪」永久灰掉、
+         * 而 tracert 又没有停止按钮 —— 用户只能切页（当时只能整页重建）救。
+         * 现在复位两者，且真正提供了停止按钮。 */
+        try {
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+        } catch (e) {}
       });
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          traceRunSeq++;
+          try { if (!jobId) { startBtn.disabled = false; stopBtn.disabled = true; } } catch (e) {}
+        });
+      }
       const startBtn = btn('开始追踪', 'btn-primary', async () => {
         if (!isDesktop) return toast('桌面端可用', 'warn');
         const host = hostIn.value.trim();
         if (!host) return;
-        term.innerHTML = ''; startBtn.disabled = true;
+        /* 【领序号 + 杀掉上一个】tracert 单次会跑几十秒；重复点会在
+         * 后台叠多个进程，而 unsubStream 只认最新 jobId —— 旧进程再也
+         * 取消不掉。与 Ping 页同一处理。 */
+        const runToken = ++traceRunSeq;
+        if (jobId) { try { await invoke(Channels.CHANNELS.JOB.KILL, jobId); } catch (e) {} jobId = null; }
+        if (runToken !== traceRunSeq) return;
+        term.innerHTML = ''; startBtn.disabled = true; stopBtn.disabled = false;
         const args = noDns.checked ? ['-d', '-h', '30', host] : ['-h', '30', host];
+        let newJobId;
         /* 【补兜底】原来是裸 `jobId = await invoke(Channels.CHANNELS.EXEC.STREAM, ...)`：
          * 启动失败时抛在 await 处，而 `startBtn.disabled = true` 已经在上一行生效，
          * 结果「开始追踪」按钮永久变灰，只能切页面才恢复。 */
         try {
-          jobId = await invoke(Channels.CHANNELS.EXEC.STREAM, { command: 'tracert', args });
+          newJobId = await invoke(Channels.CHANNELS.EXEC.STREAM, { command: 'tracert', args });
         } catch (e) {
-          startBtn.disabled = false;
+          if (runToken !== traceRunSeq) return;
+          startBtn.disabled = false; stopBtn.disabled = true;
           try {
             const errLine = h('div', { class: 'field-err' }, '✗ ' + ((e && e.message) || String(e)));
             term.appendChild(errLine);
@@ -209,6 +290,12 @@
           toast((e && e.message) || String(e), 'error');
           return;
         }
+        /* 过期就杀掉刚建出来的 job（tracert 也会跑很久） */
+        if (runToken !== traceRunSeq) {
+          if (newJobId) invoke(Channels.CHANNELS.JOB.KILL, newJobId).catch(() => {});
+          return;
+        }
+        jobId = newJobId;
         if (unsubStream) try { unsubStream(); } catch (e) {}
         if (unsubExit) try { unsubExit(); } catch (e) {}
         unsubStream = on('job:stream', (d) => {
@@ -222,10 +309,14 @@
             term.scrollTop = term.scrollHeight;
           }
         });
-        unsubExit = on('job:exit', (d) => { if (d.id === jobId) startBtn.disabled = false; });
+        unsubExit = on('job:exit', (d) => {
+          if (d.id !== jobId) return;
+          jobId = null;
+          startBtn.disabled = false; stopBtn.disabled = true;
+        });
       }, 'play');
       page.appendChild(div('card', div('card-title', '目标'),
-        div('form-row', hostIn, h('label', { class: 'field-hint' }, noDns, ' 不解析域名（更快）'), startBtn)));
+        div('form-row', hostIn, h('label', { class: 'field-hint' }, noDns, ' 不解析域名（更快）'), startBtn, ' ', stopBtn)));
       page.appendChild(div('card', div('card-title', '路径'), term));
     }
   });
@@ -575,15 +666,65 @@
       const prog = progressEl(); prog.hide();
       const status = h('span', { class: 'field-hint' }, '');
       const startBtn = btn('开始下载', 'btn-primary', start, 'download');
-      const stopBtn = btn('取消', 'btn-danger-plain', () => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); }, 'square');
+      /* 【取消必须立刻生效】（同 Ping/追踪）
+       * 原实现只 `if (jobId) kill`：在 await NET.DOWNLOAD 的窗口里 jobId
+       * 还是 null，点取消失效；invoke 返回后 token 未变，下载照样开始。
+       * 取消要做四件事，缺一不可：
+       *   ① 递增序号 —— 让在飞的 start 在返回点作废（并自杀 job）；
+       *   ② 有 id 就 kill（已经跑起来的下载）；
+       *   ③ 退订并复位按钮/进度 —— 立刻把界面还回"没在下载"；
+       *   ④ jobId 置空 —— 否则 later 的 finally 会以为还有活任务。 */
+      function doCancel() {
+        downloadRunSeq++;
+        if (jobId) { invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); jobId = null; }
+        dropSub();
+        try {
+          startBtn.disabled = false; stopBtn.disabled = true;
+          prog.hide();
+          status.textContent = '已取消';
+        } catch (e) {}
+      }
+      const stopBtn = btn('取消', 'btn-danger-plain', doCancel, 'square');
       stopBtn.disabled = true;
-      let jobId = null, unsub = null, pageDead = false;
+      let jobId = null, unsub = null;
+      /* 【一个页面同时最多一个订阅】
+       * 原来每次 start() 都无条件 subscribe('dlg') 并覆盖 unsub 引用：
+       *   · 第一次下载完成后 finally 不退订（jobId 非空那条分支没退）；
+       *   · 第二次下载覆盖 unsub，第一次的监听器再也拿不到引用 → 永久残留，
+       *     其闭包还持有旧 DOM 与进度条；
+       *   · 离开页面只退订最后一个，前面的全泄漏。
+       * 多次下载后 window.api 的 job:stream 监听器线性增长。
+       * 收口：进 start 先退旧的；done 分支退订；页面 cleanup 退当前。 */
+      function dropSub() {
+        if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+      }
+      /* 【per-run token】每次点「开始下载」领一个序号。
+       * 为什么不能用布尔 pageDead：
+       *   onEnter 把 pageDead 置 false 会引入竞态 —— 用户点下载后立刻切走，
+       *   此时 invoke 还没返回、jobId 仍是 null，cleanup 杀不到任何东西；
+       *   等返回时 pageDead 已被 onEnter 复位成 false，那个 job 就漏杀了，
+       *   变成后台孤儿下载（用户以为切页就取消了）。
+       * 序号方案没有这个窗口：cleanup 递增序号后，任何**旧**请求返回时
+       * 序号必然不等，于是无条件 kill 它自己拿到的 id；新请求领的是新序号，
+       * 不会被误杀。 */
+      let downloadRunSeq = 0;
       window.App.onCleanup(() => {
-        pageDead = true;
-        if (unsub) try { unsub(); } catch (e) {}
-        if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
+        downloadRunSeq++;
+        dropSub();
+        if (jobId) { invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); jobId = null; }
+        /* 界面复位：复用回来后不该停在"下载中"的灰按钮状态 */
+        try { startBtn.disabled = false; stopBtn.disabled = true; } catch (e) {}
       });
       async function start() {
+        /* 重入保护：上一次的订阅必须先退掉，否则同一页面会同时有两个
+         * job:stream 监听器认领同一批事件（进度条被写两遍）。
+         * 【这里写内联退订而不是 dropSub()】start() 会被
+         * scripts/test-download-finish.js 单独抠出来求值（它验的是
+         * "抛错后界面要复位"），而 dropSub 定义在 start 之外、那个环境里
+         * 不存在。内联写法让 start 自包含，测试与实现不必互相迁就。
+         * 语义与 dropSub 完全一致（退订 + 置空）。 */
+        if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+        const runToken = ++downloadRunSeq;
         const url = urlIn.value.trim();
         if (!/^https?:\/\//.test(url)) return toast('请输入 http(s) 直链', 'warn');
         let out = fileIn.value.trim();
@@ -621,6 +762,10 @@
               prog.hide();
               status.textContent = j.ok ? `✓ 已保存：${j.out || out}` : '✗ ' + (j.error || '失败');
               if (j.ok) toast('下载完成：' + (j.out || out), 'success');
+              /* 【任务结束必须退订】不论成功失败，这条下载已经不会再发事件；
+               * 不退订就会一直挂着，累积成监听器泄漏。
+               * 内联写法同 start 开头（避免依赖 start 外层的 dropSub）。 */
+              if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
             }
           } catch (e) {}
         });
@@ -635,23 +780,50 @@
          *   · 取消按钮因为 jobId 还是 null 而完全无效；
          *   · unsub 泄漏到下一次进页面（切页时 onCleanup 已跑过）。
          * 现在把整段包进 try/finally，失败路径也要把界面还回可用状态。 */
+        /* 【订阅之前再判一次 token】
+         * GET_INFO 是一个 await：用户可能在这段时间里离开页面（cleanup 已经
+         * downloadRunSeq++ 并 dropSub）。此时若继续往下走，会**在页面已离开
+         * 之后新建一个订阅** —— 那个订阅没有任何人负责退订（cleanup 早就跑完了），
+         * 永久残留并持有旧 DOM。所以这里必须提前拦下。 */
+        if (runToken !== downloadRunSeq) { prog.hide(); return; }
         try {
           const r = await invoke(Channels.CHANNELS.NET.DOWNLOAD, { url, out });
+          /* 【过期检查：这趟已作废就彻底收尾，不能只 kill】
+           * 典型场景：点下载后立刻切页 —— invoke 还没返回时 cleanup 已跑过、
+           * jobId 是 null 所以没杀到东西。而这时**首条 job:stream 可能已经把
+           * jobId 写成非空**（流事件比 invoke 返回早）。
+           * 原实现 stale 分支只 kill 就 return，随后 finally 看到 jobId 非空
+           * 就不做任何清理 —— 结果是：任务被杀了，但监听器、进度条、
+           * 按钮状态全部残留，界面永远停在"下载中"。
+           * 所以 stale 分支必须自己做完整收尾。 */
+          if (runToken !== downloadRunSeq) {
+            if (r && r.id) invoke(Channels.CHANNELS.JOB.KILL, r.id).catch(() => {});
+            jobId = null;
+            if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+            prog.hide();
+            return;
+          }
           jobId = r.id;
         } catch (err) {
+          /* 过期的那趟不弹错（用户已经不在这一页了） */
+          if (runToken !== downloadRunSeq) return;
           status.textContent = '✗ ' + (window.api.errText ? window.api.errText(err) : (err && err.message) || '下载失败');
           toast('下载失败：' + ((err && err.message) || err), 'error');
         } finally {
           /* 无论成功失败都复位：这里的「成功」指的是**任务已受理**，
            * 真正的完成由 job:stream 的 j.done 分支处理（那时才隐藏进度条）。
-           * 失败时任务根本没起来，按钮必须恢复可点，否则用户改完路径也点不动。 */
-          if (!jobId) {
+           * 失败时任务根本没起来，按钮必须恢复可点，否则用户改完路径也点不动。
+           * 【条件要点】不能只看 jobId：已过期的这趟必须**强制**收尾，
+           * 否则流事件抢先写入的 jobId 会挡住清理。 */
+          const stale = runToken !== downloadRunSeq;
+          if (stale || !jobId) {
             startBtn.disabled = false; stopBtn.disabled = true;
             prog.hide();
+            /* 失败/过期分支内联退订（同 start 开头的理由：保持 start 自包含） */
             if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+            if (stale) jobId = null;
           }
         }
-        if (pageDead && jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
       }
       page.appendChild(div('card', div('card-title', '下载'),
         div('form-row', urlIn),

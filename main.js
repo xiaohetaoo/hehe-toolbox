@@ -411,8 +411,27 @@ function runCmd(cmd, args, opts = {}) {
       }
       const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
       if (opts.throwOnNonZero && err) { reject(sanitizeCmdError(err, args)); return; }
-      if (err && !stdout) reject(sanitizeCmdError(err, args));
-      else resolve({ stdout: stdout || '', stderr: stderr || '', code });
+      /* 【非零退出默认 reject，但**保留 allowNonZero 的老语义**】
+       * 原写法 `if (err && !stdout) reject(...); else resolve({code})`：
+       * 只要进程打印过东西（哪怕只是"拒绝访问"），非零退出也会 resolve，
+       * 调用方 `await runCmd(...)` 就当成功继续 —— 这是"假成功"的通用来源。
+       * 但本仓库有 58 处调用，其中一批**依赖**"非零也拿结果"：
+       *   · `reg query` 查不到项时退出码非零，但要读 stdout 判断；
+       *   · `where es` 未安装时非零，要据此走降级路径；
+       *   · `sc.exe query` 服务不存在时同样。
+       * 所以不能一刀切。默认改成"看退出码"（安全），这些依赖点
+       * 显式传 `allowNonZero: true` 表示"我自己检查 code"。
+       * 这样新代码默认安全，老代码的行为被逐一显式承认，不是静默例外。 */
+      if (code !== 0 && !opts.allowNonZero) {
+        const e2 = sanitizeCmdError(err, args);
+        /* 附上输出与退出码：排错时最需要程序自己说了什么 */
+        e2.stdout = stdout || '';
+        e2.stderr = stderr || '';
+        e2.code = code;
+        reject(e2);
+        return;
+      }
+      resolve({ stdout: stdout || '', stderr: stderr || '', code });
     });
   });
 }
@@ -1759,25 +1778,51 @@ handle(CH.SERVER.START, async (e, root, port) => {
       let urlPath = decodeURIComponent(req.url.split('?')[0]);
       const absRoot = path.resolve(root);
       let fp = path.resolve(path.join(absRoot, urlPath));
-      /* 【逃逸检查必须解析真实路径】只做字符串比较时，root 内若有指向外部的
-       * symlink / junction（node_modules\.bin 类目录里就有），可以读到 root 之外的文件。
-       * 这里先 realpath 归一，再做「是否在 root 内」判定，并且大小写不敏感
-       * （Windows 文件系统不区分大小写，纯 startsWith 会被大小写变体绕过）。 */
-      let realRoot, realFp;
+      let realRoot;
       try { realRoot = fs.realpathSync.native(absRoot); } catch (err) { realRoot = absRoot; }
-      try { realFp = fs.existsSync(fp) ? fs.realpathSync.native(fp) : fp; } catch (err) { realFp = fp; }
-      {
-        const lq = realFp.toLowerCase(), lr = realRoot.toLowerCase();
+
+      /* 【解析"最终要读的那个文件"，并且每一跳都必须落在 root 内】
+       * 逃逸检查必须解析真实路径：只做字符串比较时，root 内若有指向外部的
+       * symlink / junction（node_modules\.bin 类目录里就有），可以读到 root
+       * 之外的文件。
+       *
+       * 【目录分支必须二次 realpath】
+       * 原实现只在第一步对请求路径做了 realpath + 包含检查，然后
+       *   fp = path.join(fp, 'index.html'); st = stat(fp)
+       * —— 只 stat、不再 realpath，也不再做包含检查。
+       * 于是 root 里放一个指向 root 外的 index.html 符号链接，
+       * 请求 / 会返回 200 并把外部文件的内容吐出去。
+       * 现在统一收进 resolveInsideRoot：无论直接命中的文件还是目录里追加的
+       * index.html，都走同一套 realpath + 大小写不敏感包含检查。
+       * 最终目标还必须是普通文件（isFile）—— 目录/设备不算。 */
+      const realpathSafe = (p0) => {
+        try { return fs.existsSync(p0) ? fs.realpathSync.native(p0) : p0; } catch (err) { return p0; }
+      };
+      /** @returns {string|null} 落在 root 内的真实文件路径；越界返回 null */
+      const resolveInsideRoot = (candidate) => {
+        const real = realpathSafe(candidate);
+        const lq = real.toLowerCase(), lr = realRoot.toLowerCase();
         const ok = lq === lr || lq.startsWith(lr + path.sep) || lq.startsWith(lr + '/');
-        if (!ok) { res.writeHead(403); res.end('403'); return; }
+        if (!ok) return null;
+        return real;
+      };
+      let realFp = resolveInsideRoot(fp);
+      if (realFp === null) { res.writeHead(403); res.end('403'); return; }
+      let st = await fsp.stat(realFp).catch(() => null);
+      if (st && st.isDirectory()) {
+        /* 目录 → 追加 index.html，**然后重新走一遍完整检查**（这一步原来漏了） */
+        const idx = path.join(realFp, 'index.html');
+        realFp = resolveInsideRoot(idx);
+        if (realFp === null) { res.writeHead(403); res.end('403'); return; }
+        st = await fsp.stat(realFp).catch(() => null);
       }
-      let st = await fsp.stat(fp).catch(() => null);
-      if (st && st.isDirectory()) { fp = path.join(fp, 'index.html'); st = await fsp.stat(fp).catch(() => null); }
-      if (!st) {
+      /* 必须是普通文件：目录、符号链接指向的设备、FIFO 都不该被当文件吐出去 */
+      if (!st || !st.isFile()) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('404 Not Found');
         send('server:log', { time: Date.now(), text: `404  ${req.method} ${urlPath}` });
         return;
       }
+      fp = realFp;
       res.writeHead(200, { 'Content-Type': MIME[path.extname(fp).toLowerCase()] || 'application/octet-stream', 'Content-Length': st.size });
       const stream = fs.createReadStream(fp);
       /* 【客户端断开时必须销毁读流，否则 fd 泄漏】
@@ -2144,7 +2189,7 @@ async function collectRunItems() {
   const out = [];
   for (const rk of RUN_KEYS) {
     try {
-      const r = await runCmd('reg', ['query', rk.key], { timeout: 10000, encoding: 'gbk' });
+      const r = await runCmd('reg', ['query', rk.key], { timeout: 10000, encoding: 'gbk', allowNonZero: true });
       for (const line of r.stdout.split(/\r?\n/)) {
         const m = line.match(/^\s{4}(.+?)\s{2,}REG_(\S+)\s{4}(.*)$/);
         if (m) out.push({ hive: rk.hive, key: rk.key, label: rk.label, name: m[1], type: 'REG_' + m[2], cmd: m[3].trim() });
@@ -2752,7 +2797,7 @@ handle(CH.CTXMENU.LIST, async () => {
   for (const [key, label] of CTX_ROOTS) {
     const items = [];
     try {
-      const r = await runCmd('reg', ['query', key, '/s'], { timeout: 20000, encoding: 'gbk' });
+      const r = await runCmd('reg', ['query', key, '/s'], { timeout: 20000, encoding: 'gbk', allowNonZero: true });
       let cur = null, inCommandKey = false; // 进入 Xxx\command 子键后，默认值归属 cur.command 而非 display
       for (const raw of r.stdout.split(/\r?\n/)) {
         const line = raw.replace(/\s+$/, '');
@@ -2845,7 +2890,7 @@ async function findEsExeAsync() {
   let p = findEsExe();
   if (p) return p;
   try {
-    const r = await runCmd('where', ['es'], { timeout: 5000 });
+    const r = await runCmd('where', ['es'], { timeout: 5000, allowNonZero: true });
     const hit = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('es.exe'));
     if (hit) p = hit.trim();
   } catch (e) {}
@@ -3732,7 +3777,7 @@ handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
 
 /* ================= IPC: WiFi 密码查看 ================= */
 handle(CH.WIFI.PROFILES, async () => {
-  const r = await runCmd('netsh', ['wlan', 'show', 'profiles'], { timeout: 15000, encoding: 'gbk' });
+  const r = await runCmd('netsh', ['wlan', 'show', 'profiles'], { timeout: 15000, encoding: 'gbk', allowNonZero: true });
   const names = [];
   for (const line of r.stdout.split(/\r?\n/)) {
     const m = line.match(/(?:所有用户配置文件|All User Profile)\s*:\s*(.+)$/);
@@ -3836,7 +3881,7 @@ handle(CH.SVC.ACTION, async (e, name, action) => {
   if (action === 'stop' && PROTECTED_SVCS.has(String(name || '').toLowerCase())) {
     throw new Error(`拒绝停止系统关键服务：${name}。停止它会导致系统功能异常（网络/DNS/更新/安全组件等），且难以察觉。`);
   }
-  const r = await runCmd('sc.exe', [action, name], { timeout: 30000, encoding: 'gbk' });
+  const r = await runCmd('sc.exe', [action, name], { timeout: 30000, encoding: 'gbk', allowNonZero: true });
   /* 【sc.exe 的失败信息会走 stdout，不能只看 stderr】
    * `sc.exe stop X` 出错时打印的是
    *   [SC] OpenService 失败 5:
@@ -3860,7 +3905,7 @@ handle(CH.SVC.ACTION, async (e, name, action) => {
   return true;
 });
 handle(CH.POWER.LIST, async () => {
-  const r = await runCmd('powercfg', ['/list'], { timeout: 15000, encoding: 'gbk' });
+  const r = await runCmd('powercfg', ['/list'], { timeout: 15000, encoding: 'gbk', allowNonZero: true });
   const plans = [];
   for (const line of r.stdout.split(/\r?\n/)) {
     const m = line.match(/([0-9a-fA-F-]{36})\s+(.+?)\s*(\*)?\s*$/);
@@ -4881,7 +4926,7 @@ handle(CH.CTXMENU.CLASSIC, async (e, on, restart) => {
 // 用 utf8 解会得到乱码（但 REG_SZ 关键字仍可匹配，容易让人以为没问题）。
 async function ctxClassicState() {
   try {
-    const r = await runCmd('reg', ['query', WIN11_CTX_HANDLER, '/ve'], { timeout: 8000, encoding: 'gbk' });
+    const r = await runCmd('reg', ['query', WIN11_CTX_HANDLER, '/ve'], { timeout: 8000, encoding: 'gbk', allowNonZero: true });
     if (r.code !== 0) return false;
     // 输出形如：    (默认)    REG_SZ    <值>
     // 值为空时该行末尾没有内容，视为“已禁用 COM 处理器” = 经典菜单

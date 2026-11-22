@@ -718,7 +718,16 @@ handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
         else {
           enc = await videoEncodeArgs({ vcodec: opts.vcodec, crf: opts.crf, preset: 'veryfast' });
           args.push(...enc.args);
-          if (opts.scale) args.push('-vf', `scale=${opts.scale}:-2`);
+          /* 【与视频压制的 scale 同一套语义：装进 N×N 方框，不放大】
+           * 这里原先是 `scale=${opts.scale}:-2` —— 竖屏源会被拉宽、奇数源
+           * 会因宽高非偶数在 yuv420p 下编码失败。统一改成方框 + decrease +
+           * 强制偶数。详见下方 press 分支的注释。 */
+          if (opts.scale) {
+            const t = Number(opts.scale);
+            if (Number.isFinite(t) && t > 0) {
+              args.push('-vf', `scale=w='min(${t},iw)':h='min(${t},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`);
+            }
+          }
           if (opts.fps) args.push('-r', String(opts.fps));
           if (opts.format === 'mp4') args.push('-movflags', '+faststart');
         }
@@ -801,7 +810,31 @@ handle(CH.FFMPEG.PRESS, async (e, { items, outDir, opts }) => {
           ...videoArgs,
           '-pix_fmt', 'yuv420p'];
         if (opts.vcodec === 'libx265') a.push('-tag:v', 'hvc1');
-        if (opts.scale) a.push('-vf', `scale=${opts.scale}:-2`);
+      /* 【「限 N p」= 只缩小不放大，且必须装进 N×N 的方框】
+       * 要求（用户明确给出的验收尺寸）：
+       *   1080×1920 + 1920 → 1080×1920   （竖屏原样，不拉宽）
+       *   720×1280  + 1280 → 720×1280    （竖屏原样）
+       *   3840×2160 + 1920 → 1920×1080   （等比缩到框内）
+       *   1280×720  + 1920 → 1280×720    （小源不放大）
+       *   1919×1080 + 1920 → 偶数尺寸且编码成功（奇数宽在 yuv420p 下会失败）
+       *
+       * 【为什么不是 scale='min(N,max(iw,ih))':-2】
+       * 那个写法把「长边的上限」当成缩放后的长边，竖屏 1080×1920 限 1920 时
+       * 长边就是 1920，于是判定"不用缩"，可 `-2` 让**宽度**去适配别的：
+       * 实测会输出 1920×3414（宽被拉成 1920，高按比例放大）—— 仍在放大。
+       *
+       * 【正确写法】把 N×N 当成一个方框，让画面等比缩放到**装进这个框**：
+       *   w='min(N,iw)':h='min(N,ih)'  —— 宽高各自都不超过 N，也不超过源尺寸；
+       *   force_original_aspect_ratio=decrease —— 按比例缩小以完整装进上述框；
+       *   force_divisible_by=2 —— 宽高都取偶数（H.264/H.265 + yuv420p 的硬要求）。
+       * 三个参数缺一不可：只写 force_divisible_by 而不给 w/h 时它无效；
+       * decrease 的方向是"缩小"，所以不会放大；两个 min() 保证了不超源。 */
+      if (opts.scale) {
+        const target = Number(opts.scale);
+        if (Number.isFinite(target) && target > 0) {
+          a.push('-vf', `scale=w='min(${target},iw)':h='min(${target},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`);
+        }
+      }
         if (opts.fps) a.push('-r', String(opts.fps));
         if (opts.stripMeta !== false) a.push('-map_metadata', '-1');
         if (opts.audio === 'mute') a.push('-an');

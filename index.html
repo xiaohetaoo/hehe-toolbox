@@ -56,6 +56,18 @@
        与剥注释差异失败过。抽成纯函数后渲染层与测试共用同一实现。
        必须排在所有工具脚本之前（下面的 net-error / net-tools 序列不受影响）。 -->
   <script src="lib/safe-name.js"></script>
+  <!-- lib/img-pick.js：「这张图该不该采用编码结果」的判据（UMD，挂 window.ImgPick）。
+       原来内联在图片压缩页里，且漏了「候选比原图大」这一条 —— 用户点压缩，
+       文件反而变大。抽成纯函数后渲染层与测试共用同一实现。
+       必须排在该工具脚本之前（不要在这里写出它的完整路径：test-media-split
+       用 indexOf 判脚本顺序，注释里提前出现会让它误判为"排在前面"）。 -->
+  <script src="lib/img-pick.js"></script>
+  <!-- lib/run-token.js：「这份异步结果还算不算数」的判据（UMD，挂 window.RunToken）。
+       保活复用后，工具页里跨页面生命周期的异步请求（内容搜索、下载、录屏、
+       Ping 等）都用 per-run 序号判定；过期请求不得改界面、不得弹提示，
+       但它建出的后台任务必须自己 kill 掉。抽成纯函数以便单测。
+       必须排在 js/tools/file-tools.js 之前（那里读 window.RunToken）。 -->
+  <script src="lib/run-token.js"></script>
   <!-- lib/pinyin.js：搜索的拼音首字母支持（打 yssc 找到「压缩」）。
        UMD 同上，挂到 window.Pinyin。零依赖 —— 用 Intl.Collator('zh-CN')
        的拼音排序做区间判定，不背拼音数据表。

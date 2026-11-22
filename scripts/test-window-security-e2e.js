@@ -49,7 +49,17 @@ t('真实隐藏 Electron 窗口拒绝 file/data 跳转，外部页面不能调�
     await fs.promises.writeFile(helper, 'const path=require("path");(' + probe.toString() + ')('
       + JSON.stringify(ROOT) + ',' + JSON.stringify(temp) + ').catch(e=>{console.error(e);process.exit(1);});');
     const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-    const { stdout } = await execFile(require('electron'), [helper], { timeout: 30000, windowsHide: true, env });
+    /* 【必须带 Chromium 兼容参数】本机不加 --no-sandbox 时 electron.exe
+     * 会以 0x80000003 直接崩掉（stdout/stderr 全空），本用例只能报
+     * "Command failed" 而看不出原因。详见 scripts/lib/electron-launch.js。
+     * 同时把 TEMP 指到工作区内：Chromium 子进程写 %TEMP% 会被安全软件拦。 */
+    const scratch = path.join(ROOT, '.tmp-e2e-ws-' + Date.now().toString(36));
+    try { fs.mkdirSync(scratch, { recursive: true }); } catch (e) {}
+    env.TEMP = scratch; env.TMP = scratch;
+    const { stdout } = await execFile(require('electron'),
+      ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--user-data-dir=' + path.join(scratch, 'udd'), helper],
+      { timeout: 30000, windowsHide: true, env });
+    try { fs.rmSync(scratch, { recursive: true, force: true }); } catch (e) {}
     const result = JSON.parse(stdout.trim().split(/\r?\n/).find(line => line.startsWith('{')));
     assert.strictEqual(result.trusted.ok, true);
     assert.strictEqual(result.fileBlocked, true); assert.strictEqual(result.dataBlocked, true);

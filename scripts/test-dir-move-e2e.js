@@ -19,8 +19,22 @@ const { execFileSync } = require('child_process');
 const links = require('../lib/links');
 const D = require('../lib/dir-move');
 
+/* 挑一块**与临时目录不同卷**的可写磁盘。
+ *
+ * 【为什么不能写死 D/E/F 的顺序】原来的实现对 ['D','E','F'] 逐个试，
+ * 谁先可写就用谁 —— 隐含假设"临时目录在 C 盘"。而 R16 起测试树的
+ * TEMP 被重定向到**工作区所在的盘**（为了绕开安全软件拦 %TEMP%），
+ * 工作区在 D 盘时，源（os.tmpdir()）与目标（D:\）就同卷了，
+ * 于是 case 直接失败：「跨盘应通过：源与目标在同一个卷」。
+ * 正确判据是「与当前临时目录的卷不同」，不是「盘符不是 C」。 */
+function volOf(p) {
+  const m = /^([a-zA-Z]):/.exec(path.resolve(p));
+  return m ? m[1].toUpperCase() : '';
+}
 function pickOtherDrive() {
-  for (const L of ['D', 'E', 'F']) {
+  const tmpVol = volOf(os.tmpdir());
+  for (const L of ['C', 'D', 'E', 'F']) {
+    if (L === tmpVol) continue;           // 与临时目录同卷的不能用
     const root = L + ':\\';
     try {
       fs.accessSync(root);
@@ -47,9 +61,13 @@ if (!otherDrive) {
    * 提醒人这台机器缺少跨盘条件、这条 e2e 没有被验证。
    * 之所以不直接 exit 0：静默通过等于假装测过了。 */
   console.log('SKIP 本机没有第二块可写磁盘，跳过跨盘搬家实测'
-    + '（该 e2e 未被验证，需要至少一个非系统盘卷）');
-  done();
-  return;
+    + '（该 e2e 未被验证，需要至少一个与临时目录不同卷的可写磁盘）');
+  /* 【打印 SKIP 后自行决定退出码，不能调 done()】
+   * harness 在 0 用例时硬性判 FAIL（防"测试消失"）。但如果脚本**
+   * 已经明确打印了 SKIP 行**，那就是"主动声明环境不满足"，
+   * 应当以 0 退出、由 run-tests 归到「环境跳过」而不是失败。
+   * 这正是 harness 注释里写的「必须打印 SKIP 并自行决定退出码」。 */
+  process.exit(0);
 }
 console.log('目标盘:', otherDrive);
 

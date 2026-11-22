@@ -75,12 +75,26 @@ ipc/
 ## 开发与质量
 
 ```bash
-npm test           # 全部测试（206 个脚本 / 2278 条断言，约 6 分钟）
-npm run test:unit  # 纯 node 的测试（不启 Electron、不 spawn 外部进程，173 个脚本，约 1.5 分钟）
+npm test           # 全部测试（209 个脚本 / 2341 条断言，约 6 分钟）
+npm run test:unit  # 纯 node 的测试（不启 Electron、不 spawn 外部进程，176 个脚本，约 1.5 分钟）
 npm run test:ui    # 启 Electron / 调外部命令的测试（33 个脚本，约 4.5 分钟）
 npm run lint       # ESLint 静态检查（退出码 0 = 通过）
 npm run typecheck  # tsc -p jsconfig.json（checkJs，不出产物，退出码 0 = 通过）
 ```
+
+> **测试环境要求（E2E 相关）**
+> 30 多个脚本要真启 Electron 验渲染层。本仓库在 `scripts/lib/electron-launch.js`
+> 里记录了实测踩到的两个环境坑，以及必需的启动参数：
+> 1. 部分机器上 Chromium 的进程级沙箱起不来，不加 `--no-sandbox` 时
+>    `electron.exe` 会以 `0x80000003` **立即崩溃**且 stdout/stderr 全空 ——
+>    测试只能报「没拿到渲染层结果」，与产品回归混在一起看不出来。
+> 2. 部分安全软件会拦 **Chromium 子进程**写 `%TEMP%`（`EPERM`），而探针都要
+>    把结果落盘再读。所以测试树的 `TEMP`/`TMP` 统一重定向到工作区内的
+>    `.tmp-testrun-*`（`run-tests.js` 与 `scripts/lib/harness.js` 两处入口都设，
+>    手跑单个脚本也生效），退出时自动删除。
+>
+> 断言基线 `scripts/assertions-baseline.json` 只允许往上走，改动测试后需
+> `node scripts/check-assertion-count.js --write` 重拍；重拍必须在**全量跑绿**时做。
 
 - **分道的判断标准**：脚本若 `require(electron)`、启动 electron 二进制、或 spawn
   外部进程（powershell / cmd / mklink 等），归 `test:ui`；其余纯 node 的归 `test:unit`。

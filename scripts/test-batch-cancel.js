@@ -19,8 +19,12 @@ function checkCancel(rel, loopRe, btnName) {
   const loopStart = loopMatch.index;
   const loopEnd = s.indexOf('        }', loopStart);
   const loopBody = s.slice(loopStart, loopEnd > 0 ? loopEnd : loopStart + 3000);
-  /* 锁的是：循环内检查标志的那一行 —— 只声明不检查等于没有取消能力。 */
-  assert.ok(/if \(cancelFlag\) break/.test(loopBody), rel + ' 循环内缺 cancelFlag break');
+  /* 锁的是：循环内检查标志的那一行 —— 只声明不检查等于没有取消能力。
+   * 【接受两种形态】纯 cancelFlag 判断，或 cancelFlag 与 per-run token 的组合
+   * （R16 起 img-compress 同时判 token，让"离开页面后重开"也能中断旧循环）。
+   * 两者都满足"循环内会因取消而中断"这一契约。 */
+  assert.ok(/if \(cancelFlag\s*(?:\|\|[^)]*)?\)\s*break/.test(loopBody),
+    rel + ' 循环内缺 cancelFlag break');
   /* 锁的是：停止按钮存在且点击置位标志 */
   assert.ok(new RegExp("btn\\('" + btnName + "'").test(s), rel + ' 缺停止按钮');
   /* 锁的是：按钮点击必须置位标志（否则按钮是个空壳）。 */
@@ -45,6 +49,8 @@ t('BC4 三个工具的收尾都复位标志与按钮', () => {
   for (const rel of ['js/tools/media/img-compress.js', 'js/tools/media/img-watermark.js',
     'js/tools/media/batch-ocr.js']) {
     const s = read(rel);
+    /* 锁的是：收尾没有复位 cancelFlag —— 第二次运行会直接 break，
+     * 表现为「停止过一次之后再也压不动」。 */
     const resets = (s.match(/cancelFlag = false/g) || []).length;
     /* 锁的是：收尾复位标志 —— 没有它第二次运行直接 break。 */
     assert.ok(resets >= 1, rel + ' 缺 cancelFlag 复位');

@@ -127,38 +127,58 @@
       const memNow = h('div', { class: 'stat-num' }, '--');
       const diskBox = div('');
       const cpuHist = [], memHist = [];
-      const unsub = on('sys:stats', (s) => {
-        cpuHist.push(s.cpu); memHist.push(s.memPct);
-        if (cpuHist.length > 120) cpuHist.shift();
-        if (memHist.length > 120) memHist.shift();
-        cpuNow.textContent = s.cpu.toFixed(1);
-        memNow.textContent = s.memPct.toFixed(1);
-        cpuNow.style.color = s.cpu >= 80 ? 'var(--warning)' : 'var(--primary)';
-        memNow.style.color = s.memPct >= 80 ? 'var(--warning)' : 'var(--primary)';
-        cpuChart.draw(cpuHist, {});
-        memChart.draw(memHist, {});
-      });
-      invoke(Channels.CHANNELS.SYS.HW_INFO).then(info => {
-        diskBox.innerHTML = '';
-        for (const p of info.partitions.filter(x => x.type === 3 && x.size > 0)) {
-          const usedPct = (1 - p.free / p.size) * 100;
-          diskBox.appendChild(div('form-row',
-            h('span', { class: 'form-label', style: { minWidth: '60px' } }, p.drive),
-            h('div', { class: 'progress', style: { flex: '1' } }, h('div', { class: 'progress-fill', style: { width: usedPct + '%', background: usedPct >= 90 ? 'var(--danger)' : usedPct >= 70 ? 'var(--warning)' : 'var(--primary)' } })),
-            h('span', { class: 'field-hint', style: { width: '180px' } }, `${fmtBytes(p.size - p.free)} / ${fmtBytes(p.size)}（${usedPct.toFixed(0)}%）`)));
-        }
-      }).catch((e) => {
-        /* 【不能只写 .catch(() => {})】
-         * 读硬件信息失败时（WMI 被策略禁用、磁盘刚拔出等），原来这条空 catch
-         * 会让「磁盘用量」卡片永远是空白 —— 用户看着一个空卡片，既不知道是
-         * 还在加载、还是这台机器没有磁盘、还是查询失败。如实写一句原因。 */
-        diskBox.innerHTML = '';
-        diskBox.appendChild(div('field-err', '✗ 读取磁盘分区失败：' + ((e && e.message) || String(e))));
-      });
+      /* 【订阅必须可重入】cleanup 会退订，而保活复用时界面不会重新 render ——
+       * 不退订会泄漏，退订后不重绑则曲线永久冻结。
+       * 所以抽成 bindStats()：每次先退旧的再挂新的（幂等），
+       * onEnter 时重新调用即可。 */
+      let unsubStats = null;
+      function bindStats() {
+        if (unsubStats) { try { unsubStats(); } catch (e) {} unsubStats = null; }
+        unsubStats = on('sys:stats', (s) => {
+          cpuHist.push(s.cpu); memHist.push(s.memPct);
+          if (cpuHist.length > 120) cpuHist.shift();
+          if (memHist.length > 120) memHist.shift();
+          cpuNow.textContent = s.cpu.toFixed(1);
+          memNow.textContent = s.memPct.toFixed(1);
+          cpuNow.style.color = s.cpu >= 80 ? 'var(--warning)' : 'var(--primary)';
+          memNow.style.color = s.memPct >= 80 ? 'var(--warning)' : 'var(--primary)';
+          cpuChart.draw(cpuHist, {});
+          memChart.draw(memHist, {});
+        });
+      }
+      /* 磁盘信息也抽成函数：复用回来时刷新一次（容量可能已经变了） */
+      function loadDisks() {
+        return invoke(Channels.CHANNELS.SYS.HW_INFO).then(info => {
+          diskBox.innerHTML = '';
+          for (const p of info.partitions.filter(x => x.type === 3 && x.size > 0)) {
+            const usedPct = (1 - p.free / p.size) * 100;
+            diskBox.appendChild(div('form-row',
+              h('span', { class: 'form-label', style: { minWidth: '60px' } }, p.drive),
+              h('div', { class: 'progress', style: { flex: '1' } }, h('div', { class: 'progress-fill', style: { width: usedPct + '%', background: usedPct >= 90 ? 'var(--danger)' : usedPct >= 70 ? 'var(--warning)' : 'var(--primary)' } })),
+              h('span', { class: 'field-hint', style: { width: '180px' } }, `${fmtBytes(p.size - p.free)} / ${fmtBytes(p.size)}（${usedPct.toFixed(0)}%）`)));
+          }
+        }).catch((e) => {
+          /* 【不能只写 .catch(() => {})】
+           * 读硬件信息失败时（WMI 被策略禁用、磁盘刚拔出等），原来这条空 catch
+           * 会让「磁盘用量」卡片永远是空白 —— 用户看着一个空卡片，既不知道是
+           * 还在加载、还是这台机器没有磁盘、还是查询失败。如实写一句原因。 */
+          diskBox.innerHTML = '';
+          diskBox.appendChild(div('field-err', '✗ 读取磁盘分区失败：' + ((e && e.message) || String(e))));
+        });
+      }
+      bindStats();
+      loadDisks();
       page.appendChild(div('card', div('card-title', 'CPU 使用率'), h('div', { style: { marginBottom: '8px' } }, cpuNow, h('span', { class: 'stat-unit' }, '%')), cpuCanvas));
       page.appendChild(div('card', div('card-title', '内存使用率'), h('div', { style: { marginBottom: '8px' } }, memNow, h('span', { class: 'stat-unit' }, '%')), memCanvas));
       page.appendChild(div('card', div('card-title', '磁盘用量'), diskBox));
-      window.App.onCleanup(unsub);
+      window.App.onCleanup(() => {
+        if (unsubStats) { try { unsubStats(); } catch (e) {} unsubStats = null; }
+      });
+      /* 【复用回来要重新订阅并刷新磁盘】否则曲线冻在离开那一刻，
+       * 磁盘用量也不再更新 —— 用户以为监控卡死了。 */
+      if (window.App.onEnter) {
+        window.App.onEnter(() => { bindStats(); loadDisks(); });
+      }
     }
   });
 
@@ -225,10 +245,23 @@
       searchIn.addEventListener('input', window.ui.debounce(draw, 200));
       const refreshBtn = btn('刷新', 'btn-sm btn-secondary', refresh, 'refresh');
       let autoTimer = null;
-      window.App.onCleanup(() => { if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } });
       const autoSw = window.ui.switchEl(false, (v) => {
         if (v) autoTimer = setInterval(refresh, 4000); else { clearInterval(autoTimer); autoTimer = null; }
       });
+      /* 【清理必须把开关也打回 off】否则保活复用后界面显示「自动刷新(4s) 开」
+       * 而 timer 早已被清掉 —— 用户以为在自动刷新，实际数据不再更新。
+       * set(false) 同时同步 class 与 aria-checked（switchEl 两份状态）。 */
+      window.App.onCleanup(() => {
+        if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+        try { autoSw.set(false); } catch (e) {}
+      });
+      /* 【复用回来时按真实状态重刷视觉】见 security.js 同一处说明：
+       * 不自动恢复刷新（用户切走时它是关的），只保证显示与实际一致。 */
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          if (!autoTimer) { try { autoSw.set(false); } catch (e) {} }
+        });
+      }
       page.appendChild(div('card', div('card-title', '进程列表', status),
         div('form-row', searchIn, refreshBtn, h('label', { class: 'field-hint' }, autoSw, ' 自动刷新(4s)'))));
       page.appendChild(box);
@@ -1022,9 +1055,81 @@
       const msgIn = h('input', { class: 'input input-sm', placeholder: '提醒时显示的文字，如「该喝水了」', style: { flex: '1' } });
       const countdown = h('span', { class: 'tag tag-blue' }, '未设置');
       const status = h('span', { class: 'field-hint' }, '');
-      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
+      /* mode 现在被清理函数读取（判断是否要复位倒计时文案），不再"赋值后未使用"，
+       * 所以去掉 eslint-disable。 */
       let timer = null, targetTs = 0, mode = '';
-      window.App.onCleanup(() => { if (timer) clearInterval(timer); });
+      /* 【清理必须把倒计时复位成「未设置」】
+       * 只有「提醒」这种应用内计时会因为切页而停（关机/重启/睡眠/锁屏
+       * 都由主进程接管，切页不影响）。原来只清 timer 不改文案，
+       * 保活复用后界面还挂着「提醒我 29:30」在倒数，实际早停了。 */
+      /* 【清理必须把倒计时状态说清楚】
+       * 这个卡片里有两类定时，切页的影响完全不同：
+       *   · 「提醒」走页面内 setInterval → 切页就停，必须明确说"已停止"；
+       *   · 关机/重启走系统 shutdown 计划、睡眠/锁屏走主进程持久化计时
+       *     → 切页**不影响**，倒计时文案不能装成"停了"，也不能继续假装
+       *     在倒数（timer 已经清了，秒数不会动了）。
+       * 【原来的判断写的是 mode === '提醒我'，而 arm('提醒', …) 实际写的是
+       * '提醒' —— 条件永不成立，于是离开页面后界面一直挂着「提醒 29:30」
+       * 在假倒数，实际 timer 早被清掉、提醒永远不会来。 */
+      window.App.onCleanup(() => {
+        if (timer) { clearInterval(timer); timer = null; }
+        if (mode === '提醒') {
+          /* 应用内计时：真的停了，如实说 */
+          countdown.textContent = '已停止（离开页面）';
+          countdown.className = 'tag tag-gray';
+          status.textContent = '提醒会在离开页面时停止；若要跨页面提醒请改用「一次性定时」';
+        } else if (mode) {
+          /* 系统级定时：仍在生效，只是这个页面不再倒数 */
+          countdown.textContent = mode + '（已交给系统）';
+          countdown.className = 'tag tag-blue';
+          status.textContent = mode + ' 的计时由系统/主进程负责，切换页面不影响；可点「取消」撤销';
+        }
+      });
+      /* 【复用回来：系统级定时恢复"会跳动的"倒数】
+       * 提醒已经停了（上面如实说），不重启；关机/重启/睡眠/锁屏仍在系统里跑，
+       * 按 targetTs 与当前时间重算一遍剩余，恢复成正常的倒计时外观。
+       * 【必须重起 interval，不能只画一帧】
+       * 只算一次的话，界面会定格在"回来那一刻"的剩余时间 —— 用户盯着它
+       * 一分钟都不会动，看起来像卡死（这正是本轮要修的"静帧"）。
+       * 这些模式的 fire 回调是空函数（真正的执行在系统/主进程），
+       * 所以这里的 interval 纯粹负责刷新文案，到点显示「已触发」并自清。
+       * cleanup 清的是同一个 timer 变量，因此这里起的会被一起收掉。 */
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          try {
+            if (!mode || mode === '提醒') return;
+            if (timer) { clearInterval(timer); timer = null; }
+            if (targetTs - Date.now() <= 0) {
+              /* 【必须同时清状态机】只写"已触发"就 return 的话，mode 仍非空：
+               * 用户随后离开页面，cleanup 看到 mode 非空，会把「已触发」
+               * 覆盖成「<mode>（已交给系统）」，status 还说"可点取消" ——
+               * 与"已经到点执行完了"的事实完全矛盾。
+               * 清掉 mode/targetTs 后 cleanup 走的是"没有定时在跑"的分支，
+               * 不再改写任何倒计时文案。 */
+              mode = ''; targetTs = 0;
+              countdown.textContent = '已触发（已结束）';
+              countdown.className = 'tag tag-green';
+              status.textContent = '定时已到点执行完毕';
+              return;
+            }
+            const label = mode;
+            countdown.textContent = `${label} ${fmtLeft(targetTs - Date.now())}`;
+            countdown.className = 'tag tag-orange';
+            timer = setInterval(() => {
+              const left = targetTs - Date.now();
+              if (left <= 0) {
+                clearInterval(timer); timer = null;
+                countdown.textContent = '已触发（已结束）'; countdown.className = 'tag tag-green';
+                /* 到点清状态机：同 arm 的说明，避免被 cleanup 误描述成"已停止" */
+                mode = ''; targetTs = 0;
+                status.textContent = '定时已到点执行完毕';
+              } else {
+                countdown.textContent = `${label} ${fmtLeft(left)}`;
+              }
+            }, 500);
+          } catch (e) {}
+        });
+      }
       function fmtLeft(ms) {
         const s = Math.max(0, Math.ceil(ms / 1000));
         return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
@@ -1040,6 +1145,11 @@
           if (left <= 0) {
             clearInterval(timer); timer = null;
             countdown.textContent = '已触发'; countdown.className = 'tag tag-green';
+            /* 【到点后必须清掉状态机】否则离开页面时 cleanup 会按 mode
+             * 仍非空把「已触发」改写成「提醒：已停止（离开页面）」——
+             * 提醒其实已经正常响过了，却被描述成"因为离开页面而没响"。
+             * 系统级模式同理：到点后不该再被当成"还在等"。 */
+            mode = ''; targetTs = 0;
             fire();
           } else countdown.textContent = `${label} ${fmtLeft(left)}`;
         }, 500);
@@ -1059,8 +1169,9 @@
         const confirmMsg = { shutdown: '关机', restart: '重启', sleep: '睡眠', lock: '锁屏' }[m];
         if (m === 'shutdown' || m === 'restart') {
           if (!(await confirmBox({ title: '定时' + confirmMsg, message: `${mins} 分钟后执行「${confirmMsg}」，确定？（期间可在此取消）`, okText: '确定' }))) return;
+          let runRes = null;
           try {
-            await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd' });
+            runRes = await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd' });
           } catch (e) {
             /* 被高危门禁拦住时只弹一句 toast 是不够的 —— 用户根本不知道
              * 「系统电源操作」这个开关在哪，只会以为是坏了。
@@ -1077,6 +1188,22 @@
               return;
             }
             return toast(msg, 'error');
+          }
+          /* 【必须检查退出码，否则是"假成功"】
+           * shutdown 在以下情况会**以非零码退出**：
+           *   1116 —— 权限不足（未提权 / 被策略拦）
+           *   1190 —— 已有一个关机计划在排队
+           *   1191 —— 找不到那个计划（取消时）
+           * 原实现只看 invoke 有没有抛错就 arm() 并写"系统将在 N 分钟后执行"，
+           * 而主进程的 runCmd 在"进程非零退出但打印过输出"时是 resolve 的，
+           * 于是界面启动倒计时、承诺关机会发生，实际什么都没排上。
+           * 现在：非零必须当作失败，不 arm、不改状态行，并如实报错。 */
+          const code = runRes && typeof runRes.code === 'number' ? runRes.code : 0;
+          if (code !== 0) {
+            const detail = (runRes && (runRes.stderr || runRes.stdout)) || '';
+            status.textContent = '✗ 排期失败';
+            return toast(`无法安排定时${confirmMsg}（shutdown 退出码 ${code}）` + (detail ? '：' + String(detail).split(/\r?\n/)[0] : '')
+              + '。常见原因：需要一个已有计划的取消，或当前权限不足。', 'error', 8000);
           }
           arm(confirmMsg, mins * 60, () => {});
           status.textContent = `系统将在 ${mins} 分钟后${confirmMsg}（shutdown 计划，可点击取消）`;
@@ -1110,15 +1237,75 @@
       }
       async function cancel() {
         if (timer) { clearInterval(timer); timer = null; }
-        try { await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: 'shutdown /a', shellType: 'cmd' }); } catch (e) {} // 取消系统的关机计划（如有）
-        /* 主进程里挂着的一次性睡眠/锁屏也要撤掉，否则"点了取消但到点还是睡了" */
+        /* 【取消必须核实"真的取消了"再改状态】
+         * 原实现先把 mode/targetTs 清零，再用 try/catch 吞掉 shutdown /a 与
+         * 每个 ONCE_REMOVE 的错误，最后无条件写"已取消定时任务"。
+         * 问题：若取消本身失败（权限不足、计划已被系统拒绝、ONCE_REMOVE 抛错），
+         * 系统里的关机计划**仍在**，而界面说已取消 —— 用户以为安全了，
+         * 到点照样关机。这是比"没取消"更糟的假成功。
+         *
+         * 现在的顺序：
+         *   ① 先清显示用的 interval（它纯粹是装饰，不清会继续倒数）；
+         *   ② 逐项执行取消，**收集每一项的真实结果**（不吞错）；
+         *   ③ 全部成功才清 mode/targetTs 并显示"已取消"；
+         *   ④ 有任何失败 → 保留可操作状态（按钮仍可点、状态行报错），
+         *      并明确告诉用户"可能仍在生效"，让他能重试或手动 shutdown /a。
+         */
+        const failures = [];
+
+        /* ---- ① 系统 shutdown 计划 ---- */
+        if (mode && mode !== '提醒') {
+          try {
+            const r = await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: 'shutdown /a', shellType: 'cmd' });
+            /* shutdown /a 在没有计划可取消时也会返回非零（比如 1116），
+             * 但那意味着"确实没有计划" —— 对取消这件事算成功。
+             * 真正需要报错的是"有权限问题且拿不准"的情况：
+             * 这里按 code 分类，只有明确"无计划"类才算成功。 */
+            const code = r && typeof r.code === 'number' ? r.code : 0;
+            if (code !== 0) {
+              /* 1116 = 无法中止（通常是无计划或权限不足）。
+               * 无法区分两者时按失败处理 —— 宁可让用户重试，
+               * 也不能在计划真的还在时告诉他已取消。 */
+              const detail = String((r && (r.stderr || r.stdout)) || '').split(/\r?\n/)[0];
+              failures.push('取消防关机计划失败（退出码 ' + code + '）' + (detail ? '：' + detail : ''));
+            }
+          } catch (e) {
+            failures.push('取消防关机计划失败：' + ((window.api.errText ? window.api.errText(e) : (e && e.message)) || String(e)));
+          }
+        }
+
+        /* ---- ② 主进程里的一次性睡眠/锁屏 ---- */
         try {
-          const list = await invoke(Channels.CHANNELS.SCHED.ONCE_LIST).catch(() => []);
-          for (const it of (list || [])) await invoke(Channels.CHANNELS.SCHED.ONCE_REMOVE, it.id).catch(() => {});
-        } catch (e) {}
-        countdown.textContent = '已取消'; countdown.className = 'tag tag-gray';
-        status.textContent = '已取消定时任务（含系统关机计划）';
+          const list = await invoke(Channels.CHANNELS.SCHED.ONCE_LIST);
+          for (const it of (list || [])) {
+            try {
+              await invoke(Channels.CHANNELS.SCHED.ONCE_REMOVE, it.id);
+            } catch (e) {
+              /* 【每个都要单独记账，不能一 catch 全吞】
+               * 原来是一个 catch 包住整个循环：第一条失败后剩下的全不执行，
+               * 而界面照样说"已取消"—— 可能还留着第二个、第三个计划。 */
+              failures.push('撤销「' + (it.action === 'lock' ? '锁屏' : '睡眠') + '」定时失败：' + ((e && e.message) || String(e)));
+            }
+          }
+        } catch (e) {
+          failures.push('读取一次性定时列表失败：' + ((e && e.message) || String(e)));
+        }
+
+        /* ---- ③ 决策：全成功才真正清状态 ---- */
         loadOnce();
+        if (!failures.length) {
+          mode = ''; targetTs = 0;
+          countdown.textContent = '已取消'; countdown.className = 'tag tag-gray';
+          status.textContent = '已取消定时任务（含系统关机计划）';
+          return;
+        }
+        /* 有失败：不清 mode/targetTs（计划可能仍在），把问题如实摆出来 */
+        status.innerHTML = '<span class="status-err">✗ 取消失败，计划可能仍在生效</span>';
+        countdown.textContent = mode || '取消失败';
+        countdown.className = 'tag tag-red';
+        /* 明确给出下一步：用户可以重试，或手动执行 shutdown /a */
+        toast('取消失败：' + failures[0] + (failures.length > 1 ? `（共 ${failures.length} 项失败）` : '')
+          + '\n如仍显示已排期，可手动运行 shutdown /a', 'error', 10000);
       }
       /* 列出主进程里挂着的一次性定时，让用户看得见、能单独删 */
       const onceList = div('');
@@ -1137,9 +1324,23 @@
             })));
         }
       }
-      /* 主进程到点执行时推一条，界面同步刷新列表（多个窗口都收到） */
-      const unsubOnce = window.api.on('sched:once-fired', () => { loadOnce(); });
-      window.App.onCleanup(() => { try { unsubOnce(); } catch (e) {} });
+      /* 主进程到点执行时推一条，界面同步刷新列表（多个窗口都收到）。
+       * 【订阅要能"关掉再装回来"】
+       * 保活复用不重新 render，所以切走时退订、切回来必须重新订阅，
+       * 否则定时到点后这个页面收不到通知，列表永远停在旧数据上。
+       * 抽成函数：初次 render 调一次、onEnter 再调一次（可重入，先退旧的）。 */
+      let unsubOnce = null;
+      function bindOnce() {
+        if (unsubOnce) { try { unsubOnce(); } catch (e) {} unsubOnce = null; }
+        unsubOnce = window.api.on('sched:once-fired', () => { loadOnce(); });
+      }
+      bindOnce();
+      window.App.onCleanup(() => { try { if (unsubOnce) unsubOnce(); } catch (e) {} unsubOnce = null; });
+      /* 【复用回来必须同时 loadOnce()】
+       * 只 bindOnce() 会漏掉「离开期间已经触发的事件」：事件在那一瞬间推过来时
+       * 本页已退订，列表仍是旧数据；返回后不重新拉一次，用户看到的是
+       * 一个已经执行完却还挂在"待执行"里的定时 —— 与主进程状态不一致。 */
+      if (window.App.onEnter) window.App.onEnter(() => { bindOnce(); loadOnce(); });
       page.appendChild(div('card', div('card-title', '一次性定时'),
         div('form-row', h('span', { class: 'form-label' }, '动作'), modeSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '分钟'), minIn, msgIn),

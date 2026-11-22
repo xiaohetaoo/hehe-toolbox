@@ -82,6 +82,12 @@ function makeRunner(relPath, opts) {
   const prelude = `
     let running = false;
     let runJobId = null;
+    /* R16 起三个媒体页都加了 per-run 序号（取消/离开要让在飞任务作废）。
+     * 这里按同名补齐 —— run() 的函数体里会 \`++xxxRunSeq\`，缺了就 ReferenceError。
+     * 三个名字都给上，避免为每个工具单独开一套 prelude。 */
+    let convRunSeq = 0, pressRunSeq = 0, trimRunSeq = 0;
+    /* 页面级清理相关的变量（run 里会写入 pageUnsub） */
+    let pageUnsub = null;
     /* video-trim 把开始按钮叫 goBtn，另外两个叫 startBtn —— 三个工具各自
      * 独立演进过命名。这里给个别名，免得为它单独开一套桩。 */
     const goBtn = startBtn;

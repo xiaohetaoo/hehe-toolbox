@@ -1,4 +1,19 @@
 'use strict';
+
+/* 【把 TEMP/TMP 指向工作区】本机安全软件拦 Chromium 子进程写 %TEMP%
+ * （EPERM），而本脚本要把探针与结果落盘。工作区不在拦截名单里。
+ * 详见 scripts/lib/electron-launch.js。进程退出时删除。 */
+(function () {
+  if (process.env.HEHE_TEST_TMP_READY) return;
+  var p = require('path'), f = require('fs');
+  var d = p.join(p.resolve(__dirname, '..'), '.tmp-testrun-' + process.pid);
+  try {
+    f.mkdirSync(d, { recursive: true });
+    process.env.TEMP = d; process.env.TMP = d;
+    process.env.HEHE_TEST_TMP_READY = '1';
+    process.on('exit', function () { try { f.rmSync(d, { recursive: true, force: true }); } catch (e) {} });
+  } catch (e) { /* 建不了就让失败如实暴露 */ }
+})();
 /* P2-18 回归：密码生成的「拒绝采样」必须
  *   (1) 生成指定长度
  *   (2) 只用给定字符集里的字符

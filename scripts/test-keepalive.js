@@ -201,4 +201,111 @@ t('KA-9 启动时必须读取并应用保活上限设置', () => {
     '没有任何一处读取后调用了 applyKeepAliveLimit —— 启动时不会应用该设置，改了重启就丢');
 });
 
+/* ==================================================================
+ * KA-10 ~ KA-13：保活页「第二次切走」的生命周期断裂
+ *
+ * 【锁的是哪个回归】
+ * KA-4 只锁了「切走就该停后台任务」——它成立的前提是**全局清理队列里还有函数**。
+ * 但清理队列是单例，runPageCleanup() 执行完就清空了；而保活复用路径
+ * 绕过 renderToolPage，因此既不重新 render、也不重新注册 onCleanup。
+ * 于是**第二次进入之后**再切走时，队列是空的 ——
+ *   · 录屏在后台继续录，剪贴板监听继续采集并写盘，
+ *     进程自动刷新一直跑，下载任务不会被取消；
+ *   · 界面还显示「开启/录制中」，而 watching/timer/recording 早已被置停，
+ *     点停止会对已结束的录制再发一次 STOP（二次 STOP）。
+ *
+ * 修法：清理函数按页面归属存进 keepAlive 记录，复用时装回全局队列；
+ * 另加 onEnter 钩子，让页面在复用时复位瞬时状态、把一次性订阅接回来。
+ *
+ * 【为什么这些用源码断言】
+ * 要真机验证需要"进页→开任务→切走→切回→再切走"五步交互并观察后台状态，
+ * CI 没有渲染进程。这里钉住的是**机制是否接上**这一实现形态。
+ * ================================================================== */
+
+/* 锁的是「复用路径不恢复清理函数」——第二次切走后后台任务停不下来。 */
+t('KA-10 保活的清理函数必须按页面归属保存并在复用时装回', () => {
+  /* 锁的是：复用分支里没有把 rec.cleanups 装回 pageCleanupFns。
+   * 判据：存在 rec.cleanups 的遍历 + push 到全局队列。 */
+  assert.ok(/rec\.cleanups/.test(SRC), '保活记录里没有 cleanups —— 复用后无清理函数');
+  /* 锁的是：装回动作被删（只存不装回 = 白存）。 */
+  assert.ok(/pageCleanupFns\.push\(fn\)/.test(SRC),
+    '没有把保存的清理函数装回 pageCleanupFns —— 第二次切走时队列是空的');
+  /* 锁的是：离开时没有把清理函数存进记录（那么复用时无东西可装）。 */
+  assert.ok(/rec\.cleanups = leavingCleanups/.test(SRC),
+    '离开页面时没有把清理函数副本存进保活记录');
+});
+
+/* 锁的是「离开时先 runPageCleanup 再抓副本」——顺序反了抓到的是空数组。 */
+t('KA-11 必须先抓清理函数副本，再执行 runPageCleanup', () => {
+  /* 锁的是：把 slice() 写在 runPageCleanup() 之后。
+   * 那会拿到已被清空的队列（length 0），等于没保存。
+   * 这是本条最容易被"整理代码顺序"时踩反的地方。
+   * 【必须限定在 renderContent 内查找】runPageCleanup 有三个出现点：
+   * 定义处、renderContent 里的调用、以及别处；全局 indexOf 会命中定义处。 */
+  const fnStart = SRC.indexOf('function renderContent()');
+  assert.ok(fnStart > 0, '找不到 renderContent');
+  /* 窗口取足够大：从函数头到复用分支之前 */
+  const seg = SRC.slice(fnStart, fnStart + 3000);
+  const cap = seg.indexOf('const leavingCleanups = pageCleanupFns.slice()');
+  const run = seg.indexOf('runPageCleanup()');
+  assert.ok(cap > 0, 'renderContent 里找不到 leavingCleanups 的抓取语句');
+  assert.ok(run > 0, 'renderContent 里找不到 runPageCleanup 调用');
+  assert.ok(cap < run,
+    '抓取清理函数副本必须在 runPageCleanup 之前 —— 否则抓到空数组，复用后无清理');
+});
+
+/* 锁的是「复用时瞬时状态不复位」：界面显示开着、实际没在采。 */
+t('KA-12 必须提供 onEnter 生命周期并挂到 window.App', () => {
+  /* 锁的是：只加了 onCleanup、没有 onEnter —— 一次性事件订阅（如
+   * sched:once-fired）切回来后再也收不到，界面永远停在旧数据。 */
+  assert.ok(/function onEnter\(fn\)/.test(SRC), '没有 onEnter 实现');
+  /* 锁的是：onEnter 实现了但没导出（工具页调不到）。 */
+  assert.ok(/onCleanup, onEnter/.test(SRC) || /onEnter,\s*\n/.test(SRC),
+    'onEnter 没有挂到 window.App，工具页无法注册');
+  /* 锁的是：runPageCleanup 里忘记作废入场钩子 —— 上一页的钩子会在
+   * 新页面复用时被跑（拿着错误的 toolId 去操作旧 DOM）。 */
+  assert.ok(/pageEnterFns = \[\]/.test(SRC), 'runPageCleanup 没有清空 pageEnterFns');
+});
+
+/* 锁的是「淘汰时不清理」——被淘汰页的定时器变孤儿。 */
+t('KA-13 保活淘汰必须执行该页的清理函数', () => {
+  /* 锁的是：evictOne 里删掉条目但不跑 cleanups。
+   * 被淘汰的页面既不会复用、也不会再走 renderContent 的清理分支，
+   * 它的 timer/订阅只能在这里收尾。 */
+  const i = SRC.indexOf('function evictOne()');
+  assert.ok(i > 0, '找不到 evictOne');
+  const seg = SRC.slice(i, i + 900);
+  /* 锁的是：淘汰时没有遍历并执行该页的 cleanups（定时器变孤儿）。 */
+  assert.ok(/oldest\.cleanups/.test(seg), 'evictOne 没有执行被淘汰页的清理函数');
+});
+
+/* 锁的是「受影响的工具页没有把 UI 同步回 idle」。
+ * 这是 P1 的第二半：光恢复清理函数还不够，界面必须与真实状态一致。 */
+t('KA-14 剪贴板自动记录：清理时开关要打回关、复用时按真实状态重刷', () => {
+  const s = readSrc('js/tools/security.js');
+  /* 锁的是：清理只置停 watching 而不动开关 —— 显示"开"但没在采。 */
+  assert.ok(/watchSw\.set\(false\)/.test(s), 'security 清理没有把自动记录开关打回关');
+  /* 锁的是：缺少 onEnter 重刷（渲染层重建后视觉与实际分叉）。 */
+  assert.ok(/window\.App\.onEnter/.test(s), 'security 缺少 onEnter 重刷开关状态');
+});
+
+t('KA-15 进程自动刷新：清理时开关要打回关、复用时重刷', () => {
+  const s = readSrc('js/tools/sys-tools.js');
+  /* 锁的是：清理只清 timer 不改开关 —— 显示"自动刷新开"而实际已停。 */
+  assert.ok(/autoSw\.set\(false\)/.test(s), 'sys-tools 清理没有把自动刷新开关打回关');
+  /* 锁的是：sched:once-fired 订阅没有可重绑的入口 —— 复用后收不到通知。 */
+  assert.ok(/function bindOnce\(\)/.test(s), 'sys-tools 的一次性定时订阅没有可重绑入口');
+});
+
+t('KA-16 录屏：离开必须停录、UI 复位、复用时按真实状态重刷', () => {
+  const s = readSrc('js/tools/media/screen-rec.js');
+  /* 锁的是：清理里没有把 recording 提前置 false ——
+   * 复用后仍显示"录制中"、点停止会对已结束的录制二次发 STOP。 */
+  assert.ok(/recording = false;/.test(s), 'screen-rec 清理没有把 recording 复位');
+  /* 锁的是：清理里没有复位按钮与状态文案。 */
+  assert.ok(/startBtn\.disabled = false/.test(s), 'screen-rec 清理没有恢复开始按钮');
+  /* 锁的是：缺少 onEnter（复用后按钮状态可能与 recording 分叉）。 */
+  assert.ok(/window\.App\.onEnter/.test(s), 'screen-rec 缺少 onEnter 状态重刷');
+});
+
 done();
