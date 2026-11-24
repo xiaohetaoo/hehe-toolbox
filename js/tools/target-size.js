@@ -120,6 +120,23 @@
       cancelBtn.disabled = true;
 
       let runJobId = null;
+      /* 【离开页面 = 请求停止，且界面必须解锁】
+       * 原来 cleanup 只做 `if (runJobId) kill`，漏了两件事：
+       *   ① 没有置 canceled —— 图片那一半是在渲染层循环里逐张编码写盘的，
+       *      切页后循环照跑，整批图片全部落盘，而页面上既没有进度也没有停止入口；
+       *   ② 没有解锁 —— 保活复用回来时 picker 仍是 locked/busy、「开始压缩」仍灰，
+       *      要等后台那趟自己跑完才恢复，看起来就是"页面卡死"。
+       * run() 里的 unlockUi 负责全部复位；它在 run 内定义（测试按 run 函数体锁定），
+       * 这里只保存它的引用，cleanup 时调用同一个出口，不另写一份"只解一半"的复位。 */
+      let unlockRef = null;
+      let targetRunSeq = 0;
+      if (window.App && App.onCleanup) {
+        App.onCleanup(() => {
+          canceled = true;
+          if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {});
+          if (unlockRef) { try { unlockRef(); } catch (e) {} }
+        });
+      }
 
       /* 列表由 picker 渲染；这里只把后台事件映射回行上 */
       /* eslint-disable-next-line no-unused-vars -- 历史遗留：定义了但未使用（删它需同步改测试断言，留给下一轮） */
@@ -217,6 +234,10 @@
         if (mode === 'abs' && !(parseFloat(mbIn.value) > 0)) return toast('请输入有效的目标大小（MB，1 MB = 1,000,000 字节）', 'warn');
 
         running = true; canceled = false;
+        /* 【per-run 序号】cleanup 会替在飞的那一趟解锁；用户回来可以立刻再压一批。
+         * 没有序号的话：旧那趟在 COMPRESS_AV 返回后会继续写状态行、把 canceled 改回去，
+         * 它的 finally 还会把**新那趟**的 running/按钮/picker 锁全复位。 */
+        const runToken = ++targetRunSeq;
         startBtn.disabled = true; cancelBtn.disabled = false;
         picker.dz.classList.add('busy');
         prog.show(); status.textContent = '准备中…';
@@ -238,6 +259,7 @@
           picker.dz.classList.remove('busy');
           runJobId = null;
         }
+        unlockRef = unlockUi;
 
         // 分组：图片走渲染层逐轮编码；音视频整体交给主进程
         const imgs = files.filter(isImg);
@@ -255,7 +277,7 @@
         try {
           /* ---- 图片：逐个多轮逼近 ---- */
           for (let k = 0; k < imgs.length; k++) {
-            if (canceled) break;
+            if (canceled || runToken !== targetRunSeq) break;
             const idx = files.indexOf(imgs[k]);
             setRow(idx, { tagText: '压缩中', tagClass: 'tag-orange' });
             status.textContent = `处理中 ${k + 1}/${imgs.length}（图片）`;
@@ -282,7 +304,7 @@
           }
 
           /* ---- 音视频：主进程内部完成 8 轮逼近，这里只订阅进度 ---- */
-          if (avs.length && !canceled) {
+          if (avs.length && !canceled && runToken === targetRunSeq) {
             let ratio = 0.5, targetBytes = 0;
             if (mode === 'ratio') ratio = parseFloat(String(tierSel.value).split(':')[1]) || 0.5;
             else targetBytes = Math.floor(parseFloat(mbIn.value) * 1000000);
@@ -346,10 +368,15 @@
               }
               if (r.canceled) canceled = true;
             } catch (e) {
-              toast('音视频压缩失败：' + (window.api.errText ? window.api.errText(e) : e.message), 'error');
-              failCount += avs.length;
+              /* 被取代的那一趟不弹错（任务多半是 cleanup 杀掉的） */
+              if (runToken === targetRunSeq) {
+                toast('音视频压缩失败：' + (window.api.errText ? window.api.errText(e) : e.message), 'error');
+                failCount += avs.length;
+              }
             } finally { try { unsub(); } catch (e) {} }
           }
+          /* 这一趟已被取代（切页后又开了一批）：界面属于新那趟，不再写 */
+          if (runToken !== targetRunSeq) return;
 
           prog.set(100);
           /* 【「已请求停止」不等于「已停止」】
@@ -365,7 +392,7 @@
           if (failCount === 0) toast(okCount ? `全部完成，共 ${okCount} 个` : '没有可处理的文件', 'success');
           else if (failures.length) window.ui.alertBox(failures.join('\n'), '部分文件未能压到目标体积');
         } finally {
-          unlockUi();
+          if (runToken === targetRunSeq) { unlockUi(); unlockRef = null; }
           setTimeout(() => prog.hide(), 800);
         }
       }
@@ -383,13 +410,6 @@
       page.appendChild(targetCard);
       page.appendChild(outCard);
       page.appendChild(runCard);
-
-      // 页面卸载时取消正在跑的任务，避免关闭页面后后台还在压
-      if (window.App && App.onCleanup) {
-        App.onCleanup(() => {
-          if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {});
-        });
-      }
     }
   });
 })();

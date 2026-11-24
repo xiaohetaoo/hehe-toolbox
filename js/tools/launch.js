@@ -144,14 +144,44 @@
       const out = div('term', '执行输出将显示在这里');
       out.style.maxHeight = '300px';
       let current = null, unsubStream, unsubExit;
+      /* 【执行也要防重入 + 取消窗口 + 离开即停】（与 Ping 同一口径）
+       * 原实现的问题：
+       *   · 没有 running 守卫：连点两下「执行」起两个进程，current 被后者覆盖，
+       *     前一个再也杀不掉，两路输出交错写进同一个框；
+       *   · 离开页面发生在 `await EXEC.STREAM` 期间时 cleanup 已经跑完（current 还是 null），
+       *     返回后任务照样启动并挂在旧页面上 —— 一个没人能停的孤儿进程
+       *     （`ping -t`、`npm run dev` 之类会常驻）；
+       *   · cleanup 只 kill 不复位：进程结束后执行按钮…（原来没有禁用，这里一并补上
+       *     "执行中"的按钮态，避免同一行被反复点击）。
+       * 输出框还有一处：每条流事件 append 一个节点、从不裁剪，
+       * `dir /s C:\` 这类命令能堆出几万个节点把渲染层拖死 —— 加行数上限。 */
+      let cmdRunSeq = 0;
+      let running = false;
+      let execBtns = [];
+      const MAX_OUT_LINES = 500;
+      function appendOut(el) {
+        out.appendChild(el);
+        while (out.children.length > MAX_OUT_LINES) out.removeChild(out.firstChild);
+        out.scrollTop = out.scrollHeight;
+      }
+      function dropSubs() {
+        if (unsubStream) { try { unsubStream(); } catch (e) {} unsubStream = null; }
+        if (unsubExit) { try { unsubExit(); } catch (e) {} unsubExit = null; }
+      }
+      function setExecBusy(on) {
+        running = on;
+        for (const b of execBtns) { try { b.disabled = on; } catch (e) {} }
+      }
       window.App.onCleanup(() => {
-        if (unsubStream) try { unsubStream(); } catch (e) {}
-        if (unsubExit) try { unsubExit(); } catch (e) {}
-        if (current) invoke(Channels.CHANNELS.JOB.KILL, current).catch(() => {});
+        cmdRunSeq++;
+        dropSubs();
+        if (current) { invoke(Channels.CHANNELS.JOB.KILL, current).catch(() => {}); current = null; }
+        setExecBusy(false);
       });
       async function load() {
         const items = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
         list.innerHTML = '';
+        execBtns = [];
         if (!items.length) { list.appendChild(div('empty-tip', '还没有收藏命令')); return; }
         const table = renderTable({
           columns: [
@@ -159,7 +189,10 @@
             { key: 'cmd', title: '命令', render: r => div('mono', { style: { fontSize: '12px' } }, r.cmd) },
             { key: 'type', title: '类型', width: '100px', render: r => h('span', { class: 'tag ' + (r.shell === 'ps' ? 'tag-blue' : 'tag-gray') }, r.shell === 'ps' ? 'PowerShell' : 'CMD') },
             { key: 'act', title: '操作', width: '220px', render: (r, td) => {
-                td.appendChild(btn('执行', 'btn-sm btn-primary', () => run(r), 'play'));
+                const execBtn = btn('执行', 'btn-sm btn-primary', () => run(r), 'play');
+                if (running) execBtn.disabled = true;
+                execBtns.push(execBtn);
+                td.appendChild(execBtn);
                 td.appendChild(btn('删除', 'btn-sm btn-text', async () => {
                   /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
                   const items = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
@@ -178,22 +211,36 @@
       }
       async function run(r) {
         if (!isDesktop) return toast('桌面端可用', 'warn');
+        if (running) return toast('上一条命令还在执行，请等它结束', 'warn');
+        const runToken = ++cmdRunSeq;
+        setExecBusy(true);
         out.innerHTML = `<div class="t-dim">$ ${escapeHtml(r.cmd)}</div>`;
         try {
           const job = await invoke(Channels.CHANNELS.EXEC.STREAM, { command: r.shell === 'ps' ? 'powershell.exe' : 'cmd.exe', args: r.shell === 'ps' ? ['-NoProfile', '-Command', r.cmd] : ['/c', r.cmd] });
+          /* 离开页面期间建出的任务：自己收掉，不挂到旧页面上 */
+          if (runToken !== cmdRunSeq) {
+            if (job) invoke(Channels.CHANNELS.JOB.KILL, job).catch(() => {});
+            return;
+          }
           current = job;
-          if (unsubStream) unsubStream();
-          if (unsubExit) unsubExit();
+          dropSubs();
           unsubStream = window.api.on('job:stream', (d) => {
-            if (d.id !== job) return;
-            const el = h('div', { class: d.err ? 't-err' : '' }, String(d.data).trimEnd());
-            out.appendChild(el);
-            out.scrollTop = out.scrollHeight;
+            if (runToken !== cmdRunSeq || d.id !== job) return;
+            appendOut(h('div', { class: d.err ? 't-err' : '' }, String(d.data).trimEnd()));
           });
           unsubExit = window.api.on('job:exit', (d) => {
-            if (d.id === job) out.appendChild(h('div', { class: 't-dim' }, `—— 退出码 ${d.code} ——`));
+            if (runToken !== cmdRunSeq || d.id !== job) return;
+            appendOut(h('div', { class: 't-dim' }, `—— 退出码 ${d.code} ——`));
+            /* 进程结束：放开执行按钮、退订（留着只会累积监听器） */
+            current = null;
+            dropSubs();
+            setExecBusy(false);
           });
-        } catch (e) { toast(e.message, 'error'); }
+        } catch (e) {
+          if (runToken !== cmdRunSeq) return;
+          setExecBusy(false);
+          toast(e.message, 'error');
+        }
       }
       async function add() {
         try {

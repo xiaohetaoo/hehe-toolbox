@@ -195,6 +195,13 @@ register({
       [fpsSel, audioSel, camPosSel, camSizeSel].forEach(el => el.addEventListener('change', saveRecPrefs));
       gifChk.addEventListener('change', saveRecPrefs);
       async function pickRegion() {
+        /* 【登记必须在第一个 await 之前】onCleanup 挂的是"当前页面"的队列；
+         * 放在 await SNIP.START 之后，用户若恰在此刻切页，这次登记会落到
+         * **下一个页面**的队列里 —— 订阅与 120 秒定时器要多等一次切页才被回收。
+         * 点击回调在第一个 await 之前是同步执行的，此时本页一定是当前页。 */
+        let _cleanup = null;
+        const cleanup = () => { if (_cleanup) { try { _cleanup(); } catch (e2) {} _cleanup = null; } };
+        if (window.App && App.onCleanup) App.onCleanup(cleanup);
         try {
           await invoke(Channels.CHANNELS.SNIP.START, 'region');
           status.textContent = '请在屏幕上框选录制区域…';
@@ -205,9 +212,6 @@ register({
            *   · 登记到 App.onCleanup —— 用户在这 120 秒里切走页面时，
            *     刚才是既不退订也不清定时器的，订阅和挂着的 Promise 一起泄漏。
            * 重复框选前也要先清掉上一轮（下面先调一次 cleanup）。 */
-          let _cleanup = null;
-          const cleanup = () => { if (_cleanup) { try { _cleanup(); } catch (e2) {} _cleanup = null; } };
-          if (window.App && App.onCleanup) App.onCleanup(cleanup);
           const rect = await new Promise((resolve) => {
             let settled = false;
             const t = setTimeout(() => finish(null), 120000);
@@ -227,7 +231,18 @@ register({
           else status.textContent = '未选择区域（保持全屏）';
         } catch (e) { toast(e.message, 'error'); }
       }
+      /* 【开始录制必须防重入】start 要跨 FFMPEG.STATUS / DIALOG.SAVE / stopPreview /
+       * REC.START 四个 await，期间「开始录制」一直可点：保存框关掉后、REC.START
+       * 还没返回时再点一下，就会再弹一次保存框、再发一次 REC.START（主进程要么
+       * 报"已在录制"，要么把上一段录制成废）。用一个只在整条流程期间为真的
+       * 标志挡住，finally 复位。 */
+      let starting = false;
       async function start() {
+        if (starting) return;
+        starting = true;
+        try { await startOnce(); } finally { starting = false; }
+      }
+      async function startOnce() {
         /* 【领序号：这一趟录制请求的有效凭证】 */
         const runToken = ++recordingRunToken;
         const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));

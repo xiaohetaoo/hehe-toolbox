@@ -95,6 +95,10 @@
     desc: '用密钥把图片像素打乱/还原，防止随手查看（注意：视觉混淆不是加密）', descEn: 'Shuffle pixels with a key to keep casual eyes away (visual only, not encryption)',
     keywords: ['混淆', '还原', '打乱', '图片', 'scramble', '遮挡'],
     render(page) {
+      /* 【per-run 序号】批量混淆是逐张 canvas 处理 + 写盘（可能几分钟），
+       * 切页后不应继续写文件，也不应 toast 到新页面。 */
+      let scrambleRunSeq = 0;
+      window.App.onCleanup(() => { scrambleRunSeq++; });
       const picker = filePicker({
         text: '拖入或选择要处理的图片（可多选）',
         filters: [IMG_FILTER],
@@ -121,6 +125,19 @@
         + '真需要保密请用「文件加密解密」（AES-256）把整个文件加密。'));
 
       const runBtn = btn('开始处理', 'btn-primary', run, 'crop');
+      /* 【停止按钮必须与其它批量页一致】
+       * R17 给 img-batch / img-watermark / batch-ocr / img-dedup 都加了停止，
+       * 但本页只加了 token（离开页面才中断）—— 用户处理几百张图时想中途停下，
+       * 除了切走页面没有别的办法，而切走会丢掉所有结果。
+       * 这里补显式停止：递增 token 让在跑的循环作废（与 cleanup 同一手段），
+       * 已处理完的文件保留在磁盘上。本页没有独立状态行，停止结论写进进度条区域。 */
+      const stopBtn = btn('停止', 'btn-danger-plain', () => {
+        scrambleRunSeq++;
+        stopBtn.disabled = true;
+        try { prog.set(0); } catch (e) {}
+        toast('已停止：已处理的结果已保留在输出目录', 'info', 4000);
+      }, 'square');
+      stopBtn.disabled = true;
 
       /* 【一张图只解码一次】
        * 原实现里 run() 先 await loadImg(files[i]) 取尺寸算置换表，
@@ -174,12 +191,15 @@
         const inverse = modeSel.value === 'restore';
         const outDir = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (!outDir || !outDir[0]) return;
+        const runToken = ++scrambleRunSeq;
+        stopBtn.disabled = false;
         prog.show();
         picker.setLocked(true);
         let ok = 0;
         const errs = [];
         try {
           for (let i = 0; i < files.length; i++) {
+            if (runToken !== scrambleRunSeq) return;   // 页面已离开，停止写盘
             prog.set((i + 1) / files.length * 100);
             try {
               const img = await loadImg(files[i]);
@@ -195,9 +215,11 @@
               }
             } catch (e) { errs.push(files[i].split(/[\\/]/).pop() + '：' + e.message); }
           }
+          if (runToken !== scrambleRunSeq) return;   // 页面已离开，不 toast
           if (ok) toast('完成 ' + ok + ' 张，输出：' + outDir[0], 'success');
           if (errs.length) toast('失败 ' + errs.length + ' 张：' + errs.slice(0, 3).join('；'), 'error', 6000);
         } finally {
+          stopBtn.disabled = true;
           prog.hide();
           /* 【必须解锁列表】picker.setLocked(true) 之后文件增删全被 ui.js 的
            * 守卫拦住（见 fileList 的 locked 分支）。只 prog.hide() 不解锁的话，
@@ -217,7 +239,7 @@
         div('form-row', h('span', { class: 'form-label' }, '密钥'), keyIn,
           h('span', { class: 'field-hint' }, '同一张图必须用同一密钥才能还原')),
         warning,
-        div('form-row', runBtn, prog.el)));
+        div('form-row', runBtn, ' ', stopBtn, prog.el)));
       page.appendChild(div('card', div('card-title', '预览'), preview));
     }
   });

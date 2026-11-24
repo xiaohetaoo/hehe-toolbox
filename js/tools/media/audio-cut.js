@@ -12,6 +12,12 @@ register({
     keywords: ['音频', '剪辑', '截取', '淡入', '淡出', '音量'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
+      /* 【per-run 序号】FFMPEG.AUDIO_CUT 是阻塞式 IPC（主进程跑完才返回），
+       * 没有 job id 可 kill。切页后 ffmpeg 会跑完，但结果不该再写回
+       * 已离开的页面 —— 否则 toast 会出现在**新页面**上（"剪辑完成"
+       * 与用户当前在做的事无关）。与 lan-scan 同一口径。 */
+      let cutRunSeq = 0;
+      window.App.onCleanup(() => { cutRunSeq++; });
       const picker = filePicker({
         text: '拖入或选择音频文件（可多选则取第一个）',
         single: true,
@@ -28,6 +34,7 @@ register({
       const goBtn = btn('开始剪辑', 'btn-primary', run, 'scissors');
       async function run() {
         if (running) return; // 防重入
+        const runToken = ++cutRunSeq;
         running = true;
         if (!picker.count) { running = false; return toast('请先选择音频', 'warn'); }
         const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
@@ -45,10 +52,15 @@ register({
           const r = await invoke(Channels.CHANNELS.FFMPEG.AUDIO_CUT, {
             input: src, out, ss: ssIn.value.trim(), dur, fadeIn: fi, fadeOut: fo, gain, format: fmt
           });
+          /* 页面已离开：结果不写回（文件已生成，但用户此刻在看别的页面） */
+          if (runToken !== cutRunSeq) return;
           status.textContent = `✓ 已输出：${out}（${fmtBytes(r.size)}）`;
           toast('剪辑完成', 'success');
-        } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
-        finally { goBtn.disabled = false; running = false; }
+        } catch (e) {
+          if (runToken !== cutRunSeq) return;   // 过期的失败不弹错
+          status.textContent = '✗ ' + e.message;
+          toast(e.message, 'error');
+        } finally { goBtn.disabled = false; running = false; }
       }
       page.appendChild(div('card', div('card-title', '音频'), picker.el));
       page.appendChild(div('card', div('card-title', '剪辑参数'),

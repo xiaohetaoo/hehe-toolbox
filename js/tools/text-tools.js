@@ -485,40 +485,84 @@
       const volLabel = h('span', { class: 'field-hint' }, '100');
       const status = h('span', { class: 'field-hint' }, '');
       const speakBtn = btn('朗读', 'btn-primary', speak, 'music');
-      const stopBtn = btn('停止', 'btn-danger-plain', () => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); }, 'square');
-      stopBtn.disabled = true;
       let jobId = null, unsub = null;
+      /* 【取消必须立刻生效 + 离开页面必须复位】（与 Ping/下载/媒体页同一口径）
+       * 原来两处都有问题：
+       *   · 停止按钮只 `if (jobId) kill`：tts:speak 的 invoke 还没返回时 jobId 是 null，
+       *     点停止毫无反应，返回后任务照样开始朗读（整段 5000 字念完）；
+       *   · cleanup 只 kill 不复位：保活复用回来「朗读」仍是灰的、「停止」仍可点，
+       *     再点停止就是对一个已经结束的任务发 job:kill。
+       * per-run 序号：停止/离开时递增，在飞的 speak 在 invoke 返回点发现自己过期，
+       * 自己把刚建出的任务杀掉，不写 jobId、不改界面。 */
+      let speakSeq = 0;
+      function resetUi() {
+        try { speakBtn.disabled = false; stopBtn.disabled = true; } catch (e) {}
+      }
+      function dropSub() {
+        if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+      }
+      function doStop(leftPage) {
+        speakSeq++;
+        if (jobId) { invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); jobId = null; }
+        dropSub();
+        resetUi();
+        /* 空闲时离开不改状态行（别把"✓ 已导出"之类的结果冲掉） */
+        if (leftPage && !/朗读中/.test(status.textContent || '')) return;
+        status.textContent = leftPage ? '已离开页面，朗读已停止' : '已停止朗读';
+      }
+      const stopBtn = btn('停止', 'btn-danger-plain', () => { doStop(false); }, 'square');
+      stopBtn.disabled = true;
       rateIn.addEventListener('input', () => rateLabel.textContent = rateIn.value);
       volIn.addEventListener('input', () => volLabel.textContent = volIn.value);
       invoke(Channels.CHANNELS.TTS.VOICES).then((r) => {
         for (const v of r.voices) voiceSel.appendChild(h('option', { value: v }, v));
       }).catch(() => { status.textContent = '语音引擎检测失败'; });
-      window.App.onCleanup(() => { if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {}); if (unsub) try { unsub(); } catch (e) {} });
+      window.App.onCleanup(() => { doStop(true); });
       async function speak() {
         const text = ta.value.trim();
         if (!text) return toast('请输入文本', 'warn');
         if (text.length > 5000) return toast('文本过长（>5000 字），请分段朗读', 'warn');
+        const runToken = ++speakSeq;
         speakBtn.disabled = true; stopBtn.disabled = false;
         status.textContent = '朗读中…';
+        /* 同一页面同时最多一个订阅：重开朗读先退掉上一条（否则两条监听器都认领同一批事件） */
+        dropSub();
         /* job:stream 是全局通道：别的任务（下载/媒体转换/卸载）结束时也会广播 {done:true}，
            不加过滤会把正在进行的朗读误判成「已结束」。主进程 tts 任务 id 以 'tts' 开头，
-           拿到真实 jobId 之前先按前缀认领，拿到之后严格比对。 */
+           JobPrefix.subscribe 内部按前缀认领；这里只同步 jobId（job:kill 要传它）。 */
         unsub = window.JobPrefix.subscribe('tts', (d) => {
           try {
-            if (jobId && d.id !== jobId) return;
+            /* 【在事件里认领 jobId】首条事件往往比 invoke 返回更早到，
+             * 不认领的话那段时间点「停止」没有对象可杀。 */
+            if (!jobId) jobId = d.id;
+            if (d.id !== jobId) return;
             const j = JSON.parse(d.data);
-            if (j.done) { speakBtn.disabled = false; stopBtn.disabled = true; jobId = null; status.textContent = '✓ 朗读结束'; }
+            if (j.done) {
+              jobId = null;
+              dropSub();
+              /* 已过期：界面属于下一趟（或已被停止/离开复位），不改 */
+              if (runToken !== speakSeq) return;
+              resetUi();
+              status.textContent = '✓ 朗读结束';
+            }
           } catch (e) {}
         });
         try {
           const r = await invoke(Channels.CHANNELS.TTS.SPEAK, { text, voice: voiceSel.value, rate: +rateIn.value, volume: +volIn.value });
+          if (runToken !== speakSeq) {
+            /* 已停止/已离开：把刚建出来的任务杀掉，不留后台朗读 */
+            if (r && r.id) invoke(Channels.CHANNELS.JOB.KILL, r.id).catch(() => {});
+            return;
+          }
           jobId = r.id;
         } catch (e) {
           // 原来这里没有 catch：tts:speak 失败时函数直接抛出，
           // speakBtn 永久 disabled、stopBtn 永久可用，只能切页才能恢复。
-          speakBtn.disabled = false; stopBtn.disabled = true; jobId = null;
+          if (runToken !== speakSeq) return;
+          jobId = null;
+          dropSub();
+          resetUi();
           status.innerHTML = '<span class="status-err">✗ ' + escapeHtml(e.message) + '</span>';
-          if (unsub) { try { unsub(); } catch (e2) {} unsub = null; }
         }
       }
       page.appendChild(div('card', div('card-title', '文本'),

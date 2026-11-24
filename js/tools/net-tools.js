@@ -107,7 +107,8 @@
           } catch (e) {}
         });
       }
-      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
+      /* eslint-disable-next-line no-unused-vars -- running 在 Ping 页只写不读：start() 不以它做守卫
+       * （重复点「开始」的语义是"杀旧起新"），保留它只为与其它页的状态复位写法一致。 */
       let latencies = [], sent = 0, recv = 0, running = false;
       let unsubStream, unsubExit;
       const startBtn = btn('开始 Ping', 'btn-primary', start, 'play');
@@ -193,7 +194,7 @@
           /* 同上：展开传参会在大数组上栈溢出，改 reduce（下限 50）。 */
           chart.draw(latencies, { max: latencies.reduce((a, b) => (a > b ? a : b), 50) * 1.2 });
         });
-        unsubExit = on('job:exit', (d) => { if (d.id === jobId) { running = false; startBtn.disabled = false; stopBtn.disabled = true; } });
+        unsubExit = on('job:exit', (d) => { if (d.id === jobId) { jobId = null; running = false; startBtn.disabled = false; stopBtn.disabled = true; } });
       }
       async function stop() {
         /* 【停止必须立刻生效，不能只在 jobId 存在时才做点什么】
@@ -202,11 +203,14 @@
          * 于是 ping -t 照样起来（永不自行退出）。必须：①递增序号让
          * start 的后续步骤作废；②有 id 就杀；③立刻复位界面。 */
         pingRunSeq++;
-        if (jobId) { try { await invoke(Channels.CHANNELS.JOB.KILL, jobId); } catch (e) {} jobId = null; }
+        /* 【先复位界面，再等 kill】job:kill 是一次 IPC 往返；放在它后面的话，
+         * IPC 一慢（主进程正忙）按钮就晚半拍才复位，用户会再点一次。 */
+        const dead = jobId; jobId = null;
         if (unsubStream) { try { unsubStream(); } catch (e) {} unsubStream = null; }
         if (unsubExit) { try { unsubExit(); } catch (e) {} unsubExit = null; }
         running = false;
         startBtn.disabled = false; stopBtn.disabled = true;
+        if (dead) { try { await invoke(Channels.CHANNELS.JOB.KILL, dead); } catch (e) {} }
       }
       page.appendChild(div('card', div('card-title', '目标'),
         div('form-row', hostIn, startBtn, ' ', stopBtn),
@@ -798,6 +802,7 @@
            * 所以 stale 分支必须自己做完整收尾。 */
           if (runToken !== downloadRunSeq) {
             if (r && r.id) invoke(Channels.CHANNELS.JOB.KILL, r.id).catch(() => {});
+            else if (jobId) invoke(Channels.CHANNELS.JOB.KILL, jobId).catch(() => {});
             jobId = null;
             if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
             prog.hide();

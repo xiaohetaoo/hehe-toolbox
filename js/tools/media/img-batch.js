@@ -13,6 +13,11 @@ register({
     keywords: ['图片', '批量', '缩放', '转换', '压缩'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
+      /* 停止标志：停止按钮与离开页面共用（同 img-compress / img-watermark）。
+       * 原来这个批量工具既没有停止按钮也没有 cleanup：切页后整批继续逐张写盘。 */
+      let cancelFlag = false;
+      const stopBtn = btn('停止', 'btn-danger-plain', () => { cancelFlag = true; stopBtn.disabled = true; }, 'square');
+      stopBtn.disabled = true;
       const picker = filePicker({
         text: '拖入或选择要处理的图片（可多选）',
         filters: [IMG_FILTER],
@@ -25,7 +30,7 @@ register({
       const rotateSel = h('select', { class: 'select input-sm' }, h('option', { value: '0' }, '不旋转'), h('option', { value: '90' }, '90°'), h('option', { value: '180' }, '180°'), h('option', { value: '270' }, '270°'));
       const fmtSel = h('select', { class: 'select input-sm' }, h('option', { value: 'keep' }, '保持原格式'), h('option', { value: 'image/jpeg' }, 'JPG'), h('option', { value: 'image/png' }, 'PNG'), h('option', { value: 'image/webp' }, 'WebP'));
       const qualityIn = h('input', { type: 'number', class: 'input input-sm', value: '85', min: '10', max: '100', style: { width: '80px' } });
-      const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空=覆盖式输出到 <原图>.processed）', style: { flex: '1' } });
+      const outDirIn = h('input', { class: 'input input-sm', placeholder: '输出目录（留空 = 源文件旁的 hehe-processed 目录）', style: { flex: '1' } });
       const pickOutBtn = btn('选择…', 'btn-sm btn-secondary', async () => {
         const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
         if (d && d[0]) outDirIn.value = d[0];
@@ -36,8 +41,10 @@ register({
       async function run() {
         if (running) return; // 防重入：双击「开始」会并发跑两遍
         if (!picker.count) return toast('请先选择图片', 'warn');
+        cancelFlag = false;
         running = true;
         prog.show();
+        stopBtn.disabled = false;
         picker.setLocked(true);
         let outDir = outDirIn.value.trim();
         const paths = picker.paths.slice();
@@ -50,6 +57,7 @@ register({
         preview.innerHTML = '';
         try {
         for (let i = 0; i < paths.length; i++) {
+          if (cancelFlag) break;   // 用户点了停止，或已离开页面
           prog.set((i + 1) / paths.length * 100);
           const p = paths[i];
           try {
@@ -92,14 +100,25 @@ register({
               h('span', { class: 'field-hint' }, `${fmtBytes(origSize)} → ${fmtBytes(newSize)}（${newSize <= origSize ? '-' : '+'}${Math.abs((1 - newSize / origSize) * 100).toFixed(0)}%）`)));
           } catch (e) { fail++; preview.appendChild(div('form-row', h('span', { class: 'tag tag-red' }, '✗'), h('span', { style: { fontSize: '12px' } }, p), h('span', { class: 'field-err' }, e.message))); }
         }
-        status.textContent = `完成：成功 ${ok}，失败 ${fail}，输出目录 ${outDir}`;
-        toast(`处理完成（${ok} 成功 / ${fail} 失败）`, fail ? 'warn' : 'success');
+        /* 【点了停止就不能说"完成"】停在第 3 张也报"处理完成"会让人以为整批都做了 */
+        if (cancelFlag) {
+          const leftN = paths.length - ok - fail;
+          status.textContent = `已停止：成功 ${ok}，失败 ${fail}，剩余 ${leftN} 张未处理，已输出的文件在 ${outDir}`;
+          toast(`已停止（已处理 ${ok + fail} 张，剩余 ${leftN} 张未处理）`, 'warn');
+        } else {
+          status.textContent = `完成：成功 ${ok}，失败 ${fail}，输出目录 ${outDir}`;
+          toast(`处理完成（${ok} 成功 / ${fail} 失败）`, fail ? 'warn' : 'success');
+        }
         } finally {
           // 无论成功、失败还是抛异常，都必须解锁列表并复位按钮状态，
           // 否则一次异常就让整个工具页永久不可用。
-          running = false; prog.hide(); picker.setLocked(false);
+          running = false; prog.hide(); picker.setLocked(false); stopBtn.disabled = true;
         }
       }
+      window.App.onCleanup(() => {
+        cancelFlag = true;
+        try { stopBtn.disabled = true; prog.hide(); } catch (e) {}
+      });
       page.appendChild(div('card', div('card-title', '选择图片'), picker.el));
       page.appendChild(div('card', div('card-title', '处理参数'),
         div('form-row', h('span', { class: 'form-label' }, '尺寸'), h('span', { class: 'field-hint' }, '缩放%'), scaleIn, ' 或 宽', widthIn, '×高', heightIn,
@@ -108,7 +127,7 @@ register({
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '格式'), fmtSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '质量'), qualityIn),
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
-        div('form-row', btn('开始处理', 'btn-primary', run, 'send'), prog.el, status)));
+        div('form-row', btn('开始处理', 'btn-primary', run, 'send'), ' ', stopBtn, prog.el, status)));
       page.appendChild(div('card', div('card-title', '处理结果'), preview));
     }
   })

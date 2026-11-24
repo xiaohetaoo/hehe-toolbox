@@ -12,6 +12,10 @@ register({
     keywords: ['截帧', '视频', '帧', '截图', 'frames'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
+      /* 【per-run 序号】FFMPEG.FRAMES 是阻塞式 IPC，切页后 ffmpeg 会跑完，
+       * 但结果不该 toast 到新页面（用户此刻在做别的事）。 */
+      let frameRunSeq = 0;
+      window.App.onCleanup(() => { frameRunSeq++; });
       const picker = filePicker({
         text: '拖入或选择视频文件',
         single: true,
@@ -31,6 +35,7 @@ register({
       modeSel.addEventListener('change', refresh); refresh();
       async function run() {
         if (running) return; // 防重入：双击会起两个 ffmpeg 抢同一输出
+        const runToken = ++frameRunSeq;
         running = true;
         if (!picker.count) { running = false; return toast('请先选择视频', 'warn'); }
         const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
@@ -71,6 +76,7 @@ register({
             ss: timeIn.value.trim(), every: Math.max(1, +everyIn.value || 1),
             count: Math.min(500, +countIn.value || 20), width: wIn.value || null
           });
+          if (runToken !== frameRunSeq) return;   // 页面已离开，结果不写回
           outLabel.textContent = modeSel.value === 'single'
             ? `✓ 已导出：${r.first}`
             : `✓ 帧序列 ${r.count} 张已导出到 ${r.outDir}` +
@@ -78,8 +84,11 @@ register({
                  实际旧的那几张已经没了。 */
               (r.overwritten ? `（另有 ${r.overwritten} 张上次导出的同名帧被覆盖）` : '');
           toast('截帧完成', 'success');
-        } catch (e) { outLabel.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
-        finally { goBtn.disabled = false; running = false; }
+        } catch (e) {
+          if (runToken !== frameRunSeq) return;   // 过期的失败不弹错
+          outLabel.textContent = '✗ ' + e.message;
+          toast(e.message, 'error');
+        } finally { goBtn.disabled = false; running = false; }
       }
       page.appendChild(div('card', div('card-title', '视频'), picker.el));
       page.appendChild(div('card', div('card-title', '参数'),

@@ -912,7 +912,7 @@ handle(CH.FFMPEG.FRAMES, async (e, { input, outDir, mode, ss, every, count, widt
    * 这里用「截帧前后的文件集合差」统计，并把被覆盖的旧文件数如实报出来。 */
   let before = new Set();
   try { before = new Set(await fsp.readdir(outDir)); } catch (e) { before = new Set(); }
-  const r = await runCmd(ffmpeg, args, { timeout: 300000 });
+  const r = await runCmd(ffmpeg, args, { timeout: 300000, allowNonZero: true });
   if (r.code !== 0) throw new Error('截帧失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
   let n = 0, overwritten = 0;
   try {
@@ -1147,7 +1147,7 @@ handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, ga
   if (ac === 'aac') args.push('-b:a', '192k');
   if (filters.length) args.push('-af', filters.join(','));
   args.push(out);
-  const r = await runCmd(ffmpeg, args, { timeout: 300000 });
+  const r = await runCmd(ffmpeg, args, { timeout: 300000, allowNonZero: true });
   if (r.code !== 0 || !(await pathExists(out))) throw new Error('剪辑失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
   return { out, size: (await fsp.stat(out)).size };
 });
@@ -1465,7 +1465,7 @@ handle(CH.REC.STOP, (e, makeGif) => withRecordingOperation(e, async () => {
          * 转义形态经真跑 ffmpeg 实测挑选，见 lib/fs-ops.js concatFileLine。 */
         await fsp.writeFile(listFile, recSegs.map(concatFileLine).join('\n'), 'utf8');
         const ffmpeg = findFfmpeg();
-        const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', recOut], { timeout: 120000 });
+        const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', recOut], { timeout: 120000, allowNonZero: true });
         if (r.code !== 0) throw new Error('分段拼接失败：' + (r.stderr || '').split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
       }
     } catch (err) {
@@ -1512,7 +1512,7 @@ handle(CH.REC.STOP, (e, makeGif) => withRecordingOperation(e, async () => {
       }
       try {
         const ffmpeg = findFfmpeg();
-        const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-i', recOut, '-vf', 'fps=10,scale=480:-2:flags=lanczos', gifTarget], { timeout: 300000 });
+        const r = await runCmd(ffmpeg, ['-y', '-hide_banner', '-i', recOut, '-vf', 'fps=10,scale=480:-2:flags=lanczos', gifTarget], { timeout: 300000, allowNonZero: true });
         if (r.code !== 0) throw new Error('GIF 转码失败');
         gifOut = gifTarget;
       } catch (err) {

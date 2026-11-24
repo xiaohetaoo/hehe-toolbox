@@ -84,11 +84,26 @@ register({
             }
             done++; prog.set(done / imgs.length * 100);
           }
-          status.textContent = `完成：${imgs.length} 张`;
-          toast('批量识别完成', 'success');
+          /* 【点了停止就不能说"完成"】原来 break 之后照样写「完成：N 张」并弹
+           * 「批量识别完成」—— 20 张停在第 3 张也报完成。停了就说停了，并给出
+           * 已识别的张数（结果仍然可以导出）。 */
+          if (cancelFlag) {
+            status.textContent = `已停止：已识别 ${done} / ${imgs.length} 张，已识别的结果可导出`;
+            toast(`已停止（已识别 ${done} / ${imgs.length} 张）`, 'warn');
+          } else {
+            status.textContent = `完成：${imgs.length} 张`;
+            toast('批量识别完成', 'success');
+          }
         } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
         finally { running = false; prog.hide(); ocrStopBtn.disabled = true; }
       }
+      /* 【离开页面 = 停止】原来没有任何 cleanup：切页后整批图片继续逐张识别
+       * （每张都可能起一个 tesseract worker），而页面上没有任何停止入口。
+       * 单张超时不会终止 worker（库没有中止接口），所以只能保证"不再开始下一张"。 */
+      window.App.onCleanup(() => {
+        cancelFlag = true;
+        try { prog.hide(); ocrStopBtn.disabled = true; } catch (e) {}
+      });
       page.appendChild(div('card', div('card-title', '图片文件夹'), div('form-row', pickBtn, dirLabel, langSel)));
       page.appendChild(div('card', div('card-title', '识别'),
         div('form-row', ocrRunBtn, ocrStopBtn, prog.el, status),

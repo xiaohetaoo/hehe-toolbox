@@ -125,7 +125,7 @@ module.exports = function register(ctx, deps) {
     }
     const sevenZa = require('7zip-bin').path7za;
     if (rt.archive === '7z') {
-      const r = await runCmd(sevenZa, ['x', archive, '-o' + staging, '-y', '-bd'], { timeout: 300000 });
+      const r = await runCmd(sevenZa, ['x', archive, '-o' + staging, '-y', '-bd'], { timeout: 300000, allowNonZero: true });
       if (r.code !== 0) throw new Error('解压失败：' + String(r.stderr || r.stdout || '').trim().split(/\r?\n/).slice(-2).join(' '));
       return;
     }
@@ -133,11 +133,11 @@ module.exports = function register(ctx, deps) {
       /* 7za 不能直接把 tar.gz 解到目标并丢顶层；分两步：gz → tar → 目录。 */
       const gzOut = path.join(staging, '.gz');
       await fsp.mkdir(gzOut, { recursive: true });
-      let r = await runCmd(sevenZa, ['x', archive, '-o' + gzOut, '-y', '-bd'], { timeout: 300000 });
+      let r = await runCmd(sevenZa, ['x', archive, '-o' + gzOut, '-y', '-bd'], { timeout: 300000, allowNonZero: true });
       if (r.code !== 0) throw new Error('解压 gz 失败');
       const tarFile = (await fsp.readdir(gzOut)).find((n) => /\.tar$/i.test(n));
       if (!tarFile) throw new Error('tar.gz 里没有 tar 包');
-      r = await runCmd(sevenZa, ['x', path.join(gzOut, tarFile), '-o' + staging, '-y', '-bd'], { timeout: 300000 });
+      r = await runCmd(sevenZa, ['x', path.join(gzOut, tarFile), '-o' + staging, '-y', '-bd'], { timeout: 300000, allowNonZero: true });
       if (r.code !== 0) throw new Error('解压 tar 失败');
       await fsp.rm(gzOut, { recursive: true, force: true }).catch(() => {});
       return;
@@ -177,7 +177,7 @@ module.exports = function register(ctx, deps) {
       '$p = GetRaw "Path"; $j = GetRaw "JAVA_HOME";',
       '[pscustomobject]@{ path=$p.v; pathKind=$p.kind; javaHome=$j.v; javaHomeKind=$j.kind } | ConvertTo-Json -Compress',
     ].join(' ');
-    const r = await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 20000 });
+    const r = await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 20000, allowNonZero: true });
     if (r.code !== 0) throw new Error('读取用户环境变量失败（' + String(r.stderr || '').split(/\r?\n/).slice(-1) + '）');
     try {
       const j = JSON.parse(String(r.stdout || '{}'));
@@ -235,7 +235,7 @@ module.exports = function register(ctx, deps) {
     ];
     await fsp.writeFile(scriptPath, psScript.withBom(lines.join('\r\n')), 'utf8');
     try {
-      const r = await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { timeout: 30000 });
+      const r = await runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { timeout: 30000, allowNonZero: true });
       if (r.code !== 0) {
         throw new Error('写入用户环境失败：' + String(r.stderr || r.stdout || '').trim().split(/\r?\n/).slice(-2).join(' '));
       }
@@ -378,7 +378,7 @@ module.exports = function register(ctx, deps) {
   /* ---------- 命令探测 ---------- */
   async function safeCmd(cmd, args, timeout) {
     try {
-      const r = await runCmd(cmd, args, { timeout: timeout || 8000 });
+      const r = await runCmd(cmd, args, { timeout: timeout || 8000, allowNonZero: true });
       return { code: r.code, stdout: String(r.stdout || ''), stderr: String(r.stderr || '') };
     } catch (e) {
       return { code: -1, stdout: '', stderr: String((e && e.message) || e) };

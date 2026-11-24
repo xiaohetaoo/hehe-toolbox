@@ -74,27 +74,32 @@ t('C1-1 shutdown 返回非零时不得 arm、不得显示成功文案', async ()
   const statusEnd = applyBody.indexOf('\n', applyBody.indexOf('status.textContent =', armIdx));
   const seg = applyBody.slice(tryStart, statusEnd + 1);
 
-  const armed = [];
-  const toasts = [];
-  let statusText = '';
   const fn = new Function(
-    'invoke', 'toast', 'arm', 'confirmBox', 'window', 'Channels', 'mins', 'm', 'confirmMsg',
+    'invoke', 'toast', 'arm', 'confirmBox', 'window', 'Channels', 'mins', 'm', 'confirmMsg', 'shown',
     `let status = { textContent: '' };
+     let mode = '', targetTs = 0, pageShown = shown;
+     /* 【不能靠 IIFE 的返回值】片段里的 \`return toast(...)\` / \`return;\` 会直接
+      * 从 IIFE 返回；状态要在它跑完之后从同一个闭包里读。 */
      return (async () => {
        ${seg}
-       return status.textContent;
-     })();`
+     })().then(() => ({ text: status.textContent, mode, targetTs }));`
   );
-  const out = await fn(
-    async () => ({ code: 1116, stdout: '', stderr: '拒绝访问。' }),
-    (m, lvl) => toasts.push([m, lvl]),
-    (...a) => armed.push(a),
-    async () => true,
-    { api: { errText: (e) => String((e && e.message) || e) }, App: {} },
-    { CHANNELS: { EXEC: { RUN: 'exec:run' } } },
-    30, 'shutdown', '关机'
-  );
-  statusText = String(out || '');
+  const run = async (code, shown) => {
+    const armed = [], toasts = [];
+    const out = await fn(
+      async () => ({ code, stdout: '', stderr: '拒绝访问。' }),
+      (m, lvl) => toasts.push([m, lvl]),
+      (...a) => armed.push(a),
+      async () => true,
+      { api: { errText: (e) => String((e && e.message) || e) }, App: {} },
+      { CHANNELS: { EXEC: { RUN: 'exec:run' } } },
+      30, 'shutdown', '关机',
+      shown
+    );
+    return { armed, toasts, out };
+  };
+  const { armed, toasts, out } = await run(1116, true);
+  const statusText = String(out.text || '');
 
   /* 锁的是：非零退出码仍然 arm —— 界面会开始倒计时并承诺关机。 */
   assert.strictEqual(armed.length, 0, 'shutdown 退出码 1116 时仍然 arm 了（假成功）');
@@ -102,6 +107,44 @@ t('C1-1 shutdown 返回非零时不得 arm、不得显示成功文案', async ()
   assert.ok(toasts.some(([, lvl]) => lvl === 'error'), '失败时没有 error 提示');
   /* 锁的是：失败时 status 仍写了"系统将在 N 分钟后执行"。 */
   assert.ok(!/分钟后/.test(statusText), '失败时仍显示"N 分钟后执行"，实际：' + statusText);
+  /* 锁的是：失败时却把 mode 写成了"关机"（onEnter 会据此复活一个不存在的倒计时）。 */
+  assert.strictEqual(out.mode, '', '排期失败却记下了 mode');
+});
+
+/* 锁的是 P2：排期成功但用户已在 EXEC.RUN 的 await 期间切页 ——
+ * 计划是真的排上了，必须记下 mode/targetTs（回来才能显示倒计时、才能取消），
+ * 但不能再 arm（cleanup 已跑过，这个 interval 没有人清）。 */
+t('C1-3 排期期间已离开页面：记下状态但不 arm', async () => {
+  const src = readSrc('js/tools/sys-tools.js', { raw: true });
+  const applyBody = extractFn(src, 'async function apply()');
+  const iRun = applyBody.indexOf('shutdown /');
+  const tryStart = applyBody.lastIndexOf('try {', iRun);
+  const armIdx = applyBody.indexOf('arm(confirmMsg', tryStart);
+  const statusEnd = applyBody.indexOf('\n', applyBody.indexOf('status.textContent =', armIdx));
+  const seg = applyBody.slice(tryStart, statusEnd + 1);
+  const armed = [], toasts = [];
+  const fn = new Function(
+    'invoke', 'toast', 'arm', 'confirmBox', 'window', 'Channels', 'mins', 'm', 'confirmMsg', 'shown',
+    `let status = { textContent: '' };
+     let mode = '', targetTs = 0, pageShown = shown;
+     return (async () => {
+       ${seg}
+     })().then(() => ({ text: status.textContent, mode, targetTs }));`
+  );
+  const out = await fn(
+    async () => ({ code: 0 }),
+    (m, lvl) => toasts.push([m, lvl]),
+    (...a) => armed.push(a),
+    async () => true,
+    { api: { errText: String }, App: {} },
+    { CHANNELS: { EXEC: { RUN: 'exec:run' } } },
+    30, 'shutdown', '关机',
+    false      // 页面已离开
+  );
+  assert.strictEqual(armed.length, 0, '页面已离开仍然 arm（interval 无人清理）');
+  assert.strictEqual(out.mode, '关机', '计划已排上却没记下 mode（回来后无法取消）');
+  assert.ok(out.targetTs > Date.now(), '计划已排上却没记下 targetTs');
+  assert.strictEqual(out.text, '', '页面已离开仍然改写了状态行');
 });
 
 /* 锁的是：非零码的错误提示里要说明原因，不能只说"失败"。 */
@@ -109,78 +152,201 @@ t('C1-2 shutdown 失败提示必须带退出码与原因', () => {
   const src = readSrc('js/tools/sys-tools.js', { raw: true });
   const iRun = src.indexOf("shutdown /");
   assert.ok(iRun > 0);
-  const seg = src.slice(iRun, iRun + 1800);
+  /* 【窗口 2600】排期与取消的说明都紧跟在第一条 shutdown 之后（含退出码对照表），
+   * 1800 已切不到 code 判定；窗口只用来框住"排期那一段"，不是断言对象。 */
+  const seg = src.slice(iRun, iRun + 2600);
   /* 锁的是：只看有没有抛错、不看 code（假成功）。 */
   assert.ok(/code !== 0/.test(seg), '没有检查 shutdown 的退出码');
   /* 锁的是：失败提示不含退出码（用户无法判断是无权限还是已有计划）。 */
   assert.ok(/退出码/.test(seg), '失败提示没有带退出码');
 });
 
+/* 锁的是 P1：上面的按退出码分支在真实 IPC 链路上是死代码。
+   runCmd 默认"非零即 reject"，而数字退出码不会随 lib/errors.js 的载荷回渲染层
+   （只透传字符串 code）—— 渲染层拿到的永远是 "Command failed…" + code 'UNKNOWN'。
+   所以两处 shutdown 调用必须声明 allowNonZero，主进程必须把它透传给 runCmd。
+   【为什么是源码断言】主进程 handler 与 runCmd 都依赖 child_process/execFile，
+   行为断言需要真实执行 shutdown（会真的关机），只能在源码层面锁契约。 */
+t('C1-4 shutdown 两处调用都带 allowNonZero，主进程 EXEC.RUN 把它透传给 runCmd', () => {
+  const sys = readSrc('js/tools/sys-tools.js', { raw: true });
+  /* 锁的是：排期调用（模板字符串拼 /s 或 /r）丢掉 allowNonZero → 退出码分支变死代码。 */
+  assert.ok(/shutdown \/\$\{m === 'shutdown' \? 's' : 'r'\}[^\n]*allowNonZero:\s*true/.test(sys), '排期调用没带 allowNonZero');
+  /* 锁的是：取消调用（/a）丢掉 allowNonZero → 1116（无计划）会被当 reject 记成失败。 */
+  assert.ok(/shutdown \/a'[^\n]*allowNonZero:\s*true/.test(sys), '取消调用没带 allowNonZero');
+  const main = readSrc('main.js', { raw: true });
+  const i = main.indexOf('handle(CH.EXEC.RUN');
+  assert.ok(i > 0, '找不到 EXEC.RUN handler');
+  const seg = main.slice(i, i + 2600);
+  /* 锁的是：EXEC.RUN 不从载荷里取 allowNonZero（渲染层声明了也无效）。 */
+  assert.ok(/allowNonZero\s*\}/.test(seg), 'EXEC.RUN 没有从载荷里取 allowNonZero');
+  /* 锁的是：取了但没传给两条 runCmd 路径（cmd / 默认），行为不变。 */
+  assert.strictEqual((seg.match(/allowNonZero:\s*nn/g) || []).length, 2, 'EXEC.RUN 没有把它传给两条 runCmd 路径');
+});
+
+/* 锁的是：runCmd 改成"非零即 reject"之后，凡是紧接着 `if (r.code !== 0) throw new Error('…：' + r.stderr…)`
+   的调用点都成了死代码 —— 用户看到的不再是 7z/ffmpeg/icacls 的原话，而是整条命令行。
+   这些调用点必须声明 allowNonZero，把"判成败"的权力交回给已经写好的分支。
+   【为什么是源码断言】要触发非零退出必须真实运行 7z / ffmpeg / icacls，属于实机测试，本轮不跑。 */
+t('C1-5 按退出码分支的 runCmd 调用点必须声明 allowNonZero', () => {
+  const main = readSrc('main.js', { raw: true });
+  /* 锁的是：runSeven（解压/读目录的两条路径都按 code 分支）。 */
+  assert.ok(/return await runCmd\(bin, realArgs, \{ timeout, allowNonZero: true \}\)/.test(main), 'runSeven 丢了 allowNonZero');
+  /* 锁的是：压缩与列目录各自按 code 拼"压缩失败：/读取压缩包失败："。 */
+  assert.ok(/runCmd\(bin, args, \{ timeout: 600000, allowNonZero: true \}\)/.test(main), '压缩调用丢了 allowNonZero');
+  assert.ok(/runCmd\(bin, args, \{ timeout: 60000, allowNonZero: true \}\)/.test(main), '列目录调用丢了 allowNonZero');
+  const acl = readSrc('ipc/dir-acl-links.js', { raw: true });
+  /* 锁的是：ACL 修复按 code 取输出最后一行当原因。 */
+  assert.ok(/runCmd\(step\.tool, step\.args, \{ timeout: 60000, allowNonZero: true \}\)/.test(acl), 'ACL 修复丢了 allowNonZero');
+  const env = readSrc('ipc/env-manager.js', { raw: true });
+  /* 锁的是：环境管理里解压 ×3、PowerShell 读/写用户变量 ×2、命令探测 safeCmd，共 ≥6 处按 code 分支。 */
+  assert.ok((env.match(/allowNonZero: true/g) || []).length >= 6, 'env-manager 的按 code 分支调用点少于 6 处');
+  const ff = readSrc('ipc/media-ffmpeg.js', { raw: true });
+  /* 锁的是：截帧 / 剪辑 / 分段拼接 / GIF 四处按 code 拼 ffmpeg 原话。 */
+  assert.ok((ff.match(/allowNonZero: true/g) || []).length >= 4, 'media-ffmpeg 的按 code 分支调用点少于 4 处');
+});
+
 /* ==================================================================
  * C2 cancel：必须收集真实结果，全成功才清状态
  * ================================================================== */
 
-/* 锁的是 P0：cancel 吞掉失败后无条件写"已取消定时任务"。 */
-t('C2-1 取消失败时不得显示"已取消"，且必须保留可操作状态', async () => {
+/* 三条 C2 用例共用：把真实 cancel 函数体 + 真实的状态变量装进同一个闭包。
+ * 【cancel 不能引用这里没注入的标识符】实现里新增了 arm / onceId，
+ * 这里必须同步注入，否则测试会在 ReferenceError 上"失败"而不是在行为上失败。 */
+function buildCancel(invoke, extraState) {
   const src = readSrc('js/tools/sys-tools.js', { raw: true });
   const cancelBody = extractFn(src, 'async function cancel()');
-
-  /* 用真实 cancel 函数体，注入会失败的 invoke */
-  const state = { mode: '关机', targetTs: Date.now() + 600000 };
-  let countdownText = '', countdownCls = '', statusText = '', statusHTML = '';
-  const toasts = [];
+  const ui = {
+    countdownText: '', countdownCls: '', statusText: '', statusHTML: '',
+    toasts: [], arms: [],
+  };
   const fn = new Function(
     'invoke', 'toast', 'loadOnce', 'window', 'Channels',
-    'countdown', 'status', 'st',
-    `let mode = st.mode, targetTs = st.targetTs, timer = null;
+    'countdown', 'status', 'arm', 'st',
+    `let mode = st.mode, targetTs = st.targetTs, timer = null, onceId = st.onceId || null;
      ${cancelBody}
-     return cancel;`
+     return { cancel, st: () => ({ mode, targetTs, onceId }) };`
   );
   const countdown = {
-    set textContent(v) { countdownText = v; }, get textContent() { return countdownText; },
-    set className(v) { countdownCls = v; }, get className() { return countdownCls; },
+    set textContent(v) { ui.countdownText = v; }, get textContent() { return ui.countdownText; },
+    set className(v) { ui.countdownCls = v; }, get className() { return ui.countdownCls; },
   };
   const status = {
-    set textContent(v) { statusText = v; }, get textContent() { return statusText; },
-    set innerHTML(v) { statusHTML = v; }, get innerHTML() { return statusHTML; },
+    set textContent(v) { ui.statusText = v; }, get textContent() { return ui.statusText; },
+    set innerHTML(v) { ui.statusHTML = v; }, get innerHTML() { return ui.statusHTML; },
   };
-  const cancelFn = fn(
-    /* invoke：shutdown /a 抛错（模拟权限不足） */
-    async (ch) => { throw new Error('拒绝访问'); },
-    (m, lvl) => toasts.push([m, lvl]),
+  const api = fn(
+    (...args) => invoke(...args),
+    (m, lvl) => ui.toasts.push([m, lvl]),
     async () => {},
-    { api: { errText: () => '拒绝访问' } },
+    { api: { errText: (e) => String((e && e.message) || e) } },
     { CHANNELS: { EXEC: { RUN: 'exec:run' }, SCHED: { ONCE_LIST: 'sched:list', ONCE_REMOVE: 'sched:rm' } } },
-    countdown, status, state
+    countdown, status,
+    (...a) => ui.arms.push(a),
+    Object.assign({ mode: '', targetTs: 0, onceId: null }, extraState)
   );
-  await cancelFn();
+  return { api, ui };
+}
+
+/* 锁的是 P0：cancel 吞掉失败后无条件写"已取消定时任务"。 */
+t('C2-1 取消失败时不得显示"已取消"，且必须保留可操作状态', async () => {
+  const calls = [];
+  const { api, ui } = buildCancel(
+    async (ch) => { calls.push(ch); throw new Error('拒绝访问'); },
+    { mode: '关机', targetTs: Date.now() + 600000 }
+  );
+  await api.cancel();
 
   /* 锁的是：取消失败却写了"已取消定时任务（含系统关机计划）"。 */
-  assert.ok(!/已取消定时任务/.test(statusText), '取消失败却显示"已取消定时任务"');
+  assert.ok(!/已取消定时任务/.test(ui.statusText), '取消失败却显示"已取消定时任务"');
   /* 锁的是：失败时倒计时被写成"已取消"（用户以为安全了）。 */
-  assert.ok(!/^已取消$/.test(countdownText), '取消失败却把倒计时写成"已取消"');
+  assert.ok(!/^已取消$/.test(ui.countdownText), '取消失败却把倒计时写成"已取消"');
   /* 锁的是：失败时没有明确告知"仍在生效"。 */
-  assert.ok(/失败|仍在生效/.test(statusHTML + statusText), '没有告知用户计划可能仍在生效');
+  assert.ok(/失败|仍在生效/.test(ui.statusHTML + ui.statusText), '没有告知用户计划可能仍在生效');
   /* 锁的是：失败时弹了 info/success 而不是 error。 */
-  assert.ok(toasts.some(([, lvl]) => lvl === 'error'), '取消失败没有 error 提示');
+  assert.ok(ui.toasts.some(([, lvl]) => lvl === 'error'), '取消失败没有 error 提示');
+  /* 锁的是：关机模式下不去读一次性定时列表（与本页要撤的东西无关）。 */
+  assert.ok(!calls.includes('sched:list'), '关机模式下不该去清一次性定时列表');
+  /* 锁的是：失败后倒计时静帧 —— clearInterval 之后没有重挂展示 interval。 */
+  assert.strictEqual(ui.arms.length, 1, '取消失败后没有重挂倒计时（界面定格）');
+  assert.strictEqual(api.st().mode, '关机', '取消失败却清了 mode');
+  assert.strictEqual(ui.countdownCls, 'tag tag-red', '失败后倒计时标签不是红色');
 });
 
-/* 锁的是：部分 ONCE_REMOVE 失败仍报"已取消"。 */
-t('C2-2 部分一次性定时撤销失败也必须如实报告', async () => {
-  const src = readSrc('js/tools/sys-tools.js', { raw: true });
-  const cancelBody = extractFn(src, 'async function cancel()');
-  const state = { mode: '睡眠', targetTs: Date.now() + 60000 };
-  let statusHTML = '', statusText = '';
-  const toasts = [];
-  let removeCalls = 0;
-  const fn = new Function(
-    'invoke', 'toast', 'loadOnce', 'window', 'Channels',
-    'countdown', 'status', 'st',
-    `let mode = st.mode, targetTs = st.targetTs, timer = null;
-     ${cancelBody}
-     return cancel;`
+/* 锁的是 P1：睡眠/锁屏根本没有系统关机计划，`shutdown /a` 必然以 1116 退出，
+ * 原实现把任何非零码记成失败 → 用户取消睡眠定时必现"取消失败"。 */
+t('C2-4 睡眠定时：shutdown /a 返回 1116（无计划）必须算取消成功', async () => {
+  const removed = [];
+  const { api, ui } = buildCancel(
+    async (ch) => {
+      if (ch === 'exec:run') return { code: 1116, stdout: '', stderr: 'Unable to abort the system shutdown because no shutdown was in progress.(1116)' };
+      if (ch === 'sched:list') return [{ id: 'o1', action: 'sleep' }];
+      if (ch === 'sched:rm') { removed.push('o1'); return { ok: true }; }
+      return null;
+    },
+    { mode: '睡眠', targetTs: Date.now() + 60000, onceId: 'o1' }
   );
-  const cancelFn = fn(
+  await api.cancel();
+  assert.ok(/已取消定时任务/.test(ui.statusText), '1116 被当成失败：' + ui.statusText);
+  assert.ok(!ui.toasts.some(([, lvl]) => lvl === 'error'), '无计划可中止却弹了 error');
+  assert.strictEqual(ui.countdownText, '已取消');
+  assert.deepStrictEqual(removed, ['o1'], '没有撤销本页建的那条定时');
+  assert.strictEqual(api.st().mode, '');
+});
+
+/* 锁的是 P2：取消只撤本页建的那一条（onceId），不清空整张列表。 */
+t('C2-5 睡眠定时：只撤本页建的那条，列表里其它定时保留', async () => {
+  const removed = [];
+  const { api, ui } = buildCancel(
+    async (ch, id) => {
+      if (ch === 'exec:run') return { code: 1116 };
+      if (ch === 'sched:list') return [{ id: 'a', action: 'sleep' }, { id: 'b', action: 'lock' }];
+      if (ch === 'sched:rm') { removed.push(id); return { ok: true }; }
+      return null;
+    },
+    { mode: '锁屏', targetTs: Date.now() + 60000, onceId: 'b' }
+  );
+  await api.cancel();
+  /* 锁的是：按整张列表全撤 —— 把与本页倒计时无关的定时也删了。 */
+  assert.deepStrictEqual(removed, ['b'], '撤销的不是本页建的那一条：' + JSON.stringify(removed));
+  assert.ok(/已取消定时任务/.test(ui.statusText));
+});
+
+/* 锁的是：onceId 已对不上（到点消费过 / 在列表里手动删过）时不该报失败。 */
+t('C2-7 睡眠定时：本页那条已不在列表里 → 不发撤销、按成功处理', async () => {
+  const removed = [];
+  const { api, ui } = buildCancel(
+    async (ch, id) => {
+      if (ch === 'exec:run') return { code: 1116 };
+      if (ch === 'sched:list') return [{ id: 'x', action: 'lock' }];
+      if (ch === 'sched:rm') { removed.push(id); return { ok: true }; }
+      return null;
+    },
+    { mode: '睡眠', targetTs: Date.now() + 60000, onceId: 'gone' }
+  );
+  await api.cancel();
+  assert.strictEqual(removed.length, 0, '把别人的定时也撤了');
+  assert.ok(/已取消定时任务/.test(ui.statusText), ui.statusText);
+  assert.strictEqual(api.st().mode, '');
+});
+
+/* 锁的是 P2：取消"提醒"时原实现会清空整张一次性定时列表，并对提醒也跑 shutdown /a。 */
+t('C2-6 取消提醒：纯应用内计时，不发任何 IPC', async () => {
+  const calls = [];
+  const { api, ui } = buildCancel(
+    async (ch) => { calls.push(ch); return null; },
+    { mode: '提醒', targetTs: Date.now() + 60000 }
+  );
+  await api.cancel();
+  assert.strictEqual(calls.length, 0, '取消提醒却发了 IPC：' + calls.join(','));
+  assert.strictEqual(ui.countdownText, '已取消');
+  assert.strictEqual(api.st().mode, '');
+  assert.strictEqual(api.st().targetTs, 0);
+});
+
+/* 锁的是 P2：部分 ONCE_REMOVE 失败仍报"已取消"。 */
+t('C2-2 部分一次性定时撤销失败也必须如实报告', async () => {
+  let removeCalls = 0;
+  const { api, ui } = buildCancel(
     async (ch) => {
       if (ch === 'exec:run') return { code: 0 };
       if (ch === 'sched:list') return [{ id: 'a', action: 'sleep' }, { id: 'b', action: 'lock' }];
@@ -192,71 +358,58 @@ t('C2-2 部分一次性定时撤销失败也必须如实报告', async () => {
       }
       return null;
     },
-    (m, lvl) => toasts.push([m, lvl]),
-    async () => {},
-    { api: { errText: (e) => String((e && e.message) || e) } },
-    { CHANNELS: { EXEC: { RUN: 'exec:run' }, SCHED: { ONCE_LIST: 'sched:list', ONCE_REMOVE: 'sched:rm' } } },
-    {
-      set textContent(v) {}, get textContent() { return ''; },
-      set className(v) {}, get className() { return ''; },
-    },
-    {
-      set textContent(v) { statusText = v; }, get textContent() { return statusText; },
-      set innerHTML(v) { statusHTML = v; }, get innerHTML() { return statusHTML; },
-    },
-    state
+    /* onceId 未知 → 退回"全撤"（旧路径，必须仍然逐条尝试、逐条记账） */
+    { mode: '睡眠', targetTs: Date.now() + 60000 }
   );
-  await cancelFn();
+  await api.cancel();
 
   /* 锁的是：第一条失败后循环 break，剩下的定时没被撤销 —— 而界面说"已取消"。 */
   assert.strictEqual(removeCalls, 2, '每个一次性定时都必须尝试撤销（不能中途放弃）');
   /* 锁的是：部分失败仍显示成功文案。 */
-  assert.ok(!/已取消定时任务/.test(statusText), '部分撤销失败却显示"已取消定时任务"');
+  assert.ok(!/已取消定时任务/.test(ui.statusText), '部分撤销失败却显示"已取消定时任务"');
   /* 锁的是：部分失败没有 error 提示。 */
-  assert.ok(toasts.some(([, lvl]) => lvl === 'error'), '部分撤销失败没有 error 提示');
+  assert.ok(ui.toasts.some(([, lvl]) => lvl === 'error'), '部分撤销失败没有 error 提示');
+});
+
+/* 锁的是：shutdown /a 抛错（门禁拦截 / 旧版主进程）时，睡眠定时本已撤销，
+ * 却因为这句兜底失败而被报成"取消失败"。兜底的失败只能作附注。 */
+t('C2-8 睡眠定时：shutdown /a 抛错不改变"定时已取消"的结论', async () => {
+  const { api, ui } = buildCancel(
+    async (ch) => {
+      if (ch === 'exec:run') { const e = new Error('Command failed: cmd.exe /c shutdown /a'); e.code = 'UNKNOWN'; throw e; }
+      if (ch === 'sched:list') return [{ id: 'o1', action: 'sleep' }];
+      if (ch === 'sched:rm') return { ok: true };
+      return null;
+    },
+    { mode: '睡眠', targetTs: Date.now() + 60000, onceId: 'o1' }
+  );
+  await api.cancel();
+  assert.ok(/已取消定时任务/.test(ui.statusText), ui.statusText);
+  assert.ok(/未能确认系统关机计划/.test(ui.statusText), '兜底失败没有作为附注说明');
+  assert.ok(!ui.toasts.some(([, lvl]) => lvl === 'error'), '兜底失败弹了 error（用户以为定时没取消）');
+  assert.strictEqual(api.st().mode, '');
 });
 
 /* 锁的是：全部成功时仍要正常清状态（不能因为加严而永远报错）。 */
 t('C2-3 全部成功时正常显示已取消并清空状态机', async () => {
-  const src = readSrc('js/tools/sys-tools.js', { raw: true });
-  const cancelBody = extractFn(src, 'async function cancel()');
-  let statusText = '', countdownText = '';
-  const fn = new Function(
-    'invoke', 'toast', 'loadOnce', 'window', 'Channels',
-    'countdown', 'status', 'st',
-    `let mode = st.mode, targetTs = st.targetTs, timer = null;
-     ${cancelBody}
-     return { cancel, st: () => ({ mode, targetTs }) };`
-  );
-  const st = { mode: '关机', targetTs: Date.now() + 600000 };
-  const api = fn(
+  const { api, ui } = buildCancel(
     async (ch) => {
       if (ch === 'exec:run') return { code: 0 };
       if (ch === 'sched:list') return [];
       return null;
     },
-    () => {},
-    async () => {},
-    { api: { errText: String } },
-    { CHANNELS: { EXEC: { RUN: 'exec:run' }, SCHED: { ONCE_LIST: 'sched:list', ONCE_REMOVE: 'sched:rm' } } },
-    {
-      set textContent(v) { countdownText = v; }, get textContent() { return countdownText; },
-      set className(v) {}, get className() { return ''; },
-    },
-    {
-      set textContent(v) { statusText = v; }, get textContent() { return statusText; },
-      set innerHTML(v) {}, get innerHTML() { return ''; },
-    },
-    st
+    { mode: '关机', targetTs: Date.now() + 600000 }
   );
   await api.cancel();
   /* 锁的是：成功路径被"加严"改坏（永远报失败）。 */
-  assert.ok(/已取消定时任务/.test(statusText), '全部成功时应显示"已取消定时任务"，实际：' + statusText);
-  assert.strictEqual(countdownText, '已取消');
+  assert.ok(/已取消定时任务/.test(ui.statusText), '全部成功时应显示"已取消定时任务"，实际：' + ui.statusText);
+  assert.ok(/已中止/.test(ui.statusText), 'shutdown /a 返回 0 却没说明"系统关机计划已中止"');
+  assert.strictEqual(ui.countdownText, '已取消');
   const after = api.st();
   /* 锁的是：成功后没清 mode/targetTs（onEnter 会复活倒计时）。 */
   assert.strictEqual(after.mode, '', '成功后 mode 没清空');
   assert.strictEqual(after.targetTs, 0, '成功后 targetTs 没清零');
+  assert.strictEqual(ui.arms.length, 0, '成功路径不该再重挂倒计时');
 });
 
 /* ==================================================================

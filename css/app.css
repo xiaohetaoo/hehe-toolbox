@@ -671,6 +671,19 @@ body {
 .card-title .icon { color: var(--primary); }
 .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .tool-grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+/* 相似图片查找的结果格：缩略图 + 文件名（媒体模块 img-dedup） */
+.sim-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.sim-cell {
+  display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+  transition: border-color 0.15s;
+}
+.sim-cell:hover, .sim-cell:focus-visible { border-color: var(--primary); }
+.sim-cell img {
+  width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block;
+  border-radius: 5px; background: var(--bg-2);
+}
+.sim-cell .sim-name { font-size: 11px; color: var(--text-2); line-height: 1.3; word-break: break-all; }
 .tool-card {
   background: var(--card-bg); border: 1px solid transparent; border-radius: 8px; padding: 16px;
   display: flex; gap: 12px; align-items: flex-start; cursor: pointer;

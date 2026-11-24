@@ -257,6 +257,10 @@ register({
               if (mustConvert) alreadyFits = false;
             }
             // 同名不同扩展（a.png + a.jpg → 都是 a.jpg）时自动加序号，避免互相覆盖
+            /* 【离开/停止发生在编码期间：这一张不再落盘】循环开头只挡住"下一张"，
+             * 编码本身可能耗时数秒；cleanup 的承诺是"离开后不写新文件"，
+             * 所以写盘前再判一次。用户点「停止」时同样不再多写一张。 */
+            if (cancelFlag || runToken !== imgRunSeq) break;
             let outPath = outDir.replace(/[\\/]$/, '') + '/' + name.replace(/\.\w+$/, '') + outExt;
             outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, outPath);
             await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, outB64);
@@ -326,9 +330,27 @@ register({
         /* 【只有当前这趟才改界面】过期（用户离开/重开）时界面属于别人，
          * 这里保持原样；pageProg 也要清掉，避免 cleanup 操作已过期的元素。 */
         if (runToken !== imgRunSeq) { if (pageProg === prog) pageProg = null; return; }
+        /* 【用户点了停止就不能说"完成"】原来停止后循环 break，落到这里照样写
+         * 「完成：成功 N…」并弹「压缩完成」—— 用户明明按了停止，却被告知完成，
+         * 还会以为剩下那些是被跳过成功的。停了就说停了，并点名还剩几个没处理。 */
+        const stopped = cancelFlag;
+        cancelFlag = false;
+        if (stopped) {
+          for (let i = 0; i < paths.length; i++) {
+            const row = picker.list.rowAt(i);
+            const tagEl = row && row.querySelector('.tag');
+            if (tagEl && /压缩中/.test(tagEl.textContent)) { tagEl.textContent = '未处理'; tagEl.className = 'tag tag-gray'; }
+          }
+        }
         prog.hide(); running = false; startBtn.disabled = false; picker.setLocked(false);
-        stopBtn.disabled = true; cancelFlag = false;
+        stopBtn.disabled = true;
         if (pageProg === prog) pageProg = null;
+        if (stopped) {
+          const leftN = paths.length - ok - fail;
+          status.textContent = `已停止：已压缩 ${ok} 个，失败 ${fail} 个，剩余 ${Math.max(0, leftN)} 个未处理；已输出的文件保留在 ${outDir}`;
+          toast(`已停止（已压缩 ${ok} 个，剩余 ${Math.max(0, leftN)} 个未处理）`, 'warn');
+          return;
+        }
         /* 【汇总行不能笼统说"完成"】若有文件未达目标，用户只看到绿色总数
          * 会以为全部达标。这里把未达标数单独列出来。 */
         const missedNote = missCount ? `，其中 ${missCount} 个未达目标` : '';

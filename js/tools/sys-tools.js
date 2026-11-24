@@ -393,6 +393,10 @@
       let topFiles = [];     // 全盘最大文件（scan-tree 的结果）
       let levelSeq = 0;      // 快速连点目录时丢弃过期响应
       let busy = false;
+      /* 【per-run 序号】SCAN_TREE 是阻塞式长操作（全盘扫描可能几分钟），
+       * 切页后结果不该写回新页面。 */
+      let diskScanSeq = 0;
+      window.App.onCleanup(() => { diskScanSeq++; });
 
       const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
         const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
@@ -403,6 +407,7 @@
         const dir = dirIn.value.trim();
         if (!dir) return toast('请选择目录', 'warn');
         if (busy) return;
+        const runToken = ++diskScanSeq;
         busy = true;
         result.innerHTML = ''; prog.show(); status.textContent = '扫描中…';
         const unsub = on('job:progress', (d) => {
@@ -410,6 +415,7 @@
         });
         try {
           const r = await invoke(Channels.CHANNELS.FS.SCAN_TREE, dir, {});
+          if (runToken !== diskScanSeq) return;   // 页面已离开，结果不写回
           scanRoot = r.root; topFiles = r.topFiles || [];
           status.textContent = `完成：${fmtNum(r.files)} 个文件 / ${fmtNum(r.dirCount)} 个文件夹 / 总计 ${fmtBytes(r.totalSize)}`;
           /* 【先退订再下钻】下钻会发 job:progress，不退订的话它的进度
@@ -418,6 +424,7 @@
           try { unsub(); } catch (e) {}
           await openDir(r.root);
         } catch (e) {
+          if (runToken !== diskScanSeq) return;
           status.textContent = '✗ ' + e.message;
         } finally { prog.hide(); busy = false; unsub(); }
       }
@@ -1058,6 +1065,12 @@
       /* mode 现在被清理函数读取（判断是否要复位倒计时文案），不再"赋值后未使用"，
        * 所以去掉 eslint-disable。 */
       let timer = null, targetTs = 0, mode = '';
+      /* onceId：本页最近一次用「睡眠/锁屏」建出的主进程一次性定时 id。
+       * 取消时只撤这一条，不清空整张列表（列表里的其它条目有自己的「删除」）。
+       * pageShown：页面当前是否在前台（cleanup 置 false、onEnter 置 true）。
+       * apply 的几处 await 返回后据此判断"还能不能动界面"。 */
+      let onceId = null;
+      let pageShown = true;
       /* 【清理必须把倒计时复位成「未设置」】
        * 只有「提醒」这种应用内计时会因为切页而停（关机/重启/睡眠/锁屏
        * 都由主进程接管，切页不影响）。原来只清 timer 不改文案，
@@ -1072,6 +1085,7 @@
        * '提醒' —— 条件永不成立，于是离开页面后界面一直挂着「提醒 29:30」
        * 在假倒数，实际 timer 早被清掉、提醒永远不会来。 */
       window.App.onCleanup(() => {
+        pageShown = false;
         if (timer) { clearInterval(timer); timer = null; }
         if (mode === '提醒') {
           /* 应用内计时：真的停了，如实说 */
@@ -1096,6 +1110,7 @@
        * cleanup 清的是同一个 timer 变量，因此这里起的会被一起收掉。 */
       if (window.App.onEnter) {
         window.App.onEnter(() => {
+          pageShown = true;
           try {
             if (!mode || mode === '提醒') return;
             if (timer) { clearInterval(timer); timer = null; }
@@ -1171,7 +1186,10 @@
           if (!(await confirmBox({ title: '定时' + confirmMsg, message: `${mins} 分钟后执行「${confirmMsg}」，确定？（期间可在此取消）`, okText: '确定' }))) return;
           let runRes = null;
           try {
-            runRes = await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd' });
+            /* allowNonZero：非零退出也要拿到 { code, stdout, stderr }。
+             * 不传的话主进程会 reject，而退出码（数字）不会随 IPC 错误回到这里
+             * —— 下面按 code 分支的逻辑就成了永远走不到的死代码。 */
+            runRes = await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: `shutdown /${m === 'shutdown' ? 's' : 'r'} /t ${mins * 60}`, shellType: 'cmd', allowNonZero: true });
           } catch (e) {
             /* 被高危门禁拦住时只弹一句 toast 是不够的 —— 用户根本不知道
              * 「系统电源操作」这个开关在哪，只会以为是坏了。
@@ -1179,6 +1197,8 @@
             const msg = window.api.errText ? window.api.errText(e) : (e && e.message) || String(e);
             const denied = (e && e.code === 'CAP_DENIED') || /高危功能|已默认关闭/.test(msg);
             if (denied) {
+              /* 已离开页面就不再弹二级确认框（它会出现在别的工具页上），只留一句提示 */
+              if (!pageShown) return toast(msg, 'error', 8000);
               const go = await confirmBox({
                 title: '需要先开启「系统电源操作」',
                 message: msg + '\n\n是否现在前往设置页开启？开启后即可使用定时关机 / 重启。',
@@ -1191,19 +1211,26 @@
           }
           /* 【必须检查退出码，否则是"假成功"】
            * shutdown 在以下情况会**以非零码退出**：
-           *   1116 —— 权限不足（未提权 / 被策略拦）
-           *   1190 —— 已有一个关机计划在排队
-           *   1191 —— 找不到那个计划（取消时）
+           *   1190 —— 已有一个关机/重启计划在排队（新的这次没排上）
+           *   5    —— 拒绝访问（权限不足 / 被策略拦）
+           *   1116 —— 当前没有待执行的关机计划（排期时不应出现，
+           *            它是取消 `shutdown /a` 在"无计划"时的正常返回，见 cancel）
            * 原实现只看 invoke 有没有抛错就 arm() 并写"系统将在 N 分钟后执行"，
            * 而主进程的 runCmd 在"进程非零退出但打印过输出"时是 resolve 的，
            * 于是界面启动倒计时、承诺关机会发生，实际什么都没排上。
            * 现在：非零必须当作失败，不 arm、不改状态行，并如实报错。 */
+          /* 【await 期间离开页面：计划已排上，但不能再动界面】
+           * 确认框与 EXEC.RUN 都是 await；用户可能在此期间切走（cleanup 已跑）。
+           * 计划是真的排上了，所以 mode/targetTs 必须记下来（回来时 onEnter
+           * 据此恢复倒计时、用户也才能点取消）；但此时不 arm —— arm 起的
+           * interval 没有任何人负责清，会一直空转到下次进出页面。 */
+          if (!pageShown) { mode = confirmMsg; targetTs = Date.now() + mins * 60 * 1000; return; }
           const code = runRes && typeof runRes.code === 'number' ? runRes.code : 0;
           if (code !== 0) {
             const detail = (runRes && (runRes.stderr || runRes.stdout)) || '';
             status.textContent = '✗ 排期失败';
             return toast(`无法安排定时${confirmMsg}（shutdown 退出码 ${code}）` + (detail ? '：' + String(detail).split(/\r?\n/)[0] : '')
-              + '。常见原因：需要一个已有计划的取消，或当前权限不足。', 'error', 8000);
+              + '。常见原因：已有一个关机/重启计划在排队（先点「取消」），或当前权限不足。', 'error', 8000);
           }
           arm(confirmMsg, mins * 60, () => {});
           status.textContent = `系统将在 ${mins} 分钟后${confirmMsg}（shutdown 计划，可点击取消）`;
@@ -1219,6 +1246,12 @@
            * 改走 SCHED.ONCE_ADD：主进程持久化计时，切页、关窗、重启都不影响。 */
           try {
             const r = await invoke(Channels.CHANNELS.SCHED.ONCE_ADD, { action: m === 'sleep' ? 'sleep' : 'lock', minutes: mins });
+            /* 记下这一条的主进程 id：取消时只撤它自己建的这条，
+             * 不再清空整张列表（见 cancel 的说明）。 */
+            onceId = r && r.item ? r.item.id : null;
+            /* 【await 期间离开页面】定时已交给主进程（切页不影响），但界面不能再动：
+             * 只记状态、不 arm、不刷新列表；回来时 onEnter 会按 targetTs 恢复倒计时。 */
+            if (!pageShown) { mode = confirmMsg; targetTs = Date.now() + mins * 60 * 1000; return; }
             /* 界面仍显示倒计时，但它只是"展示"，真正的执行在主进程 */
             arm(confirmMsg, mins * 60, () => {});
             const at = new Date(r.item.fireAt);
@@ -1251,58 +1284,106 @@
          *   ④ 有任何失败 → 保留可操作状态（按钮仍可点、状态行报错），
          *      并明确告诉用户"可能仍在生效"，让他能重试或手动 shutdown /a。
          */
-        const failures = [];
-
-        /* ---- ① 系统 shutdown 计划 ---- */
-        if (mode && mode !== '提醒') {
-          try {
-            const r = await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: 'shutdown /a', shellType: 'cmd' });
-            /* shutdown /a 在没有计划可取消时也会返回非零（比如 1116），
-             * 但那意味着"确实没有计划" —— 对取消这件事算成功。
-             * 真正需要报错的是"有权限问题且拿不准"的情况：
-             * 这里按 code 分类，只有明确"无计划"类才算成功。 */
-            const code = r && typeof r.code === 'number' ? r.code : 0;
-            if (code !== 0) {
-              /* 1116 = 无法中止（通常是无计划或权限不足）。
-               * 无法区分两者时按失败处理 —— 宁可让用户重试，
-               * 也不能在计划真的还在时告诉他已取消。 */
-              const detail = String((r && (r.stderr || r.stdout)) || '').split(/\r?\n/)[0];
-              failures.push('取消防关机计划失败（退出码 ' + code + '）' + (detail ? '：' + detail : ''));
-            }
-          } catch (e) {
-            failures.push('取消防关机计划失败：' + ((window.api.errText ? window.api.errText(e) : (e && e.message)) || String(e)));
-          }
+        /* ---- ① 提醒：纯应用内计时，不发任何 IPC ---- */
+        if (mode === '提醒') {
+          mode = ''; targetTs = 0; onceId = null;
+          countdown.textContent = '已取消'; countdown.className = 'tag tag-gray';
+          status.textContent = '已取消提醒';
+          return;
         }
+        /* 【按"当前是哪一种定时"决定取消什么，而不是一律全清】
+         * 原实现只要 mode 非空就 `shutdown /a`，并且无条件清空整张一次性定时列表：
+         *   · 睡眠/锁屏根本没有系统关机计划，`shutdown /a` 必然以 1116 退出
+         *     （"no shutdown was in progress"）→ 被记成失败 → 用户设了睡眠后点取消，
+         *     主进程里的定时**其实已经撤掉了**，界面却说"取消失败，计划可能仍在生效"，
+         *     mode 也不清 —— 必现的假失败（权限不足是退出码 5，不是 1116）。
+         *   · 取消一个"提醒"会把列表里所有睡眠/锁屏定时一起删掉（提醒与它们无关）。
+         * 现在：
+         *   · 关机/重启  → `shutdown /a`；0 = 已中止，1116 = 本来就没有计划，都算成功；
+         *                  其它退出码 / 抛错才算失败。
+         *   · 睡眠/锁屏  → 只撤本页建的那一条（onceId）；拿不到 onceId 时才退回"全撤"。
+         *                  顺带 `shutdown /a` 兜底（用户先排过关机又排了睡眠的情况），
+         *                  它的失败只作附注，不改变"定时已取消"的结论。
+         *   · 没有倒计时  → 只做一次 `shutdown /a` 兜底（例如计划是重启应用前排的）。 */
+        const failures = [];
+        const isShutdownPlan = mode === '关机' || mode === '重启';
+        const isOncePlan = mode === '睡眠' || mode === '锁屏';
+        let sideNote = '';
 
-        /* ---- ② 主进程里的一次性睡眠/锁屏 ---- */
+        /* ---- ② 系统关机计划（兜底，总是试一次） ---- */
+        let planAborted = false;
         try {
-          const list = await invoke(Channels.CHANNELS.SCHED.ONCE_LIST);
-          for (const it of (list || [])) {
-            try {
-              await invoke(Channels.CHANNELS.SCHED.ONCE_REMOVE, it.id);
-            } catch (e) {
-              /* 【每个都要单独记账，不能一 catch 全吞】
-               * 原来是一个 catch 包住整个循环：第一条失败后剩下的全不执行，
-               * 而界面照样说"已取消"—— 可能还留着第二个、第三个计划。 */
-              failures.push('撤销「' + (it.action === 'lock' ? '锁屏' : '睡眠') + '」定时失败：' + ((e && e.message) || String(e)));
-            }
+          const r = await invoke(Channels.CHANNELS.EXEC.RUN, { cmd: 'shutdown /a', shellType: 'cmd', allowNonZero: true });
+          const code = r && typeof r.code === 'number' ? r.code : 0;
+          planAborted = code === 0;
+          /* 1116 = "没有正在进行的关机"：对"取消"而言就是目标状态，算成功。 */
+          if (code !== 0 && code !== 1116) {
+            const detail = String((r && (r.stderr || r.stdout)) || '').split(/\r?\n/)[0];
+            const msg = 'shutdown /a 退出码 ' + code + (detail ? '（' + detail + '）' : '');
+            if (isShutdownPlan) failures.push('取消防关机计划失败：' + msg);
+            else sideNote = '未能确认系统关机计划：' + msg;
           }
         } catch (e) {
-          failures.push('读取一次性定时列表失败：' + ((e && e.message) || String(e)));
+          const msg = (window.api.errText ? window.api.errText(e) : (e && e.message)) || String(e);
+          /* 新版主进程带 allowNonZero 不会走到这里；旧版主进程会把 1116 当 reject，
+           * 且数字退出码不会回到渲染层 —— 只能认"确实没有计划"这句原文。 */
+          const noPlan = e && (e.code === 1116 || /no shutdown was in progress/i.test(e.stderr || e.stdout || (e.message || '')));
+          /* 睡眠/锁屏模式下被电源门禁拦下：本应用没开「系统电源操作」，
+           * 关机计划不可能是从这里排出去的 —— 不算失败，也不必附注吓人。 */
+          const gated = e && e.code === 'CAP_DENIED';
+          if (noPlan || (gated && !isShutdownPlan)) { /* 本来就没有（可由本应用排出的）计划：算成功 */ }
+          else if (isShutdownPlan) failures.push('取消防关机计划失败：' + msg);
+          else sideNote = '未能确认系统关机计划：' + msg;
         }
 
-        /* ---- ③ 决策：全成功才真正清状态 ---- */
+        /* ---- ③ 主进程里的一次性睡眠/锁屏：只撤本页建的那条 ---- */
+        if (isOncePlan) {
+          try {
+            const list = await invoke(Channels.CHANNELS.SCHED.ONCE_LIST);
+            const all = Array.isArray(list) ? list : [];
+            /* onceId 对不上（已被到点消费 / 在列表里手动删过）→ 没有东西要撤，直接算成功 */
+            const targets = onceId ? all.filter((it) => it && it.id === onceId) : all;
+            for (const it of targets) {
+              try {
+                await invoke(Channels.CHANNELS.SCHED.ONCE_REMOVE, it.id);
+              } catch (e) {
+                /* 【每个都要单独记账，不能一 catch 全吞】
+                 * 原来是一个 catch 包住整个循环：第一条失败后剩下的全不执行，
+                 * 而界面照样说"已取消"—— 可能还留着第二个、第三个计划。 */
+                failures.push('撤销「' + (it.action === 'lock' ? '锁屏' : '睡眠') + '」定时失败：' + ((e && e.message) || String(e)));
+              }
+            }
+          } catch (e) {
+            failures.push('读取一次性定时列表失败：' + ((e && e.message) || String(e)));
+          }
+        }
+
+        /* ---- ④ 决策：全成功才真正清状态 ---- */
         loadOnce();
         if (!failures.length) {
+          const hadMode = !!mode;
           mode = ''; targetTs = 0;
+          onceId = null;
           countdown.textContent = '已取消'; countdown.className = 'tag tag-gray';
-          status.textContent = '已取消定时任务（含系统关机计划）';
+          let ok = '已取消定时任务';
+          if (!hadMode) ok = planAborted ? '已中止系统里遗留的关机计划' : '没有正在倒计时的定时，系统里也没有待执行的关机计划';
+          else if (isShutdownPlan) ok += planAborted ? '（系统关机计划已中止）' : '（系统里已没有待执行的关机计划）';
+          if (sideNote) ok += '；' + sideNote + '，如排过关机请手动运行 shutdown /a';
+          status.textContent = ok;
           return;
         }
         /* 有失败：不清 mode/targetTs（计划可能仍在），把问题如实摆出来 */
         status.innerHTML = '<span class="status-err">✗ 取消失败，计划可能仍在生效</span>';
-        countdown.textContent = mode || '取消失败';
         countdown.className = 'tag tag-red';
+        /* 【失败后倒计时必须继续跳】上面已经 clearInterval；不重挂的话界面会停在
+         * 红色的"关机"两个字上一动不动，看起来像卡死。重挂展示用的 interval
+         * （fire 是空函数，真正的执行在系统/主进程），文案由它每 500ms 刷新。 */
+        if (isShutdownPlan || isOncePlan) {
+          arm(mode, Math.max(1, Math.ceil((targetTs - Date.now()) / 1000)), () => {});
+          countdown.className = 'tag tag-red';
+        } else {
+          countdown.textContent = '取消失败';
+        }
         /* 明确给出下一步：用户可以重试，或手动执行 shutdown /a */
         toast('取消失败：' + failures[0] + (failures.length > 1 ? `（共 ${failures.length} 项失败）` : '')
           + '\n如仍显示已排期，可手动运行 shutdown /a', 'error', 10000);
@@ -1344,7 +1425,7 @@
       page.appendChild(div('card', div('card-title', '一次性定时'),
         div('form-row', h('span', { class: 'form-label' }, '动作'), modeSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '分钟'), minIn, msgIn),
-        div('form-row', btn('设置', 'btn-primary', apply, 'timer'), ' ', btn('取消', 'btn-danger-plain', cancel), countdown, status),
+        div('form-row', btn('设置', 'btn-primary', apply, 'timer'), ' ', btn('取消', 'btn-danger-plain', cancel, 'square'), countdown, status),
         /* 【提示文案必须如实反映两种不同的持久性】
          * 关机/重启走系统 shutdown 计划：切页、关程序都仍然会执行。
          * 睡眠/锁屏走主进程持久化计时：切页不影响，重启后仍会恢复。

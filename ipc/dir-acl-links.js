@@ -1742,7 +1742,9 @@ handle(dirMoveCh.ACL_LINKS.ACL_REPAIR, async (e, opts = {}) => {
   const log = [];
   for (const step of plan.steps) {
     try {
-      const r = await runCmd(step.tool, step.args, { timeout: 60000 });
+      /* allowNonZero：下面按 r.code 分支并取输出最后一行当原因；默认 reject 的话
+       * 这里只会拿到 "Command failed: icacls …" 整条命令行，真正的原因丢了。 */
+      const r = await runCmd(step.tool, step.args, { timeout: 60000, allowNonZero: true });
       const text = (String(r.stdout || '') + String(r.stderr || '')).trim();
       if (r.code !== 0) {
         log.push({ tool: step.tool, ok: false, text: text.slice(-500) });

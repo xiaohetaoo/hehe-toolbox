@@ -57,7 +57,7 @@ register({
        * ③ 离开页面必须 kill（与下载/搜索同一口径）。 */
       let convRunSeq = 0;
       let pageUnsub = null;
-      function pageCleanup() {
+      function pageCleanup(leftPage) {
         convRunSeq++;
         if (runJobId) { invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); runJobId = null; }
         if (pageUnsub) { try { pageUnsub(); } catch (e) {} pageUnsub = null; }
@@ -65,6 +65,16 @@ register({
         try {
           startBtn.disabled = false; cancelBtn.disabled = true;
           picker.setLocked(false);
+          /* 取消后行上还挂着「转换中」：任务已停，不会再有结果事件来改它 */
+          for (let i = 0; i < picker.paths.length; i++) {
+            const row = picker.list.rowAt(i);
+            const tag = row && row.querySelector('.av-tag');
+            const bar = row && row.querySelector('.progress-fill');
+            if (tag && /tag-orange/.test(tag.className)) { tag.textContent = '已取消'; tag.className = 'tag tag-gray'; }
+            if (bar) bar.style.width = '0%';
+          }
+          /* 【状态行必须说话】原来取消后状态行停在空白或上一轮的"完成：…" */
+          if (!/^完成|^✗/.test(status.textContent || '')) status.textContent = leftPage !== false ? '已离开页面，转换已取消' : '已取消转换，已完成的文件保留';
         } catch (e) {}
       }
       window.App.onCleanup(pageCleanup);
@@ -73,7 +83,7 @@ register({
           try { if (!running) { startBtn.disabled = false; cancelBtn.disabled = true; } } catch (e) {}
         });
       }
-      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(); }, 'square');
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(false); }, 'square');
       cancelBtn.disabled = true;
       // 目标格式变了只刷新行上的「→ XXX」标签，不重建列表（重建会丢掉进度状态）
       fmtSel.addEventListener('change', () => picker.list.refresh());
@@ -96,12 +106,14 @@ register({
         let unsub = null;
         try {
           const st = await invoke(Channels.CHANNELS.FFMPEG.STATUS).catch(() => ({ ffmpeg: null }));
+          /* 【先判过期，再判环境】顺序反过来的话：用户在预检期间已取消/切页，
+           * 过期的这趟还会弹"未安装 FFmpeg"并跳去安装页 —— 与用户此刻的操作无关。 */
+          if (runToken !== convRunSeq) return;   // 预检期间被取消/切页
           if (!st.ffmpeg) {
             toast('未安装 FFmpeg，请先前往「FFmpeg 环境」安装', 'warn');
             window.App.openTool('ffmpeg-setup');
             return;
           }
-          if (runToken !== convRunSeq) return;   // 预检期间被取消/切页
           cancelBtn.disabled = false;
           picker.setLocked(true);
           status.textContent = '';

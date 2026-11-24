@@ -67,6 +67,10 @@
     render(page) {
       let pdfPath = null;
       const fileHint = div('field-hint', '未选择');
+      /* 【per-run 序号】读文件 / embedFont / 保存框都是 await，期间用户可能切页。
+       * 之后写盘与 toast 不该落到新页面上（pdf-lib 处理本身没有可取消的 job）。 */
+      let wmRunSeq = 0;
+      window.App.onCleanup(() => { wmRunSeq++; });
 
       const picker = ui.filePicker({
         text: '选择 PDF 文件',
@@ -123,6 +127,7 @@
 
         status.textContent = '处理中…';
         runBtn.disabled = true;
+        const runToken = ++wmRunSeq;
         try {
           const PDFLib = window.PDFLib;
           if (!PDFLib) throw new Error('pdf-lib 未加载');
@@ -161,6 +166,7 @@
            * 「只要页码」正是这个工具最自然的用法之一，等于主功能不可用。
            * 标准字体 embed 一次的成本可以忽略（PDF 里复用同一个字体对象）。 */
           const font = await doc.embedFont(StandardFonts.HelveticaBold);
+          if (runToken !== wmRunSeq) return;   // 页面已离开，不再处理/弹框
 
           const op = Math.max(0.02, Math.min(1, Number(wmOpacity.value) || 0.15));
           const col = hexToRgb(wmColor.value);
@@ -238,11 +244,13 @@
             filters: [{ name: 'PDF', extensions: ['pdf'] }],
           });
           if (!outPath) { status.textContent = ''; runBtn.disabled = false; return; }
+          if (runToken !== wmRunSeq) return;   // 选保存框期间离开了页面：不再写盘
           await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
           const before = r.b64.length * 0.75, after = bytes.length;
           status.textContent = '完成：' + outPath;
           toast('已生成（' + fmtDelta(before, after) + '）：' + outPath, 'success', 4000);
         } catch (e) {
+          if (runToken !== wmRunSeq) return;   // 过期的失败不弹错
           status.textContent = '';
           toast('生成失败：' + (e && e.message || e), 'error', 6000);
         } finally {
@@ -306,6 +314,9 @@
       const pageRange = h('input', { class: 'input input-sm', placeholder: '页码范围（留空 = 全部），如 1-5', style: { width: '200px' } });
       const withPageMark = h('input', { type: 'checkbox', class: 'checkbox' });
       const OCR_TOOL = 'screenshot-ocr';
+      /* 【per-run 序号】逐页取文字有 await，切页后不该继续跑完、更不该弹模态框 */
+      let txtRunSeq = 0;
+      window.App.onCleanup(() => { txtRunSeq++; });
 
       const picker = ui.filePicker({
         text: '选择 PDF 文件', single: true, emptyText: '还没有选择 PDF',
@@ -321,6 +332,7 @@
         if (!window.pdfjsLib) return toast('pdf.js 未加载', 'error');
         status.textContent = '读取中…';
         runBtn.disabled = true;
+        const runToken = ++txtRunSeq;
         try {
           window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
           const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pdfPath);
@@ -328,6 +340,7 @@
           const arr = new Uint8Array(bin.length);
           for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
           const pdf = await window.pdfjsLib.getDocument({ data: arr }).promise;
+          if (runToken !== txtRunSeq) return;   // 页面已离开
           const total = pdf.numPages;
 
           /* 页码范围 */
@@ -355,8 +368,10 @@
           const chunks = [];
           let emptyPages = 0;
           for (const pn of targets) {
+            if (runToken !== txtRunSeq) return;   // 页面已离开：不写半截结果
             const pg = await pdf.getPage(pn);
             const tc = await pg.getTextContent();
+            if (runToken !== txtRunSeq) return;
             /* items 里每项有 str 与 hasEOL；按出现顺序拼接，
              * 遇到 hasEOL 补换行。直接 join('') 会把整页挤成一行。 */
             let line = '';
@@ -398,6 +413,7 @@
             toast(emptyPages + ' 页没有文字层（可能是图片页）', 'warn', 4000);
           }
         } catch (e) {
+          if (runToken !== txtRunSeq) return;   // 过期的失败不弹错
           status.textContent = '';
           toast('提取失败：' + (e && e.message || e), 'error', 6000);
         } finally {
@@ -440,6 +456,9 @@
       const fileHint = div('field-hint', '未选择');
       const status = h('span', { class: 'field-hint' }, '');
       const result = div('');
+      /* 【per-run 序号】load/save/保存框都是 await，切页后不该再写盘与 toast */
+      let slimRunSeq = 0;
+      window.App.onCleanup(() => { slimRunSeq++; });
 
       const picker = ui.filePicker({
         text: '选择 PDF 文件', single: true, emptyText: '还没有选择 PDF',
@@ -456,6 +475,7 @@
         status.textContent = '处理中…';
         runBtn.disabled = true;
         result.innerHTML = '';
+        const runToken = ++slimRunSeq;
         try {
           const PDFLib = window.PDFLib;
           if (!PDFLib) throw new Error('pdf-lib 未加载');
@@ -465,6 +485,7 @@
           const beforeBytes = Math.floor(r.b64.length * 0.75);
 
           const doc = await PDFDocument.load(r.b64, { ignoreEncryption: true, updateMetadata: false });
+          if (runToken !== slimRunSeq) return;   // 页面已离开
           /* 【三件事各自的作用】
            *  1) 清元数据：Word 导出的 PDF 常带 Producer/Creator/Keywords，
            *     有时还有一大坨 XMP —— 这些都是可删的文本，几百字节到几 KB；
@@ -485,6 +506,7 @@
             filters: [{ name: 'PDF', extensions: ['pdf'] }],
           });
           if (!outPath) { status.textContent = ''; runBtn.disabled = false; return; }
+          if (runToken !== slimRunSeq) return;   // 选保存框期间离开了页面：不再写盘
           await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
 
           status.textContent = '完成：' + outPath;
@@ -502,6 +524,7 @@
           }
           toast(saved > 0 ? ('已瘦身 ' + ui.fmtBytes(saved)) : '体积未减少', saved > 0 ? 'success' : 'info', 4000);
         } catch (e) {
+          if (runToken !== slimRunSeq) return;   // 过期的失败不弹错
           status.textContent = '';
           toast('瘦身失败：' + (e && e.message || e), 'error', 6000);
         } finally {

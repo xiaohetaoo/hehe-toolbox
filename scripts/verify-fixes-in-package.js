@@ -384,11 +384,11 @@ const CHECKS_BY_VERSION = {
         && !/destroyed = true/.test(s2)],
     /* ---- 媒体任务离开即停 ---- */
     ['js/tools/media/video-press.js', 'K7 压制页离开时 kill 任务',
-      (s2) => /function pageCleanup\(\)/.test(s2) && /JOB\.KILL/.test(s2)],
+      (s2) => /function pageCleanup\(/.test(s2) && /JOB\.KILL/.test(s2)],
     ['js/tools/media/video-trim.js', 'K8 裁剪页离开时 kill 任务',
-      (s2) => /function pageCleanup\(\)/.test(s2) && /JOB\.KILL/.test(s2)],
+      (s2) => /function pageCleanup\(/.test(s2) && /JOB\.KILL/.test(s2)],
     ['js/tools/media/av-convert.js', 'K9 转码页离开时 kill 任务',
-      (s2) => /function pageCleanup\(\)/.test(s2) && /JOB\.KILL/.test(s2)],
+      (s2) => /function pageCleanup\(/.test(s2) && /JOB\.KILL/.test(s2)],
     ['js/tools/media/img-compress.js', 'K10 图片压缩离开后不再写新文件',
       (s2) => /imgRunSeq/.test(s2) && /cancelFlag \|\| runToken !== imgRunSeq/.test(s2)],
     /* ---- 其它生命周期 ---- */
@@ -401,6 +401,39 @@ const CHECKS_BY_VERSION = {
      * 所以对 scripts/lib/electron-launch.js 做产物校验必然 SKIP。
      * 它的守卫由 test-source-assertions 与 test-round16-behavior 负责，
      * 不需要在「产物内容」这一层重复。 */
+  ],
+  /* v0.9.5：取消链路真正接通（EXEC.RUN 透传 allowNonZero）+ 批量任务生命周期 */
+  '0.9.5': [
+    ['main.js', 'L1 EXEC.RUN 透传 allowNonZero（数字退出码能回到渲染层）',
+      (s2) => /const nn = !!allowNonZero/.test(s2)],
+    ['main.js', 'L2 runCmd 非零默认 reject',
+      (s2) => /if \(code !== 0 && !opts\.allowNonZero\)/.test(s2)],
+    ['js/tools/sys-tools.js', 'L3 取消按 mode 分流（关机/睡眠/提醒）',
+      (s2) => /isShutdownPlan/.test(s2) && /isOncePlan/.test(s2) && /onceId/.test(s2)],
+    ['js/tools/sys-tools.js', 'L4 1116（本来就没有计划）算取消成功',
+      (s2) => /code !== 0 && code !== 1116/.test(s2)],
+    ['js/tools/sys-tools.js', 'L5 提醒取消零 IPC',
+      (s2) => /已取消提醒/.test(s2)],
+    ['ipc/env-manager.js', 'L6 解压/用户变量按 code 判成败',
+      (s2) => (s2.match(/allowNonZero/g) || []).length >= 6],
+    ['js/tools/text-tools.js', 'L7 TTS 停止用 per-run token',
+      (s2) => /speakSeq/.test(s2)],
+    ['js/tools/launch.js', 'L8 命令收藏有重入守卫',
+      (s2) => /cmdRunSeq/.test(s2)],
+    ['js/tools/target-size.js', 'L9 目标压缩离开即取消',
+      (s2) => /targetRunSeq/.test(s2)],
+    ['js/tools/media/img-batch.js', 'L10 批量图片有停止',
+      (s2) => /cancelFlag/.test(s2)],
+    ['js/tools/media/img-dedup.js', 'L11 相似图片缩略图网格',
+      (s2) => /sim-grid/.test(s2)],
+    ['js/tools/media/img-scramble.js', 'L12 混淆页有停止按钮',
+      (s2) => /stopBtn/.test(s2) && /scrambleRunSeq/.test(s2)],
+    ['js/tools/office.js', 'L13 PDF 转图片用 token',
+      (s2) => /pdfImgRunSeq/.test(s2)],
+    ['js/tools/pdf-plus.js', 'L14 PDF 水印/文字/瘦身用 token',
+      (s2) => /wmRunSeq/.test(s2) && /txtRunSeq/.test(s2) && /slimRunSeq/.test(s2)],
+    ['js/tools/media/screen-rec.js', 'L15 录屏开始防重入',
+      (s2) => /starting/.test(s2)],
   ],
 };
 

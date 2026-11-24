@@ -226,7 +226,7 @@
        * ③ 离开页面必须 kill（与下载/搜索同一口径）。 */
       let trimRunSeq = 0;
       let pageUnsub = null;
-      function pageCleanup() {
+      function pageCleanup(leftPage) {
         trimRunSeq++;
         if (runJobId) { invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); runJobId = null; }
         if (pageUnsub) { try { pageUnsub(); } catch (e) {} pageUnsub = null; }
@@ -234,8 +234,12 @@
         try {
           goBtn.disabled = false; cancelBtn.disabled = true;
           picker.setLocked(false);
-          prog.hide();
-          if (status.textContent && !/^完成|^失败/.test(status.textContent)) status.textContent = '已离开页面，裁剪已取消';
+          prog.hide(); prog.set(0);
+          /* 【文案要分清"用户取消"与"离开页面"】原来两种都写「已离开页面」。 */
+          if (status.textContent && !/^完成|^失败/.test(status.textContent)) {
+            status.textContent = leftPage !== false ? '已离开页面，裁剪已取消' : '已取消裁剪（残片已清理）';
+            status.style.color = '';
+          }
         } catch (e) {}
       }
       window.App.onCleanup(pageCleanup);
@@ -244,7 +248,7 @@
           try { if (!running) { goBtn.disabled = false; cancelBtn.disabled = true; } } catch (e) {}
         });
       }
-      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(); }, 'square');
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(false); }, 'square');
       cancelBtn.disabled = true;
 
       async function run() {

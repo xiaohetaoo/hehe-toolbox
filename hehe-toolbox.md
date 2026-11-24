@@ -43,7 +43,7 @@
 
 ## 三、发版流程（与协作约定 1 配合）
 
-1. 本地全绿：`npm test`（209 脚本 / 2314 断言；dist 与 package 同版本时会多跑 test-packaged-assets 的 27 条）+ `npm run lint` + `npm run typecheck`；
+1. 本地全绿：`npm test`（209 脚本 / 2341 断言；dist 与 package 同版本时会多跑 test-packaged-assets 的 27 条）+ `npm run lint` + `npm run typecheck`；
 2. 升版本：`node scripts/version.js --next --write` + 同步 `package-lock.json`；
 3. 写 `docs/release-notes/vX.Y.Z.md`（≥400 字）；
 4. commit → **先问用户** → push → 等 CI 绿；
@@ -87,8 +87,8 @@
   取消定时「可能没取消却报已取消」；P1 止损取消窗口（8 个长任务页面统一
   per-run 序号）、媒体离开即停、下载过期分支收尾；测试环境根治
   （19 个 E2E 失败归零，根因是 Chromium 沙箱 + %TEMP% 被拦）。
-- 质量门禁：`npm test` **209 脚本 / 2314 PASS / 0 失败 / 8 环境跳过**，
-  lint 0、typecheck 0；断言基线 **2314**（209 文件）。
+- 质量门禁：`npm test` **209 脚本 / 2341 PASS / 0 失败 / 8 环境跳过**，
+  lint 0、typecheck 0；断言基线 **2341**（209 文件）。
 - 工具数 111；`lib/` 49 个模块（新增 `run-token`）、
   `scripts/lib/` 新增 `electron-launch`。
 - 测试环境：`scripts/lib/electron-launch` 记录了 E2E 必需的

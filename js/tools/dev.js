@@ -550,7 +550,6 @@
       const portIn = h('input', { class: 'input input-sm', type: 'number', value: '8128', style: { width: '100px' } });
       const statusEl = h('span', { class: 'field-hint' }, '未启动');
       const logEl = div('term', '');
-      /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
       let running = false;
       const startBtn = btn('启动服务', 'btn-primary', start, 'play');
       const stopBtn = btn('停止服务', 'btn-danger-plain', stop, 'square');
@@ -575,10 +574,15 @@
       }
       async function start() {
         if (!dirIn.value.trim()) return toast('请选择目录', 'warn');
+        /* 【防重入】SERVER.START 是一次 await；连点两下会发两次启动，
+         * 第二次必然报「已有服务在运行」，看起来像出了错。 */
+        if (running) return toast('服务已在运行', 'warn');
+        running = true;
+        startBtn.disabled = true;
         try {
           const r = await invoke(Channels.CHANNELS.SERVER.START, dirIn.value.trim(), parseInt(portIn.value) || 8128);
           paintRunning(r);
-        } catch (e) { toast(e.message, 'error'); }
+        } catch (e) { running = false; startBtn.disabled = false; toast(e.message, 'error'); }
       }
       async function stop() {
         try { await invoke(Channels.CHANNELS.SERVER.STOP); } catch (e) {}

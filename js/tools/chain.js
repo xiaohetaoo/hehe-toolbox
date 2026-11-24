@@ -339,6 +339,10 @@
       let selected = -1;      // 当前编辑的链条下标
       let files = [];         // 待处理文件
       let running = false;
+      /* 【per-run 序号】工具链是多步骤批量处理（可能几分钟），切页后
+       * 不应继续写文件，也不应 toast 到新页面。 */
+      let chainRunSeq = 0;
+      window.App.onCleanup(() => { chainRunSeq++; });
 
       const picker = window.ui.filePicker({
         text: '拖入文件，或点击选择（这一步的输入）',
@@ -481,6 +485,7 @@
         const chain = chains[selected];
         if (!(chain.steps || []).length) return toast('这条工具链还没有步骤', 'warn');
         running = true;
+        const runToken = ++chainRunSeq;
         runBtn.disabled = true;
         reportBox.innerHTML = '';
         try {
@@ -489,6 +494,7 @@
             const sub = p.subTotal ? '（' + p.subDone + '/' + p.subTotal + '）' : '';
             progressLine.textContent = '第 ' + p.step + '/' + p.totalSteps + ' 步：' + p.label + sub;
           });
+          if (runToken !== chainRunSeq) return;   // 页面已离开，结果不写回
           const secs = ((Date.now() - t0) / 1000).toFixed(1);
           const okCount = rep.state.filter((s) => !s.failed).length;
           progressLine.textContent = '完成：' + okCount + '/' + rep.state.length + ' 个文件成功，耗时 ' + secs + ' 秒';
@@ -510,6 +516,7 @@
           });
           toast(okCount === rep.state.length ? '工具链执行完成' : '完成，但有条目失败', okCount === rep.state.length ? 'success' : 'warn');
         } catch (e) {
+          if (runToken !== chainRunSeq) return;
           progressLine.textContent = '';
           toast('执行失败：' + e.message, 'error');
         } finally {

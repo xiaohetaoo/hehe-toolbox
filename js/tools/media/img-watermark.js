@@ -125,14 +125,27 @@ register({
             }
           }
         }
-        toast(`完成，成功 ${ok} 张${fail ? '，失败 ' + fail + ' 张' : ''}，输出：${outDir}`,
-          fail ? 'warn' : 'success');
+        /* 【点了停止就不能说"完成"】原来 break 之后照样弹「完成，成功 N 张」——
+         * 停在第 3 张也报完成。停了就说停了，并点名还剩几个没处理。 */
+        if (cancelFlag) {
+          const leftN = paths.length - ok - fail;
+          toast(`已停止：已处理 ${ok} 张${fail ? '，失败 ' + fail + ' 张' : ''}，剩余 ${leftN} 张未处理；已输出的文件在 ${outDir}`, 'warn');
+        } else {
+          toast(`完成，成功 ${ok} 张${fail ? '，失败 ' + fail + ' 张' : ''}，输出：${outDir}`,
+            fail ? 'warn' : 'success');
+        }
         if (fail) toast('失败明细：' + errs.join('；') + (fail > errs.length ? ' …' : ''), 'error', 6000);
         } finally {
           // 异常也必须解锁，否则一次失败就让本页永久不可用
           running = false; prog.hide(); picker.setLocked(false);
         }
       }
+      /* 【离开页面 = 停止】原来没有任何 cleanup：切页后整批图片继续逐张写盘，
+       * 而页面上没有任何停止入口。停止按钮与切页走同一个标志。 */
+      window.App.onCleanup(() => {
+        cancelFlag = true;
+        try { wmStopBtn.disabled = true; prog.hide(); } catch (e) {}
+      });
       page.appendChild(div('card', div('card-title', '选择图片'), picker.el));
       page.appendChild(div('card', div('card-title', '水印设置'),
         div('form-row', h('span', { class: 'form-label' }, '文字'), textIn),

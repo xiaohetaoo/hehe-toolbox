@@ -79,6 +79,9 @@
       let pdfPath = null;
       let pageOrder = [];      // 当前页面顺序（1 基页号数组）
       let rotations = {};      // { 页号: 累计角度 }
+      /* 【per-run 序号】build / 保存框都是 await，切页后不该继续写盘与 toast */
+      let pagesRunSeq = 0;
+      window.App.onCleanup(() => { pagesRunSeq++; });
 
       const fileHint = div('field-hint', '未选择文件');
       const pageList = div('pdfp-list');
@@ -210,20 +213,24 @@
       }
 
       async function saveAs(defaultName) {
+        const runToken = ++pagesRunSeq;
         try {
           status.textContent = '生成中…';
           const bytes = await build();
+          if (runToken !== pagesRunSeq) return;   // 页面已离开
           const outPath = await invoke(Channels.CHANNELS.DIALOG.SAVE, {
             title: '保存处理后的 PDF',
             defaultPath: String(pdfPath).replace(/\.pdf$/i, '') + (defaultName || '-edited') + '.pdf',
             filters: [{ name: 'PDF', extensions: ['pdf'] }],
           });
           if (!outPath) { status.textContent = ''; return; }
+          if (runToken !== pagesRunSeq) return;   // 选保存框期间离开了页面：不再写盘
           await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, outPath, arrayB64(bytes));
           const before = srcB64.length * 0.75;
           status.textContent = '已保存：' + outPath + '（' + fmtBytes(before) + ' → ' + fmtBytes(bytes.length) + '）';
           toast('已保存：' + outPath, 'success', 4000);
         } catch (e) {
+          if (runToken !== pagesRunSeq) return;   // 过期的失败不弹错
           status.textContent = '';
           toast(e.message, 'error');
         }

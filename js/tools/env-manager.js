@@ -48,7 +48,9 @@
        * `if (!lastJob) return` 什么都不做，而 installEnv 恢复后任务照旧在跑。
        * 现在：取消先递增 installRunSeq（让 installEnv 的收尾判定过期），
        * 有 lastJob 就 kill，并立刻恢复界面可用状态。 */
-      const cancelBtn = btn(T('停止下载'), 'btn-sm btn-text', async () => {
+      /* 样式与其它页面的「停止/取消」一致：btn-danger-plain（原来是 btn-text，
+       * 看起来像一个普通链接，不像一个会中止任务的操作）。 */
+      const cancelBtn = btn(T('停止下载'), 'btn-sm btn-danger-plain', async () => {
         installRunSeq++;
         const job = lastJob;
         lastJob = null;

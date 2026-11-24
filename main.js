@@ -1598,7 +1598,7 @@ function assertPowerAllowed(cmd) {
     throw e;
   }
 }
-handle(CH.EXEC.RUN, async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
+handle(CH.EXEC.RUN, async (e, { cmd, args, shellType, cwd, timeoutMs, allowNonZero }) => {
   /* 关机/重启/休眠必须先在设置里开启「系统电源操作」。
    * 【必须拿「整条命令」判，不能把 cmd 与 args 分开判】
    * power-gate 的剥离逻辑是按整条命令行做的：`cmd.exe` 自己不是危险词，
@@ -1612,11 +1612,18 @@ handle(CH.EXEC.RUN, async (e, { cmd, args, shellType, cwd, timeoutMs }) => {
    * 这条门禁存在的唯一理由就是拦住它。 */
   const flatArgs = Array.isArray(args) ? args.map((a) => String(a == null ? '' : a)) : [];
   assertPowerAllowed([String(cmd == null ? '' : cmd), ...flatArgs].join(' '));
+  /* 【allowNonZero：让调用方自己看退出码】
+   * runCmd 默认"非零即 reject"，而且非零退出码（数字）不会随 IPC 错误载荷回到
+   * 渲染层（lib/errors.js 只透传字符串 code）—— 渲染层拿到的永远是
+   * "Command failed: cmd.exe /c shutdown /a" + code 'UNKNOWN'。
+   * 「定时关机/重启」恰恰需要退出码来区分"排期被拒"与"取消时本来就没有计划"
+   * （1116），所以由调用方显式声明"非零也要拿到结果"，与 runCmd 的约定一致。 */
+  const nn = !!allowNonZero;
   if (shellType === 'ps') return await ps(cmd, timeoutMs || 30000, cwd);
   if (shellType === 'cmd') {
-    return await runCmd('cmd.exe', ['/c', cmd], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk' });
+    return await runCmd('cmd.exe', ['/c', cmd], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk', allowNonZero: nn });
   }
-  return await runCmd(cmd, args || [], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk' });
+  return await runCmd(cmd, args || [], { cwd, timeout: timeoutMs || 30000, encoding: 'gbk', allowNonZero: nn });
 });
 handle(CH.EXEC.STREAM, (e, { command, args, cwd }) => {
   // 流式通道同样要过电源门禁（理由见 exec:run 上方注释：必须整条判）
@@ -3636,7 +3643,9 @@ async function runSeven(bin, args, opts = {}) {
     if (opts.outputDir) {
       return await archiveProcess.extractLimited(bin, realArgs, { root: opts.outputDir, timeout });
     }
-    return await runCmd(bin, realArgs, { timeout });
+    /* allowNonZero：runSeven 的两个调用方（解压、读目录）都按 r.code 分支并
+     * 拼出带 7z 原话的错误；默认 reject 会让那些分支变成死代码。 */
+    return await runCmd(bin, realArgs, { timeout, allowNonZero: true });
   } catch (err) {
     /* 密码脱敏：execFile 失败时 err.message 是**完整命令行**，
        里面有 -p<密码> 明文。这个 err 会被 handle() 包装成
@@ -3687,7 +3696,7 @@ handle(CH.SEVEN.COMPRESS, async (e, { files, out, password, volumeMB }) => {
   if (password) args.push(sevenPwdArg(password), '-mhe=on');
   if (volumeMB) args.push('-v' + Math.max(1, volumeMB) + 'm');
   args.push(out, ...files);
-  const r = await runCmd(bin, args, { timeout: 600000 });
+  const r = await runCmd(bin, args, { timeout: 600000, allowNonZero: true });
   if (r.code !== 0) throw new Error('压缩失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
   const first = volumeMB ? out + '.001' : out;
   let size = 0; try { size = (await fsp.stat(first)).size; } catch (e) {}
@@ -4762,7 +4771,7 @@ handle(CH.SEVEN.LIST, async (e, { archive, password }) => {
   const args = ['l', '-bd', '-slt'];
   args.push(sevenPwdArg(password));
   args.push(archive);
-  const r = await runCmd(bin, args, { timeout: 60000 });
+  const r = await runCmd(bin, args, { timeout: 60000, allowNonZero: true });
   if (r.code !== 0) throw new Error('读取压缩包失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
   const rows = [];
   let cur = null;

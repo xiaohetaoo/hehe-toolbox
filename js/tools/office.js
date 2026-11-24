@@ -220,6 +220,11 @@
     render(page) {
       let pdfPath = null;
       let rendering = false; // 防重入标志：渲染中禁止再次点击
+      /* 【per-run 序号 + 同步注册 cleanup】逐页渲染 + 写盘可能持续几分钟，
+       * 切页后不应继续写文件，也不应 toast 到新页面。
+       * cleanup 必须在同步阶段注册（不能在 async run 内注册——那会落到新页面的队列）。 */
+      let pdfImgRunSeq = 0;
+      window.App.onCleanup(() => { pdfImgRunSeq++; });
       const info = div('field-hint', '未选择');
       const scaleIn = h('input', { type: 'number', class: 'input input-sm', value: '2', min: '1', max: '4', step: '0.5', style: { width: '80px' } });
       const list = div('');
@@ -242,6 +247,7 @@
         if (!pdfPath) return toast('请先选择 PDF', 'warn');
         if (!window.pdfjsLib) return toast('pdf.js 未加载', 'error');
         rendering = true;
+        const runToken = ++pdfImgRunSeq;
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
         status.textContent = '渲染中…';
         try {
@@ -255,6 +261,7 @@
           await invoke(Channels.CHANNELS.FS.MKDIR, outDir);
           const scale = parseFloat(scaleIn.value) || 2;
           for (let i = 1; i <= pdf.numPages; i++) {
+            if (runToken !== pdfImgRunSeq) { status.textContent = '已停止（离开页面）'; return; }
             /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
             const page = await pdf.getPage(i);
             const viewport = page.getViewport({ scale });
@@ -262,14 +269,18 @@
             canvas.width = viewport.width; canvas.height = viewport.height;
             await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
             const b64 = canvas.toDataURL('image/png').split(',')[1];
+            if (runToken !== pdfImgRunSeq) { status.textContent = '已停止（离开页面）'; return; }
             const pagePath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, `${outDir}/page-${String(i).padStart(3, '0')}.png`);
             await invoke(Channels.CHANNELS.FS.WRITE_FILE_B64, pagePath, b64);
             status.textContent = `渲染中… ${i}/${pdf.numPages}`;
           }
+          if (runToken !== pdfImgRunSeq) return;   // 页面已离开，不 toast
           status.innerHTML = `<span class="status-ok">✓ 完成</span> 共 ${pdf.numPages} 页，输出目录 ${escapeHtml(outDir)}`;
           toast('PDF 转图片完成', 'success');
-        } catch (e) { status.textContent = '✗ ' + e.message; }
-        finally { rendering = false; }
+        } catch (e) {
+          if (runToken !== pdfImgRunSeq) return;
+          status.textContent = '✗ ' + e.message;
+        } finally { rendering = false; }
       }
       page.appendChild(div('card', div('card-title', '选择 PDF'), picker.el, info,
         div('form-row', h('span', { class: 'form-label' }, '清晰度'), scaleIn, h('span', { class: 'field-hint' }, '倍渲染（2 = 约 192dpi）'),
@@ -439,9 +450,14 @@
         else engineEl.innerHTML = '<span class="status-warn">⚠ 未检测到 LibreOffice 或 Microsoft Office，请先安装其中之一</span>';
       }).catch(() => {});
       let running = false; // 防重入标志：转换中禁止再次点击
+      /* 【per-run 序号】OFFICE.CONVERT 是批量阻塞式（LibreOffice/COM 逐个转换），
+       * 切页后主进程会跑完，但结果不该 toast 到新页面。 */
+      let officeRunSeq = 0;
+      window.App.onCleanup(() => { officeRunSeq++; });
       const startBtn = btn('开始转换', 'btn-primary', run, 'send');
       async function run() {
         if (running) return; // 防重入：重复转换会并发占用 LibreOffice/Office COM
+        const runToken = ++officeRunSeq;
         running = true;
         if (!picker.count) { running = false; return toast('请先选择文件', 'warn'); }
         if (targetSel.value === 'docx' && picker.paths.some(f => !f.toLowerCase().endsWith('.pdf'))) { running = false; return toast('转 DOCX 仅支持 PDF 来源（PDF→Word）', 'warn'); }
@@ -450,6 +466,7 @@
         const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');
         try {
           const r = await invoke(Channels.CHANNELS.OFFICE.CONVERT, { files: picker.paths, target: targetSel.value, outDir });
+          if (runToken !== officeRunSeq) return;   // 页面已离开，结果不写回
           status.textContent = `完成（引擎：${r.engine}）：成功 ${r.results.filter(x => x.ok).length} / ${r.results.length}`;
           for (const res of r.results) {
             const row = div('form-row',
@@ -461,6 +478,7 @@
           }
           toast('转换完成', r.results.some(x => x.ok) ? 'success' : 'error');
         } catch (e) {
+          if (runToken !== officeRunSeq) return;
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
         } finally { startBtn.disabled = false; running = false; }

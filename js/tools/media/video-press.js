@@ -73,7 +73,7 @@ register({
        *      否则切走后 ffmpeg 继续写盘，而页面已没有任何进度与取消入口。 */
       let pressRunSeq = 0;
       let pageUnsub = null;       // 当前 job:stream 的退订函数（由 run 写入）
-      function pageCleanup() {
+      function pageCleanup(leftPage) {
         pressRunSeq++;            // 在飞的 run() 到此作废
         if (runJobId) { invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); runJobId = null; }
         if (pageUnsub) { try { pageUnsub(); } catch (e) {} pageUnsub = null; }
@@ -81,7 +81,17 @@ register({
         try {
           startBtn.disabled = false; cancelBtn.disabled = true;
           picker.setLocked(false);
-          if (status.textContent && !/^完成|^✗/.test(status.textContent)) status.textContent = '已离开页面，压制已取消';
+          /* 取消后行上还挂着「压制中 · libx264」：任务已停，不会再有结果事件来改它 */
+          for (let i = 0; i < picker.paths.length; i++) {
+            const row = picker.list.rowAt(i);
+            const tag = row && row.querySelector('.av-tag');
+            const bar = row && row.querySelector('.progress-fill');
+            if (tag && /tag-orange/.test(tag.className)) { tag.textContent = '已取消'; tag.className = 'tag tag-gray'; tag.title = ''; }
+            if (bar) bar.style.width = '0%';
+          }
+          /* 【文案要分清"用户取消"与"离开页面"】原来两种都写「已离开页面」，
+           * 用户明明是自己点的取消，却被告知离开了页面。 */
+          if (status.textContent && !/^完成|^✗/.test(status.textContent)) status.textContent = leftPage !== false ? '已离开页面，压制已取消' : '已取消压制，已完成的文件保留';
         } catch (e) {}
       }
       window.App.onCleanup(pageCleanup);
@@ -97,7 +107,7 @@ register({
       /* 【取消必须立刻生效】只在 runJobId 存在时才 kill 的话，
        * invoke 还没返回的那段时间点取消完全无效，而 run 恢复后 token 未变，
        * 任务照样起来。递增序号 + 复位界面 + 退订，三件一起做。 */
-      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(); }, 'square');
+      const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(false); }, 'square');
       cancelBtn.disabled = true;
       function applyPreset() {
         const v = presetSel.value;

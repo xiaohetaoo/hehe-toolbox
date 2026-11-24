@@ -973,8 +973,19 @@
       function stopQuick() {
         clearTimeout(searchTimer);
         if (quickJob) { invoke(Channels.CHANNELS.JOB.KILL, quickJob).catch(() => {}); quickJob = null; }
-        if (quickUnsub) { quickUnsub(); quickUnsub = null; }
+        if (quickUnsub) { try { quickUnsub(); } catch (e) {} quickUnsub = null; }
+        try { quickStopBtn.disabled = true; } catch (e) {}
       }
+      /* 【全盘快扫必须有停止入口】SEARCH.QUICK 一点就开始遍历整个分区，
+       * 可能跑上几分钟；原来这一页只有「快速扫描」按钮，想停只能切走页面
+       * （切走 = 结果全丢）。停止时保留已找到的结果行，只声明"已停止"。 */
+      const quickStopBtn = btn('停止', 'btn-sm btn-danger-plain', () => {
+        quickRunSeq++;            // 在飞的这趟作废：它返回的 job 会被自己杀掉
+        stopQuick();
+        engTag.textContent = '就绪'; engTag.className = 'tag tag-gray';
+        statsLine.textContent = '已停止快速扫描（已找到的结果保留）';
+      }, 'square');
+      quickStopBtn.disabled = true;
       async function doSearch() {
         const mySeq = ++seq;
         stopQuick();
@@ -1046,6 +1057,7 @@
          * 用序号而不是布尔 pageDead：布尔复位后无法区分「旧请求」与
          * 「新请求」，会把新任务的 id 当成旧的杀掉（或反过来漏杀）。 */
         const runToken = ++quickRunSeq;
+        quickStopBtn.disabled = false;
         listBox.innerHTML = ''; statsLine.textContent = '正在扫描…';
         engTag.textContent = '快速扫描中'; engTag.className = 'tag tag-orange';
         let rowCount = 0;
@@ -1060,6 +1072,7 @@
             if (j.rows && j.rows.length) { rowCount += j.rows.length; renderRows(j.rows, true); statsLine.textContent = `已找到 ${rowCount} 条（扫描中…）`; }
             else if (j.scanned != null && !j.done) statsLine.textContent = `已扫描 ${j.scanned.toLocaleString()} 项…`;
             if (j.done) {
+              quickStopBtn.disabled = true;
               engTag.textContent = '就绪'; engTag.className = 'tag tag-gray';
               statsLine.textContent = j.error ? ('✗ ' + j.error) : `完成：找到 ${j.matched} 条 · 扫描 ${(j.scanned || 0).toLocaleString()} 项 · ${j.ms}ms${j.canceled ? '（已停止）' : ''}`;
               quickJob = null;
@@ -1097,7 +1110,7 @@
       page.appendChild(div('card', div('card-title', '搜索'),
         div('form-row', inBox, limitSel),
         div('form-row', engTag, ' ', statsLine),
-        div('form-row', quickBtn, h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '扫描范围'), rootSel),
+        div('form-row', quickBtn, ' ', quickStopBtn, h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '扫描范围'), rootSel),
         listBox));
       setTimeout(() => { try { inBox.focus(); } catch (e) {} }, 100);
     }
