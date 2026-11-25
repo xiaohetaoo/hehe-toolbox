@@ -26,6 +26,7 @@
       "index.html",
       "lib/job-id.js",
       "lib/job-owner.js",
+      "lib/once-schedule.js",
       "lib/errors.js",
       "lib/fail-text.js",
       "lib/win*.js",
@@ -45,6 +46,9 @@
       "test-release-*",
       "test-version*",
       "test-ipc-*",
+      "test-lib-globals.js",
+      "test-once-schedule.js",
+      "test-round20-fixes.js",
       "test-source-assertions.js",
       "test-aux-csp.js",
       "test-window-security*",
@@ -351,6 +355,7 @@
     "label": "路径守卫与命名（防覆盖/临时名/盘符判断）",
     "src": [
       "lib/path-guard.js",
+      "lib/path-text.js",
       "lib/temp-names.js",
       "lib/fs-ops.js",
       "lib/job-id.js"

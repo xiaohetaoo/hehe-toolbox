@@ -93,7 +93,10 @@ t('RP6 界面：删除必须二次确认且说明会清掉其它卷影副本', (
   const ui = readSrc('js/tools/sys-tools.js');
   const at = ui.indexOf("id: 'restore-points'");
   assert.ok(at >= 0, '找不到 restore-points 工具');
-  const seg = ui.slice(at, at + 4200);
+  /* 窗口从 4200 放宽到 4700：R18 给「打开系统还原」补了取不到 rstrui 的提示，
+   * 这段在删除按钮之前，把 `RESTORE_DELETE, 'all'` 推出了原来的窗口。
+   * 断言语义不变（两个删除入口分别传 oldest / all），只是范围跟着实现长了。 */
+  const seg = ui.slice(at, at + 4700);
   /* 锁的是：删除没有 danger 确认 —— 一次误点清空全部还原点。 */
   assert.strictEqual((seg.match(/danger: true/g) || []).length >= 2, true,
     '删除最旧 / 删除全部都要 danger 确认');

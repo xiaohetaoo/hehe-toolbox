@@ -84,7 +84,7 @@
       params: [{ key: 'name', label: '包名（留空自动）', type: 'text', value: '' }],
       async run(ctx) {
         const first = ctx.files[0];
-        const dir = first ? first.replace(/[\\/][^\\/]+$/, '') : '';
+        const dir = first ? window.PathText.dirname(first) : '';
         const name = String(ctx.params.name || '').trim() || 'bundle';
         /* 【签名是位置参数，不是对象】zip:compress(paths, outZip)。
          * 传对象会静默拼出错误的归档内容（参数错位），所以这里逐个对齐。 */
@@ -154,7 +154,7 @@
         const out = [];
         for (const p of ctx.files) {
           const ext = (p.match(/\.[^.\\/]+$/) || [''])[0];
-          const dir = p.replace(/[\\/][^\\/]+$/, '');
+          const dir = window.PathText.dirname(p);
           const target = dir + '/' + prefix + '-' + String(n).padStart(3, '0') + ext;
           const uniq = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, target);
           await invoke(Channels.CHANNELS.FS.RENAME, p, uniq);
@@ -202,7 +202,7 @@
           page.drawImage(emb, { x: 0, y: 0, width: emb.width, height: emb.height });
         }
         const outBytes = await doc.save();
-        const dir = imgs[0].replace(/[\\/][^\\/]+$/, '');
+        const dir = window.PathText.dirname(imgs[0]);
         const outPath = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, dir + '/chain-images.pdf');
         let bin = '';
         const chunk = 0x8000;
@@ -342,7 +342,15 @@
       /* 【per-run 序号】工具链是多步骤批量处理（可能几分钟），切页后
        * 不应继续写文件，也不应 toast 到新页面。 */
       let chainRunSeq = 0;
-      window.App.onCleanup(() => { chainRunSeq++; });
+      /* 【离开页面只清进度行，不动 running】
+       * run() 的 finally 一定会跑（返回/异常/序号过期都走它），所以 running
+       * 与按钮本来就会被复位 —— 这里再置一次反而危险：runChain 还在后台写文件，
+       * running 被提前放开，用户切回页面再点「开始执行」就会叠上第二趟，
+       * 两趟同时改同一批文件。只清掉给用户看的进度行。 */
+      window.App.onCleanup(() => {
+        chainRunSeq++;
+        try { progressLine.textContent = ''; } catch (e) {}
+      });
 
       const picker = window.ui.filePicker({
         text: '拖入文件，或点击选择（这一步的输入）',
@@ -509,7 +517,7 @@
             if (s.extras && s.extras.length) {
               for (const line of s.extras) {
                 row.appendChild(div('chain-report-ok mono',
-                  { style: { fontSize: '11.5px', paddingLeft: '8px', userSelect: 'text' } }, line));
+                  { style: { fontSize: '11px', paddingLeft: '8px', userSelect: 'text' } }, line));
               }
             }
             reportBox.appendChild(row);

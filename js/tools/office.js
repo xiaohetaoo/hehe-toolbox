@@ -463,7 +463,7 @@
         if (targetSel.value === 'docx' && picker.paths.some(f => !f.toLowerCase().endsWith('.pdf'))) { running = false; return toast('转 DOCX 仅支持 PDF 来源（PDF→Word）', 'warn'); }
         startBtn.disabled = true; status.textContent = '转换中…';
         listBox.innerHTML = '';
-        const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');
+        const outDir = outDirIn.value.trim() || window.PathText.dirname(picker.paths[0]);
         try {
           const r = await invoke(Channels.CHANNELS.OFFICE.CONVERT, { files: picker.paths, target: targetSel.value, outDir });
           if (runToken !== officeRunSeq) return;   // 页面已离开，结果不写回

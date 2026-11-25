@@ -448,7 +448,12 @@
         for (let i = 0; i < n; i++) {
           if (kind === 'uuid') lines.push(uuid());
           else if (kind === 'num') {
-            const a = parseInt(rangeA.value) || 0, b = parseInt(rangeB.value) || 100;
+            let a = parseInt(rangeA.value) || 0, b = parseInt(rangeB.value) || 100;
+            /* 【下限大于上限时要对调】原来直接算 b-a+1：用户把 100 填在前、
+             * 10 填在后时 b-a+1 = -89，Math.random() 乘负数得到负值，
+             * 「随机数」就变成了小于下限的数（100~10 会生成 10 以下的数）。
+             * 对调是最符合直觉的处理：用户只是把区间写反了。 */
+            if (a > b) { const t = a; a = b; b = t; }
             lines.push(String(Math.floor(Math.random() * (b - a + 1)) + a));
           } else if (kind === 'str') {
             // crypto.getRandomValues 单次上限 65536 字节，超了抛 QuotaExceededError
@@ -646,17 +651,30 @@
         // 导出的 HTML 无 CSP 保护，必须净化防止存储型 XSS
         const safe = window.DOMPurify ? DOMPurify.sanitize(view.innerHTML) : view.innerHTML;
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Markdown</title></head><body style="max-width:800px;margin:40px auto;font-family:'Microsoft YaHei',sans-serif;line-height:1.7">${safe}</body></html>`;
-        const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'document.html' });
-        if (!p) return;
-        await invoke(Channels.CHANNELS.FS.WRITE_TEXT, p, html);
-        toast('已导出：' + p, 'success');
+        /* 【写盘失败必须有人接住】原来这段没有 try/catch：保存路径选好之后
+         * 写盘失败（目录只读、文件被占用、磁盘满）会是一个未处理的 Promise
+         * rejection —— 界面什么都不显示，用户以为导出成功了。
+         * 内容其实是纯文本 + 已净化 HTML，写失败通常是环境问题，如实说清即可。 */
+        try {
+          const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'document.html' });
+          if (!p) return;
+          await invoke(Channels.CHANNELS.FS.WRITE_TEXT, p, html);
+          toast('已导出：' + p, 'success');
+        } catch (e) {
+          toast('导出失败：' + (e && e.message || e), 'error');
+        }
       }
       async function openFile() {
-        const p = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openFile'], filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'txt'] }] });
-        if (!p || !p[0]) return;
-        const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p[0]);
-        ta.value = r.content;
-        renderMd();
+        /* 同上：选文件/读文件失败会变成静默 rejection */
+        try {
+          const p = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openFile'], filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'txt'] }] });
+          if (!p || !p[0]) return;
+          const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p[0]);
+          ta.value = r.content;
+          renderMd();
+        } catch (e) {
+          toast('打开失败：' + (e && e.message || e), 'error');
+        }
       }
       ta.addEventListener('input', window.ui.debounce(renderMd, 200));
       page.appendChild(div('card', div('card-title', 'Markdown 源文本',

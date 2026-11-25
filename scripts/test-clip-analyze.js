@@ -69,8 +69,11 @@ t('CA3 空剪贴板与图片走不同分支', () => {
   const img = C.analyze({ isImage: true, imageSize: { w: 100, h: 50 } });
   assert.strictEqual(img.kind, 'image');
   assert.ok(img.label.indexOf('100') >= 0, '标签里应带尺寸：' + img.label);
-  assert.ok(img.actions.indexOf('imgAnnotate') >= 0, '图片应给「标注」动作');
+  /* 锁的是：把「截图标注」列成图片推荐动作。snip-tool 只能框选屏幕、
+   * 没有导入图片入口；列出来会让用户以为能标注剪贴板这张图。 */
+  assert.ok(img.actions.indexOf('imgAnnotate') < 0, '图片动作不应包含无法导入图片的「截图标注」');
   assert.ok(img.actions.indexOf('imgOcr') >= 0, '图片应给「OCR」动作');
+  assert.ok(img.actions.indexOf('imgCompress') >= 0, '图片应给「图片压缩」动作');
 });
 
 t('CA4 乱码能被认出（含替换字符或 Latin-1 成片出现）', () => {

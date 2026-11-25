@@ -46,6 +46,7 @@ const diskHealth = require('./lib/disk-health');      // 磁盘健康：诚实�
 /* 临时产物命名的**唯一来源**：生成函数与清理白名单在同一个模块里，
  * 避免"新增一种产物忘了登记白名单"（.hehe-7zx-* 那次残留事故的根因）。 */
 const tempNames = require('./lib/temp-names');
+const onceSchedule = require('./lib/once-schedule'); // 一次性定时的时间戳解析/该不该执行（纯逻辑）
 /* 文件名用的**本地**时间戳。原来几处直接用 toISOString()，那是 UTC ——
  * UTC+8 用户看到的 hosts 备份名会差 8 小时，在「恢复 hosts」列表里挑错备份。
  * 内部诊断用的 .corrupt- 备份仍走 UTC（跨时区比对更方便），不在此列。 */
@@ -2267,8 +2268,9 @@ handle(CH.AUTOSTART.DELETE, async (e, item, permanent) => {
     return true;
   }
   // disable = backup + delete
-  const bak = storeGet('autostartBackup', []);
-  if (!bak.find(b => b.hive === item.hive && b.name === item.name)) { bak.push(item); storeSet('autostartBackup', bak); }
+  const cur = storeGet('autostartBackup', []);
+  const bak = Array.isArray(cur) ? cur : [];   // store 损坏成 null/对象时不能 .find
+  if (!bak.find(b => b && b.hive === item.hive && b.name === item.name)) { bak.push(item); storeSet('autostartBackup', bak); }
   await runCmd('reg', ['delete', item.key, '/v', item.name, '/f'], { timeout: 10000 });
   return true;
 });
@@ -2281,11 +2283,15 @@ handle(CH.AUTOSTART.ENABLE, async (e, item) => {
   const rawType = String(item.type || 'REG_SZ').trim().toUpperCase();
   const type = rawType.startsWith('REG_') ? rawType : 'REG_' + rawType;
   await runCmd('reg', ['add', item.key, '/v', item.name, '/t', type, '/d', item.cmd, '/f'], { timeout: 10000 });
-  const bak = storeGet('autostartBackup', []).filter(b => !(b.hive === item.hive && b.name === item.name));
+  const cur = storeGet('autostartBackup', []);
+  const bak = (Array.isArray(cur) ? cur : []).filter(b => b && !(b.hive === item.hive && b.name === item.name));
   storeSet('autostartBackup', bak);
   return true;
 });
-handle(CH.AUTOSTART.DISABLED_LIST, () => storeGet('autostartBackup', []));
+handle(CH.AUTOSTART.DISABLED_LIST, () => {
+  const cur = storeGet('autostartBackup', []);
+  return Array.isArray(cur) ? cur : [];
+});
 
 /* hosts */
 const HOSTS_PATH = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts');
@@ -3212,7 +3218,15 @@ async function createPinWindow(srcPath) {
   hardenWindow(bw);
   bw.setAlwaysOnTop(true, 'screen-saver');
   pinWins.set(pinKey(bw.id), bw);
-  bw.on('closed', () => pinWins.delete(pinKey(bw.id)));
+  bw.on('closed', () => {
+    pinWins.delete(pinKey(bw.id));
+    /* 贴图源图是我们自己生成的临时 PNG：窗口关了就没有任何引用，
+     * 不删就只能等下次启动的 24 小时清扫。只删白名单认可的自有临时名，
+     * 用户文件（即使被误传进来）绝不碰。 */
+    try {
+      if (tempNames.isOwnTempName(path.basename(srcPath))) fs.rmSync(srcPath, { force: true });
+    } catch (e) {}
+  });
   await bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath, accent: currentAccent } });
   return { id: bw.id, w: size.width, h: size.height };
 }
@@ -3692,13 +3706,23 @@ handle(CH.SEVEN.COMPRESS, async (e, { files, out, password, volumeMB }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
   if (!/\.7z$/i.test(out)) out += '.7z';
+  /* 【分卷参数必须先归一】旧写法 `if (volumeMB) args.push('-v' + Math.max(1, volumeMB) + 'm')`
+   * 对 "abc"/Infinity 会拼出 `-vNaNm` / `-vInfinitym`：7z 直接失败，
+   * 而错误行只剩一句看不懂的参数错误。非正数按「不分卷」处理（与界面勾选语义一致）。 */
+  const volumeRaw = volumeMB;
+  const volume = Number(volumeRaw);
+  const hasVolume = !(volumeRaw == null || volumeRaw === '' || volume === 0);
+  if (hasVolume && (!Number.isFinite(volume) || volume < 0)) {
+    throw new Error('分卷大小无效：' + String(volumeRaw));
+  }
+  const split = hasVolume && volume > 0;
   const args = ['a', '-y', '-bd'];
   if (password) args.push(sevenPwdArg(password), '-mhe=on');
-  if (volumeMB) args.push('-v' + Math.max(1, volumeMB) + 'm');
+  if (split) args.push('-v' + Math.max(1, Math.floor(volume)) + 'm');
   args.push(out, ...files);
   const r = await runCmd(bin, args, { timeout: 600000, allowNonZero: true });
   if (r.code !== 0) throw new Error('压缩失败：' + (r.stderr || r.stdout).split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' '));
-  const first = volumeMB ? out + '.001' : out;
+  const first = split ? out + '.001' : out;
   let size = 0; try { size = (await fsp.stat(first)).size; } catch (e) {}
   return { out: first, size };
 });
@@ -3823,12 +3847,25 @@ handle(CH.TTS.VOICES, async () => {
   if (!Array.isArray(arr)) arr = [arr];
   return { voices: arr.filter(Boolean) };
 });
-function ttsEsc(s) { return String(s).replace(/'/g, "''"); }
+function ttsEsc(s) { return String(s == null ? '' : s).replace(/'/g, "''"); }
+/** 把界面传来的数值夹到合法范围；非数字回落到默认值。
+ * 旧写法直接 `[int]${Math.max(..., volume)}`，volume 是 "abc" 时会生成
+ * `[int]NaN` —— PowerShell 抛错，用户只看到一句看不懂的异常。 */
+function ttsInt(v, min, max, def) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
 handle(CH.TTS.SPEAK, (e, { text, voice, rate, volume }) => {
   const id = 'tts' + (++jobSeq);
+  /* 渲染层已经拦 5000 字，但 IPC 不能只靠界面：整段一次性 Speak 会把
+   * 主进程锁在语音引擎里，停止按钮也要等它自己结束。 */
+  if (String(text == null ? '' : text).length > 5000) throw new Error('文本过长（>5000 字），请分段朗读');
+  const safeRate = ttsInt(rate, -10, 10, 0);
+  const safeVolume = ttsInt(volume, 0, 100, 100);
   const script = `Add-Type -AssemblyName System.Speech; $p=New-Object System.Speech.Synthesis.SpeechSynthesizer;` +
     (voice ? `try{$p.SelectVoice('${ttsEsc(voice)}')}catch{};` : '') +
-    `$p.Rate=[int]${Math.max(-10, Math.min(10, rate || 0))};$p.Volume=[int]${Math.max(0, Math.min(100, volume == null ? 100 : volume))};$p.Speak('${ttsEsc(text)}')|Out-Null`;
+    `$p.Rate=[int]${safeRate};$p.Volume=[int]${safeVolume};$p.Speak('${ttsEsc(text)}')|Out-Null`;
   const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true });
   const kill = () => { try { spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']); } catch (e) {} };
   jobs.set(id, { cancel: kill });
@@ -3842,13 +3879,34 @@ handle(CH.TTS.SPEAK, (e, { text, voice, rate, volume }) => {
   proc.on('exit', () => { jobs.delete(id); send('job:stream', { id, data: JSON.stringify({ done: true }) }); });
   return { id };
 });
-handle(CH.TTS.WAV, async (e, { text, out, voice, rate }) => {
+handle(CH.TTS.WAV, async (e, { text, out, voice, rate, volume }) => {
+  if (!out || typeof out !== 'string') throw new Error('导出路径无效');
+  if (String(text == null ? '' : text).length > 5000) throw new Error('文本过长（>5000 字），请分段导出');
+  /* 【先写临时文件，成功后再原子替换】SetOutputToWaveFile 是直接创建/截断
+   * 目标文件的：语音合成到一半失败（音色不可用、磁盘满、进程被杀）时，
+   * 用户原有的同名 WAV 已经被截断成半截。旧实现还直接用 out 作为
+   * PowerShell 的输出路径，连覆盖闸门都没过。 */
+  const tag = process.pid + '-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+  const tmp = tempNames.writeTmp(out, tag) + '.wav';
+  await fsp.mkdir(path.dirname(tmp), { recursive: true });
+  const safeRate = ttsInt(rate, -10, 10, 0);
+  /* 【导出要跟试听一致】旧实现只传 rate，界面上的音量滑杆对导出的 WAV
+   * 完全无效：用户把音量调到 20 导出，文件仍是 100。这里补 Volume。 */
+  const safeVolume = ttsInt(volume, 0, 100, 100);
   const script = `Add-Type -AssemblyName System.Speech; $p=New-Object System.Speech.Synthesis.SpeechSynthesizer;` +
     (voice ? `try{$p.SelectVoice('${ttsEsc(voice)}')}catch{};` : '') +
-    `$p.Rate=[int]${Math.max(-10, Math.min(10, rate || 0))};$p.SetOutputToWaveFile('${ttsEsc(out)}');$p.Speak('${ttsEsc(text)}');$p.Dispose();Write-Output OK`;
-  const r = await ps(script, 300000);
-  if (!(await pathExists(out))) throw new Error('导出失败' + (r.stderr ? '：' + r.stderr.slice(0, 200) : ''));
-  return { out, size: (await fsp.stat(out)).size };
+    `$p.Rate=[int]${safeRate};$p.Volume=[int]${safeVolume};$p.SetOutputToWaveFile('${ttsEsc(tmp)}');$p.Speak('${ttsEsc(text)}');$p.Dispose();Write-Output OK`;
+  try {
+    const r = await ps(script, 300000);
+    if (!(await pathExists(tmp))) throw new Error('导出失败' + (r.stderr ? '：' + r.stderr.slice(0, 200) : ''));
+    /* writeFileAtomic 自带覆盖闸门（关键目录 / 其他用户目录），并在
+     * Windows rename 失败时走「备份 → 就位 → 删备份」的可回滚流程。 */
+    const buf = await fsp.readFile(tmp);
+    await writeFileAtomic(out, buf);
+    return { out, size: buf.length };
+  } finally {
+    try { await fsp.rm(tmp, { force: true }); } catch (err) {}
+  }
 });
 
 /* ================= IPC: 服务与电源计划 ================= */
@@ -4606,7 +4664,15 @@ function armSchedule(s, isRefire) {
 }
 function armAllSchedules() {
   const list = storeGet('settings.schedules', []);
-  for (const s of list) armSchedule(s, false);
+  /* 【损坏的 store 不能拖垮启动】settings.schedules 被手改成 null/对象时，
+   * 旧写法 `for (const s of list)` 直接在启动阶段抛 TypeError，
+   * 后面的托盘、窗口初始化全部不执行（表现是双击没反应）。
+   * 这里逐条防御：坏项跳过，其余照常挂。 */
+  if (!Array.isArray(list)) return;
+  for (const s of list) {
+    if (!s || typeof s !== 'object' || !s.id) continue;
+    try { armSchedule(s, false); } catch (e) { console.warn('[sched] 挂载周期任务失败：', fmtErr(e)); }
+  }
 }
 handle(CH.SCHED.LIST, () => storeGet('settings.schedules', []));
 // 周期任务参数校验：渲染层有过滤不代表 IPC 层安全。
@@ -4652,7 +4718,8 @@ function nextLocalId(prefix) {
 handle(CH.SCHED.ADD, (e, s) => {
   const clean = normSchedule(s);
   clean.id = nextLocalId('sc');
-  const list = storeGet('settings.schedules', []);
+  const cur = storeGet('settings.schedules', []);
+  const list = Array.isArray(cur) ? cur : [];   // store 损坏成 null/对象时不能 push 失败
   list.push(clean);
   storeSet('settings.schedules', list);
   armSchedule(clean, false);
@@ -4661,7 +4728,8 @@ handle(CH.SCHED.ADD, (e, s) => {
 handle(CH.SCHED.REMOVE, (e, id) => {
   const t = schedTimers.get(id);
   if (t) { clearTimeout(t.timeout); if (t.interval) clearInterval(t.interval); schedTimers.delete(id); }
-  const list = storeGet('settings.schedules', []).filter(x => x.id !== id);
+  const cur = storeGet('settings.schedules', []);
+  const list = (Array.isArray(cur) ? cur : []).filter(x => x && x.id !== id);
   storeSet('settings.schedules', list);
   return list;
 });
@@ -4689,25 +4757,35 @@ function runOnceAction(action) {
   try {
     if (action === 'lock') {
       spawnDetached('rundll32.exe', ['user32.dll,LockWorkStation']);
-    } else {
+    } else if (action === 'sleep') {
       spawnDetached('rundll32.exe', ['powrprof.dll,SetSuspendState', '0,1,0']);
+    } else {
+      /* 【未知 action 不能按 else 走睡眠】旧写法 else 一律睡眠，store 被手改成
+       * `"shutdown"`/`""` 时用户会在到点后莫名被挂起。未知动作只记日志。 */
+      console.warn('[sched] 未知的一次性动作，已跳过：', String(action));
     }
   } catch (e) { console.warn('[sched] 一次性定时执行失败：', fmtErr(e)); }
 }
 
 function armOnce(item) {
+  /* 【坏时间戳绝不能进 setTimeout】见 lib/once-schedule.js 头部：
+   * NaN 会被当成 1ms，应用一启动就锁屏/睡眠。这里再守一道，
+   * 即使调用方绕过 armOnceAll 也不会误触发。 */
+  const fireAt = onceSchedule.fireAtOf(item);
+  if (fireAt == null) return false;
   const old = schedOnceTimers.get(item.id);
   if (old) clearTimeout(old);
-  const delay = Math.max(0, Number(item.fireAt) - Date.now());
+  const delay = Math.max(0, fireAt - Date.now());
   /* setTimeout 的上限是 2^31-1 ms（约 24.8 天）。超过就分段重挂，
    * 否则 Node 会把它当成 1ms 立刻触发 —— 那是灾难性误触发。 */
   const MAX = 2147483647;
   const step = Math.min(delay, MAX);
   const t = setTimeout(() => {
-    if (Date.now() < Number(item.fireAt)) { armOnce(item); return; }
+    if (Date.now() < fireAt) { armOnce(item); return; }
     runOnceAction(item.action);
     /* 执行完就从表里清掉：一次性任务不该留在列表里 */
-    const list = storeGet('settings.schedulesOnce', []).filter((x) => x.id !== item.id);
+    const cur = storeGet('settings.schedulesOnce', []);
+    const list = (Array.isArray(cur) ? cur : []).filter((x) => x && x.id !== item.id);
     storeSet('settings.schedulesOnce', list);
     schedOnceTimers.delete(item.id);
     /* 事件名直接用字面量：它是**推送**（send），不需要注册 handle，
@@ -4721,18 +4799,21 @@ function armOnce(item) {
 /** 启动/新增后统一挂一遍，并处理"应用关着的时候到点了"的过期项。 */
 function armOnceAll() {
   const list = storeGet('settings.schedulesOnce', []);
+  const source = Array.isArray(list) ? list : [];   // store 损坏成 null/对象时也不能抛
   const keep = [];
   const now = Date.now();
-  for (const item of Array.isArray(list) ? list : []) {
-    if (!item || !item.id || !item.fireAt) continue;
-    if (Number(item.fireAt) <= now) {
-      if (now - Number(item.fireAt) <= ONCE_CATCHUP_MS) runOnceAction(item.action);
-      continue;   // 已过期：补执行（或放弃）后不再挂
-    }
-    keep.push(item);
-    armOnce(item);
+  for (const item of source) {
+    if (!item || (item.action !== 'lock' && item.action !== 'sleep')) continue;
+    /* 【损坏的 fireAt 必须丢弃，不能"看起来没到点"就挂表】
+     * 旧写法用 `if (!item.fireAt) continue` + `Number(item.fireAt) <= now`：
+     * `"abc"` 既不为假、比较又是 false，于是被当成未来任务交给 armOnce，
+     * setTimeout(NaN) = 1ms，启动即执行睡眠。判据统一收在
+     * lib/once-schedule.js，行为用例在 test-once-schedule.js。 */
+    const d = onceSchedule.decideOnce(item, now, ONCE_CATCHUP_MS);
+    if (d.kind === 'run') runOnceAction(item.action);
+    else if (d.kind === 'keep') { keep.push(item); armOnce(item); }
   }
-  if (keep.length !== list.length) storeSet('settings.schedulesOnce', keep);
+  if (!Array.isArray(list) || keep.length !== source.length) storeSet('settings.schedulesOnce', keep);
   return keep;
 }
 
@@ -5196,11 +5277,23 @@ if (process.env.HEHE_SMOKE) {
         // 之前出现过 CSS 出问题时「页面渲染成功但排版全乱」（元素失去 block/flex），
         // 只查异常完全测不出来，所以这里补上关键布局属性的断言。
         const styleErrs = [];
+        /* 【像素值必须允许 <0.5px 的误差】Windows 125%/150% 缩放时，
+         * Chromium 的布局单位会被设备像素比换算回 CSS px，getComputedStyle
+         * 于是可能报 37.9921px / 179.995px —— 与声明的 38px / 180px 只差
+         * 一个舍入误差。旧写法用字符串全等，在这类机器上把「正确的布局」
+         * 报成 LAYOUT 失败（实测本机 125% 缩放即命中）。display 等非数值
+         * 属性仍按全等比较。 */
+        const pxNear = (got, want) => {
+          if (typeof got !== 'string' || typeof want !== 'string') return false;
+          if (!/px$/.test(got) || !/px$/.test(want)) return false;
+          const g = parseFloat(got), w = parseFloat(want);
+          return Number.isFinite(g) && Number.isFinite(w) && Math.abs(g - w) <= 0.5;
+        };
         const expect = (sel, prop, want, label) => {
           const el = document.querySelector(sel);
           if (!el) { styleErrs.push(label + ': 找不到 ' + sel); return; }
           const got = getComputedStyle(el)[prop];
-          if (got !== want) styleErrs.push(label + ': ' + sel + ' 的 ' + prop + ' 应为 ' + want + '，实际 ' + got);
+          if (got !== want && !pxNear(got, want)) styleErrs.push(label + ': ' + sel + ' 的 ' + prop + ' 应为 ' + want + '，实际 ' + got);
         };
         window.App.showView({ type: 'home' });
         await tick();
@@ -5245,7 +5338,7 @@ if (process.env.HEHE_SMOKE) {
         expect('.tool-card .tc-desc', 'display', 'block', '卡片描述');
         expect('.tool-grid', 'display', 'grid', '工具网格');
         const icon = document.querySelector('.tool-card .tc-icon');
-        if (icon && getComputedStyle(icon).width !== '38px') styleErrs.push('卡片图标尺寸异常: ' + getComputedStyle(icon).width);
+        if (icon && !pxNear(getComputedStyle(icon).width, '38px')) styleErrs.push('卡片图标尺寸异常: ' + getComputedStyle(icon).width);
         // 卡片顺序：模块页渲染出来的顺序必须与 Registry.ORDER 一致。
         // ORDER 是手写的，写成「相邻同类」的意图如果被改坏，界面上看不出来 ——
         // 卡片还是那些卡片，只是顺序乱了。这里逐模块比对渲染顺序与表内顺序。

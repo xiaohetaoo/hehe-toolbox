@@ -123,7 +123,7 @@ register({
         canvas.style.borderRadius = '8px';
         canvasBox.appendChild(canvas);
         const b64 = canvas.toDataURL('image/png').split(',')[1];
-        const outDefault = (loaded[0].path.replace(/[\\/][^\\/]+$/, '')) + (isV ? '/stitch-v.png' : '/stitch-h.png');
+        const outDefault = (window.PathText.dirname(loaded[0].path)) + (isV ? '/stitch-v.png' : '/stitch-h.png');
         const saveBtn = btn('保存 PNG', 'btn-primary btn-sm', async () => {
           try {
             const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: outDefault });

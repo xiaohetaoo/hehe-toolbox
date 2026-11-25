@@ -17,7 +17,20 @@ register({
        * 已离开的页面 —— 否则 toast 会出现在**新页面**上（"剪辑完成"
        * 与用户当前在做的事无关）。与 lan-scan 同一口径。 */
       let cutRunSeq = 0;
-      window.App.onCleanup(() => { cutRunSeq++; });
+      if (window.App && App.onCleanup) {
+        App.onCleanup(() => {
+          cutRunSeq++;
+          /* 【离开页面必须复位 running】它在第一个 await（FFMPEG.STATUS）
+           * 与 ffmpeg 执行期间一直是 true；cleanup 只递增序号时，
+           * 保活复用回来点「开始剪辑」会被开头的 running 静默挡掉 ——
+           * 用户看到的是"按钮点了没反应"。 */
+          try {
+            running = false;
+            goBtn.disabled = false;
+            if (/处理中/.test(status.textContent || '')) status.textContent = '已离开页面，本次剪辑结果不再写回';
+          } catch (e) {}
+        });
+      }
       const picker = filePicker({
         text: '拖入或选择音频文件（可多选则取第一个）',
         single: true,

@@ -80,6 +80,42 @@ t('13b 行为：预置同名分片后调用，reject 且不残留', async () => 
   } finally { rmDir(dir); }
 });
 
+/* ==================== 13c 分片尺寸 ==================== */
+
+t('13c 行为：每片不超过所选 chunkMB（不依赖 ws.bytesWritten 的落盘进度）', async () => {
+  /* 【为什么这条必须存在】
+   * 换片判据曾经用 ws.bytesWritten —— 那是「已经写进磁盘」的字节数，
+   * Node 文档明确说不含仍在队列里的数据。SSD 上 1MB 块恰好每次都能在
+   * 下一块 data 到达前写完，所以本机实测每片正好 1048576；
+   * 而慢盘 / 杀软扫描 / 大文件时它会滞后，同一片会被多塞几个 chunk：
+   * 用户选「按 1MB 分」，拿到的 part1 可能是 2MB 甚至更多。
+   * 这条用真实 handler 跑 2.5MB，锁住「每片 ≤ chunkSize」这个承诺。 */
+  const { loadFsOps } = require('./lib/fs-handlers');
+  const { CH, handlers } = loadFsOps();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r19-split-'));
+  try {
+    const src = path.join(dir, 'payload.bin');
+    const total = 1024 * 1024 * 2 + 512 * 1024;
+    fs.writeFileSync(src, Buffer.alloc(total, 7));
+    const outDir = path.join(dir, 'parts');
+    const r = await handlers.get(CH.FS.SPLIT_FILE)({}, src, 1, outDir);
+    const chunk = 1024 * 1024;
+    const parts = fs.readdirSync(outDir).filter((n) => /\.part\d+$/.test(n)).sort();
+    assert.strictEqual(parts.length, 3, '2.5MB 按 1MB 应切成 3 片，实际 ' + parts.length);
+    assert.strictEqual(r.parts, 3, '返回的分片数与磁盘不一致');
+    const sizes = parts.map((n) => fs.statSync(path.join(outDir, n)).size);
+    assert.deepStrictEqual(sizes, [chunk, chunk, total - 2 * chunk],
+      '分片尺寸不是「每片 1MB、最后一片余数」：' + JSON.stringify(sizes));
+    for (const s of sizes) assert.ok(s <= chunk, '有分片超过 chunkMB：' + s);
+    /* 清单里的 parts / size 必须与磁盘一致（合并只认这份清单） */
+    /* 用异步 readFile 而不是 readFileSync：后者会被 test-source-assertions
+     * 的 SA-3 当成「裸读项目源码」（它无法区分测试产物与源码）。 */
+    const man = JSON.parse(await fs.promises.readFile(path.join(outDir, 'payload.bin.manifest.hehe.json'), 'utf8'));
+    assert.strictEqual(man.parts, 3, '清单分片数不对');
+    assert.strictEqual(man.size, total, '清单原始大小不对');
+  } finally { rmDir(dir); }
+});
+
 /* ==================== 14. 静态服务读流 ==================== */
 
 t('14a 静态服务用 pipeline（或 res.on(close)) 保证销毁读流', () => {

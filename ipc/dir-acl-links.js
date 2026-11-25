@@ -281,6 +281,14 @@ async function copyTreeExcludingLinks(srcAbs, dstAbs, linkList) {
     files: 0, dirs: 0,
     skippedFiles: 0, skippedDirs: 0,
     disappeared: [],
+    /* 【复制时看到的链接必须全部带回去】
+     * 预检的 collectLinks 有 20 万条目上限；超限时它只返回前 20 万条里的链接，
+     * 而复制阶段照样会跳过所有链接（ent.isSymbolicLink() 分支）——
+     * 于是超出上限的那些链接「被跳过了但没被重建」，目标侧静默少一批链接，
+     * 预检/校验都发现不了（校验本身就跳过链接）。这里的 links 是复制过程中
+     * 实际遇到的全部链接，调用方与预检结果合并后再重建，上限只影响扫描速度，
+     * 不再影响数据完整性。 */
+    links: [],
   };
   const noteGone = (rel, kind) => {
     if (kind === 'dir') stats.skippedDirs++;
@@ -305,7 +313,7 @@ async function copyTreeExcludingLinks(srcAbs, dstAbs, linkList) {
       const dstChild = path.join(dstDir, ent.name);
 
       if (skip.has(childRel.toLowerCase())) continue;  // 链接：跳过，稍后重建
-      if (ent.isSymbolicLink()) continue;               // 兜底：任何漏网的链接
+      if (ent.isSymbolicLink()) { stats.links.push(srcChild); continue; }  // 兜底：任何漏网的链接
 
       if (ent.isDirectory()) {
         try {
@@ -746,14 +754,27 @@ async function dirMoveRun(opts) {
      */
     const treeLinks = await collectLinks(srcAbs);
     cpStats = await copyTreeExcludingLinks(srcAbs, dstAbs, treeLinks.links);
+    /* 【把复制阶段补发现的链接并进来】
+     * collectLinks 有条目上限（20 万）。超限时预检清单会少掉一部分链接，
+     * 而复制阶段一定见过它们 —— 不合并就会出现「目标侧少链接、全流程不报错」。
+     * 按小写路径去重：同一棵树里同大小写不同的同一路径不会出现，
+     * 但两份来源可能因为短名/长名差异重复给出同一条。 */
+    const mergedLinks = [];
+    const seenLinkKey = new Set();
+    for (const l of treeLinks.links.concat(cpStats.links || [])) {
+      const k = String(l).toLowerCase();
+      if (seenLinkKey.has(k)) continue;
+      seenLinkKey.add(k);
+      mergedLinks.push(l);
+    }
     /* 链接不在 cp 的范围里了，所以 cp 不会再碰 symlink()，EPERM 消失。
      * 重建前先判定每个链接指向目录还是文件 —— 目录用 junction（免特权），
      * 文件用符号链接（用 junction 会造出打不开的坏链接且不报错）。 */
-    const ln = await linkNatures(treeLinks.links);
+    const ln = await linkNatures(mergedLinks);
     /* 性质查询失败不阻断搬家（受限的都是「重建时会不会被判成性质不明」），
      * 但必须报出来：否则用户只会看到「无法判断这个链接指向目录还是文件」。 */
     if (ln.error) emit('check', { ok: true, linkNaturesError: ln.error });
-    const linkRestore = await restoreLinksIntoTarget(srcAbs, dstAbs, treeLinks.links, ln.natures);
+    const linkRestore = await restoreLinksIntoTarget(srcAbs, dstAbs, mergedLinks, ln.natures);
     /* 留给第 5 步：源改名之后要按这份清单抽查目标侧的链接 */
     innerLinkCheckList = linkRestore.srcReadableLinks || [];
     /* 【重建失败必须报出来，不能静默】
@@ -765,7 +786,7 @@ async function dirMoveRun(opts) {
       throw new Error('目标侧重建链接失败（' + linkRestore.failed.length + ' 个）：' +
         path.basename(first.link) + ' —— ' + first.error);
     }
-    emit('copy', { ok: true, links: treeLinks.links.length, fileLinks: linkRestore.fileLinks,
+    emit('copy', { ok: true, links: mergedLinks.length, fileLinks: linkRestore.fileLinks,
       innerRewritten: linkRestore.innerRewritten,
       files: cpStats.files, dirs: cpStats.dirs,
       /* 【跳过的条目数必须如实报出去】

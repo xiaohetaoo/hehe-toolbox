@@ -13,6 +13,10 @@ register({
     keywords: ['水印', '图片'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
+      /* 【per-run 序号】理由同 img-batch：cleanup 放开 running 后用户可能立刻再点，
+       * 新一轮会把 cancelFlag 置回 false，上一轮醒来后就会继续写盘 → 两轮并发。
+       * 序号让旧轮在检查点退出，且 finally 只复位自己那一代。 */
+      let wmRunSeq = 0;
       const picker = filePicker({
         text: '拖入或选择要加水印的图片（可多选）',
         filters: [IMG_FILTER],
@@ -36,10 +40,16 @@ register({
         if (!textIn.value.trim()) return toast('请输入水印文字', 'warn');
         cancelFlag = false;
         running = true;
+        const wmToken = ++wmRunSeq;
         prog.show();
+        /* 【停止按钮必须真的可用】它初始化是 disabled（没有任务不该能点），
+         * 但原实现从头到尾没有把它解开：整批处理期间「停止」一直是灰的，
+         * 而 cleanup/停止标志的整套机制都以"用户能按到它"为前提 ——
+         * 等于这一个页面的停止功能完全不存在。 */
+        wmStopBtn.disabled = false;
         picker.setLocked(true);
         const paths = picker.paths.slice();
-        const firstDir = paths[0].replace(/[\\/][^\\/]+$/, '');
+        const firstDir = window.PathText.dirname(paths[0]);
         const outDir = firstDir + '/hehe-watermark';
         try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
         let ok = 0;
@@ -47,7 +57,7 @@ register({
         const errs = [];
         try {
         for (let i = 0; i < paths.length; i++) {
-          if (cancelFlag) break;   // 用户点了停止
+          if (cancelFlag || wmToken !== wmRunSeq) break;   // 用户点了停止，或页面已离开
           prog.set((i + 1) / paths.length * 100);
           try {
             const p = paths[i];
@@ -90,6 +100,9 @@ register({
             const ENCODABLE = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
             const mime = ENCODABLE[ext] || 'image/jpeg';
             const dataUrl = canvas.toDataURL(mime, 0.92);
+            /* 【编码完再判一次停止】同 img-batch：一张图解码+编码可能数秒，
+             * 用户在这期间点停止/切页时，不该再多写一张。 */
+            if (cancelFlag || wmToken !== wmRunSeq) break;
             const rawName = p.split(/[\\/]/).pop();
             // 原来用 name.replace(/\.(\w+)$/, '_wm.$1')：文件名**没有扩展名**时
             // replace 不匹配，输出名就等于原名 -> 输出到原目录时把原图盖掉。
@@ -137,14 +150,25 @@ register({
         if (fail) toast('失败明细：' + errs.join('；') + (fail > errs.length ? ' …' : ''), 'error', 6000);
         } finally {
           // 异常也必须解锁，否则一次失败就让本页永久不可用
-          running = false; prog.hide(); picker.setLocked(false);
+          if (wmToken === wmRunSeq) {
+            running = false; prog.hide(); picker.setLocked(false); wmStopBtn.disabled = true;
+          }
         }
       }
       /* 【离开页面 = 停止】原来没有任何 cleanup：切页后整批图片继续逐张写盘，
        * 而页面上没有任何停止入口。停止按钮与切页走同一个标志。 */
       window.App.onCleanup(() => {
         cancelFlag = true;
-        try { wmStopBtn.disabled = true; prog.hide(); } catch (e) {}
+        wmRunSeq++;
+        try {
+          wmStopBtn.disabled = true; prog.hide();
+          /* 【离开页面必须把整页状态复位】原来只置停止标志，running 仍是 true、
+           * picker 仍是 locked。保活复用回到本页时，用户看到的是
+           * 「加不了文件、删不掉列表、点开始也没反应（被 running 挡住）」
+           * 的一个彻底卡死的页面，只能去别的工具页绕一圈再回来。 */
+          running = false;
+          picker.setLocked(false);
+        } catch (e) {}
       });
       page.appendChild(div('card', div('card-title', '选择图片'), picker.el));
       page.appendChild(div('card', div('card-title', '水印设置'),

@@ -69,6 +69,15 @@ t('UL2 逐类进程的判定结果符合预期', () => {
   assert.strictEqual(safety.canKillForUnlock({ pid: 3000, procName: 'notepad' }, ow).ok, true);
   /* 大小写与空名 */
   assert.strictEqual(safety.canKillForUnlock({ pid: 3000, procName: 'LSASS' }, ow).ok, false);
+  /* 【名字归一】Restart Manager 的 strAppName 可能是完整路径或带 .exe；
+   * 早期只小写化，'svchost.exe' / 'C:\\...\\lsass.exe' 全部绕过名单。
+   * 这三条锁住「去目录、去扩展名后再比对」。 */
+  assert.strictEqual(safety.canKillForUnlock({ pid: 3000, procName: 'svchost.exe' }, ow).ok, false,
+    'svchost.exe 未归一，绕过了关键进程名单');
+  assert.strictEqual(safety.canKillForUnlock({ pid: 3000, procName: 'C:\\Windows\\System32\\lsass.exe' }, ow).ok, false,
+    '带完整路径的 lsass.exe 未归一，绕过了关键进程名单');
+  assert.strictEqual(safety.canKillForUnlock({ pid: 3000, procName: 'WINWORD.EXE' }, ow).ok, true,
+    '普通进程带 .exe 不应被误拦');
   assert.strictEqual(safety.canKillForUnlock({ pid: 3000, name: 'Chrome' }, ow).ok, true);
   /* 无效 pid */
   assert.strictEqual(safety.canKillForUnlock({ pid: 0 }, ow).ok, false);

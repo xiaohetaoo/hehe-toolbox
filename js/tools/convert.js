@@ -269,6 +269,10 @@
       }
       function renderHistory() {
         historyEl.innerHTML = '';
+        /* 【没有历史时要连整张卡片一起藏掉】
+         * 原来只清空内容：卡片留着 12px 内边距 + 边框，页脚凭空多出一块
+         * 空白方框，看起来像"历史加载失败"。 */
+        hcard.style.display = history.length ? '' : 'none';
         if (!history.length) return;
         historyEl.appendChild(div('card-title', '历史记录'));
         /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
@@ -307,6 +311,7 @@
       page.appendChild(div('card', div('card-title', '结果'), result));
       const hcard = div('card', historyEl);
       page.appendChild(hcard);
+      hcard.style.display = 'none';   // 首次进入没有历史，不该出现空卡片
     }
   });
 })();

@@ -15,7 +15,23 @@ register({
       /* 【per-run 序号】FFMPEG.FRAMES 是阻塞式 IPC，切页后 ffmpeg 会跑完，
        * 但结果不该 toast 到新页面（用户此刻在做别的事）。 */
       let frameRunSeq = 0;
-      window.App.onCleanup(() => { frameRunSeq++; });
+      /* 清理注册：离开页面既要作废在飞的结果，也要把"运行中"状态复位 */
+      if (window.App && App.onCleanup) {
+        App.onCleanup(() => {
+          frameRunSeq++;
+          /* 【离开页面要把 running / 按钮复位】
+           * run() 里 running 在第一个 await（FFMPEG.STATUS）之前就置真，
+           * 之后还有一次「选输出目录」的模态框（用户可能停留很久）。
+           * 这两段时间里切走页面时，cleanup 只递增了序号，running 仍是 true ——
+           * 保活复用回来会变成「点开始截帧毫无反应」（被开头的 running 挡住），
+           * 而界面没有任何提示。 */
+          try {
+            running = false;
+            goBtn.disabled = false;
+            if (/处理中/.test(outLabel.textContent || '')) outLabel.textContent = '已离开页面，本次截帧结果不再写回';
+          } catch (e) {}
+        });
+      }
       const picker = filePicker({
         text: '拖入或选择视频文件',
         single: true,

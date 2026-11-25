@@ -171,7 +171,7 @@
           card.appendChild(div('form-row',
             h('span', { style: { fontWeight: 500, width: '150px' } }, rt ? rt.name : d.id),
             h('span', { class: 'mono', style: { width: '160px', fontSize: '12px' } }, d.version || T('版本未知')),
-            h('span', { class: 'mono field-hint', style: { flex: '1', wordBreak: 'break-all', fontSize: '11.5px' } },
+            h('span', { class: 'mono field-hint', style: { flex: '1', wordBreak: 'break-all', fontSize: '11px' } },
               d.path || (d.paths || []).join(' ; ')),
             rt && rt.installed ? h('span', { class: 'tag tag-green' }, T('工具箱已装')) : h('span', { class: 'tag tag-gray' }, T('仅本机'))));
         }
@@ -224,7 +224,7 @@
             applied ? btn(T('从环境移除'), 'btn-sm btn-text', () => unapplyOne(r), 'unlock') : null,
             btn(T('官方安装器'), 'btn-sm btn-text', () => openOfficial(r), 'external')));
           if (installed) {
-            card.appendChild(div('field-hint mono', { style: { fontSize: '11.5px', wordBreak: 'break-all' } }, installed.dir));
+            card.appendChild(div('field-hint mono', { style: { fontSize: '11px', wordBreak: 'break-all' } }, installed.dir));
           }
           if (d && d.found) {
             card.appendChild(div('field-hint', T('本机已装：{ver}（{path}）', {
@@ -233,6 +233,13 @@
           }
           listBox.appendChild(card);
         }
+        /* 【重建后必须重新套用 busy】draw() 会被多处调用（loadCatalog、
+         * loadDetect 完成后、安装完成后……），每次都把 listBox 里的按钮
+         * 重新造一遍，而新按钮默认是「启用」态。安装进行中若走了一次 draw()
+         * （典型：切页回来 → onEnter 重拉清单，而 loadDetect 是异步的，
+         * 它的收尾 draw() 会晚于 onEnter 里的 setBusy(true)），界面就会
+         * 变成"可以点"，与真实状态不符。统一在 draw 末尾对齐一次。 */
+        try { setBusy(busy); } catch (e) {}
       }
 
       async function installEnv(r) {

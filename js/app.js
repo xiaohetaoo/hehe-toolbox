@@ -2107,21 +2107,30 @@
           try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {}
         }
       }
-      /* 图片类内容：交给页内的图片选择器（如果有）。
-       * 走与拖拽相同的 __pendingDrop 通道，filePicker 会接住。 */
+      /* 图片类内容：先落成临时文件，再走与拖拽相同的 __pendingDrop 通道。
+       *
+       * 【为什么不能把 dataUrl 直接塞进 __pendingDrop】
+       * DropOpen.takePending 只返回 paths/exts，FilePicker 也只认路径；
+       * 旧写法 { paths: [], dataUrl } 在交接时 dataUrl 被丢掉，图片压缩/
+       * OCR/截图标注打开后列表是空的 —— 用户以为动作没生效。
+       * CLIP.SAVE_IMAGE 落在 userData/clip-img 下（有孤儿清理），返回 path。 */
       if (p.dataUrl) {
-        window.__pendingDrop = { paths: [], exts: [], dataUrl: p.dataUrl, at: Date.now() };
-        /* 通知本页的 picker 立即消费（保活复用时 setTimeout 已过，没人接）。 */
-        setTimeout(() => {
-          try {
-            const el = page.querySelector('.picker');
-            const api = el && el.__picker;
-            /* 传 toolId 保持与拖拽路径同构：虽然面板送的 dataUrl 队列不带
-             * toolId（takePending 不会过滤它），但两条路径的调用形态一旦不一致，
-             * 下一个人给 dataUrl 队列补 toolId 时这里会静默失效。 */
-            if (api && api.consumePendingDrop) api.consumePendingDrop(toolId);
-          } catch (e) { /* 交接失败不影响主功能 */ }
-        }, 0);
+        const api = window.api;
+        const Ch = window.Channels && window.Channels.CHANNELS;
+        if (api && Ch && Ch.CLIP && Ch.CLIP.SAVE_IMAGE) {
+          api.invoke(Ch.CLIP.SAVE_IMAGE, p.dataUrl).then((r) => {
+            if (!r || !r.path) return;
+            window.__pendingDrop = { paths: [r.path], exts: ['png'], at: Date.now() };
+            setTimeout(() => {
+              try {
+                const el = page.querySelector('.picker');
+                const picker = el && el.__picker;
+                /* 传 toolId 保持与拖拽路径同构，见上方说明。 */
+                if (picker && picker.consumePendingDrop) picker.consumePendingDrop(toolId);
+              } catch (e) { /* 交接失败不影响主功能 */ }
+            }, 0);
+          }).catch(() => { /* 落盘失败走不到工具页；不弹错，动作本身是增强 */ });
+        }
       }
     } catch (e) { /* 交接失败不影响工具主功能 */ }
   }

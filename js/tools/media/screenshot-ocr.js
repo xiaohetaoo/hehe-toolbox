@@ -49,9 +49,15 @@ register({
        * 他看到的是"很慢"，不是"坏了"，所以不会想到去报告。
        * 超时逻辑与归因文案在 lib/ocr-guard.js（两个 OCR 工具共用一份）。 */
       const OCR_TIMEOUT_MS = OcrGuard.DEFAULT_TIMEOUT_MS;
+      let ocrBusy = false;
       async function recognize() {
         if (!currentImg) return toast('请先提供图片', 'warn');
         if (!window.Tesseract) return toast('OCR 引擎未加载，请重启应用', 'error');
+        /* 【防重入】识别一次要起 worker + 可能下载语言包（几十秒到几分钟）。
+         * 引擎没加载完之前按钮一直可点，连点两下会各自起一个 worker，
+         * 两份进度写进同一条状态行，而 Tesseract 的 worker 还都占着内存。 */
+        if (ocrBusy) return toast('上一次识别还没结束', 'warn', 2000);
+        ocrBusy = true;
         result.value = ''; prog.show();
         status.textContent = '初始化 OCR 引擎（首次识别需下载语言包，请耐心等待）…';
         try {
@@ -80,12 +86,19 @@ register({
           const reason = OcrGuard.failReason(e);
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(reason)}</span>`;
           toast('识别失败：' + reason, 'error');
+        } finally {
+          ocrBusy = false;
         }
       }
       /* objectURL 收口：img 挂的是 URL，blob 几 MB 时（全屏截图）
        * 不释放就是持续占用。进函数先释放上一次的。 */
       let lastObjUrl = null;
       const dropLastUrl = () => { if (lastObjUrl) { URL.revokeObjectURL(lastObjUrl); lastObjUrl = null; } };
+      /* 【离开页面必须释放 blob URL】预览图用的是 URL.createObjectURL，
+       * 全屏截图能有几 MB。原来没有任何收口：进过这个工具页、看过多张图，
+       * 那些 blob 会一直被 URL 表引用着（只有 Chrome 主动 GC 才回收），
+       * 而 blob 是整块内存，不是小字符串。本页保活复用时也只需保留当前那张。 */
+      if (window.App && App.onCleanup) App.onCleanup(dropLastUrl);
       async function fromBlob(blob, label) {
         currentImg = blob;
         preview.innerHTML = '';

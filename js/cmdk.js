@@ -70,12 +70,18 @@
     return parts.join(' ').toLowerCase();
   }
 
+  /* 面板自己的少量文案（占位符/空态/底栏）也要跟界面语言走。
+   * 之前命令面板是唯一"整块不随语言变"的地方：切到 English 后工具名与模块名
+   * 都成了英文，但从占位符到底栏全是中文 —— 看起来像语言切换没生效。 */
+  const en = () => !!(window.i18n && window.i18n.lang === 'en');
+
   /* 本地化名称：动作用固定中文；工具走 Registry 的本地化包装（英文界面显示英文名） */
   function label(cmd) {
-    return cmd.id && cmd.id.startsWith('@') ? (cmd.name || '') : toolLabel(cmd);
+    if (cmd.id && cmd.id.startsWith('@')) return en() ? (cmd.nameEn || cmd.name || '') : (cmd.name || '');
+    return toolLabel(cmd);
   }
   function subLabel(cmd) {
-    if (cmd.id && cmd.id.startsWith('@')) return cmd.nameEn || '';
+    if (cmd.id && cmd.id.startsWith('@')) return en() ? '' : (cmd.nameEn || '');
     /* 【cmd.module 是字符串 id，modName 要的是模块对象】直接传 id 进去，
      * modName 读 m.name/m.nameEn 全是 undefined —— 模块名静默丢失，
      * 副标题只剩描述。先按 id 查出模块对象再取本地化名。 */
@@ -110,7 +116,7 @@
     hlIndex = 0;
     listEl.innerHTML = '';
     if (!items.length) {
-      listEl.appendChild(h('div', { class: 'cmdk-empty' }, '没有匹配的工具或命令'));
+      listEl.appendChild(h('div', { class: 'cmdk-empty' }, en() ? 'No matching tools or commands' : '没有匹配的工具或命令'));
       return;
     }
     items.forEach((cmd, i) => {
@@ -124,7 +130,7 @@
       const sub = subLabel(cmd);
       if (sub) main.appendChild(h('div', { class: 'cmdk-sub' }, sub));
       row.appendChild(main);
-      if (isAction) row.appendChild(h('span', { class: 'cmdk-tag' }, '命令'));
+      if (isAction) row.appendChild(h('span', { class: 'cmdk-tag' }, en() ? 'Action' : '命令'));
       /* 行是 div：必须自己处理键盘可达性，否则 Tab 走不到（与搜索结果行同一问题） */
       window.ui.makeButtonLike(row, label(cmd));
       row.addEventListener('click', () => run(cmd));
@@ -183,7 +189,7 @@
     const head = h('div', { class: 'cmdk-head' });
     inputEl = h('input', {
       class: 'cmdk-input', type: 'text', spellcheck: 'false', autocomplete: 'off',
-      placeholder: '搜索工具或命令（输入即搜，↑↓ 选择，回车直达）',
+      placeholder: en() ? 'Search tools or commands (↑↓ to select, Enter to open)' : '搜索工具或命令（输入即搜，↑↓ 选择，回车直达）',
     });
     inputEl.setAttribute('aria-label', '搜索工具或命令');
     head.appendChild(icon('search'));
@@ -193,7 +199,7 @@
     listEl = h('div', { class: 'cmdk-list' });
     panel.appendChild(listEl);
     panel.appendChild(h('div', { class: 'cmdk-foot' },
-      h('span', null, '↑↓ 选择'), h('span', null, '↵ 打开'), h('span', null, 'Esc 关闭')));
+      h('span', null, en() ? '↑↓ select' : '↑↓ 选择'), h('span', null, en() ? '↵ open' : '↵ 打开'), h('span', null, en() ? 'Esc close' : 'Esc 关闭')));
     mask.appendChild(panel);
     /* 点遮罩空白处关闭（与搜索下拉同一交互）：点在面板上不关 */
     mask.addEventListener('mousedown', (e) => { if (e.target === mask) close(); });

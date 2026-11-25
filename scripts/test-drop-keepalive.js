@@ -100,18 +100,26 @@ t('KA6 takePendingClip 同样取完即清空（与拖拽同构）', () => {
   assert.ok(/maxAge|30000/.test(s), 'takePendingClip 必须有过期时间');
 });
 
-t('KA7 面板送的图片走 __pendingDrop 通道并立即通知消费', () => {
+t('KA7 面板送的图片先落盘成路径，再走 __pendingDrop 通道并立即通知消费', () => {
   const s = readSrc('js/app.js');
   const at = s.indexOf('function consumePendingClip');
-  const seg = s.slice(at, at + 1800);
-  /* 锁的是：图片内容只放进 __pendingDrop 却没人消费 —— 保活场景下
-   * 没有下一次 render，图片会躺到过期。 */
-  assert.ok(/__pendingDrop = \{ paths: \[\], exts: \[\], dataUrl/.test(seg),
-    '图片内容应走 __pendingDrop 通道');
-  /* 锁的是：放入 __pendingDrop 后没有通知消费 —— 保活场景没有下一次
-   * render，图片会躺到过期。
-   * 第四轮起要求显式传 toolId（与复用路径同构），所以这里锁的是带参形态。 */
-  assert.ok(/api\.consumePendingDrop\(toolId\)/.test(seg),
+  const seg = s.slice(at, at + 2200);
+  /* 锁的是：又把 dataUrl 直接塞进 paths: []。
+   * DropOpen.takePending 只返回 paths/exts，FilePicker 也只认路径，
+   * 这样的「交接」会让图片内容静默丢失（图片压缩/OCR 打开后列表为空）。
+   * 正确做法：先 CLIP.SAVE_IMAGE 落成 userData/clip-img 下的临时文件。 */
+  /* 锁的是：图片交接又退回只放 dataUrl —— FilePicker 只认路径，内容会丢。 */
+  assert.ok(/Ch\.CLIP\.SAVE_IMAGE/.test(seg),
+    '图片内容应先用 clip:save-image 落盘，不能只放 dataUrl');
+  /* 锁的是：落盘后的 path 没进队列 —— 工具页仍拿到空列表。 */
+  assert.ok(/paths: \[r\.path\]/.test(seg),
+    'SAVE_IMAGE 返回的 path 必须放进 __pendingDrop.paths');
+  /* 锁的是：又写回「空 paths + dataUrl」的无效交接（历史缺陷 KA7 的原形态）。 */
+  assert.ok(!/__pendingDrop = \{ paths: \[\], exts: \[\], dataUrl/.test(seg),
+    '锁的是：又退回「空 paths + dataUrl」的无效交接');
+  /* 锁的是：落盘后没有通知消费 —— 保活场景没有下一次 render，
+   * 图片会躺到过期。第四轮起要求显式传 toolId（与复用路径同构）。 */
+  assert.ok(/consumePendingDrop\(toolId\)/.test(seg),
     '放入 __pendingDrop 后应立即通知本页 picker 消费（并带上 toolId）');
 });
 

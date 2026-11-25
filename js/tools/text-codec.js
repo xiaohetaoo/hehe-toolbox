@@ -209,9 +209,17 @@
        * 现在：方向判断收进 onConvert，只留 convertLayout 那一个监听器；
        * 切换方向时主动调 box.fire() 重算（输入没变但方向变了）。 */
       function decodeUnicode(t) {
-        // 逐字符解析成 code point 再 fromCodePoint，代理对会自动重组
-        const s0 = String(t).replace(/\\\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
-        return s0.replace(/[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]/g, (pair) =>
+        /* 【正则里的反斜杠只能写一次，原来是多写了两倍】
+         * 旧代码是 /\\\\u([0-9a-fA-F]{4})/ —— 在正则字面量里「\\\\」代表
+         * 两个字面反斜杠，而编码器输出的是「一个反斜杠 + u」。两边对不上，
+         * 于是解码方向从来没匹配过：粘贴 \u4e2d 点「解码」原样返回，
+         * 「中文转 Unicode」这条主用途整个失效，而且界面上毫无提示。
+         * 代理对那条正则同样多写了反斜杠：[\\uD800-\\uDBFF] 实际是字符类里的
+         * \、u、D 加上 8-0 的范围，emoji 的高低代理永远合并不回来。
+         * 现在两处都按正则语义写：\\u = 一个字面反斜杠 + u，
+         * \uD800-\uDFFF = 真正的代理区码点范围。 */
+        const s0 = String(t).replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+        return s0.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, (pair) =>
           String.fromCodePoint((pair.charCodeAt(0) - 0xD800) * 0x400 + (pair.charCodeAt(1) - 0xDC00) + 0x10000));
       }
       const encodeUnicode = (t) => [...t].map((c) =>

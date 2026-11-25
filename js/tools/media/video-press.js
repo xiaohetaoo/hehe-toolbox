@@ -143,7 +143,7 @@ register({
         picker.setLocked(true);
         status.textContent = '';
         runJobId = null;
-        const outDir = outDirIn.value.trim() || (picker.paths[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-pressed');
+        const outDir = outDirIn.value.trim() || (window.PathText.dirname(picker.paths[0]) + '/hehe-pressed');
         // job id 从流事件里取：invoke 要等全部压制结束才返回，那时已经来不及取消了
         // 【必须按前缀认领】本任务 id 形如 prs<数字>。原因同 av-convert：
         // 不校验归属会抓到别的标签页的任务 id，点「取消」杀错任务。

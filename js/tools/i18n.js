@@ -68,6 +68,7 @@
       '识别结果': 'Result',
       '复制': 'Copy',
       '打开链接': 'Open link',
+      '识别结果不是 http/https 链接': 'The decoded text is not an http/https link',
     },
     /* EXIF 查看：v0.4.2 从「只有工具名双语」扩到正文。
      * 键仍是中文原文 —— 中文模式下走一条早退，不查表，所以零行为改动。 */

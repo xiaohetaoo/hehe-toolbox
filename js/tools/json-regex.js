@@ -28,7 +28,7 @@
         const text = ta.value.trim();
         status.textContent = '';
         status.style.color = '';
-        if (!text) { out.value = ''; treeBox.innerHTML = ''; return; }
+        if (!text) { out.value = ''; treeBox.innerHTML = ''; treeCard.style.display = 'none'; return; }
         try {
           let obj = JSON.parse(text);
           lastValid = obj;
@@ -50,6 +50,7 @@
           status.textContent = '✗ ' + e.message;
           status.style.color = 'var(--danger)';
           treeBox.innerHTML = '';
+          treeCard.style.display = 'none';
         }
       }
       const treeBox = div('');
@@ -57,6 +58,7 @@
         treeBox.innerHTML = '';
         const root = buildTreeNode('root', obj, true);
         treeBox.appendChild(root);
+        treeCard.style.display = '';
       }
       function buildTreeNode(key, value, isRoot) {
         const node = div('tree-node');
@@ -111,6 +113,8 @@
           btn('示例', 'btn-sm btn-text', () => { ta.value = '{"name":"核核工具箱","version":"1.0.0","tools":["base64","json"],"config":{"theme":"blue","count":66}}'; fire(); }))));
       page.appendChild(div('card', div('card-title', '格式化结果'), out, div('form-row', btn('复制', 'btn-sm btn-secondary', () => copyText(out.value)))));
       const treeCard = div('card', div('card-title', '树形查看'), treeBox);
+      /* 还没解析出结构时不要留一张只有标题的空卡片 —— 页面刚打开就是这个状态 */
+      treeCard.style.display = 'none';
       page.appendChild(treeCard);
     }
   });

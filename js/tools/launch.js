@@ -46,7 +46,8 @@
     render(page) {
       const list = div('');
       async function load() {
-        const items = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
+        const rawQuick = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
+        const items = Array.isArray(rawQuick) ? rawQuick : [];
         list.innerHTML = '';
         if (!items.length) { list.appendChild(div('empty-tip', '还没有快捷项，点「添加」创建一个')); return; }
         const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' } });
@@ -63,7 +64,8 @@
           ops.appendChild(btn('打开', 'btn-sm btn-primary', () => open(it)));
           ops.appendChild(btn('删除', 'btn-sm btn-text', async () => {
             if (!(await confirmBox({ title: '删除快捷项', message: `删除「${it.name}」？` }))) return;
-            const cur = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
+            const rawDel = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
+            const cur = Array.isArray(rawDel) ? rawDel : [];
             // 旧数据没有 id 字段，只能按 name+target+type 定位；
             // 直接 findIndex(x => x.id === it.id) 会在 undefined === undefined 时命中第一条，导致删错项。
             const idx = cur.findIndex(x => it.id
@@ -179,7 +181,8 @@
         setExecBusy(false);
       });
       async function load() {
-        const items = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
+        const rawCmds = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
+        const items = Array.isArray(rawCmds) ? rawCmds : [];
         list.innerHTML = '';
         execBtns = [];
         if (!items.length) { list.appendChild(div('empty-tip', '还没有收藏命令')); return; }
@@ -194,13 +197,13 @@
                 execBtns.push(execBtn);
                 td.appendChild(execBtn);
                 td.appendChild(btn('删除', 'btn-sm btn-text', async () => {
-                  /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-                  const items = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
-                  const idx = items.findIndex(x => x.id === r.id);
+                  const rawDel = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
+                  const curItems = Array.isArray(rawDel) ? rawDel : [];
+                  const idx = curItems.findIndex(x => x.id === r.id);
                   // findIndex 未命中时返回 -1，splice(-1,1) 会误删最后一条，必须先挡住
                   if (idx < 0) { load(); return; }
-                  items.splice(idx, 1);
-                  await invoke(Channels.CHANNELS.STORE.SET, 'commands', items);
+                  curItems.splice(idx, 1);
+                  await invoke(Channels.CHANNELS.STORE.SET, 'commands', curItems);
                   load();
                 }));
               } }
@@ -250,7 +253,8 @@
           if (!cmd) return;
           const shell = await pickOne('选择执行环境', [['cmd', 'CMD'], ['ps', 'PowerShell']]);
           if (!shell) return;   // 用户关掉了弹窗
-          const items = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
+          const rawItems = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
+          const items = Array.isArray(rawItems) ? rawItems : [];
           items.push({ id: nextId('cmd'), name, cmd, shell });
           await invoke(Channels.CHANNELS.STORE.SET, 'commands', items);
           toast('已收藏', 'success');

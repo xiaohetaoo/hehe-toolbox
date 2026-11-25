@@ -302,7 +302,11 @@
         return list.slice(0, cap);
       }
       async function load() {
-        history = await invoke(Channels.CHANNELS.STORE.GET, 'clipHistory', []);
+        const raw = await invoke(Channels.CHANNELS.STORE.GET, 'clipHistory', []);
+        /* 锁的是：clipHistory 被手改成对象/字符串后，下面会直接
+         * history.unshift / sweepSensitive 的 filter 抛，页面只剩一个空列表；
+         * 用户既录不进新内容，也没法手动清理。 */
+        history = Array.isArray(raw) ? raw : [];
         /* 每次进页面先扫一次过期敏感条目 —— 用户可能几天没打开这个工具，
          * 期间过期的凭据一直躺在磁盘上。 */
         try { await sweepSensitive(); } catch (e) {}
@@ -355,7 +359,8 @@
           if (text && text !== lastClip) {
             lastClip = text;
             const okText = admitText(text);
-            if (okText === null) { timer = setTimeout(poll, 1200); return; }
+            /* 超长文本不入库，但仍要继续轮询；这里也不能在停止后重排 */
+            if (okText === null) { if (watching) timer = setTimeout(poll, 1200); return; }
             history.unshift({ type: 'text', content: okText, time: Date.now() });
             /* 必须走 trimHistory：它会回收被挤出上限的图片文件。
              * 直接 slice(0, 200) 会让图片条目"消失但文件还在"。 */
@@ -376,6 +381,11 @@
             }
           }
         } catch (e) { /* browser */ }
+        /* 【关闭开关的瞬间可能正卡在上面的 await 里】
+         * 原来这里无条件再排一次，于是"关掉开关"只在下一拍之前有效：
+         * 正在进行的那一轮 poll 返回后又把定时器装回去，界面显示关闭、
+         * 实际一直在采，离开页面后也继续（cleanup 只清一次定时器）。 */
+        if (!watching) { timer = null; return; }
         timer = setTimeout(poll, 1200);
       }
       function render() {
@@ -416,7 +426,11 @@
               else {
                 let du = contentRef;
                 if (!du && item.file) { const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, item.file); du = 'data:image/png;base64,' + r.b64; }
-                if (du) await invoke(Channels.CHANNELS.CLIP.WRITE_IMAGE, du);
+                /* 【读不到图不能报"已复制"】历史里的图片文件可能已被清理（用户在
+                 * 别处删了数据目录、或清理脚本动了 hehe-clip）。du 为空时原来
+                 * 直接落到下面的 toast('已复制') —— 剪贴板里其实什么都没变。 */
+                if (!du) return toast('图片文件已不存在，无法复制', 'warn');
+                await invoke(Channels.CHANNELS.CLIP.WRITE_IMAGE, du);
               }
               toast('已复制', 'success', 1000);
             } catch (e) { toast(e.message, 'error'); }

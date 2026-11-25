@@ -86,7 +86,18 @@ register({
       const cancelBtn = btn('取消', 'btn-danger-plain', () => { pageCleanup(false); }, 'square');
       cancelBtn.disabled = true;
       // 目标格式变了只刷新行上的「→ XXX」标签，不重建列表（重建会丢掉进度状态）
-      fmtSel.addEventListener('change', () => picker.list.refresh());
+      /* 【按目标格式收敛参数区】音频容器（mp3/m4a/wav/flac）用不到视频编码、
+       * CRF、分辨率、帧率；GIF 宽度只对 gif 有意义。原来这些控件对任何格式
+       * 都呈「可用」态，用户选了 MP3 仍能调 CRF/分辨率 —— 调了也不会生效，
+       * 却让人以为是自己参数没调好才没效果。灰掉比留着更能说明「这项不适用」。 */
+      const AUDIO_FMTS = ['mp3', 'm4a', 'wav', 'flac'];
+      function refreshFmt() {
+        const isAudio = AUDIO_FMTS.indexOf(fmtSel.value) >= 0;
+        for (const el of [vcodecSel, crfIn, scaleSel, fpsIn]) { try { el.disabled = isAudio; } catch (e) {} }
+        try { gifWIn.disabled = fmtSel.value !== 'gif'; } catch (e) {}
+      }
+      fmtSel.addEventListener('change', () => { refreshFmt(); picker.list.refresh(); });
+      refreshFmt();
       async function run() {
         if (!picker.count) return toast('请先选择文件', 'warn');
         if (running) return;
@@ -118,7 +129,7 @@ register({
           picker.setLocked(true);
           status.textContent = '';
           runJobId = null;
-          const outDir = outDirIn.value.trim() || picker.paths[0].replace(/[\\/][^\\/]*$/, '');
+          const outDir = outDirIn.value.trim() || window.PathText.dirname(picker.paths[0]);
           // job id 从流事件里取：invoke 要等全部转码结束才返回，那时已经来不及取消了
           // 【必须按前缀认领】原来写的是 `if (!runJobId && d.id) runJobId = d.id`，
           // 会抓任意任务的第一个 id —— 别的标签页在跑哈希/下载时，
@@ -190,7 +201,7 @@ register({
         div('form-row', h('span', { class: 'form-label' }, '分辨率'), scaleSel,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, '帧率'), fpsIn,
           h('label', { class: 'field-hint' }, muteChk, ' 移除音频')),
-        div('form-row', h('span', { class: 'form-label' }, '剪辑'), '从', ssIn, '持续（秒）', toIn,
+        div('form-row', h('span', { class: 'form-label' }, '剪辑'), '从', ssIn, '时长', toIn,
           h('span', { class: 'form-label', style: { minWidth: 'auto' } }, 'GIF宽度'), gifWIn),
         div('form-row', h('span', { class: 'form-label' }, '输出'), outDirIn, pickOutBtn),
         div('form-row', startBtn, ' ', cancelBtn, status)));

@@ -758,11 +758,14 @@
 
     const normKey = (p) => String(p || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
     function baseName(p) {
+      if (window.PathText) return window.PathText.basename(p);
       const s = String(p || '').replace(/[\\/]+$/, '');
       const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
       return i >= 0 ? s.slice(i + 1) : s;
     }
     function dirName(p) {
+      /* 统一走 lib/path-text.js：C:\foo 的目录是 C:\，不是 C:。 */
+      if (window.PathText) return window.PathText.dirname(p);
       const s = String(p || '');
       const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
       return i > 0 ? s.slice(0, i) : '';

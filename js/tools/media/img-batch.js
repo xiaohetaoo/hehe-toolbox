@@ -13,6 +13,12 @@ register({
     keywords: ['图片', '批量', '缩放', '转换', '压缩'],
     render(page) {
       let running = false; // 防重入标志：处理中禁止重复点击
+      /* 【per-run 序号】cleanup 会把 running 放回 false；如果用户回来后立刻再点
+       * 「开始」，新一轮开头会把 cancelFlag 重新置 false —— 而上一轮的循环
+       * 还在 await 解码中，醒来后看到 cancelFlag=false 就继续写盘了。
+       * 两轮并发写同一批文件，且旧轮结束时还会把新一轮的 running/prog 复位。
+       * 序号让旧轮在下一个检查点永久退出。 */
+      let batchRunSeq = 0;
       /* 停止标志：停止按钮与离开页面共用（同 img-compress / img-watermark）。
        * 原来这个批量工具既没有停止按钮也没有 cleanup：切页后整批继续逐张写盘。 */
       let cancelFlag = false;
@@ -43,21 +49,22 @@ register({
         if (!picker.count) return toast('请先选择图片', 'warn');
         cancelFlag = false;
         running = true;
+        const batchToken = ++batchRunSeq;
         prog.show();
         stopBtn.disabled = false;
         picker.setLocked(true);
         let outDir = outDirIn.value.trim();
         const paths = picker.paths.slice();
         if (!outDir) {
-          const firstDir = paths[0].replace(/[\\/][^\\/]+$/, '');
+          const firstDir = window.PathText.dirname(paths[0]);
           outDir = firstDir + '/hehe-processed';
-          try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); }
-        } else { try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); return toast('创建输出目录失败：' + e.message, 'error'); } }
+          try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); stopBtn.disabled = true; return toast('创建输出目录失败：' + e.message, 'error'); }
+        } else { try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) { running = false; prog.hide(); picker.setLocked(false); stopBtn.disabled = true; return toast('创建输出目录失败：' + e.message, 'error'); } }
         let ok = 0, fail = 0;
         preview.innerHTML = '';
         try {
         for (let i = 0; i < paths.length; i++) {
-          if (cancelFlag) break;   // 用户点了停止，或已离开页面
+          if (cancelFlag || batchToken !== batchRunSeq) break;   // 用户点了停止，或已离开页面
           prog.set((i + 1) / paths.length * 100);
           const p = paths[i];
           try {
@@ -84,6 +91,10 @@ register({
             }
             const q = Math.min(100, Math.max(10, parseInt(qualityIn.value) || 85)) / 100;
             const dataUrl = canvas.toDataURL(mime, q);
+            /* 【编码完再判一次停止】循环开头只能挡住"下一张"，而一张 4000×3000
+             * 的图解码 + 编码可能耗时数秒。用户点「停止」或切页发生在这一段时间里时，
+             * 原来仍会把这一张写盘 —— 但此时状态行已经写"已停止"，磁盘上却多出一个文件。 */
+            if (cancelFlag || batchToken !== batchRunSeq) break;
             const name = p.split(/[\\/]/).pop().replace(/\.\w+$/, mime === 'image/jpeg' ? '.jpg' : mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.' + (p.split('.').pop()));
             const outPath = outDir.replace(/[\\/]$/, '') + '/' + name;
             // 输出路径必须唯一：既要防止盖掉**输入原图**（输出目录选成原目录、
@@ -112,12 +123,22 @@ register({
         } finally {
           // 无论成功、失败还是抛异常，都必须解锁列表并复位按钮状态，
           // 否则一次异常就让整个工具页永久不可用。
-          running = false; prog.hide(); picker.setLocked(false); stopBtn.disabled = true;
+          /* 但只复位「自己这一代」：页面离开后新一轮已经开始的，这一步
+           * 会把新一轮的 running/prog 一起清掉（旧轮还没真正结束）。 */
+          if (batchToken === batchRunSeq) {
+            running = false; prog.hide(); picker.setLocked(false); stopBtn.disabled = true;
+          }
         }
       }
       window.App.onCleanup(() => {
         cancelFlag = true;
-        try { stopBtn.disabled = true; prog.hide(); } catch (e) {}
+        batchRunSeq++;
+        try {
+          stopBtn.disabled = true; prog.hide();
+          /* 同 img-watermark：running / picker 锁必须复位，否则复用回来是死页 */
+          running = false;
+          picker.setLocked(false);
+        } catch (e) {}
       });
       page.appendChild(div('card', div('card-title', '选择图片'), picker.el));
       page.appendChild(div('card', div('card-title', '处理参数'),

@@ -258,7 +258,7 @@ body {
   display: flex; align-items: center; gap: 10px; padding: 16px 14px 12px; height: 56px;
   -webkit-app-region: drag;
 }
-.sidebar .logo img { width: 30px; height: 30px; flex: none; border-radius: 7px; }
+.sidebar .logo img { width: 30px; height: 30px; flex: none; border-radius: 8px; }
 .sidebar .logo .logo-name {
   font-size: 15px; font-weight: 600; color: var(--text-1); white-space: nowrap;
   opacity: 1; transition: opacity 0.2s;
@@ -268,7 +268,7 @@ body {
 .nav-section-title { font-size: 11px; color: var(--text-3); padding: 12px 10px 4px; white-space: nowrap; letter-spacing: 0.5px; transition: opacity 0.2s; }
 .nav-item {
   display: flex; align-items: center; gap: 11px; padding: 8px 12px; margin-bottom: 2px;
-  border-radius: 8px; cursor: pointer; color: var(--text-2); font-size: 13.5px;
+  border-radius: 8px; cursor: pointer; color: var(--text-2); font-size: 13px;
   position: relative; white-space: nowrap; transition: background 0.15s, color 0.15s;
 }
 /* ============ 键盘焦点环 ============
@@ -353,7 +353,7 @@ body {
  * 用户看到一行蓝色文字，鼠标移上去毫无反应，自然不会去点。
  * 现在所有可点层级统一走 .bc-link：手型光标 + hover 底色 + 焦点环。 */
 .titlebar .breadcrumb .bc-node {
-  padding: 2px 6px; border-radius: 5px; transition: background 0.12s, color 0.12s;
+  padding: 2px 6px; border-radius: 4px; transition: background 0.12s, color 0.12s;
 }
 .titlebar .breadcrumb .bc-link { cursor: pointer; }
 .titlebar .breadcrumb .bc-link:hover { background: var(--nav-hover); color: var(--text-1); }
@@ -670,7 +670,6 @@ body {
 .card-title { font-size: 14px; font-weight: 500; color: var(--text-1); margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
 .card-title .icon { color: var(--primary); }
 .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-.tool-grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
 /* 相似图片查找的结果格：缩略图 + 文件名（媒体模块 img-dedup） */
 .sim-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
 .sim-cell {
@@ -681,7 +680,7 @@ body {
 .sim-cell:hover, .sim-cell:focus-visible { border-color: var(--primary); }
 .sim-cell img {
   width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block;
-  border-radius: 5px; background: var(--bg-2);
+  border-radius: 6px; background: var(--bg-2);
 }
 .sim-cell .sim-name { font-size: 11px; color: var(--text-2); line-height: 1.3; word-break: break-all; }
 .tool-card {
@@ -749,7 +748,7 @@ body {
 .home-search .hs-kbd {
   position: absolute; right: 14px; top: 15px; pointer-events: none;
   font-size: 11px; color: var(--text-3); letter-spacing: 0.4px;
-  border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px; background: var(--page-bg);
+  border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; background: var(--page-bg);
 }
 
 /* 搜索结果列表 */
@@ -860,7 +859,7 @@ body {
 
 /* ============ 工具页通用 ============ */
 .tool-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.tool-header .th-icon { width: 40px; height: 40px; border-radius: 9px; background: var(--primary-light); color: var(--primary); display: flex; align-items: center; justify-content: center; }
+.tool-header .th-icon { width: 40px; height: 40px; border-radius: 10px; background: var(--primary-light); color: var(--primary); display: flex; align-items: center; justify-content: center; }
 .tool-header h2 { font-size: 16px; font-weight: 500; }
 .tool-header .th-desc { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .tool-header .th-star { margin-left: auto; }
@@ -932,7 +931,7 @@ body {
 .form-inline { display: inline-flex; align-items: center; gap: 6px; }
 .form-label { font-size: 13px; color: var(--text-2); min-width: 84px; flex: none; }
 .input, .select, textarea.input {
-  border: 1px solid var(--border); border-radius: 5px; background: var(--input-bg); color: var(--text-1);
+  border: 1px solid var(--border); border-radius: 6px; background: var(--input-bg); color: var(--text-1);
   padding: 6px 10px; font-size: 14px; outline: none; font-family: inherit;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
@@ -1038,9 +1037,9 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .file-list .fl-row:hover { background: var(--hover-fill); }
 .file-list .fl-idx { flex: none; min-width: 22px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-3); }
 .file-list .fl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.file-list .fl-name { font-size: 12.5px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-list .fl-name { font-size: 12px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-list .fl-path { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-list .fl-size { flex: none; font-size: 11.5px; color: var(--text-3); min-width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
+.file-list .fl-size { flex: none; font-size: 11px; color: var(--text-3); min-width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
 .file-list .fl-del { flex: none; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); font-size: 16px; line-height: 1; cursor: pointer; padding: 0; }
 .file-list .fl-del:hover:not(:disabled) { background: rgba(245, 63, 63, 0.1); color: var(--danger); }
 .file-list .fl-del:disabled { cursor: not-allowed; opacity: 0.35; }
@@ -1055,7 +1054,7 @@ textarea.input { resize: vertical; line-height: 1.6; }
  * 深底/绿字/蓝高亮/红错误是所有终端的通用约定，用户对它有稳定预期；
  * 跟随主题反而在浅色主题下变成「白底绿字」没法读。 */
 .term {
-  background: #1D2129; color: #7EE787; font-family: Consolas, "Courier New", monospace; font-size: 12.5px;
+  background: #1D2129; color: #7EE787; font-family: Consolas, "Courier New", monospace; font-size: 12px;
   border-radius: 8px; padding: 12px; overflow: auto; line-height: 1.55; white-space: pre-wrap; word-break: break-all;
   max-height: 380px; min-height: 120px; user-select: text; cursor: text;
 }
@@ -1141,7 +1140,7 @@ textarea.input { resize: vertical; line-height: 1.6; }
 /* 设置页（Win11 风格：左侧融入导航 + 右侧白色大卡） */
 .settings-wrap { display: flex; gap: 8px; min-height: 420px; align-items: flex-start; }
 .settings-nav { width: 180px; flex: none; padding: 4px 0; }
-.settings-nav-item { padding: 9px 14px; border-radius: 8px; cursor: pointer; font-size: 13.5px; color: var(--text-2); position: relative; margin-bottom: 2px; transition: background 0.15s, color 0.15s; }
+.settings-nav-item { padding: 9px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text-2); position: relative; margin-bottom: 2px; transition: background 0.15s, color 0.15s; }
 .settings-nav-item .icon { color: var(--text-3); }
 .settings-nav-item:hover { background: var(--nav-hover); color: var(--text-1); }
 .settings-nav-item.active { background: var(--nav-active); color: var(--nav-active-text); font-weight: 500; }
@@ -1163,7 +1162,7 @@ textarea.input { resize: vertical; line-height: 1.6; }
    下面的「隐私承诺」等条目会被推到屏幕外。 */
 .crash-log {
   font-family: Consolas, "Courier New", monospace;
-  font-size: 11.5px; line-height: 1.55;
+  font-size: 11px; line-height: 1.55;
   color: var(--text-2);
   background: var(--bg-2);
   border: 1px solid var(--border);
@@ -1181,7 +1180,7 @@ textarea.input { resize: vertical; line-height: 1.6; }
 
 /* 关于分区（原独立「关于」页并入设置后） */
 .about-head { display: flex; align-items: center; gap: 14px; padding-bottom: 16px; margin-bottom: 4px; border-bottom: 1px solid var(--border-light); }
-.about-head img { width: 52px; height: 52px; border-radius: 11px; flex: none; }
+.about-head img { width: 52px; height: 52px; border-radius: 12px; flex: none; }
 .about-head .about-name { font-weight: 600; font-size: 17px; color: var(--text-1); }
 .about-head .about-head-btn { margin-left: auto; }
 /* kvGrid 自带 auto-fill 网格，塞进设置面板后需要下边距与分隔线 */
@@ -1192,9 +1191,9 @@ textarea.input { resize: vertical; line-height: 1.6; }
   background: var(--danger-light); border: 1px solid var(--danger-line);
   border-radius: 8px; padding: 14px 16px; margin-bottom: 6px;
 }
-.danger-banner-title { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600; color: var(--danger); margin-bottom: 6px; }
+.danger-banner-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--danger); margin-bottom: 6px; }
 .danger-banner-title .icon { color: var(--danger); }
-.danger-banner-text { font-size: 12.5px; color: var(--text-2); line-height: 1.65; }
+.danger-banner-text { font-size: 12px; color: var(--text-2); line-height: 1.65; }
 .danger-row .set-label { color: var(--text-1); }
 .danger-row .set-label::before {
   content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
@@ -1623,4 +1622,25 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
 .wl-title {
   flex: 1; color: var(--text-1);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ============ 窄窗口布局收口 ============ */
+/* 【文本类工具的三栏在窄窗下会塌成两条细缝】
+ * ui.splitPane 的默认栅格是 `1fr 130px 1fr`：窗口 720px 时左右各只有
+ * ~260px（再减去卡片 48px 内边距），中文长行几乎每 10 字就折一次，
+ * 而中间的「→」按钮还占着 130px 的固定宽度。窄于 860px 时改成上下堆叠：
+ * 左右两栏各占满宽，中间的转换按钮变成一条满宽按钮 —— 阅读顺序从
+ * 「左右对照」变成「上下一一对应」，但每一行都能完整显示。 */
+@media (max-width: 860px) {
+  .split-pane, .split-pane.no-btn { grid-template-columns: 1fr; }
+  .split-mid { padding: 4px 0; }
+  .split-mid .btn { width: 100%; }
+}
+/* 【窄窗口收紧卡片内边距】
+ * .card 的 24px 内边距是按 1200px 内容宽度定的；窗口 780px 时正文实际
+ * 只剩 ~680px，再吃掉 48px 就显得局促（表单标签与输入框更容易被挤到换行）。
+ * 收窄到 16px 只影响窄窗口，宽屏维持原样。 */
+@media (max-width: 820px) {
+  .card { padding: 18px 16px; }
+  .form-row { gap: 8px; }
 }

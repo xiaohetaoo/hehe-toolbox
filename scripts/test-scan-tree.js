@@ -70,6 +70,85 @@ t('17c 行为：带/不带尾斜杠扫描同一个目录，根统计一致', asy
   assert.strictEqual(hit, true, '从文件向上聚合没有命中根目录（根统计会恒为 0）');
 });
 
+/* ==================== 17d 相对根 ==================== */
+
+/* 【本文件里的异步用例会 process.chdir —— 必须串行】
+ * harness 的 deferred 模式用 Promise.all 同时跑所有异步用例（见 doneAsync）。
+ * 两个用例各自 chdir 到不同临时目录的父目录，就会互相把 cwd 改走，
+ * 于是「相对根」解析到别人家的目录，断言随机变红（本文件 17e 第一版
+ * 就这么挂了：standalone 跑通，整文件跑红）。
+ * 这里用文件级串行链把 17d/17e 排队；不要改成 Promise.all 友好的写法 ——
+ * 相对路径解析本身就依赖进程级 cwd，没有并发安全的版本。 */
+let serial = Promise.resolve();
+const serialAsync = (fn) => { const p = serial.then(fn); serial = p.catch(() => {}); return p; };
+
+t('17d 行为：相对根扫描时，逐目录体积与路径都必须正确', () => serialAsync(async () => {
+  /* 【锁的是什么】聚合祖先用的是归一后的绝对 scanRoot，而遍历原来用原始
+   * root。传相对路径（输入框手打 "photos"）时 item.path 是相对的，
+   * dirname 得到 "photos\\sub"，与绝对 scanRoot 永远不相等 ——
+   * 文件数/总体积仍对（直接累加），但每个目录的体积恒为 0，
+   * 「目录占用排行」整块失真。实测旧实现返回
+   *   topDirs: [{ path: "hehe-probe-xxx\\sub", size: 0 }]
+   * 这条用真实 handler 跑一遍，同时锁住「返回绝对路径」（渲染层会拿它
+   * 去继续下钻 / 打开目录，相对路径会被解析到主进程 cwd）。 */
+  const { loadFsOps } = require('./lib/fs-handlers');
+  const { CH, handlers } = loadFsOps();
+  const fs = require('fs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'r19-scan-'));
+  try {
+    fs.mkdirSync(path.join(base, 'sub'));
+    fs.writeFileSync(path.join(base, 'sub', 'a.bin'), Buffer.alloc(500000));
+    fs.writeFileSync(path.join(base, 'b.bin'), Buffer.alloc(300000));
+    const cwd = process.cwd();
+    process.chdir(path.dirname(base));
+    let r;
+    try {
+      r = await handlers.get(CH.FS.SCAN_TREE)({}, path.basename(base), {});
+    } finally { process.chdir(cwd); }
+    assert.strictEqual(r.totalSize, 800000, '总体积不对：' + r.totalSize);
+    assert.strictEqual(r.files, 2, '文件数不对：' + r.files);
+    assert.ok(path.isAbsolute(r.root), '返回的 root 不是绝对路径：' + r.root);
+    const sub = r.topDirs.find((d) => path.basename(d.path) === 'sub');
+    assert.ok(sub, 'topDirs 里没有 sub：' + JSON.stringify(r.topDirs));
+    assert.strictEqual(sub.size, 500000, '目录体积为 0/错误 —— 聚合键与遍历路径不是同一套');
+    assert.ok(path.isAbsolute(sub.path), '目录路径不是绝对路径：' + sub.path);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+}));
+
+t('17e 行为：相对根下空目录扫描与查重结果都是绝对路径', () => serialAsync(async () => {
+  /* 空目录清单会被渲染层送回 fs:delete-empty，查重结果会被送回 fs:delete；
+   * 两者都按主进程 cwd 解析相对路径 —— 相对根会让「列出来的目录/文件」
+   * 与「能删的路径」对不上，报错却是「路径不存在」。 */
+  const { loadFsOps } = require('./lib/fs-handlers');
+  const { CH, handlers } = loadFsOps();
+  const fs = require('fs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'r19-scan2-'));
+  try {
+    fs.mkdirSync(path.join(base, 'empty1'));
+    fs.mkdirSync(path.join(base, 'empty2'));
+    fs.writeFileSync(path.join(base, 'a.txt'), 'same-content');
+    fs.mkdirSync(path.join(base, 'copy'));
+    fs.writeFileSync(path.join(base, 'copy', 'a.txt'), 'same-content');
+    const cwd = process.cwd();
+    process.chdir(path.dirname(base));
+    let empty, dedupe;
+    try {
+      empty = await handlers.get(CH.FS.SCAN_EMPTY_DIRS)({}, path.basename(base));
+      dedupe = await handlers.get(CH.FS.DEDUPE)({}, path.basename(base), { mode: 'content' });
+    } finally { process.chdir(cwd); }
+    assert.ok(empty.dirs.length >= 2, '空目录没扫全：' + JSON.stringify(empty.dirs));
+    for (const d of empty.dirs) assert.ok(path.isAbsolute(d.path), '空目录返回了相对路径：' + d.path);
+    assert.ok(dedupe.groups.length >= 1, '内容相同的两个文件没有被分成一组');
+    for (const f of dedupe.groups[0].files) {
+      assert.ok(path.isAbsolute(f), '查重结果返回了相对路径：' + f);
+    }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+}));
+
 /* ==================== 执行 ==================== */
 
 done();

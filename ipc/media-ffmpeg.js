@@ -350,7 +350,16 @@ handle(CH.FFMPEG.PICK, async (e) => {
   for (const src of picked.filePaths) {
     const name = path.basename(src).toLowerCase();
     if (name === 'ffmpeg.exe' || name === 'ffprobe.exe') {
-      await fsp.copyFile(src, path.join(binDir(), name));
+      /* 同上面 gz 分支：先临时名再改名，避免复制中断留下半截 exe */
+      const dest = path.join(binDir(), name);
+      const tmp = tempNames.writeTmp(dest, 'ffpick' + process.pid + '-' + Date.now());
+      try {
+        await fsp.copyFile(src, tmp);
+        await fsp.rename(tmp, dest);
+      } catch (err) {
+        await fsp.rm(tmp, { force: true }).catch(() => {});
+        throw err;
+      }
       copied.push(name);
     }
   }
@@ -377,9 +386,15 @@ handle(CH.FFMPEG.PICK, async (e) => {
           return { picked: copied, binDir: binDir(), skipped: '已有可用的 ffmpeg，未覆盖' };
         }
       }
-      await fsp.copyFile(first, dest);
-      copied.push('ffmpeg.exe');
-    } catch (err) { /* 不是 ffmpeg：保持原状，不复制 */ }
+      const tmp2 = tempNames.writeTmp(dest, 'ffpick2-' + process.pid + '-' + Date.now());
+      try {
+        await fsp.copyFile(first, tmp2);
+        await fsp.rename(tmp2, dest);
+      } catch (e) {
+        await fsp.rm(tmp2, { force: true }).catch(() => {});
+        throw e;
+      }
+      copied.push('ffmpeg.exe');    } catch (err) { /* 不是 ffmpeg：保持原状，不复制 */ }
   }
   return { picked: copied, binDir: binDir() };
 });
@@ -407,10 +422,30 @@ handle(CH.FFMPEG.DOWNLOAD, async (e, sourceId) => {
         emitLabel();
         await downloadToFile(src.base + '/' + gzName, tmp, id, ctrl, `文件 ${idx}/2：${exeName}`);
         send('job:stream', { id, data: JSON.stringify({ stage: 'extract', label: `解压 ${exeName}` }) });
-        const gz = fs.readFileSync(tmp);
-        const out = zlib.gunzipSync(gz);
-        fs.writeFileSync(path.join(binDir(), exeName), out);
-        fs.rmSync(tmp, { force: true });
+        /* 【解压失败的临时 gz 必须清掉】
+         * 原来 gunzip 抛错（下载被截断 / 镜像给了 HTML 错误页）时直接
+         * 冒到 handler 的 catch，而 fs.rmSync(tmp) 写在成功路径末尾 ——
+         * 几十 MB 的 .gz 永远留在 %TEMP%。现在用 try/finally 收口。 */
+        try {
+          const gz = fs.readFileSync(tmp);
+          const out = zlib.gunzipSync(gz);
+          /* 【先写临时名再改名，不能直接覆盖 bin 里的 exe】
+           * 直接 writeFileSync 到 bin/ffmpeg.exe 时，写到一半失败（磁盘满、
+           * 杀软拦截）会把原来能用的 ffmpeg 变成半截文件，而 findFfmpeg 只看
+           * 「文件存在」就认它 —— 之后所有转码都失败，用户不知道是这一步造成的。
+           * 同目录临时名 + rename 保证要么是旧的、要么是完整的新文件。 */
+          const dest = path.join(binDir(), exeName);
+          const wtmp = tempNames.writeTmp(dest, 'ffdl' + process.pid + '-' + Date.now());
+          try {
+            fs.writeFileSync(wtmp, out);
+            fs.renameSync(wtmp, dest);
+          } catch (e) {
+            try { fs.rmSync(wtmp, { force: true }); } catch (e2) {}
+            throw e;
+          }
+        } finally {
+          fs.rmSync(tmp, { force: true });
+        }
       }
       const ffmpeg = findFfmpeg();
       send('job:stream', { id, data: JSON.stringify({ stage: 'done' }) });
@@ -1440,7 +1475,17 @@ handle(CH.REC.RESUME, (e) => withRecordingOperation(e, async () => {
 }));
 handle(CH.REC.STOP, (e, makeGif) => withRecordingOperation(e, async () => {
   await recStopSeg();
-  if (!recSegs.length) return { ok: true, size: 0, outPath: recOut };
+  if (!recSegs.length) {
+    /* 【没有分段的早退也要复位会话】
+     * 这条分支原来直接 return：recOpts/recSegDir/recOwner 原样留着，
+     * 下次「开始录制」就被「已有录制会话进行中」挡住，用户只能重启应用。
+     * 现在虽然正常流程很难走到这里（START 成功必然 push 一段），
+     * 但 START 与 STOP 的异常交错（启动失败回滚、进程被外部杀掉）都会落到它。 */
+    const emptyDir = recSegDir;
+    recOpts = null; recSegs = []; recSegDir = null; recOwner = null; recDeath = null;
+    if (emptyDir) await fsp.rm(emptyDir, { recursive: true, force: true }).catch(() => {});
+    return { ok: true, size: 0, outPath: recOut };
+  }
   // 拼接失败时的降级标记：必须如实告诉用户只拿到了第一段，
   // 否则“暂停过的录制”会静默丢掉后半段，用户还以为完整。
   let degraded = null;

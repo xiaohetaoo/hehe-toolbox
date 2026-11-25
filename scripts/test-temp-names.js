@@ -178,6 +178,9 @@ t('17 全项目：凡是从 %TEMP% 提交到用户输出目录的地方，都不
     'fsp.rename(partTmp, finalOut)',    // fsOps.tempPathFor(finalOut)：同目录
     'fsp.rename(tmp, HOSTS_PATH)',      // hosts 临时文件在同目录
     'fsp.rename(tmp, dest)',            // downloadToFile：dest + '.part-...' 同目录
+    /* FFmpeg 手动挑选的备用名分支：writeTmp(dest) 就在 dest 的父目录里，
+     * 与目标同卷；变量叫 tmp2 只是与上一分支的 tmp 区分。 */
+    'fsp.rename(tmp2, dest)',           // FFmpeg 挑选：同目录临时名
     'fsp.rename(srcAbs, bakPath)',      // 搬家：源改名为同级 .bak
     'fsp.rename(bakPath, srcPath)',     // 搬家回滚
     'fsp.rename(src, dst)',             // moveFile 内部（EXDEV 已兜底）

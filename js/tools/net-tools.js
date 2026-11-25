@@ -488,7 +488,7 @@
     desc: '快速编辑系统 Hosts，支持备份还原（写入需管理员权限）', descEn: 'Edit the hosts file with backup and one-click restore',
     keywords: ['hosts', '域名', '解析'],
     render(page) {
-      const ta = h('textarea', { class: 'pane-ta mono', style: { minHeight: '320px', fontSize: '12.5px' } });
+      const ta = h('textarea', { class: 'pane-ta mono', style: { minHeight: '320px', fontSize: '12px' } });
       const pathEl = div('field-hint', '');
       const status = h('div', { class: 'field-hint' }, '');
       async function load() {

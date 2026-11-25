@@ -139,6 +139,25 @@ register({
       /* region 现在被 onEnter 的 status 文案与区域标签读取，已不是"只赋值未使用"，
        * 所以不再需要 eslint-disable。 */
       let recording = false, paused = false, region = null;
+      /* 【录制期间锁住设置项】
+       * 帧率/麦克风/摄像头/区域/GIF 都是「开录那一刻」传送给主进程的参数，
+       * 录制中途改它们不会对正在跑的 ffmpeg 生效。原来这些控件在录制期间
+       * 仍可点：用户把麦克风从「不录声音」改成某个设备，界面显示已改，
+       * 实际录出来的文件里却没有声音 —— 比灰掉更误导。
+       * 更具体的一条：录制中切摄像头会触发 camOn → startPreview，
+       * 而摄像头正被 ffmpeg 独占，预览必然失败并把提示刷成
+       * 「预览不可用」，看起来像是录制出了问题。
+       * 锁住即可，停止后按摄像头是否选中恢复位置/大小的可用态。 */
+      function setControlsLocked(on) {
+        for (const el of [fpsSel, audioSel, camSel, regionBtn, clearRegionBtn, gifChk]) {
+          try { el.disabled = on; } catch (e) {}
+        }
+        try {
+          const hasCam = !!camSel.value;
+          camPosSel.disabled = on || !hasCam;
+          camSizeSel.disabled = on || !hasCam;
+        } catch (e) {}
+      }
       const camOn = () => {
         /* 这里没挂 no-shadow 压制 —— 因为 eslint 并不认为这里有遮蔽
          * （模块顶层的 on 来自 window.api 解构，与这里的局部 on 不在同一
@@ -270,6 +289,7 @@ register({
             return;
           }
           recording = true; paused = false;
+          setControlsLocked(true);
           startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
           status.textContent = '录制中…' + (region ? `（${region.w}×${region.h}）` : '（全屏）') + (audioSel.value ? ' + 麦克风' : '') + (camSel.value ? ' + 摄像头画中画' : '');
           camPreviewHint.textContent = '录制中（预览已让给录制）';
@@ -304,6 +324,8 @@ register({
             toast('录制不完整：' + r.degraded, 'error', 8000);
           }
         } catch (e) { recording = false; startBtn.disabled = false; status.textContent = '✗ ' + e.message; }
+        /* 录制结束（无论成功失败）解除设置锁，再决定是否把摄像头交还预览 */
+        setControlsLocked(false);
         // 录制结束把摄像头交还给预览
         if (camSel.value) startPreview(camSel.value);
       }
@@ -337,6 +359,7 @@ register({
             paused = false;
             if (/录制中|正在封装/.test(status.textContent || '')) status.textContent = '已离开页面，录制已停止';
             camPreviewHint.textContent = '已离开页面，预览已释放';
+            setControlsLocked(false);
           } catch (e) {}
           return;
         }
@@ -350,6 +373,7 @@ register({
            * 「录制中（预览已让给录制）」—— 而录制已经停了、预览也已经释放，
            * 复用回来后用户看到这句话会以为还在录。 */
           camPreviewHint.textContent = '已离开页面，预览已释放';
+          setControlsLocked(false);
         } catch (e) {}
         invoke(Channels.CHANNELS.REC.STOP, false).catch((e) => {
           /* 【不能静默】停不下来意味着后台还在录 —— 这是必须让用户知道的事
@@ -366,6 +390,7 @@ register({
         window.App.onEnter(() => {
           try {
             const on = !!recording;
+            setControlsLocked(on);
             startBtn.disabled = on;
             stopBtn.disabled = !on;
             pauseBtn.disabled = !on || paused;

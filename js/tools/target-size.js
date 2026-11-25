@@ -130,10 +130,18 @@
        * 这里只保存它的引用，cleanup 时调用同一个出口，不另写一份"只解一半"的复位。 */
       let unlockRef = null;
       let targetRunSeq = 0;
+      /* 【音视频进度订阅只留一个槽位】
+       * 原来每跑一次音视频就在 App.onCleanup 里再注册一个 unsub：跑 10 次
+       * 就有 10 个闭包常驻（app.js 的 onCleanup 按引用去重，每次都是新函数，
+       * 永远命中不了），离开页面时挨个调用已退订的函数。功能没问题，
+       * 但页面寿命越长、跑得越多，这个队列越长。改成页面级登记一次，
+       * 槽位里只放当前那一条订阅。 */
+      let avUnsub = null;
       if (window.App && App.onCleanup) {
         App.onCleanup(() => {
           canceled = true;
           if (runJobId) invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {});
+          if (avUnsub) { try { avUnsub(); } catch (e) {} avUnsub = null; }
           if (unlockRef) { try { unlockRef(); } catch (e) {} }
         });
       }
@@ -264,7 +272,7 @@
         // 分组：图片走渲染层逐轮编码；音视频整体交给主进程
         const imgs = files.filter(isImg);
         const avs = files.filter(isAv);
-        const outDirBase = outDirIn.value.trim() || (files[0].replace(/[\\/][^\\/]*$/, '') + '/hehe-target');
+        const outDirBase = outDirIn.value.trim() || (window.PathText.dirname(files[0]) + '/hehe-target');
         try { await invoke(Channels.CHANNELS.FS.MKDIR, outDirBase); } catch (e) {
           unlockUi();
           setTimeout(() => prog.hide(), 800);
@@ -319,6 +327,7 @@
              * 为什么保持默认（宽松）而不是显式改成 strict：主进程的 tgt 任务 id
              * 形态若变了（例如将来带横杠），strict 会静默失效、一条事件都收不到；
              * 宽松前缀 + claimedId 认领对这种变化是稳的。 */
+            if (avUnsub) { try { avUnsub(); } catch (e) {} avUnsub = null; }
             const unsub = window.JobPrefix.subscribe('tgt', (d) => {
               try {
                 /* 【必须在这里认领 runJobId】
@@ -343,7 +352,7 @@
                 }
               } catch (e) {}
             });
-            if (window.App && App.onCleanup) App.onCleanup(unsub);
+            avUnsub = unsub;
             try {
               status.textContent = `处理中（音视频 ${avs.length} 个）…`;
               const r = await invoke(Channels.CHANNELS.TARGET.COMPRESS_AV, {
@@ -373,7 +382,7 @@
                 toast('音视频压缩失败：' + (window.api.errText ? window.api.errText(e) : e.message), 'error');
                 failCount += avs.length;
               }
-            } finally { try { unsub(); } catch (e) {} }
+            } finally { try { unsub(); } catch (e) {} if (avUnsub === unsub) avUnsub = null; }
           }
           /* 这一趟已被取代（切页后又开了一批）：界面属于新那趟，不再写 */
           if (runToken !== targetRunSeq) return;

@@ -508,11 +508,11 @@ t('长路径要分批：不抛 ENAMETOOLONG，结构完整', async () => {
    *
    * 【路径条数从 600 降到 130】PS_PATH_BATCH 是 60，600 条要分 10 批、
    * 起 10 次 PowerShell（每次约 640ms）—— 这条用例因此独占 8.9 秒。
-   * 260 条 = 5 批（覆盖「多批」），拼成单条约 33k 字符仍超过 32767，
+   * 260 条 = 5 批（覆盖「多批」），拼成单条约 43k 字符，稳定超过 32767，
    * 判据一个不少，耗时从 8.9 秒降到约 3 秒。 */
   const many = [];
   for (let i = 0; i < 260; i++) {
-    many.push(path.join(os.tmpdir(), 'r11-nope-' + i + '-' + 'x'.repeat(70), 'link-' + i));
+    many.push(path.join(os.tmpdir(), 'r11-nope-' + i + '-' + 'x'.repeat(100), 'link-' + i));
   }
 
   /* 拼成一条命令行的长度（单引号包裹、逗号分隔，与实现里的形态一致） */

@@ -341,7 +341,15 @@ handle(CH.FS.SCAN_TREE, async (e, root, opts = {}) => {
   let files = 0, totalSize = 0, dirCount = 0, lastEmit = 0;
   const topFiles = [];
   try {
-    await walkDir(root, { maxDepth: opts.maxDepth || 64, _cancelRef: cancelRef }, async (item) => {
+    /* 【遍历也必须用归一后的根】
+     * 聚合祖先用的是绝对路径 scanRoot，而这里原来用原始 root 遍历：
+     * 传相对路径（界面输入框里手打 "photos"）时 item.path 也是相对的，
+     * path.dirname 得到 "photos\\sub"，与 "D:\\...\\photos" 永远不相等 ——
+     * 文件总数与总体积仍是对的（那是直接累加的），但**每个目录的体积全是 0**，
+     * 界面上的「目录占用排行」整块失真。实测（探针）：相对根返回
+     *   topDirs: [{ path: "hehe-probe-xxx\\sub", size: 0 }]
+     * 改成 scanRoot 之后，item.path 与聚合键出自同一套路径。 */
+    await walkDir(scanRoot, { maxDepth: opts.maxDepth || 64, _cancelRef: cancelRef }, async (item) => {
       if (item.type === 'dir') {
         dirCount++;
         dirSize.set(item.path, 0);
@@ -453,6 +461,10 @@ function normalizeRootForScan(root) {
 
 /* empty dirs */
 handle(CH.FS.SCAN_EMPTY_DIRS, async (e, root) => {
+  /* 同 scan-tree：先归一。空目录清单会被渲染层原样送回 fs:delete-empty，
+   * 相对路径在那里会按主进程 cwd 解析 —— 列出来的目录一个也删不掉，
+   * 报的错却是「路径不存在」，用户根本猜不到是入口少了归一。 */
+  const scanRoot = normalizeRootForScan(root);
   const id = 'empty' + ctx.nextJobSeq();
   const cancelRef = { canceled: false };
   jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
@@ -472,7 +484,7 @@ handle(CH.FS.SCAN_EMPTY_DIRS, async (e, root) => {
     if (!hasFile && !cancelRef.canceled) { empty.push({ path: dir, depth }); return true; }
     return false;
   }
-  try { await rec(root, 0); } finally { jobs.delete(id); }
+  try { await rec(scanRoot, 0); } finally { jobs.delete(id); }
   if (cancelRef.canceled) throw new Error('已取消');
   empty.sort((a, b) => b.depth - a.depth);
   return { dirs: empty };
@@ -861,8 +873,7 @@ handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
   // 异步 stat：大文件分片期间不能阻塞主进程事件循环（UI 与 sys:stats 都要响应）
   const st = await fsp.stat(p);
   const chunkSize = Math.max(1, chunkMB) * 1024 * 1024;
-  const base = path.basename(p);
-  // 空文件没有可分割的内容：parts 记为 1 并与实际产生的 part1 保持一致，
+  const base = path.basename(p);  // 空文件没有可分割的内容：parts 记为 1 并与实际产生的 part1 保持一致，
   // 否则清单 parts=0 而磁盘上留着 0 字节 part1，合并时会按 0 片处理，分片成为孤儿文件。
   const parts = Math.max(1, Math.ceil(st.size / chunkSize));
   const pad = String(parts).length;
@@ -881,7 +892,15 @@ handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
   const madePaths = [];
   await new Promise((resolve, reject) => {
     const rs = fs.createReadStream(p, { highWaterMark: 1 << 20 });
-    let idx = 1, ws = null, done = 0, pausedFor = null;
+    /* 【本片已"排入写流"的字节数必须自己记，不能读 ws.bytesWritten】
+     * ws.bytesWritten 是**已经落盘**的字节数（Node 文档明说「不含仍在
+     * 写队列里的数据」），在高水位 16KB + 慢盘上会明显滞后于我们写进去的量。
+     * 用它算「还能写多少到片界」，同一片里就会多塞几个 chunk；随后
+     *   - 每片大于用户选的 chunkMB（合并时仍然对，但「按 1MB 分」的承诺破了）；
+     *   - 片号与内容边界错位，靠片头/片尾做校验的工具会误判。
+     * 这是竞态：本机 SSD 实测恰好每片 1048576 字节，不能证明它是对的。
+     * partBytes 只在 while 里随 write 递增，与落盘进度无关，边界才是确定的。 */
+    let idx = 1, ws = null, done = 0, pausedFor = null, partBytes = 0;
     /* 【统一失败收口：读流必须销毁，否则 fd 挂到进程退出】
      * 原实现里 ws 的 error 直接 reject —— 既没 rs.destroy() 也没清半截分片。
      * 触发点很常见：默认输出目录是「源文件 + '.parts'」，同一个文件分两次
@@ -903,6 +922,7 @@ handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
     const openPart = () => {
       const partPath = path.join(outDir, `${base}.part${String(idx).padStart(pad, '0')}`);
       ws = fs.createWriteStream(partPath, { flags: 'wx' });
+      partBytes = 0;
       /* 【只登记"确实由我们创建成功"的分片】
        * createWriteStream 是异步打开的，'error' 可能要过一会儿才到。
        * 早期这里在 createWriteStream 之后立刻 push，于是 EEXIST 的情况下
@@ -924,10 +944,10 @@ handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
       if (settled) return;
       let off = 0;
       while (off < chunk.length) {
-        if (ws.bytesWritten >= chunkSize) { ws.end(); idx++; openPart(); if (pausedFor && pausedFor !== ws) { pausedFor = null; rs.resume(); } }
-        const n = Math.min(chunk.length - off, chunkSize - ws.bytesWritten);
+        if (partBytes >= chunkSize) { ws.end(); idx++; openPart(); if (pausedFor && pausedFor !== ws) { pausedFor = null; rs.resume(); } }
+        const n = Math.min(chunk.length - off, chunkSize - partBytes);
         const piece = chunk.subarray(off, off + n); off += n;
-        writtenBytes += n;
+        writtenBytes += n; partBytes += n;
         if (!ws.write(piece)) {
           // 背压：慢盘上防止内存无界堆积。
           // 注意 rs.pause() 只阻止后续 'data' 事件，当前这块 chunk 的 while 仍在继续写，
@@ -1076,6 +1096,10 @@ handle(CH.FS.MERGE_PARTS, async (e, pickedPath, outPath) => {
 
 handle(CH.FS.DEDUPE, async (e, root, opts = {}) => {
   const mode = opts.mode || 'content';
+  /* 同 scan-tree：查重结果里的路径会被渲染层直接拿去删/打开，
+   * 必须是绝对路径。相对根返回相对路径时，fs:delete 会按主进程 cwd 解析，
+   * 对不上用户实际选的那棵树。 */
+  const scanRoot = normalizeRootForScan(root);
   const cancelRef = { canceled: false };
   const id = 'dedupe' + ctx.nextJobSeq();
   jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
@@ -1083,7 +1107,7 @@ handle(CH.FS.DEDUPE, async (e, root, opts = {}) => {
   try {
     const byKey = new Map();
     let scanned = 0, lastEmit = Date.now();
-    await walkDir(root, { _cancelRef: cancelRef }, async (item) => {
+    await walkDir(scanRoot, { _cancelRef: cancelRef }, async (item) => {
       if (item.type !== 'file') return;
       scanned++;
       const now = Date.now();

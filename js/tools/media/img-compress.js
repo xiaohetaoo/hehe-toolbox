@@ -174,10 +174,15 @@ register({
         cancelFlag = false;
         running = true; startBtn.disabled = true;
         picker.setLocked(true);
+        /* 【停止按钮必须真的可用】它初始 disabled（空闲时不该能点），
+         * 但原实现只在页尾把它置回 true，从来没在这里解开：
+         * 整批压缩（几十张、每张几秒）期间「停止」一直是灰的，
+         * 而 cancelFlag 的整套停止/中途退出逻辑都以"用户能按到它"为前提。 */
+        stopBtn.disabled = false;
         pageProg = prog;
         prog.show(); status.textContent = '';
         const paths = picker.paths.slice();
-        const outDir = outDirIn.value.trim() || (paths[0].replace(/[\\/][^\\/]+$/, '') + '/hehe-compressed');
+        const outDir = outDirIn.value.trim() || (window.PathText.dirname(paths[0]) + '/hehe-compressed');
         try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) {}
         let totalBefore = 0, totalAfter = 0, ok = 0, fail = 0, missCount = 0;
         for (let i = 0; i < paths.length; i++) {

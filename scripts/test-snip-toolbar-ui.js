@@ -377,11 +377,20 @@ const PROBE = `
         same: bar.querySelector('#sizeSlider') === ref
       });
     }
-    /* 线宽真的影响笔画：同一条竖线上红色像素数应随线宽显著增加 */
+    /* 线宽真的影响笔画：同一条**水平扫描线**横穿矩形左边框，红色像素个数
+     * 应随线宽显著增加。
+     *
+     * 【为什么不能继续按「竖着数一条 1px 宽的列」来量】
+     * 那个量法只在 DPR=1 时成立。本机 DPR=1.875：逻辑 1px 的线宽落到物理
+     * 上是 1.875px，且描边中心在 60*1.875=112.5 —— 刚好把物理像素 112 整个
+     * 盖住。于是 size=1 和 size=10 在同一条竖线上都是「整列纯红」，
+     * 量出来必然相等（实测都是 133），断言恒失败而与实现无关。
+     * 横着数才是「线宽」的真身：size=1 → 约 2 个物理像素，size=10 → 约 19 个。 */
     function strokePx(sz) {
       T.getShapes().length = 0;
       T.addShape({ type: 'rect', color: '#FF0000', size: sz, x1: 60, y1: 90, x2: 220, y2: 200 });
-      const d = ctx.getImageData(Math.round(60*DPR), Math.round(110*DPR), 1, Math.round(70*DPR)).data;
+      const w = Math.round(25 * DPR);
+      const d = ctx.getImageData(Math.round(50 * DPR), Math.round(150 * DPR), w, 1).data;
       let n = 0;
       for (let i = 0; i < d.length; i += 4) if (d[i] > 170 && d[i+1] < 120) n++;
       return n;
@@ -528,7 +537,8 @@ t('真机：线宽滑杆连续可调，且拖动时元素不被替换', () => {
     if (!st.same) throw new Error('拖动滑杆时元素被替换（拖拽会中断）');
   }
   /* 锁的是：线宽滑杆只是装饰 —— 调了但画出来的笔画粗细没变。
-   * 1px 与 10px 在同一位置的红色像素数必须显著不同。 */
+   * 量法见 PROBE 里 strokePx 的注释：横穿左边框数红色，DPR≠1 也成立。
+   * 1px 与 10px 的红色像素数必须显著不同（实测约 2 vs 19）。 */
   if (!(s.thick > s.thin * 2)) {
     throw new Error('线宽没有真正影响笔画：1px=' + s.thin + 'px 10px=' + s.thick + 'px');
   }

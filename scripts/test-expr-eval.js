@@ -188,6 +188,23 @@ t('29 expr-eval：% 紧跟右括号/函数调用也按百分比（不再「括�
   }
 });
 
+t('30 expr-eval：常量后的百分号也算后缀（pi% / e%）', () => {
+  const EEx = require(path.join(ROOT, 'lib', 'expr-eval'));
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  /* 锁的是：prevIsOperandEnd 漏了 const 这个 token 类型。
+   * `pi%` 在修复前被当成取余（`%` 后面没有操作数），parser 抛
+   * 「表达式不完整」—— 而它是计算器里再普通不过的写法。 */
+  const cases = [
+    ['pi%', Math.PI / 100],
+    ['e%', Math.E / 100],
+    ['2*pi%', 2 * Math.PI / 100],
+  ];
+  for (const [e, want] of cases) {
+    const got = EEx.evaluate(e);
+    assert.ok(near(got, want), 'evaluate(' + JSON.stringify(e) + ') 应为 ' + want + '，实际 ' + got);
+  }
+});
+
 /* ==================== 28. acl-repair：写权限 ≠ 完全控制 ==================== */
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');

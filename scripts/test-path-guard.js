@@ -119,7 +119,10 @@ t('拒绝覆盖系统关键目录内的文件', () => {
   }
 });
 t('允许覆盖普通文件', () => {
-  assert.strictEqual(guard.checkOverwritable('C:/Users/x/Desktop/notes.txt'), null);
+  /* 用**当前用户**的桌面路径：`C:/Users/x/...` 现在会被 25e 的
+   * 「另一个用户的家目录不许覆盖」正确拦下（x 不是本机用户名），
+   * 那是期望行为，不是误拦。 */
+  assert.strictEqual(guard.checkOverwritable(path.join(os.homedir(), 'Desktop', 'notes.txt')), null);
 });
 
 /* ---------- 交叉验证：不能通过组合绕过 ---------- */
@@ -359,5 +362,24 @@ t('25d ensureDirectoryInsideTracked：只记录本次新建的目录（EEXIST �
 });
 
 /* ==================== 26. power-gate 包装剥离 ==================== */
+
+t('25e 另一个用户的家目录深层：删除与覆盖都要拦住', () => {
+  /* 锁的是：Users 的「只保护本身 + 一层」豁免被一并套到了别人的家目录上。
+   * isCriticalPath 对 C:\Users\Alice\Documents 判 false（因为多了一层），
+   * 于是共享电脑/管理员场景下可以递归删掉另一个用户的文档，
+   * 而界面提示只是普通的「确认删除」。自己的 Documents 必须继续放行。 */
+  const PGx = require(path.join(ROOT, 'lib', 'path-guard'));
+  const home = require('os').homedir();
+  const usersRoot = path.dirname(home);
+  if (path.dirname(usersRoot) !== path.parse(usersRoot).root) return; // 非标准家目录布局，跳过
+  const other = path.join(usersRoot, 'HeheOtherUser', 'Documents', 'thesis.docx');
+  const del = PGx.checkDeletable(other, true);
+  assert.ok(del && del.code === 'OTHER_HOME', '另一个用户的文档必须拒绝删除，实际：' + JSON.stringify(del));
+  const ow = PGx.checkOverwritable(other);
+  assert.ok(ow && ow.code === 'OTHER_HOME', '另一个用户的文档必须拒绝覆盖，实际：' + JSON.stringify(ow));
+  const mine = path.join(home, 'Documents', 'thesis.docx');
+  assert.strictEqual(PGx.checkDeletable(mine, true), null, '自己的文档目录必须继续放行');
+  assert.strictEqual(PGx.checkOverwritable(mine), null, '自己的文档目录必须继续可写');
+});
 
 done();

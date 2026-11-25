@@ -16,7 +16,7 @@
 (function () {
   const Channels = window.Channels;   // IPC 通道名常量（见 lib/channels.js）
   const { register } = window.Registry;
-  const { div, btn, toast, filePicker, progressEl, icon } = window.ui;
+  const { div, btn, toast, filePicker, progressEl, icon, guard } = window.ui;
   const { invoke } = window.api;
   const MOD = 'media';
   const { isImgPath, IMG_FILTER, loadImg } = window.MediaShared;
@@ -124,7 +124,19 @@
         '混淆只打乱像素位置，图片的统计特征仍在，有意的攻击者可以恢复大致轮廓。'
         + '真需要保密请用「文件加密解密」（AES-256）把整个文件加密。'));
 
-      const runBtn = btn('开始处理', 'btn-primary', run, 'crop');
+      /* 【开始处理必须防重入】
+       * run() 里先弹「选输出目录」的模态框，再逐张解码写盘（几百张要几分钟）。
+       * 原来「开始处理」全程可点：模态框关掉后即可再点一次，两趟各自持有
+       * 自己的 files/outDir，第二轮 ++scrambleRunSeq 会把第一轮作废，
+       * 但第一轮已经写过的那几张已经落盘 —— 输出目录里出现同名序号文件，
+       * 用户看到「处理了 N 张」却数出更多文件。用统一的 guard 收口：
+       * 并发直接挡掉，按钮在整条流程期间禁用，任何出口都会复位。 */
+      let runBtn = null;
+      const run = guard(runOnce, {
+        before: () => { if (runBtn) runBtn.disabled = true; },
+        after: () => { if (runBtn) runBtn.disabled = false; },
+      });
+      runBtn = btn('开始处理', 'btn-primary', run, 'crop');
       /* 【停止按钮必须与其它批量页一致】
        * R17 给 img-batch / img-watermark / batch-ocr / img-dedup 都加了停止，
        * 但本页只加了 token（离开页面才中断）—— 用户处理几百张图时想中途停下，
@@ -170,7 +182,7 @@
         return dataUrl;
       }
 
-      async function run() {
+      async function runOnce() {
         /* 【必须用 picker.paths，picker 上没有 files() 这个方法】
          * 原来写的是 `picker.files()` —— 而 filePicker() 返回的 api 只有
          * paths / count / add / clear / setLocked / move / sortBy / list / el / dz
@@ -189,9 +201,16 @@
         const key = keyIn.value;
         if (!key) return toast('请填写密钥', 'warn');
         const inverse = modeSel.value === 'restore';
-        const outDir = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
-        if (!outDir || !outDir[0]) return;
+        /* 【序号必须选对话框之前领】
+         * 原来 ++scrambleRunSeq 写在 OPEN 对话框返回之后。用户在「选输出目录」
+         * 的框里停留时切走页面：cleanup 已把序号加过一次，这里再 ++ 得到的是
+         * **新的**当前序号 —— 于是下面的 runToken === scrambleRunSeq 判断永远成立，
+         * 任务在已经离开的页面上继续解码写盘，直到整批结束。
+         * 先领序号、对话框回来后再比对，才真正是"离开即作废"。 */
         const runToken = ++scrambleRunSeq;
+        const outDir = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
+        if (runToken !== scrambleRunSeq) return;   // 选目录期间离开了页面
+        if (!outDir || !outDir[0]) return;
         stopBtn.disabled = false;
         prog.show();
         picker.setLocked(true);

@@ -92,12 +92,12 @@
              * //server/share 也合法 —— 一并处理，不做特例。 */
             out = p.replace(/\\/g, '/');
           } else if (actionId === 'pathName') {
-            out = p.replace(/^.*[\\/]/, '');
+            /* 统一走 lib/path-text.js：目录路径带结尾反斜杠时不能得到空串。 */
+            out = window.PathText.basename(p);
           } else {
-            const i2 = p.search(/[\\/][^\\/]*$/);
-            /* 路径就是根（C:\ 或 \\server\share）时没有"所在目录"，
-             * 给原值比给空串好 —— 空串复制出去用户会以为动作坏了。 */
-            out = i2 > 0 ? p.slice(0, i2) : p;
+            /* 统一走 lib/path-text.js：C:\foo 的“所在目录”必须是 C:\，
+             * 不能是盘符相对路径 C:。 */
+            out = window.PathText.dirname(p) || p;
           }
           await api.invoke(Ch.CLIP.WRITE_TEXT, out);
           ui.toast('已复制：' + (out.length > 40 ? out.slice(0, 40) + '…' : out), 'success');
@@ -195,6 +195,9 @@
       title: '路径属性',
       width: 520,
       body,
+      /* 锁的是：没有 onClose 时，Esc/点遮罩关掉后 modalEl 仍指向已销毁的
+       * 实例；下一次 Ctrl+Shift+V 会走「再按一次就收起」分支，面板打不开。 */
+      onClose: () => { modalEl = null; },
       foot: [ui.btn('在资源管理器打开', 'btn-secondary', async () => {
         try { await api.invoke(Ch.FS.SHOW_ITEM, p); } catch (e) {}
       }, 'folder'), ui.btn('关闭', 'btn-primary', () => { if (modalEl) modalEl.close(); })],
@@ -243,6 +246,9 @@
       body.appendChild(ui.div('empty-tip', '剪贴板里没有可用内容。先复制点什么再按 Ctrl+Shift+V。'));
       modalEl = ui.modal({
         title: '剪贴板动作', width: 520, body,
+        /* 同上：空剪贴板这一屏也必须清掉 modalEl，否则 Esc 关闭后
+         * 快捷键只会走「收起」分支，永远弹不出下一次面板。 */
+        onClose: () => { modalEl = null; },
         foot: [ui.btn('关闭', 'btn-primary', () => close())],
       });
       return;

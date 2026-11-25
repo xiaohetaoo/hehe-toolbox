@@ -300,11 +300,26 @@ handle(CH.NET.HTTP, async (e, opts) => {
   } finally { clearTimeout(timer); }
 });
 /* speedtest job */
-handle(CH.NET.SPEEDTEST, async (e, { direction, url, seconds = 10 }) => {
+handle(CH.NET.SPEEDTEST, async (e, opts = {}) => {
+  /** @type {{direction?:string, url?:string, seconds?:number}} */
+  const o = opts || {};
+  const { direction, url, seconds = 10 } = o;
   const id = 'speed' + (nextJobSeq());
   const ctrl = new AbortController();
   jobs.set(id, { cancel: () => ctrl.abort() });
   setLatestCancelable(() => ctrl.abort());
+  /* 【必须有硬超时，不能只靠用户点取消】
+   * 下行原来只在「收到数据且距上次采样 >300ms」时才检查 seconds：
+   * 服务器接受连接后既不发数据也不断开（弱网/中间设备挂死）时，
+   * reader.read() 会一直挂着，job 永远不结束、进度条停在 0，
+   * 用户只能自己发现后再点取消。上行更直接：fetch 没有超时，
+   * POST 卡住就一直等。
+   * seconds 先夹到 1..120 —— 手改 IPC 参数传 Infinity 时，
+   * setTimeout(Infinity) 会因溢出立刻触发（TimeoutOverflowWarning），
+   * 等于刚开始就中止。 */
+  const sec = Math.min(120, Math.max(1, Number(seconds) || 10));
+  let timedOut = false;
+  const hardStop = setTimeout(() => { timedOut = true; ctrl.abort(); }, (sec + 15) * 1000);
   const started = Date.now();
   try {
     if (direction === 'down') {
@@ -323,7 +338,7 @@ handle(CH.NET.SPEEDTEST, async (e, { direction, url, seconds = 10 }) => {
           samples.push({ t: now - started, mbps: inst });
           send('job:stream', { id, data: JSON.stringify({ bytes, elapsed: now - started, samples: samples.slice(-40) }) });
           lastT = now; lastB = bytes;
-          if ((now - started) / 1000 > seconds + 5) break;
+          if ((now - started) / 1000 > sec + 5) break;
         }
       }
       const elapsed = (Date.now() - started) / 1000;
@@ -336,6 +351,11 @@ handle(CH.NET.SPEEDTEST, async (e, { direction, url, seconds = 10 }) => {
       const elapsed = (Date.now() - started) / 1000;
       return { mbps: size * 8 / 1e6 / elapsed, bytes: size, elapsed, samples: [] };
     }
-  } finally { jobs.delete(id); }
+  } catch (err) {
+    /* abort 有两个来源：用户点取消 / 上面的硬超时。只有后者要换成可读文案，
+     * 用户主动取消应保持原来的「已取消」语义（渲染层按 abort 处理）。 */
+    if (timedOut) throw new Error('测速超时：服务器长时间无响应，或网络已中断');
+    throw err;
+  } finally { clearTimeout(hardStop); jobs.delete(id); }
 });
 };

@@ -55,4 +55,13 @@ t('EP5 长度预警：超过阈值要能被发现（不是静默接受）', () =
   assert.strictEqual(ep.pathTooLong('12345', 4), true);
 });
 
+t('EP6 前置：盘符根必须保留 C:\\，不能退化成 C:', () => {
+  /* 锁的是：去尾分隔符的 `.replace(/[\\/]+$/, '')` 把 C:\ 变成 C:。
+   * PATH 里的 `C:` 是“C 盘当前目录”，不是盘符根；用户在环境管理里
+   * 选中驱动器根时会写进去，重启终端后解析路径可能指向错误位置。 */
+  const r = ep.prependEntries('', ['C:\\', 'D:\\envs\\node\\']);
+  assert.strictEqual(r.value, 'C:\\;D:\\envs\\node');
+  assert.deepStrictEqual(r.added, ['C:\\', 'D:\\envs\\node']);
+});
+
 done();

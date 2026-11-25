@@ -435,6 +435,23 @@ const CHECKS_BY_VERSION = {
     ['js/tools/media/screen-rec.js', 'L15 录屏开始防重入',
       (s2) => /starting/.test(s2)],
   ],
+  /* v0.9.6：R18~R21 四轮审查修复 + MIT 开源。 */
+  '0.9.6': [
+    ['LICENSE', 'M1 MIT 许可随产物分发',
+      (s2) => /MIT License/.test(s2) && /Permission is hereby granted/.test(s2)],
+    ['lib/power-gate.js', 'M2 计划任务 / WMI 绕过已拦',
+      (s2) => /SCHEDULER_HEADS/.test(s2) && /WMI_METHOD_HEADS/.test(s2)],
+    ['lib/run-token.js', 'M3 顶层标识符改为模块专属（RunTokenApi）',
+      (s2) => /RunTokenApi/.test(s2)],
+    ['lib/img-pick.js', 'M4 同上（ImgPickApi）',
+      (s2) => /ImgPickApi/.test(s2)],
+    ['lib/path-text.js', 'M5 盘符根不退化',
+      (s2) => /function dirname/.test(s2) && /function basename/.test(s2)],
+    ['lib/path-guard.js', 'M6 别人 home 深处拒绝',
+      (s2) => /inOtherUserHome/.test(s2) && /OTHER_HOME/.test(s2)],
+    ['lib/once-schedule.js', 'M7 坏时间戳必须 drop',
+      (s2) => /fireAtOf/.test(s2) && /decideOnce/.test(s2)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];

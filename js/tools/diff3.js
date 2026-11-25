@@ -137,7 +137,7 @@
         });
         const shown = rows.filter((r) => show.has(r.i));
 
-        const table = h('div', { style: { marginTop: '10px', fontFamily: 'Consolas, monospace', fontSize: '12.5px' } });
+        const table = h('div', { style: { marginTop: '10px', fontFamily: 'Consolas, monospace', fontSize: '12px' } });
         // 表头
         const head2 = h('div', { style: { display: 'grid', gridTemplateColumns: '44px 1fr 1fr 1fr', gap: '6px', color: 'var(--text-3)', padding: '4px 6px', borderBottom: '1px solid var(--border)' } },
           h('div', null, T('行号')), h('div', null, 'A'), h('div', null, T('基准')), h('div', null, 'B'));

@@ -70,7 +70,7 @@ scripts/test-job-prefix-sync.js | A=5 | B=6 | legacy-source-assertion
 scripts/test-job-stream-isolation.js | A=2 | B=0 | legacy-read
 scripts/test-job-subscribe.js | A=2 | B=0 | legacy-read
 scripts/test-keyboard-a11y.js | A=1 | B=0 | exact:那 1 处读的是 Electron 子进程写出的探测结果 JSON（%TEMP% 下），不是项目源码；本脚本的断言全部是真实渲染后的 DOM/样式探测，没有源码匹配断言
-scripts/test-lan-scan.js | A=1 | B=1 | exact:迁移来的 read() 助手用 fs.readFileSync 读 js/tools/lan-scan.js 源码（该文件整体形态是自建助手，改成 readSrc 会改变既有行为，属语义变更）
+scripts/test-lan-scan.js | A=1 | B=0 | exact:迁移来的 read() 助手用 fs.readFileSync 读 js/tools/lan-scan.js 源码（该文件整体形态是自建助手，改成 readSrc 会改变既有行为，属语义变更）
 scripts/test-lib.js | A=1 | B=0 | exact:A=1：readAny() 助手读项目源码遍历「全库」检查展开传参（Math.max(...arr) 这类）。
 scripts/test-links.js | A=2 | B=41 | exact:同上：迁移来的 read() 助手读 lib/links.js 与 js/tools/link-doctor.js 源码，与文件原有的助手风格一致
 scripts/test-markdown-sanitize.js | A=1 | B=0 | exact:读 office.js/dev.js/text-tools.js 原文核对 marked.parse 调用点的守卫与退化路径、index.html 的 DOMPurify 加载。XSS 防御深度无法用行为断言验证（DOMPurify 缺失才会走退化路径，正常环境不会触发）。

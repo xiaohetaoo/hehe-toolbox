@@ -61,6 +61,14 @@ t('扩展名超长时仍不超长度上限（负 keep 边界）', () => {
   const got2 = safeNameFromUrl('https://x.com/' + 'c'.repeat(179) + '.' + 'd'.repeat(50));
   assert.ok(got2.length <= 180, '长度 ' + got2.length);
 });
+/* 【锁的是】超长无扩展名时原来是硬截断，可能正好停在空格上；
+ * Windows 落盘会去掉结尾空格，于是「返回的名字」与磁盘上的名字不一致，
+ * 后续按返回路径做覆盖/清理判断就对不上。截断后必须再剥一次尾。 */
+t('超长无扩展名硬截断后不以点/空格结尾', () => {
+  const got = safeNameFromUrl('https://x.com/' + 'a'.repeat(179) + ' ' + 'b'.repeat(20));
+  assert.ok(got.length <= 180, '长度 ' + got.length);
+  assert.ok(!/[. ]$/.test(got), '仍以点/空格结尾: ' + JSON.stringify(got));
+});
 t('非法百分号编码不抛异常', () => {
   const got = safeNameFromUrl('https://x.com/%zz.bin');
   assert.ok(typeof got === 'string' && got.length > 0, '得到: ' + got);

@@ -56,6 +56,10 @@
        与剥注释差异失败过。抽成纯函数后渲染层与测试共用同一实现。
        必须排在所有工具脚本之前（下面的 net-error / net-tools 序列不受影响）。 -->
   <script src="lib/safe-name.js"></script>
+  <!-- lib/path-text.js：渲染层没有 Node path，dirname/basename 统一收口。
+       手写 `replace(/[\\/][^\\/]*$/, '')` 在 C:\foo 上会得到 C: 而不是 C:\，
+       顶层文件/目录与盘符根全算错；必须早于所有工具脚本。 -->
+  <script src="lib/path-text.js"></script>
   <!-- lib/img-pick.js：「这张图该不该采用编码结果」的判据（UMD，挂 window.ImgPick）。
        原来内联在图片压缩页里，且漏了「候选比原图大」这一条 —— 用户点压缩，
        文件反而变大。抽成纯函数后渲染层与测试共用同一实现。

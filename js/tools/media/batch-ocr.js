@@ -54,6 +54,10 @@ register({
         }
         cancelFlag = false;
         running = true; prog.show(); out.value = '';
+        /* 【停止按钮必须真的可用】它初始 disabled（空闲时不该能点），
+         * 但原实现没有在开工时解开：整批识别期间「停止」一直是灰的，
+         * 而 cancelFlag 的整套停止机制都以"用户能按到它"为前提。 */
+        ocrStopBtn.disabled = false;
         try {
           const items = await invoke(Channels.CHANNELS.FS.LIST, dir);
           const imgs = items.filter(x => /\.(png|jpe?g|bmp|webp)$/i.test(x.name || x));

@@ -310,11 +310,31 @@
       const panes = div('', { style: { display: 'flex', gap: '10px' } });
       let curTag = '';
       const TAG_MARK = /^<!--hehe:tags:(.*)-->$/m;
+      function snapshot() { return titleIn.value + '\u0000' + tagsIn.value + '\u0000' + ta.value; }
+      let savedSnapshot = snapshot();
+      function isDirty() { return snapshot() !== savedSnapshot; }
+      /** 切换/新建前确认：未保存的编辑会被下一次载入覆盖。 */
+      async function confirmDiscard() {
+        if (!isDirty()) return true;
+        return await window.ui.confirmBox({
+          title: '有未保存的修改',
+          message: '当前笔记的内容、标题或标签还没保存。继续切换会丢弃这些修改。',
+          danger: true, okText: '丢弃修改', cancelText: '返回编辑'
+        });
+      }
       function renderMd() {
         if (!window.marked) return;
         if (!window.DOMPurify) { preview.textContent = ta.value || ''; } else { preview.innerHTML = DOMPurify.sanitize(window.marked.parse(ta.value || '')); }
       }
       ta.addEventListener('input', renderMd);
+      /* 【笔记内容缓存】refreshList 会在「搜索框每停 250ms」「点标签」「保存后」
+       * 各跑一次，每次都把整个笔记目录逐篇 fs:read-text 一遍：笔记一多
+       * （几十篇 × 每篇几 KB），一次刷新就是几十次 IPC 往返，输入明显发卡。
+       * FS.LIST 已经带回 size + mtime，所以按「路径 → {size,mtime,content,tags}」
+       * 缓存：只有文件真的变了（size 或 mtime 不同）才重读，其余直接用缓存。
+       * 保存后同一次刷新也能命中（save 之后会 refreshList，此时 mtime 已变，
+       * 正好重读刚写的那一篇）。 */
+      const noteCache = new Map();
       async function refreshList() {
         sideList.innerHTML = '';
         const q = searchIn.value.trim().toLowerCase();
@@ -323,13 +343,23 @@
         const notes = items.filter(x => !x.isDir && /\.md$/i.test(x.name));
         const allTags = new Set();
         const notesWithTags = [];
+        const alive = new Set();
         for (const n of notes) {
-          let tags = [], content = null;
-          try { content = (await invoke(Channels.CHANNELS.FS.READ_TEXT, n.path)).content; } catch (e) {}
-          if (content) { const m = content.match(TAG_MARK); if (m) tags = m[1].split(',').map(x => x.trim()).filter(Boolean); }
-          tags.forEach(t => allTags.add(t));
-          notesWithTags.push({ n, tags, content });
+          alive.add(n.path);
+          let entry = noteCache.get(n.path);
+          if (!entry || entry.size !== n.size || entry.mtime !== n.mtime) {
+            let content = null;
+            try { content = (await invoke(Channels.CHANNELS.FS.READ_TEXT, n.path)).content; } catch (e) {}
+            let tags = [];
+            if (content) { const m = content.match(TAG_MARK); if (m) tags = m[1].split(',').map(x => x.trim()).filter(Boolean); }
+            entry = { size: n.size, mtime: n.mtime, content, tags };
+            noteCache.set(n.path, entry);
+          }
+          entry.tags.forEach(t => allTags.add(t));
+          notesWithTags.push({ n, tags: entry.tags, content: entry.content });
         }
+        /* 清掉已被删除/改名的笔记，避免缓存无限增长 */
+        for (const p of noteCache.keys()) if (!alive.has(p)) noteCache.delete(p);
         tagFilter.innerHTML = '';
         const mkTag = (label, val, on) => {
           const el = h('span', { class: 'tag ' + (on ? 'tag-blue' : 'tag-gray'), style: { cursor: 'pointer' } }, label);
@@ -353,6 +383,10 @@
         status.textContent = notes.length + ' 篇' + (q || curTag ? '（已过滤）' : '');
       }
       async function openNote(n) {
+        /* 【不能静默覆盖未保存的编辑】openNote 会直接把 ta.value 换成
+         * 磁盘上的内容；自动保存要等 30 秒且只对已存在笔记生效，
+         * 用户输入后马上点另一篇（或新建），刚才的修改就无提示消失。 */
+        if (!(await confirmDiscard())) return;
         try {
           const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, n.path);
           curName = n.name;
@@ -362,6 +396,7 @@
           tagsIn.value = m ? m[1] : '';
           if (m) body = body.replace(TAG_MARK, '').replace(/^\r?\n/, '');
           ta.value = body;
+          savedSnapshot = snapshot();
           renderMd();
           refreshList();
         } catch (e) { toast(e.message, 'error'); }
@@ -424,6 +459,7 @@
           await invoke(Channels.CHANNELS.FS.DELETE, notesDir + '/' + curName).catch(() => {}); // 旧副本删不掉也不影响新内容
         }
         curName = name;
+        savedSnapshot = snapshot();
         toast('已保存', 'success', 1200);
         refreshList();
       }
@@ -435,12 +471,26 @@
           if (r) toast('已导出：' + r.out, 'success');
         } catch (e) { toast(e.message, 'error'); }
       }
-      async function createNew() { curName = null; titleIn.value = ''; tagsIn.value = ''; ta.value = ''; renderMd(); refreshList(); titleIn.focus(); }
+      async function createNew() {
+        if (!(await confirmDiscard())) return;
+        curName = null; titleIn.value = ''; tagsIn.value = ''; ta.value = '';
+        savedSnapshot = snapshot();
+        renderMd(); refreshList(); titleIn.focus();
+      }
       async function removeCur() {
         if (!curName) return;
         if (!(await window.ui.confirmBox({ title: '删除笔记', message: '删除「' + curName + '」？', danger: true, okText: '删除' }))) return;
-        await invoke(Channels.CHANNELS.FS.DELETE, notesDir + '/' + curName).catch(() => {});
-        curName = null; titleIn.value = ''; ta.value = ''; renderMd();
+        /* 【删除失败不能假装成功】旧写法 .catch(() => {}) 把异常吞掉后照样
+         * 清空编辑区并刷新列表：文件因被占用/权限不足没删掉，界面却当它没了。 */
+        try {
+          await invoke(Channels.CHANNELS.FS.DELETE, notesDir + '/' + curName);
+        } catch (e) {
+          toast('删除失败：' + (e && e.message ? e.message : String(e)), 'error');
+          return;
+        }
+        curName = null; titleIn.value = ''; tagsIn.value = ''; ta.value = '';
+        savedSnapshot = snapshot();
+        renderMd();
         refreshList();
       }
       // 每次击键都把全部笔记 fs:read-text 一遍：笔记一多，输入直接卡死。
@@ -574,11 +624,14 @@
           btn('导出 WAV', 'btn-sm btn-secondary', async () => {
             const text = ta.value.trim();
             if (!text) return toast('请输入文本', 'warn');
+            /* 与“朗读”同一个上限：否则 5 万字一次性合成会生成几百 MB 的
+             * WAV，主进程读入内存再原子替换，直接把应用拖死。 */
+            if (text.length > 5000) return toast('文本过长（>5000 字），请分段导出', 'warn');
             const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'speech.wav', filters: [{ name: 'WAV', extensions: ['wav'] }] });
             if (!p) return;
             status.textContent = '导出中…';
             /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-            try { const r = await invoke(Channels.CHANNELS.TTS.WAV, { text, out: p, voice: voiceSel.value, rate: +rateIn.value }); status.textContent = '✓ 已导出：' + p; toast('导出完成', 'success'); }
+            try { const r = await invoke(Channels.CHANNELS.TTS.WAV, { text, out: p, voice: voiceSel.value, rate: +rateIn.value, volume: +volIn.value }); status.textContent = '✓ 已导出：' + p; toast('导出完成', 'success'); }
             catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
           }, 'save'), status),
         div('field-hint', '使用 Windows 内置语音（设置 → 时间和语言 → 语音 可安装更多音色，如中文 Huihui）')));

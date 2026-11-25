@@ -352,7 +352,8 @@
          * 只在这里更新标记，读的地方在 applyBtn 的 onclick 里（那时已就绪）。 */
         setConflictCount(conflictIdx.size);
       }
-      const applyBtn = btn('执行重命名', 'btn-primary', async () => {        if (!files.length) return toast('请先添加文件', 'warn');
+      const applyBtn = btn('执行重命名', 'btn-primary', guard(async () => {
+        if (!files.length) return toast('请先添加文件', 'warn');
         if (useExif.checked) await ensureExifTimes();
         /* 【执行前重新算一次冲突】
          * 预览是"上一次渲染时"的快照：用户可能在预览之后又改了命名规则、
@@ -394,11 +395,16 @@
          * 登记表非空，提示用户一键恢复（见 renderRenameRecovery）。 */
         const stagedReg = plan.map((x, i) => ({ tmp: '', from: x.from, to: x.to, seq: i + 1 }));
         await invoke(Channels.CHANNELS.STORE.SET, 'renameStaged', stagedReg);
+        /* 【执行期间禁用按钮，配合 guard 堵住重入】
+         * 两阶段改名把源文件挪到临时名，如果再点一次「执行」，第二次会拿着
+         * 已经过期的 files 路径（此时磁盘上是 .hehe-ren-*）重新算计划 ——
+         * 轻则报一堆失败，重则两轮互相踩。 */
+        applyBtn.disabled = true;
         prog.show();
         try {
           for (const item of plan) {
             tmpSeq++;
-            const dir = item.from.replace(/[\\/][^\\/]*$/, '');
+            const dir = window.PathText.dirname(item.from);
             const tmp = dir + '\\.hehe-ren-' + REN_TS + '-' + tmpSeq
               + (item.from.match(/\.[^.\\/]+$/)?.[0] || '');
             try {
@@ -450,6 +456,11 @@
           }
         } finally {
           prog.hide();
+          /* 【收尾要按「当前冲突数」恢复按钮，不能无条件解开】
+           * 无条件 applyBtn.disabled = false 会把「存在名称冲突」这一提示态抹掉：
+           * 执行完一轮后冲突集合可能仍非空（比如用户把 1 个文件改成与别的文件同名），
+           * 按钮却变得可点，再点一次只会得到一串失败。syncApplyState 才是唯一入口。 */
+          try { syncApplyState(conflictIdx.size); } catch (e) { applyBtn.disabled = false; }
           /* 每一步都记账后，收尾时把已完成的条目清掉：登记表里只剩「真的
            * 中途崩掉、既没改成目标名也没还原原名」的条目。全成功即空表。 */
           try {
@@ -470,7 +481,7 @@
           toast(`完成：成功 ${ok} 个`, 'success');
         }
         if (dirMode && dirInput.value) loadDirBtn.click(); else { picker.clear(); files = []; safePreview(); }
-      });
+      }));
       /* 注册执行按钮的冲突同步（见 setConflictCount 的说明）。
        * 建好之后再补一次：此时 buildPreview 可能已经跑过一次、
        * 那次的 setConflictCount 因为没有回调而什么也没做。 */
@@ -559,25 +570,33 @@
         }));
         if (plan.length > 200) previewBox.appendChild(div('field-hint', `…共 ${plan.length} 个文件`));
       });
-      const applyBtn = btn('执行修改', 'btn-primary', async () => {
+      const applyBtn = btn('执行修改', 'btn-primary', guard(async () => {
         if (!plan.length) return toast('请先扫描', 'warn');
         if (!(await confirmBox({ title: '批量改后缀', message: `将修改 ${plan.length} 个文件的扩展名，确定继续？` }))) return;
+        /* 【批量改名要防重入】改完后 plan 仍指向旧路径（磁盘上已是新名）。
+         * 原实现执行期间按钮可点：第二次点击会拿过期 plan 再改一轮 ——
+         * 命中的是"新名再改一次后缀"或一堆 ENOENT 失败。guard + 禁用一起上。 */
+        applyBtn.disabled = true;
         let ok = 0;
         const failures = [];
-        for (const p of plan) {
-          try { await invoke(Channels.CHANNELS.FS.RENAME, p.path, p.newPath); ok++; }
-          catch (e) { failures.push({ from: p.path, to: p.newPath, err: e.message }); }
-        }
-        // 失败明细必须列出来：只报「失败 1」用户不知道是哪个文件、为什么失败，
-        // 而且批量操作半成功半失败的状态无从判断，后续手工整理极易出错。
-        if (failures.length) {
-          /* 同上：alertBox(message, title)。对象形式会弹出一个空白框。 */
-          await alertBox(buildFailText(ok, failures), '部分文件未能修改').catch(() => {});
-        } else {
-          toast(`完成：成功 ${ok} 个`, 'success');
+        try {
+          for (const p of plan) {
+            try { await invoke(Channels.CHANNELS.FS.RENAME, p.path, p.newPath); ok++; }
+            catch (e) { failures.push({ from: p.path, to: p.newPath, err: e.message }); }
+          }
+          // 失败明细必须列出来：只报「失败 1」用户不知道是哪个文件、为什么失败，
+          // 而且批量操作半成功半失败的状态无从判断，后续手工整理极易出错。
+          if (failures.length) {
+            /* 同上：alertBox(message, title)。对象形式会弹出一个空白框。 */
+            await alertBox(buildFailText(ok, failures), '部分文件未能修改').catch(() => {});
+          } else {
+            toast(`完成：成功 ${ok} 个`, 'success');
+          }
+        } finally {
+          applyBtn.disabled = false;
         }
         scanBtn.click();
-      });
+      }));
       page.appendChild(div('card', div('card-title', '目标目录'), div('form-row', dirInput, pickBtn),
         div('form-row', h('span', { class: 'form-label' }, '规则'), fromIn, h('span', null, '→'), toIn,
           h('label', { class: 'field-hint' }, recursive, ' 包含子目录')),

@@ -352,9 +352,9 @@
     const age = Date.now() - (p.at || 0);
     /* 过期就整条丢掉（与过滤无关：老队列对谁都没用） */
     if (age > (maxAge || 30000)) { window.__pendingDrop = null; return null; }
-    /* 【只有入队时有 toolId 才过滤】面板送图片的路径（app.js 里
-     * window.__pendingDrop = { paths: [], exts: [], dataUrl, at })
-     * 不带 toolId —— 那种是"谁先看到谁用"，保持原行为。
+    /* 【只有入队时有 toolId 才过滤】剪贴板面板送图片的路径现在是
+     * clip:save-image 落盘后的真实文件路径（见 app.js consumePendingClip），
+     * 依然不带 toolId —— 那种是"谁先看到谁用"，保持原行为。
      * 有 toolId 时严格比对，不匹配就不取、也不清空。 */
     if (p.toolId && toolId && p.toolId !== toolId) return null;
     window.__pendingDrop = null;

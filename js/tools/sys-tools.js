@@ -289,7 +289,7 @@
             columns: [
               { key: 'name', title: '名称', render: r => h('span', { style: { fontWeight: 500 } }, r.name) },
               { key: 'label', title: '范围', width: '90px', render: r => h('span', { class: 'tag tag-gray' }, r.label) },
-              { key: 'cmd', title: '命令', render: r => div('mono', { style: { fontSize: '11.5px' } }, r.cmd) },
+              { key: 'cmd', title: '命令', render: r => div('mono', { style: { fontSize: '11px' } }, r.cmd) },
               { key: 'act', title: '操作', width: '220px', render: (r, td) => {
                   td.appendChild(btn('禁用', 'btn-sm btn-text', async () => {
                     // 禁用 = 把注册表项移到本应用的备份区（可恢复），但仍是写注册表，
@@ -341,7 +341,7 @@
           card.appendChild(div('form-row',
             h('span', { class: 'mono', style: { flex: '1', wordBreak: 'break-all', fontSize: '12px' } }, r.name),
             r.meta ? h('span', { class: 'tag tag-gray' }, r.meta) : null,
-            r.hint ? h('span', { class: 'field-hint', style: { fontSize: '11.5px' } }, r.hint) : null));
+            r.hint ? h('span', { class: 'field-hint', style: { fontSize: '11px' } }, r.hint) : null));
         }
         if (total > rows.length) card.appendChild(div('field-hint', `只显示前 ${rows.length} 个（共 ${total} 个）`));
         return card;
@@ -357,7 +357,7 @@
           div('field-hint', '这三类同样会开机自动运行，但改动需要系统工具或管理员权限 —— 本工具只做展示，不代改。'));
         for (const d of (inv.startupDirs || [])) {
           head.appendChild(div('form-row', h('span', { style: { fontWeight: 500 } }, d.label),
-            h('span', { class: 'field-hint mono', style: { flex: '1', wordBreak: 'break-all', fontSize: '11.5px' } }, d.dir),
+            h('span', { class: 'field-hint mono', style: { flex: '1', wordBreak: 'break-all', fontSize: '11px' } }, d.dir),
             d.exists ? btn('打开', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.OPEN_PATH, d.dir), 'external') : h('span', { class: 'tag tag-gray' }, '不存在')));
         }
         head.appendChild(div('form-row',
@@ -441,7 +441,7 @@
         while (cur && cur.length >= scanRoot.length) {
           chain.unshift(cur);
           if (cur === scanRoot) break;
-          const parent = cur.replace(/[\\/][^\\/]+$/, '');
+          const parent = window.PathText.dirname(cur);
           if (!parent || parent === cur) break;
           cur = parent;
         }
@@ -456,7 +456,7 @@
         /* 上一级：扫描根已经是顶了，再往上是盘符根，没有可分析的意义 */
         if (dir !== scanRoot) {
           box.appendChild(btn('上一级', 'btn-sm btn-secondary', () => {
-            const parent = dir.replace(/[\\/][^\\/]+$/, '');
+            const parent = window.PathText.dirname(dir);
             if (parent && parent !== dir && parent.length >= scanRoot.length) openDir(parent);
           }, 'arrow-left'));
         }
@@ -524,7 +524,7 @@
               h('div', { class: 'progress', style: { flex: '1', height: '10px' } }, h('div', { class: 'progress-fill', style: { width: (f.size / maxF * 100) + '%' } })),
               h('span', { class: 'mono', style: { width: '70px', fontSize: '12px', textAlign: 'right' } }, fmtBytes(f.size)),
               btn('定位', 'btn-sm btn-text', () => invoke(Channels.CHANNELS.FS.SHOW_ITEM, f.path), 'eye')));
-            c.appendChild(div('mono', { style: { fontSize: '11.5px', color: 'var(--text-3)', marginTop: '-6px', marginBottom: '6px', wordBreak: 'break-all' } }, f.path));
+            c.appendChild(div('mono', { style: { fontSize: '11px', color: 'var(--text-3)', marginTop: '-6px', marginBottom: '6px', wordBreak: 'break-all' } }, f.path));
           }
           result.appendChild(c);
         }
@@ -565,10 +565,10 @@
            * 其余清理项默认勾上（与改造前一致）。 */
           const cb = h('input', { type: 'checkbox', class: 'checkbox', checked: !it.defaultOff, dataset: { id: it.id } });
           const meta = div('');
-          if (it.hint) meta.appendChild(h('div', { class: 'field-hint', style: { fontSize: '11.5px' } }, it.hint));
+          if (it.hint) meta.appendChild(h('div', { class: 'field-hint', style: { fontSize: '11px' } }, it.hint));
           box.appendChild(div('form-row', cb,
             div('', h('div', null, h('b', null, it.label)),
-              h('div', { class: 'field-hint mono', style: { fontSize: '11.5px' } }, it.path),
+              h('div', { class: 'field-hint mono', style: { fontSize: '11px' } }, it.path),
               meta),
             it.needsAdmin ? h('span', { class: 'tag tag-orange', style: { marginLeft: 'auto' } }, '需要管理员') : null,
             h('span', { class: 'tag tag-blue', style: { marginLeft: it.needsAdmin ? '6px' : 'auto' } }, fmtBytes(it.size)),
@@ -665,7 +665,12 @@
         catch (e) { toast(e.message, 'error', 8000); }
       }, 'shield');
       const openBtn = btn('打开系统还原', 'btn-secondary', () => {
+        /* 【取不到 rstrui 时要说明，而不是"点了没反应"】
+         * rstrui 由主进程按系统盘探测；在精简版 Windows / 未安装「系统还原」
+         * 组件时为空。按钮照旧可点，但原实现是静默 return —— 用户分不清是
+         * 应用卡住了还是系统确实没有这个程序。 */
         if (rstrui) invoke(Channels.CHANNELS.FS.OPEN_PATH, rstrui).catch((e) => toast(e.message, 'error'));
+        else toast('本机没有找到系统还原程序（rstrui.exe）。可在开始菜单搜索「创建还原点」或运行 systempropertiesprotection', 'warn', 8000);
       }, 'external');
       const delOldBtn = btn('删除最旧的还原点', 'btn-danger-plain', async () => {
         if (!(await confirmBox({ title: '删除最旧的还原点', message: '将删除系统中最早的卷影副本（还原点）。\n\n删除后无法恢复。确定继续？', danger: true, okText: '删除' }))) return;

@@ -116,6 +116,9 @@
        * 把上一次的 URL 存起来、进函数先释放，是成本最低的收口。 */
       let lastObjUrl = null;
       const dropLastUrl = () => { if (lastObjUrl) { URL.revokeObjectURL(lastObjUrl); lastObjUrl = null; } };
+      /* 离开页面时把 objectURL 也放掉：它挂在 document 上，等 GC 可能要很久，
+       * 而这里粘贴是高频操作，攒着不放没意义。 */
+      window.App.onCleanup(dropLastUrl);
       const pasteBtn = btn(T('从剪贴板识别'), 'btn-secondary', async () => {
         try {
           const imgData = await invoke(Channels.CHANNELS.CLIP.READ_IMAGE);
@@ -134,7 +137,11 @@
       page.appendChild(div('card', div('card-title', T('选择图片')), pasteBtn, picker.el, preview));
       page.appendChild(div('card', div('card-title', T('识别结果')),
         result, div('form-row', btn(T('复制'), 'btn-sm btn-secondary', () => result.value && copyText(result.value)),
-          btn(T('打开链接'), 'btn-sm btn-secondary', () => { if (/^https?:\/\//.test(result.value)) invoke(Channels.CHANNELS.SHELL.OPEN_URL, result.value); }))));
+          btn(T('打开链接'), 'btn-sm btn-secondary', () => {
+            /* 识别结果不是网址时要说一句，否则点了没反应，像按钮坏了 */
+            if (!/^https?:\/\//.test(result.value)) return toast(T('识别结果不是 http/https 链接'), 'warn');
+            invoke(Channels.CHANNELS.SHELL.OPEN_URL, result.value);
+          }))));
     }
   });
 })();

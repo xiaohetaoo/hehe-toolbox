@@ -71,7 +71,19 @@ const mustBlock = [
   'Start-Process shutdown',
   'powershell -c "Start-Process shutdown"',
   'powershell -Command "Start-Process shutdown -ArgumentList /s"',
-  'Start-Process -FilePath shutdown'
+  'Start-Process -FilePath shutdown',
+
+  /* 【计划任务 / WMI：关机动作藏在参数里（第六轮审查补的漏拦）】
+   * 这些命令的首词都不是危险词，旧判据只看首词 → 全部放行，但执行后
+   * 到点真的关机/重启。判据见 lib/power-gate.js 的 SCHEDULER_HEADS 注释。 */
+  'schtasks /create /tn x /tr "shutdown /s /t 0" /sc once /st 23:59',
+  'schtasks /create /tn x /tr "cmd /c shutdown /r" /sc once /st 23:59',
+  'at 23:59 shutdown /s',
+  'Invoke-CimMethod -ClassName Win32_OperatingSystem -MethodName Shutdown',
+  'Invoke-CimMethod -ClassName Win32_OperatingSystem -MethodName Reboot',
+  'powershell -c "(Get-WmiObject Win32_OperatingSystem).Win32Shutdown(2)"',
+  'New-ScheduledTaskAction -Execute shutdown',
+  'psshutdown -s -t 0'
 ];
 
 const mustAllow = [
@@ -96,6 +108,12 @@ const mustAllow = [
   'move shutdown.log backup' + B,
   'notepad shutdown.log',
   'dir shutdown.log',
+
+  /* 计划任务/WMI 的**管理/查询**形态不能被误拦：只拦带关机动作的写法 */
+  'schtasks /query /tn Backup',
+  'schtasks /end /tn Backup',
+  'Get-CimInstance Win32_OperatingSystem',
+  'Invoke-CimMethod -ClassName Win32_Process -MethodName GetOwner',
   '',
   null,
   undefined
