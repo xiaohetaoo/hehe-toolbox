@@ -226,7 +226,16 @@ handle(CH.FS.LIST, async (e, p) => {
   out.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name, 'zh'));
   return out;
 });
-handle(CH.FS.MKDIR, async (e, p) => { await fsp.mkdir(p, { recursive: true }); return true; });
+handle(CH.FS.MKDIR, async (e, p) => {
+  if (typeof p !== 'string' || !p.trim()) throw new Error('缺少目录路径');
+  /* 写文件/删除都有闸门，mkdir 原来裸跑：可以往受保护目录里建新目录。
+   * 只拒绝系统保护位置，用户正常目录（含已存在）不受影响（R24-13）。 */
+  if (pathGuard.isProtectedForModify(p) || pathGuard.isCriticalPath(p)) {
+    throw new Error('该位置受系统保护，不能创建目录：' + p);
+  }
+  await fsp.mkdir(p, { recursive: true });
+  return true;
+});
 // Unix 的 rename() 目标存在就覆盖，Windows 上 Node 也照这个语义走：
 // 批量改名/改后缀撞上已存在的同名文件时，会把别人的文件悄无声息地抹掉。
 // 这里默认拒绝覆盖（overwrite 需显式传 true），把“静默毁文件”变成可见的错误。

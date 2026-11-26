@@ -90,7 +90,8 @@ register({
           const r = await invoke(Channels.CHANNELS.FFMPEG.FRAMES, {
             input: src, outDir: finalDir, mode: modeSel.value,
             ss: timeIn.value.trim(), every: Math.max(1, +everyIn.value || 1),
-            count: Math.min(500, +countIn.value || 20), width: wIn.value || null
+            count: Math.min(500, Math.max(1, Math.round(+countIn.value) || 20)),
+            width: wIn.value ? (Math.max(1, Math.round(+wIn.value) || 0) || null) : null
           });
           if (runToken !== frameRunSeq) return;   // 页面已离开，结果不写回
           outLabel.textContent = modeSel.value === 'single'

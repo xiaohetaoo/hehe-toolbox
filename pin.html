@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
@@ -29,13 +29,13 @@
       padding: 2px 8px; border-radius: 10px; opacity: 0; transition: opacity .25s; pointer-events: none; }
     #wrap:hover ~ #hint, #hint.show { opacity: 1; }
   </style>
+  <script src="js/channels.js"></script>
   <script src="js/auxwin/pin-1.js"></script>
 
 </head>
 <body>
-  <div id="wrap"><img id="pic"></div>
+  <div id="wrap"><img id="pic" alt=""></div>
   <div id="hint">拖动移动 · 滚轮缩放 · 双击 / Esc 关闭</div>
-  <script src="js/channels.js"></script>
   <script src="js/auxwin/pin-2.js"></script>
 </body>
 </html>

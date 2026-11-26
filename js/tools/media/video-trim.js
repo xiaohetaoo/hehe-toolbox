@@ -83,8 +83,10 @@
       const previewBox = div('');
 
       let meta = null;   // { duration, width, height, size }
+      let loadSeq = 0;
 
       function clearVideo() {
+        ++loadSeq;
         meta = null;
         video.removeAttribute('src');
         video.style.display = 'none';
@@ -95,11 +97,13 @@
       }
 
       async function loadVideo(p) {
+        const my = ++loadSeq;
         previewBox.innerHTML = '';
         videoInfo.textContent = '正在读取视频信息…';
         meta = null;
         try {
           const m = await invoke(Channels.CHANNELS.FFMPEG.PROBE, p);
+          if (my !== loadSeq) return;   // 连续换文件时旧探测结果丢弃（R24-35）
           const fmt = m.format || {};
           const vs = (m.streams || []).find((s) => s.codec_type === 'video');
           const hasAudio = (m.streams || []).some((s) => s.codec_type === 'audio');
@@ -228,6 +232,9 @@
       let pageUnsub = null;
       function pageCleanup(leftPage) {
         trimRunSeq++;
+        /* 预览正在播放时切页：DOM 摘除不会自动暂停 <video>，音轨会继续输出。
+         * 只 pause 不清 src —— 回页时用户还要看到原来的预览位置（R24-10）。 */
+        try { video.pause(); } catch (e) {}
         if (runJobId) { invoke(Channels.CHANNELS.JOB.KILL, runJobId).catch(() => {}); runJobId = null; }
         if (pageUnsub) { try { pageUnsub(); } catch (e) {} pageUnsub = null; }
         running = false;

@@ -331,31 +331,41 @@
     render(page) {
       const list = div('');
       const input = h('input', { class: 'input', placeholder: '记录一条待办 / 便签，回车添加…', style: { flex: '1' } });
+      /* 坏 store 归一：notes 被手改成对象/字符串，或数组里混入 null/缺字段，
+       * 下面任何一次 .length/.push/.find 都会抛。R24-02 的剩余点位之一。 */
+      const asNotes = (raw) => (Array.isArray(raw) ? raw : [])
+        .filter(x => x && typeof x === 'object' && typeof x.id === 'string' && typeof x.text === 'string');
+      /* 读-改-写串行化：两趟并发读同一旧数组时，后写会覆盖先写（丢条目/勾选回滚）。 */
+      let writeChain = Promise.resolve();
+      function mutate(fn) {
+        writeChain = writeChain.then(async () => {
+          const items = asNotes(await invoke(Channels.CHANNELS.STORE.GET, 'notes', []));
+          await fn(items);
+          await invoke(Channels.CHANNELS.STORE.SET, 'notes', items);
+          await load();
+        }, () => {});
+        return writeChain;
+      }
       async function load() {
-        const items = await invoke(Channels.CHANNELS.STORE.GET, 'notes', []);
+        const items = asNotes(await invoke(Channels.CHANNELS.STORE.GET, 'notes', []));
         list.innerHTML = '';
         if (!items.length) { list.appendChild(div('empty-tip', '还没有便签，添加第一条吧')); return; }
         for (const it of [...items].sort((a, b) => (a.done - b.done) || (b.time - a.time))) {
           const cb = h('input', { type: 'checkbox', class: 'checkbox', checked: it.done });
-          cb.addEventListener('change', async () => {
-            /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-            const items = await invoke(Channels.CHANNELS.STORE.GET, 'notes', []);
-            const t = items.find(x => x.id === it.id);
-            if (t) t.done = cb.checked;
-            await invoke(Channels.CHANNELS.STORE.SET, 'notes', items);
-            load();
+          cb.addEventListener('change', () => {
+            mutate((cur) => {
+              const t = cur.find(x => x.id === it.id);
+              if (t) t.done = cb.checked;
+            });
           });
           const row = div('form-row', cb,
             h('span', { style: { flex: '1', textDecoration: it.done ? 'line-through' : 'none', color: it.done ? 'var(--text-3)' : 'var(--text-1)', userSelect: 'text' } }, it.text),
             h('span', { class: 'field-hint' }, fmtDate(it.time, false)),
-            btn('删除', 'btn-sm btn-text', async () => {
-              /* eslint-disable-next-line no-shadow -- 历史遗留：内层同名变量遮蔽外层（已逐条确认无语义影响） */
-              const items = await invoke(Channels.CHANNELS.STORE.GET, 'notes', []);
-              const idx = items.findIndex(x => x.id === it.id);
-              if (idx < 0) { load(); return; } // 重复点击时条目已删，避免 splice(-1) 误删末条
-              items.splice(idx, 1);
-              await invoke(Channels.CHANNELS.STORE.SET, 'notes', items);
-              load();
+            btn('删除', 'btn-sm btn-text', () => {
+              mutate((cur) => {
+                const idx = cur.findIndex(x => x.id === it.id);
+                if (idx >= 0) cur.splice(idx, 1); // 重复点击时条目已删，避免 splice(-1) 误删末条
+              });
             }));
           list.appendChild(row);
         }
@@ -363,11 +373,10 @@
       async function add() {
         const text = input.value.trim();
         if (!text) return;
-        const items = await invoke(Channels.CHANNELS.STORE.GET, 'notes', []);
-        items.push({ id: 'n' + Date.now(), text, done: false, time: Date.now() });
-        await invoke(Channels.CHANNELS.STORE.SET, 'notes', items);
+        await mutate((items) => {
+          items.push({ id: 'n' + Date.now(), text, done: false, time: Date.now() });
+        });
         input.value = '';
-        load();
       }
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
       page.appendChild(div('card', div('card-title', '我的便签'),

@@ -178,6 +178,7 @@
        * 条目被淘汰时缓存跟着回收，不会泄漏。 */
       const kindCache = new WeakMap();
       function kindOf(item) {
+        if (!item || typeof item !== 'object') return 'text'; // 条目级坏数据不应让整页抛
         if (item.type === 'image') return 'image';
         const hit = kindCache.get(item);
         if (hit) return hit;
@@ -185,7 +186,7 @@
         try {
           const C = window.ClipAnalyze;
           if (C) {
-            const r = C.analyze({ text: item.content || '' });
+            const r = C.analyze({ text: typeof item.content === 'string' ? item.content : '' });
             if (r.kind === 'url') k = 'url';
             else if (r.kind === 'json') k = 'json';
             else if (r.kind === 'hash' || r.kind === 'jwt' || r.kind === 'color' || r.kind === 'timestamp') k = 'misc';
@@ -306,7 +307,8 @@
         /* 锁的是：clipHistory 被手改成对象/字符串后，下面会直接
          * history.unshift / sweepSensitive 的 filter 抛，页面只剩一个空列表；
          * 用户既录不进新内容，也没法手动清理。 */
-        history = Array.isArray(raw) ? raw : [];
+        history = (Array.isArray(raw) ? raw : []).filter((x) => x && typeof x === 'object'
+          && (x.type === 'text' ? typeof x.content === 'string' : (x.type === 'image' && typeof x.file === 'string')));
         /* 每次进页面先扫一次过期敏感条目 —— 用户可能几天没打开这个工具，
          * 期间过期的凭据一直躺在磁盘上。 */
         try { await sweepSensitive(); } catch (e) {}

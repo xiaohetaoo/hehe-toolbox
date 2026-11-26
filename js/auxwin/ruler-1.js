@@ -8,5 +8,10 @@
     } catch (e) {}
     if (window.hehe && window.hehe.on) {
       try { window.hehe.on('aux:accent', apply); } catch (e) {}
+      try {
+        window.hehe.on(Channels.CHANNELS.APP.UI_PREFS_CHANGED, function (p) {
+          document.documentElement.lang = (p && p.lang === 'en') ? 'en' : 'zh-CN';
+        });
+      } catch (e) {}
     }
   })();

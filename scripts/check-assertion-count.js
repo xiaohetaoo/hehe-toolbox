@@ -160,6 +160,9 @@ function main() {
    * 判据尽量保守：只有真在日志里出现过该标记才补，没跑过的文件仍记 0。 */
   for (const f of EXIT_ONLY_FILES) {
     if (!(f.replace(/^scripts\//, '') in cnt0(text))) continue;
+    /* 汇总行里已经 FAIL 的脚本不许再补 1 条冒充通过（R24-48）。 */
+    const failed = text.split('\n').some((line) => /^FAIL\s+scripts\//.test(line) && line.includes(f));
+    if (failed) continue;
     if ((counts[f] || 0) === 0) counts[f] = 1;
   }
   const files = Object.keys(counts).sort();

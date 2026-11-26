@@ -29,6 +29,7 @@
  */
 const API = 'https://api.github.com';
 const WANT_SUFFIX = ['.exe', '.zip'];
+const pkg = require('../package.json');
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -101,6 +102,11 @@ async function main() {
   const hasZip = named.some((a) => String(a.name).endsWith('.zip'));
   if (!hasExe) problems.push('缺少 Portable .exe 产物');
   if (!hasZip) problems.push('缺少 .zip 产物');
+  /* 产物名必须带当前 package.json 版本，避免发错版本却只校验了后缀（R24-49）。 */
+  if (named.length && pkg && pkg.version) {
+    const mism = named.filter((a) => !String(a.name || '').includes(pkg.version));
+    for (const a of mism) problems.push('产物名不含当前版本 ' + pkg.version + '：' + a.name);
+  }
 
   for (const a of named) {
     if (!a.size || a.size < 1024 * 1024) {

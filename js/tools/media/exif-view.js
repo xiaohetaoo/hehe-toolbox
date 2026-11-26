@@ -16,6 +16,7 @@ register({
     keywords: ['exif', '照片', '信息', '隐私'],
     render(page) {
       const result = div('');
+      let analyzeSeq = 0;
       const picker = filePicker({
         text: T('拖入 JPEG 照片查看 EXIF'),
         single: true,
@@ -27,9 +28,11 @@ register({
         }
       });
       async function analyze(path) {
+        const my = ++analyzeSeq;
         result.innerHTML = '';
         try {
           const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path);
+          if (my !== analyzeSeq) return;   // 连选两张时旧结果不许覆盖新结果（R24-35）
           const buf = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
           const exif = window.ExifLib.parseExif(buf);
           if (!exif || !Object.keys(exif).length) { result.appendChild(div('empty-tip', T('未找到 EXIF 信息（可能已被清除或不是照片）'))); return; }
@@ -46,7 +49,7 @@ register({
             } catch (e) { toast(T('保存失败：{e}', { e: e.message }), 'error'); }
           }, 'refresh');
           result.appendChild(div('form-row', cleanBtn));
-        } catch (e) { result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
+        } catch (e) { if (my === analyzeSeq) result.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
       }
       /* EXIF 解析已抽到 lib/exif.js（纯函数、可单测，也被
        * 「按拍摄时间批量重命名」复用）。这里只保留 stripExif ——

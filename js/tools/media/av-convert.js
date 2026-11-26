@@ -159,10 +159,12 @@ register({
           const r = await invoke(Channels.CHANNELS.FFMPEG.CONVERT, {
             items: picker.paths, outDir,
             opts: {
-              format: fmtSel.value, vcodec: vcodecSel.value, crf: parseInt(crfIn.value) || 23,
-              scale: scaleSel.value, fps: fpsIn.value ? parseInt(fpsIn.value) : null,
+              format: fmtSel.value, vcodec: vcodecSel.value,
+              crf: Math.min(51, Math.max(0, parseInt(crfIn.value) || 23)),
+              scale: scaleSel.value,
+              fps: fpsIn.value ? Math.min(120, Math.max(1, parseInt(fpsIn.value) || 30)) : null,
               mute: muteChk.checked, ss: ssIn.value.trim(), to: toIn.value.trim(),
-              gifWidth: parseInt(gifWIn.value) || 480
+              gifWidth: Math.min(4096, Math.max(16, parseInt(gifWIn.value) || 480))
             }
           });
           r.results.forEach((res, i) => {
@@ -175,7 +177,7 @@ register({
           });
           const okN = r.results.filter(x => x.ok).length;
           status.textContent = `完成：成功 ${okN} / 失败 ${r.results.length - okN}，输出目录 ${outDir}`;
-          toast(`转换完成（${okN}/${r.results.length}）`, okN ? 'success' : 'error');
+          toast(`转换完成（${okN}/${r.results.length}）`, okN === r.results.length ? 'success' : (okN ? 'warn' : 'error'));
           } catch (e) {
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');

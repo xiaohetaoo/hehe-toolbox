@@ -14,7 +14,7 @@ const TAG = process.argv[2];
 /* 仓库坐标：镜像下载需要 owner/repo 拼 URL。写死在这里而不是从 git remote 解析，
  * 因为脚本只服务本仓库、解析 remote 反而会引入"local/upstream 名字不同"的坑。 */
 const REPO = 'xiaohetaoo/hehe-toolbox';
-const IDLE_MS = 60000;
+const IDLE_MS = 180000;   // 官方 CDN 首包可能要等十几秒，慢速约 100~150 KB/s
 if (!TAG) { console.error('用法：node scripts/fetch-dist.js vX.Y.Z'); process.exit(2); }
 
 function token() {
@@ -28,26 +28,33 @@ const tok = token();
 const apiHeaders = { Accept: 'application/vnd.github+json', 'User-Agent': 'hehe-fetch', Authorization: 'token ' + tok };
 
 async function download(url, dest, expectedSize, expectedSha) {
-  /* 【先试官方资产端点；被阻断时自动走镜像】
-   * 2026-11-24 实测：官方 302 到 `release-assets.githubusercontent.com`，
-   * 而该域名在本机网络下完全下不动 —— Node fetch / Invoke-WebRequest /
-   * curl 直连签名 URL，三种方式都是 **0 字节且永不报错**（连接建立后无数据）。
-   * 同一时刻 Cloudflare 的 10MB 测试文件以 0.85 MB/s 正常下完，
-   * 说明不是带宽/防火墙全断，而是该域名被阻断或限速为 0。
+  /* 【官方端点优先；只有"确实拿不到字节"才回退镜像】
    *
-   * 绕过办法：走公开的 GitHub 加速镜像（`ghfast.top` 实测可用，
-   * 0.83~1.24 MB/s）。镜像只当传输通道 —— 下载完仍按**官方 API 的
-   * digest** 做 SHA-256 逐字节校验，传坏或传错会立刻被拒，不会污染 dist/。
+   * ============ 2026-11-26 更正上一轮的结论 ============
+   * 上一轮这里写着「官方 CDN 被阻断，三种下载器都是 0 字节」——**那个结论是错的**，
+   * 是我误判了。真相是：`release-assets.githubusercontent.com` 可以连、也能下，
+   * 只是**首字节要等十几秒、速率约 100~150 KB/s**。
+   * `curl -r 0-1048575` 实测 http=206、10.3s 拿到 1MB、101 KB/s；
+   * 完整 154MB 用 1198s 下完，SHA256 与官方 digest 一致。
    *
-   * 顺序：官方端点（快、可信）→ 失败/0 字节 → 镜像。
-   * 每个候选都有独立的超时，任何一个卡住都不会拖死整轮。 */
+   * 当时判定"阻断"是因为：① 连接建立后十几秒没有数据，而我的空闲超时只有 60s，
+   * 但更致命的是 ② 我把 `res.body` 的**首个 chunk 之前的等待**算进了"无数据"，
+   * 而 Node fetch 在这种"接受连接、慢速首包"的场景下既不报错也不给 chunk，
+   * 于是被 `bytes === 0` 误判成"通道返回 0 字节"。
+   *
+   * 现在的策略：
+   *   · 空闲超时放宽到 180s（首包 + 慢速都要容得下）
+   *   · 官方端点作为**首选**（唯一权威源）；只有连接错误/HTTP 非 2xx 才回退镜像
+   *   · 镜像列表保留（ghfast.top 等），但镜像当前也可能不可用，故失败时如实报错
+   *   · 慢不是错：`--speed-limit` 式的"低速放弃"只在极低时触发，交给调用方超时
+   */
   const MIRROR = 'https://ghfast.top/https://github.com';
   const m = /\/releases\/assets\/(\d+)$/.exec(url);
   const official = url;
   /* 镜像需要 "owner/repo/releases/download/tag/name"，从 dest 文件名 + 环境拿 */
   const mirrorUrl = MIRROR + '/' + REPO + '/releases/download/' + TAG + '/' + path.basename(dest);
   const attempts = [];
-  if (m) attempts.push({ label: '官方', url: official });
+  if (m) attempts.push({ label: '官方 CDN', url: official });
   attempts.push({ label: '镜像 ghfast.top', url: mirrorUrl });
 
   let lastErr = null;
@@ -91,14 +98,16 @@ async function downloadOnce(url, dest, expectedSize, expectedSha, label) {
   } finally { clearTimeout(idle); }
   await new Promise((res2, rej2) => out.end((e) => (e ? rej2(e) : res2())));
   const digest = hash.digest('hex');
-  /* 【0 字节要单独报】被阻断时的典型形态是"连接建立、永不发数据"：
-   * fetch 不报错、res.ok 为 true、body 立刻结束 —— 落盘是 0 字节。
-   * 不单独判的话，用户看到的是"大小不符 0 ≠ 161390678"，会误以为是
-   * 版本/资产搞错了，而真实原因是传输通道给了个空响应。
-   * 先删掉空文件再抛，避免污染 dist/。 */
+  /* 【0 字节：如实报，但别写成"被阻断"】
+   * 2026-11-26 更正：上一轮这里断言"域名被阻断"，实际是我把
+   * "慢速首包"误判成"永不发数据"。真正的成因有两类，必须分开说：
+   *   a) 连接错误/HTTP 非 2xx  → 由上面的 throw 报了，走不到这里
+   *   b) 空闲超时被 abort      → 会抛 AbortError，也走不到这里
+   *   c) 服务端给了 200 但 body 立即结束 → 才是真的空响应
+   * 所以这里能落到的只剩 (c)。文案不再猜原因，只报事实 + 通道名。 */
   if (bytes === 0) {
     try { fs.rmSync(tmp, { force: true }); } catch (e) {}
-    throw new Error('通道返回 0 字节（域名可能被阻断）：' + label);
+    throw new Error('通道返回了空响应（HTTP 200 但 0 字节）：' + label);
   }
   fs.renameSync(tmp, dest);
   console.log('  完成 ' + bytes + ' 字节 | SHA256 ' + digest.slice(0, 16) + '…');
@@ -133,10 +142,23 @@ async function downloadOnce(url, dest, expectedSize, expectedSha, label) {
     }
     await download('https://api.github.com/repos/xiaohetaoo/hehe-toolbox/releases/assets/' + a.id, dest, a.size, expect);
   }
-  /* 删除旧版本产物 */
+  /* 【删除旧产物之前必须先确认新产物真的就位】
+   * 2026-11-26 事故：镜像全挂、两个资产都没下成，但这里照样把
+   * 0.9.6 的旧 zip/exe 删掉了 —— dist/ 直接变空，等于自己把可用产物清了。
+   * 删除是**破坏性**动作，必须放在"目标状态已达成"之后。
+   * 判据：本次 Release 的每个资产都在 dist/ 里且大小正确。 */
+  const missing = rel.assets.filter((a) => {
+    const p = path.join(DIST, a.name);
+    return !fs.existsSync(p) || fs.statSync(p).size !== a.size;
+  });
+  if (missing.length) {
+    console.error('下载未完成，保留旧产物不删：缺 ' + missing.map((a) => a.name).join(', '));
+    process.exit(1);
+  }
+  /* 目标状态已达成，才清理旧版本产物 */
   for (const f of fs.readdirSync(DIST)) {
     if (!rel.assets.some((x) => x.name === f) && !f.endsWith('.part')) {
-      fs.rmSync(path.join(DIST, f), { force: true });
+      fs.rmSync(path.join(DIST, f), { recursive: true, force: true });
       console.log('删除旧产物: ' + f);
     }
   }

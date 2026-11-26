@@ -202,7 +202,7 @@ async function normalizeAll(repo, token) {
     for (const rel of items) {
       checked++;
       const tag = rel.tag_name || '';
-      if (!/^v\d+\.\d+\.\d+$/.test(tag)) {
+      if (!/^v\d+(?:\.\d+){2,3}(?:-\d+)?$/.test(tag)) {
         log(`- ${tag}: 非 vX.Y.Z 形式的 tag，跳过`);
         continue;
       }

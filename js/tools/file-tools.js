@@ -772,20 +772,32 @@
       const status = div('field-hint', '');
       const resultBox = div('');
       let groups = [];
+      let dedupeBusy = false;
+      let dedupeSeq = 0;
       const scanBtn = btn('开始扫描', 'btn-primary', async () => {
+        if (dedupeBusy) return; // 双击/回车+点击会并发两次扫描并互相覆盖进度与结果
+        dedupeBusy = true;
+        const mySeq = ++dedupeSeq;
+        scanBtn.disabled = true;
         const dir = dirInput.value.trim();
-        if (!dir) return toast('请选择目录', 'warn');
+        if (!dir) { dedupeBusy = false; scanBtn.disabled = false; return toast('请选择目录', 'warn'); }
         resultBox.innerHTML = ''; status.textContent = '扫描中…';
-        const unsub = window.api.on('job:progress', (d) => { if (d.kind === 'dedupe') status.textContent = `扫描中… 已检查 ${d.files || 0} 个文件`; });
+        /* 只认本轮：job:progress 的 id 是主进程内部生成的，渲染层拿不到；
+         * 用轮次序号把上一轮迟到的进度丢掉，避免状态行在两轮之间跳动。 */
+        const unsub = window.api.on('job:progress', (d) => {
+          if (mySeq !== dedupeSeq) return;
+          if (d.kind === 'dedupe') status.textContent = `扫描中… 已检查 ${d.files || 0} 个文件`;
+        });
         try {
           const r = await invoke(Channels.CHANNELS.FS.DEDUPE, dir, { mode: modeSel.value });
+          if (mySeq !== dedupeSeq) return;
           groups = r.groups;
           status.innerHTML = groups.length
             ? `发现 <b>${groups.length}</b> 组重复文件，可释放 <b>${fmtBytes(r.totalWasted)}</b>`
             : '未发现重复文件 ✓';
           renderGroups();
-        } catch (e) { status.textContent = '✗ ' + e.message; }
-        finally { unsub(); }
+        } catch (e) { if (mySeq === dedupeSeq) status.textContent = '✗ ' + e.message; }
+        finally { unsub(); if (mySeq === dedupeSeq) { dedupeBusy = false; scanBtn.disabled = false; } }
       });
       /* 按大小 / 按文件名 只是「疑似重复」，内容可能完全不同。
          这两种模式下绝不能给出「保留第一个，删除其余」这种一键删除，

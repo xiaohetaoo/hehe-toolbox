@@ -255,9 +255,26 @@ handle(CH.LAN.SCAN, async (e, opts = {}) => {
   };
 });
 
+/* 只允许 http/https：主进程 fetch 不该被指向 file:、data: 或本机私有协议。
+ * 私有网段是否放行由产品决定（内网设备页需要），这里只守协议边界。 */
+function isHttpUrl(u) {
+  try {
+    const p = new URL(String(u));
+    return p.protocol === 'http:' || p.protocol === 'https:';
+  } catch (e) { return false; }
+}
+
 handle(CH.NET.SCAN, async (e, host, ports, opts = {}) => {
   const net = require('net');
-  const concurrency = opts.concurrency || 300, timeout = opts.timeout || 500;
+  if (typeof host !== 'string' || !host.trim()) throw new Error('主机地址不合法');
+  /* ports 非数组时旧实现 ports.length 为 undefined → Array.from({length:NaN})
+   * 得到空数组，静默返回 scanned: undefined。坏输入必须报错，不能假装扫过。 */
+  const list = Array.isArray(ports)
+    ? ports.map(Number).filter((p) => Number.isInteger(p) && p > 0 && p < 65536)
+    : [];
+  if (!list.length) throw new Error('端口列表不合法（应为 1-65535 的数字数组）');
+  const concurrency = Math.min(1000, Math.max(1, Number(opts.concurrency) || 300));
+  const timeout = Math.min(5000, Math.max(50, Number(opts.timeout) || 500));
   const id = 'scanp' + (nextJobSeq());
   const cancelRef = { canceled: false };
   jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
@@ -266,8 +283,8 @@ handle(CH.NET.SCAN, async (e, host, ports, opts = {}) => {
   async function worker() {
     while (!cancelRef.canceled) {
       const i = idx++;
-      if (i >= ports.length) return;
-      const port = ports[i];
+      if (i >= list.length) return;
+      const port = list[i];
       await new Promise((res) => {
         const s = new net.Socket();
         const fin = () => { s.destroy(); res(); };
@@ -280,18 +297,22 @@ handle(CH.NET.SCAN, async (e, host, ports, opts = {}) => {
     }
   }
   try {
-    await Promise.all(Array.from({ length: Math.min(concurrency, ports.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, worker));
   } finally { jobs.delete(id); }
   if (cancelRef.canceled) throw new Error('已取消');
-  return { open: open.sort((a, b) => a - b), scanned: ports.length };
+  return { open: open.sort((a, b) => a - b), scanned: list.length };
 });
 handle(CH.NET.HTTP, async (e, opts) => {
   const { method = 'GET', url, headers = {}, body, timeoutMs = 30000 } = opts;
+  if (!isHttpUrl(url)) throw new Error('只支持 http/https 地址');
+  const verb = String(method).toUpperCase();
+  if (!['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(verb)) throw new Error('不支持的请求方法：' + verb);
+  const timeout = Math.min(120000, Math.max(1000, Number(timeoutMs) || 30000));
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), timeout);
   const start = Date.now();
   try {
-    const r = await fetch(url, { method, headers, body: method === 'GET' || method === 'HEAD' ? undefined : body, signal: ctrl.signal });
+    const r = await fetch(url, { method: verb, headers, body: verb === 'GET' || verb === 'HEAD' ? undefined : body, signal: ctrl.signal });
     const buf = Buffer.from(await r.arrayBuffer());
     const text = buf.length > 1024 * 512 ? buf.toString('utf8', 0, 1024 * 512) + '\n…[已截断，共 ' + buf.length + ' 字节]' : buf.toString('utf8');
     return { status: r.status, statusText: r.statusText, /* Headers 在旧版 lib.dom 类型里没有 entries()；用 forEach 累加，
@@ -304,6 +325,7 @@ handle(CH.NET.SPEEDTEST, async (e, opts = {}) => {
   /** @type {{direction?:string, url?:string, seconds?:number}} */
   const o = opts || {};
   const { direction, url, seconds = 10 } = o;
+  if (url && !isHttpUrl(url)) throw new Error('测速地址只支持 http/https');
   const id = 'speed' + (nextJobSeq());
   const ctrl = new AbortController();
   jobs.set(id, { cancel: () => ctrl.abort() });

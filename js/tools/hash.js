@@ -129,7 +129,11 @@
         // 一次 IPC 拿回多个算法，避免 3 次往返
         let res;
         try { res = await window.api.invoke(Channels.CHANNELS.FS.HASH_TEXT_MULTI, ta.value, ['md5', 'sha1', 'sha256']); }
-        catch (e) { return; } // browser mode
+        catch (e) {
+          /* 文本哈希失败时结果区已清空；再静默 return 用户会以为按钮没反应（R24-32）。 */
+          if (e && e.message) toast('计算失败：' + e.message, 'error');
+          return;
+        } // browser mode
         for (const algo of ['md5', 'sha1', 'sha256']) {
           const hex = res && res[algo];
           if (!hex) continue;

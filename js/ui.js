@@ -100,6 +100,16 @@
     } catch (e) {}
     return fallback;
   };
+  /* 带插值的版本：{n}/{size} 这类占位符必须走 i18n.t(key, vars)。 */
+  const TV = (key, vars, fallback) => {
+    try {
+      if (window.i18n && window.i18n.t) {
+        const v = window.i18n.t(key, vars);
+        return (v && v !== key) ? v : fallback;
+      }
+    } catch (e) {}
+    return fallback;
+  };
 
   function pad2(n) { return String(n).padStart(2, '0'); }
   function fmtTime(ms) {
@@ -130,10 +140,15 @@
      * 所以每次用之前都要确认它仍然挂在文档上，不在就重挂一份。 */
     if (!toastBox || !toastBox.isConnected) {
       toastBox = div('toast-container');
+      toastBox.setAttribute('role', 'status');
+      toastBox.setAttribute('aria-live', 'polite');
+      toastBox.setAttribute('aria-atomic', 'false');
       document.body.appendChild(toastBox);
     }
     const iconName = type === 'success' ? 'check' : type === 'error' ? 'x' : type === 'warn' ? 'alert' : 'info';
     const t = div(`toast toast-${type}`, icon(iconName), h('span', null, msg));
+    /* 错误用 alert 立即播报，其余走容器的 polite（R24-39）。 */
+    t.setAttribute('role', type === 'error' ? 'alert' : 'status');
     toastBox.appendChild(t);
     setTimeout(() => { t.classList.add('leaving'); setTimeout(() => t.remove(), 260); }, ms);
   }
@@ -185,19 +200,39 @@
     if (width) m.style.width = typeof width === 'number' ? width + 'px' : width;
     const bodyEl = div('modal-body');
     if (typeof body === 'function') body(bodyEl, m); else if (body) bodyEl.appendChild(body);
-    const head = div('modal-head', h('span', null, title), div('modal-close', icon('x')));
+    /* 读屏器需要知道这是一个模态对话框、标题是什么（R24-38）。 */
+    const titleId = nextId('modal-title');
+    const closeBtn = div('modal-close', icon('x'));
+    makeButtonLike(closeBtn, TT('dialog.close', '关闭'));
+    const head = div('modal-head', h('span', { id: titleId }, title), closeBtn);
+    m.setAttribute('role', 'dialog');
+    m.setAttribute('aria-modal', 'true');
+    m.setAttribute('aria-labelledby', titleId);
+    const opener = document.activeElement;
     let closed = false;
     const close = () => {
       if (closed) return;
       closed = true;
       openOverlays.delete(entry);
       mask.remove();
+      /* 关闭后把焦点还给打开它的那个控件；控件已被重建时跳过。 */
+      try { if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus(); } catch (e) {}
       onClose && onClose();
     };
     const entry = { close };
     openOverlays.add(entry);
-    head.querySelector('.modal-close').addEventListener('click', close);
+    closeBtn.addEventListener('click', close);
     mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
+    /* 轻量 Tab 循环：不让焦点跑到遮罩后面的页面上。 */
+    m.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      const nodes = Array.from(m.querySelectorAll('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'))
+        .filter((n) => !n.disabled && n.offsetParent !== null);
+      if (!nodes.length) return;
+      const first = nodes[0], last = nodes[nodes.length - 1];
+      if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && (document.activeElement === first || document.activeElement === m)) { e.preventDefault(); last.focus(); }
+    });
     m.appendChild(head); m.appendChild(bodyEl);
     if (foot && foot.length) {
       const f = div('modal-foot');
@@ -230,7 +265,7 @@
       });
     });
   }
-  function alertBox(message, title = '提示') {
+  function alertBox(message, title = TT('dialog.alertTitle', '提示')) {
     /* 【兼容误传对象，并且必须吵一声】
      * 真实缺陷：js/tools/file-tools.js 里曾两处把配置对象当第一个实参传进来
      * （形如 alertBox 后面跟一个左花括号，里面是 title 与 message 两个字段）。
@@ -244,7 +279,7 @@
      * 注意：只认带 message 字段的对象，避免把真的想显示对象字面量的调用误改。 */
     if (message && typeof message === 'object' && !Array.isArray(message)
         && typeof message.message === 'string') {
-      if (title === '提示' && typeof message.title === 'string' && message.title) title = message.title;
+      if ((title === '提示' || title === 'Notice') && typeof message.title === 'string' && message.title) title = message.title;
       const wrong = message;
       console.warn('alertBox 收到配置对象，已按 alertBox(message, title) 兼容处理：', wrong.title || '(无标题)');
       message = wrong.message;
@@ -261,7 +296,7 @@
     const box = modal({
       title,
       body: (b) => b.appendChild(h('div', { style: { userSelect: 'text', whiteSpace: 'pre-wrap' } }, message)),
-      foot: [h('button', { class: 'btn btn-primary', onclick: () => mdRef.close() }, '知道了')]
+      foot: [h('button', { class: 'btn btn-primary', onclick: () => mdRef.close() }, TT('dialog.ack', '知道了'))]
     });
     mdRef = box;
     return box;
@@ -277,7 +312,7 @@
       const md = modal({
         title, onClose: () => resolve(result),
         body: (b) => { if (label) b.appendChild(h('div', { style: { marginBottom: '8px' } }, label)); b.appendChild(input); },
-        foot: [h('button', { class: 'btn btn-secondary', onclick: () => md.close() }, '取消'), ok]
+        foot: [h('button', { class: 'btn btn-secondary', onclick: () => md.close() }, TT('dialog.cancel', '取消')), ok]
       });
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok.click(); });
     });
@@ -288,9 +323,9 @@
     try {
       if (isDesktop) await invoke(Channels.CHANNELS.CLIP.WRITE_TEXT, text);
       else await navigator.clipboard.writeText(text);
-      toast('已复制', 'success', 1200);
+      toast(TT('common.copied', '已复制'), 'success', 1200);
       return true;
-    } catch (e) { toast('复制失败：' + e.message, 'error'); return false; }
+    } catch (e) { toast(TT('dialog.copyFailPrefix', '复制失败：') + e.message, 'error'); return false; }
   }
 
   /* ---------- 表格 ---------- */
@@ -307,13 +342,18 @@
     function drawHead() {
       trh.innerHTML = '';
       for (const c of columns) {
-        const th = h('th', { class: c.sortable ? 'sortable' : '', style: c.width ? { width: c.width } : null }, c.title);
+        const th = h('th', { class: c.sortable ? 'sortable' : '', tabindex: c.sortable ? '0' : null, style: c.width ? { width: c.width } : null }, c.title);
         if (c.sortable) {
+          th.setAttribute('aria-sort', sort.key === c.key ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none');
           if (sort.key === c.key) th.appendChild(h('span', { class: 'sort-arrow' }, sort.dir > 0 ? '▲' : '▼'));
-          th.addEventListener('click', () => {
+          const doSort = () => {
             if (sort.key === c.key) sort.dir *= -1; else sort = { key: c.key, dir: 1 };
             drawBody();
             drawHead();
+          };
+          th.addEventListener('click', doSort);
+          th.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); doSort(); }
           });
         }
         trh.appendChild(th);
@@ -332,7 +372,13 @@
       }
       for (const r of data) {
         const tr = h('tr', { dataset: rowKey ? { key: r[rowKey] } : null });
-        if (onRowClick) tr.addEventListener('click', (e) => onRowClick(r, tr, e));
+        if (onRowClick) {
+          tr.tabIndex = 0;
+          tr.addEventListener('click', (e) => onRowClick(r, tr, e));
+          tr.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(r, tr, e); }
+          });
+        }
         for (const c of columns) {
           const td = h('td');
           const v = c.render ? c.render(r, td) : r[c.key];
@@ -533,17 +579,17 @@
     return new Promise((resolve) => {
       let done = false;
       const finish = (v) => { if (done) return; done = true; md.close(); resolve(v); };
-      const fileBtn = h('button', { class: 'btn btn-primary', onclick: () => finish(multiple ? ['openFile', 'multiSelections'] : ['openFile']) }, '选择文件');
-      const dirBtn = h('button', { class: 'btn btn-secondary', onclick: () => finish(multiple ? ['openDirectory', 'multiSelections'] : ['openDirectory']) }, '选择文件夹');
-      const cancelBtn = h('button', { class: 'btn btn-text', onclick: () => finish(null) }, '取消');
+      const fileBtn = h('button', { class: 'btn btn-primary', onclick: () => finish(multiple ? ['openFile', 'multiSelections'] : ['openFile']) }, TT('picker.file', '选择文件'));
+      const dirBtn = h('button', { class: 'btn btn-secondary', onclick: () => finish(multiple ? ['openDirectory', 'multiSelections'] : ['openDirectory']) }, TT('picker.folder', '选择文件夹'));
+      const cancelBtn = h('button', { class: 'btn btn-text', onclick: () => finish(null) }, TT('dialog.cancel', '取消'));
       const md = modal({
-        title: '选择文件还是文件夹？',
+        title: TT('picker.title', '选择文件还是文件夹？'),
         /* 不 resolve 的话，用户点 × 或按 Esc 会让这个 Promise 永远挂着，
          * 于是「点击拖拽区」这条链路静默卡死。modal 的 onClose 覆盖了所有关闭方式。 */
         onClose: () => { if (!done) { done = true; resolve(null); } },
         body: (b) => {
           b.appendChild(div('field-hint',
-            'Windows 的文件对话框不能同时选择文件和文件夹，请先指定一种。'));
+            TT('picker.hint', 'Windows 的文件对话框不能同时选择文件和文件夹，请先指定一种。')));
         },
         foot: [cancelBtn, dirBtn, fileBtn],
       });
@@ -571,17 +617,21 @@
     const capDepth = (typeof maxDepth === 'number' && maxDepth > 0) ? maxDepth : expandMaxDepth();
     const parts = [];
     if (r && r.hitFileCap) {
-      parts.push(`已达到 ${capFiles} 个文件的上限，剩余文件未加入`);
+      parts.push(TV('expand.fileCap', { n: capFiles }, `已达到 ${capFiles} 个文件的上限，剩余文件未加入`));
     }
     if (r && r.hitDepth) {
-      parts.push(`目录层级超过 ${capDepth} 层，更深的内容未加入`);
+      parts.push(TV('expand.depthCap', { n: capDepth }, `目录层级超过 ${capDepth} 层，更深的内容未加入`));
     }
     if (!parts.length) return '';
-    return parts.join('；') + '。可在「设置 → 工具默认值」里调大上限。';
+    return parts.join('；') + TT('expand.footer', '可在「设置 → 工具默认值」里调大上限。');
   }
 
-  function dropzone({ text = '点击选择或拖拽文件到此处', sub = '', multiple = true, accept, onFiles, pickProps, directory = false, filters }) {
+  function dropzone({ text = TT('dropzone.default', '点击选择或拖拽文件到此处'), sub = '', multiple = true, accept, onFiles, pickProps, directory = false, filters }) {
     const dz = div('dropzone');
+    /* 键盘入口：原来只有 click，纯键盘用户无法打开文件对话框。 */
+    dz.tabIndex = 0;
+    dz.setAttribute('role', 'button');
+    dz.setAttribute('aria-label', text);
     dz.appendChild(div('dz-icon', iconLg('upload')));
     const mainEl = div('dz-main', text);
     /* 拖拽提示会临时改写这行文字，需要能还原。
@@ -638,6 +688,12 @@
       finally { picking = false; }
     };
     dz.addEventListener('click', getFiles);
+    dz.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        getFiles();
+      }
+    });
     /* 【拖入文件夹时要给不一样的反馈】
      * 原来 dragover 一律加同一个 .dragover 类。但用户拖文件夹时心里想的是
      * 「这一整个文件夹里的东西」，而拖单个文件是「就这一个」。
@@ -788,11 +844,13 @@
       let total = 0, unknown = 0;
       for (const it of items) { if (typeof it.size === 'number') total += it.size; else unknown++; }
       head.appendChild(h('span', { class: 'fl-count' },
-        `共 ${items.length} 项` + (unknown ? '' : `，合计 ${fmtBytes(total)}`)));
+        unknown
+          ? TV('list.countOnly', { n: items.length }, `共 ${items.length} 项`)
+          : TV('list.countAll', { n: items.length, size: fmtBytes(total) }, `共 ${items.length} 项，合计 ${fmtBytes(total)}`)));
       if (!locked) {
         head.appendChild(h('button', {
           class: 'btn btn-text btn-sm', onclick: (e) => { e.stopPropagation(); clearAll(); }
-        }, '清空'));
+        }, TT('list.clear', '清空')));
       }
     }
 
@@ -806,10 +864,10 @@
 
     function fillSize(item, sizeEl) {
       // 虚拟条目（剪贴板图片等没有磁盘路径）：不 stat，直接显示来源
-      if (item.virtual) { sizeEl.textContent = item.sizeLabel || '剪贴板'; return; }
+      if (item.virtual) { sizeEl.textContent = item.sizeLabel || TT('list.clipboard', '剪贴板'); return; }
       // 已知体积（例如上次已经查到过）就直接用，不再问主进程
       if (item.size !== undefined && item.size !== null) {
-        sizeEl.textContent = item.isDir ? '文件夹' : fmtBytes(item.size);
+        sizeEl.textContent = item.isDir ? TT('list.folder', '文件夹') : fmtBytes(item.size);
         return;
       }
       pendingSizes.push({ item, sizeEl });
@@ -1028,11 +1086,11 @@
       pickProps
     } = opts;
     const fl = fileList({
-      single, beforeRemove, rowStart, rowEnd, emptyText: emptyText || '还没有添加文件',
+      single, beforeRemove, rowStart, rowEnd, emptyText: emptyText || TT('list.emptyFiles', '还没有添加文件'),
       onChange: (items) => {
         // 有内容时把拖拽区收成一条窄横条：省下的纵向空间留给列表
         dz.classList.toggle('compact', items.length > 0 && !single);
-        if (dz.setMain) dz.setMain(items.length ? (textMore || '继续添加文件（可多选）') : text);
+        if (dz.setMain) dz.setMain(items.length ? (textMore || TT('dropzone.more', '继续添加文件（可多选）')) : text);
         if (onChange) onChange(items);
       }
     });
@@ -1051,9 +1109,9 @@
         }
         const r = fl.add(ok);
         if (rejected && onReject) onReject(rejected, list.filter((p) => !ok.includes(p)));
-        else if (rejected) toast(`已忽略 ${rejected} 个不支持的文件`, 'warn');
+        else if (rejected) toast(TV('list.ignored', { n: rejected }, `已忽略 ${rejected} 个不支持的文件`), 'warn');
         // 重复项给个轻提示：用户拖了同一个文件两次，列表里却没多出来，不说明会以为是 bug
-        if (r.dup) toast(`跳过 ${r.dup} 个重复项`, 'info', 1200);
+        if (r.dup) toast(TV('list.dup', { n: r.dup }, `跳过 ${r.dup} 个重复项`), 'info', 1200);
         return r;
       }
     });
@@ -1250,19 +1308,35 @@
    * 「约 1 分 30 秒」比「1 分 29.7 秒」更好读，也避免数字频繁跳动。 */
   function fmtDuration(ms) {
     const s = Math.round(ms / 1000);
-    if (s < 5) return '即将完成';
-    if (s < 60) return '约 ' + s + ' 秒';
+    if (s < 5) return TT('duration.soon', '即将完成');
+    if (s < 60) return TV('duration.sec', { n: s }, '约 ' + s + ' 秒');
     const m = Math.round(s / 60);
-    if (m < 60) return '约 ' + m + ' 分钟';
+    if (m < 60) return TV('duration.min', { n: m }, '约 ' + m + ' 分钟');
     const hh = Math.floor(m / 60);
-    return '约 ' + hh + ' 小时 ' + (m % 60) + ' 分';
+    return TV('duration.hour', { h: hh, m: m % 60 }, '约 ' + hh + ' 小时 ' + (m % 60) + ' 分');
   }
-  function loadingBlock(text = '加载中…') { return div('loading-block', h('span', { class: 'spinner' }), text); }
+  function loadingBlock(text = TT('common.loading', '加载中…')) { return div('loading-block', h('span', { class: 'spinner' }), text); }
   function fieldRow(label, control, hint) {
     const row = div('form-row');
-    if (label) row.appendChild(h('label', { class: 'form-label' }, label));
+    /* label 与控件互绑：包装型控件取内部第一个可聚焦元素（R24-39）。 */
+    const target = control && control.nodeType === 1
+      ? (control.matches('input, select, textarea') ? control : control.querySelector('input, select, textarea'))
+      : null;
+    let labelEl = null;
+    if (label) {
+      labelEl = h('label', { class: 'form-label' }, label);
+      if (target) {
+        if (!target.id) target.id = nextId('field');
+        labelEl.setAttribute('for', target.id);
+      }
+      row.appendChild(labelEl);
+    }
     row.appendChild(control);
-    if (hint) row.appendChild(h('span', { class: 'field-hint' }, hint));
+    if (hint) {
+      const hintEl = h('span', { class: 'field-hint', id: nextId('field-hint') }, hint);
+      row.appendChild(hintEl);
+      if (target) target.setAttribute('aria-describedby', hintEl.id);
+    }
     return row;
   }
   /* 【按钮文本必须单独包一层 span】
@@ -1285,17 +1359,17 @@
     return b;
   }
   /* 双栏转换布局 */
-  function convertLayout({ inputLabel = '输入内容', outputLabel = '转换结果', btnText = '转换', btnIcon = 'arrow-right', realtime = false, onConvert, height }) {
+  function convertLayout({ inputLabel = TT('pane.input', '输入内容'), outputLabel = TT('pane.output', '转换结果'), btnText = TT('pane.convert', '转换'), btnIcon = 'arrow-right', realtime = false, onConvert, height }) {
     const root = div('');
     const leftHead = div('pane-head', h('span', null, inputLabel), h('span', { class: 'pane-count' }, ''));
-    const clearBtn = h('button', { class: 'btn btn-text btn-sm', onclick: () => { ta.value = ''; update(); fire(); } }, '清空');
+    const clearBtn = h('button', { class: 'btn btn-text btn-sm', onclick: () => { ta.value = ''; update(); fire(); } }, TT('list.clear', '清空'));
     leftHead.appendChild(div('pane-actions', clearBtn));
-    const ta = h('textarea', { class: 'pane-ta', placeholder: '请输入内容…' });
+    const ta = h('textarea', { class: 'pane-ta', placeholder: TT('pane.placeholderIn', '请输入内容…') });
     if (height) ta.style.minHeight = height + 'px';
     const rightHead = div('pane-head', h('span', null, outputLabel));
-    const copyBtn = h('button', { class: 'btn btn-text btn-sm', onclick: () => out.value && copyText(out.value) }, '复制');
+    const copyBtn = h('button', { class: 'btn btn-text btn-sm', onclick: () => out.value && copyText(out.value) }, TT('common.copy', '复制'));
     rightHead.appendChild(div('pane-actions', copyBtn));
-    const out = h('textarea', { class: 'pane-ta readonly', readonly: true, placeholder: '结果将显示在这里…' });
+    const out = h('textarea', { class: 'pane-ta readonly', readonly: true, placeholder: TT('pane.placeholderOut', '结果将显示在这里…') });
     if (height) out.style.minHeight = height + 'px';
     const mid = div('split-mid');
     if (!realtime) {
@@ -1310,7 +1384,7 @@
     const errTip = div('field-err', '');
     errTip.style.display = 'none';
     root.appendChild(errTip);
-    function update() { leftHead.querySelector('.pane-count').textContent = ta.value ? `${ta.value.length} 字符` : ''; }
+    function update() { leftHead.querySelector('.pane-count').textContent = ta.value ? TV('pane.chars', { n: ta.value.length }, `${ta.value.length} 字符`) : ''; }
     function fire() {
       errTip.style.display = 'none';
       try {
@@ -1388,15 +1462,17 @@
    */
   function guard(fn, opts) {
     const o = opts || {};
-    let busy = false;
+    /* opts.state 允许同一工具页的多个按钮共用一个闭包（R24-30）：
+     * 旧实现每个 guard() 自带独立 busy，四个 PDF 操作可两两并发。 */
+    const state = (o.state && typeof o.state === 'object') ? o.state : { busy: false };
     return async function guarded(...args) {
-      if (busy) return;              // 防重入：真正并发时挡住第二次
-      busy = true;
+      if (state.busy) return;              // 防重入：真正并发时挡住第二次
+      state.busy = true;
       try {
         if (typeof o.before === 'function') o.before();
         return await fn.apply(this, args);
       } finally {
-        busy = false;                // 关键：任何 return / throw 都会走到这里
+        state.busy = false;                // 关键：任何 return / throw 都会走到这里
         try { if (typeof o.after === 'function') o.after(); } catch (e) { console.warn('guard after', e); }
       }
     };

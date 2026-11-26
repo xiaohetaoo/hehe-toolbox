@@ -204,6 +204,10 @@
     });
   }
 
+  /* 读取剪贴板是异步 IPC；在它返回前 modalEl 仍是 null，连按两次会各建一个
+   * 模态、后一个覆盖 modalEl，前一个成孤儿（R24-03）。 */
+  let opening = false;
+
   function close() {
     if (modalEl) { try { modalEl.close(); } catch (e) {} modalEl = null; }
   }
@@ -214,8 +218,15 @@
     const C = window.ClipAnalyze;
     if (!ui || !C) return;
     if (modalEl) { close(); return; }   // 再按一次就收起（开关式）
+    if (opening) return;                // 读取剪贴板期间的第二次触发直接忽略
 
-    const clip = await readClipboard();
+    opening = true;
+    let clip;
+    try {
+      clip = await readClipboard();
+    } finally {
+      opening = false;                  // 只挡 IPC 往返窗口，后续同步建 DOM 不再放行第二次
+    }
     const analysis = C.analyze(clip || { text: '' });
 
     const body = document.createElement('div');

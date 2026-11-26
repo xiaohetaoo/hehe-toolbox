@@ -73,6 +73,16 @@ const mustBlock = [
   'powershell -Command "Start-Process shutdown -ArgumentList /s"',
   'Start-Process -FilePath shutdown',
 
+  /* 【R24-01：启动器参数里的内层命令】
+   * 旧实现剥到 -ArgumentList 就停，首词是 powershell/cmd，内层从没被看到。
+   * 下面六条是本次新增的等价写法；`& $c` 是子代理探针里确认会执行的拼名绕过。 */
+  'Start-Process powershell -ArgumentList "-c Stop-Computer"',
+  'Start-Process cmd -ArgumentList "/c shutdown /s"',
+  'Start-Process -FilePath cmd -ArgumentList "/c shutdown /s"',
+  'Start-Process powershell -ArgumentList Stop-Computer',
+  "powershell -c \"Start-Process cmd -ArgumentList '/c shutdown /s'\"",
+  "$c='Stop-'+'Computer'; & $c",
+
   /* 【计划任务 / WMI：关机动作藏在参数里（第六轮审查补的漏拦）】
    * 这些命令的首词都不是危险词，旧判据只看首词 → 全部放行，但执行后
    * 到点真的关机/重启。判据见 lib/power-gate.js 的 SCHEDULER_HEADS 注释。 */
@@ -98,6 +108,12 @@ const mustAllow = [
   'echo shutdown',                               // 只是文本里提到
   'type shutdown.txt',
   'shutdownx /s',                                // 同名但不是它,
+
+  /* R24-01 的放行对照：启动器只启动无害程序时不能被误拦 */
+  'Start-Process notepad',
+  'Start-Process explorer.exe',
+  'Start-Process pwsh -ArgumentList "-c Write-Output HEHE"',
+  'notepad start-process-shutdown.txt',
 
   /* 文件名里含 shutdown 的日常操作：旧实现对整串做词根匹配，
      而 . \ : 都不算边界，于是这些全被误拦成「高危功能已关闭」。 */

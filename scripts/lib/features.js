@@ -155,9 +155,12 @@ function testsForChanged(changedFiles) {
     if (!tfs.length) continue;
     if (tfs.some((x) => featureSet.has(x))) chosen.push(tf);
   }
+  /* 同一次改动里直接改到的测试必须进增量集，否则"源码+测试一起改"
+   * 会因为测试的归属域没被源码命中而漏跑（R24-47）。 */
+  const chosenAll = Array.from(new Set(chosen.concat(changedTests)));
 
   return {
-    tests: chosen,
+    tests: chosenAll,
     features: [...featureSet],
     reason: '改动命中 ' + [...featureSet].join(', ') + ' 域',
     full: false,

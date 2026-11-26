@@ -1162,8 +1162,7 @@ handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, ga
   if (dur > 0) args.push('-t', String(dur));
   const filters = [];
   if (fadeIn > 0) filters.push(`afade=t=in:st=0:d=${fadeIn}`);
-  if (fadeOut > 0) {
-    // 淡出起点取「截取时长」或源时长减淡出长度
+  if (fadeOut > 0) {    // 淡出起点取「截取时长」或源时长减淡出长度
     let total = dur > 0 ? dur : 0;
     if (total <= 0) {
       try {
@@ -1177,7 +1176,16 @@ handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, ga
     const st = Math.max(0, total - fadeOut);
     filters.push(`afade=t=out:st=${st.toFixed(2)}:d=${fadeOut}`);
   }
-  if (gain) filters.push(`volume=${gain}dB`);
+  /* gain 直接来自渲染层输入，旧实现 `if (gain)` 会把任意真值字符串拼进
+   * `-af`，逗号可追加额外滤镜（fadeIn/fadeOut/dur 都有 >0 数值比较挡着，
+   * 只有 gain 没有）。这里只接受有限数并夹到合理 dB 范围（R24-12）。 */
+  let gainNum = 0;
+  if (gain !== undefined && gain !== null && String(gain).trim() !== '') {
+    gainNum = Number(gain);
+    if (!Number.isFinite(gainNum)) throw new Error('音量增益必须是数字（dB）');
+    if (gainNum < -96 || gainNum > 60) throw new Error('音量增益超出范围（-96 ~ 60 dB）');
+  }
+  if (gainNum) filters.push(`volume=${gainNum}dB`);
   args.push('-vn', '-c:a', ac);
   if (ac === 'aac') args.push('-b:a', '192k');
   if (filters.length) args.push('-af', filters.join(','));

@@ -79,7 +79,9 @@
         }
       }
       let selfUpdating = false;
+      let loadSeq = 0;
       async function handleFile(path, blob) {
+        const my = ++loadSeq;
         preview.innerHTML = '';
         dropLastUrl();
         let img;
@@ -88,10 +90,11 @@
           img = h('img', { src: lastObjUrl });
         } else {
           const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, path);
+          if (my !== loadSeq) return;   // 旧文件的读取晚到，丢弃（R24-35）
           img = h('img', { src: 'data:image/png;base64,' + r.b64 });
         }
         preview.appendChild(img);
-        img.addEventListener('load', () => decodeImage(img));
+        img.addEventListener('load', () => { if (my === loadSeq) decodeImage(img); });
         /* 解码失败必须有提示：只挂 load 的话，损坏/不支持的图片会让预览区
          * 一直空白，用户以为工具卡死。与 load 对称挂 error。 */
         img.addEventListener('error', () => { preview.innerHTML = ''; toast(T('图片加载失败，请确认文件是有效的图片'), 'error'); });
@@ -120,13 +123,15 @@
        * 而这里粘贴是高频操作，攒着不放没意义。 */
       window.App.onCleanup(dropLastUrl);
       const pasteBtn = btn(T('从剪贴板识别'), 'btn-secondary', async () => {
+        const my = ++loadSeq;
         try {
           const imgData = await invoke(Channels.CHANNELS.CLIP.READ_IMAGE);
+          if (my !== loadSeq) return;
           if (!imgData) return toast(T('剪贴板中没有图片'), 'warn');
           preview.innerHTML = '';
           const img = h('img', { src: imgData, style: { maxWidth: '100%' } });
           preview.appendChild(img);
-          img.addEventListener('load', () => decodeImage(img));
+          img.addEventListener('load', () => { if (my === loadSeq) decodeImage(img); });
           img.addEventListener('error', () => { preview.innerHTML = ''; toast(T('图片加载失败，请确认剪贴板里是有效的图片'), 'error'); });
           // 剪贴板来源也登记一行（虚拟条目：没有磁盘路径，只作展示）
           selfUpdating = true;

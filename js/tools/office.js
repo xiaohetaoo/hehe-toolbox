@@ -35,7 +35,8 @@
        * （大文件合并要几十秒），连点会并发跑两份 pdf-lib、互相抢 UI 线程，
        * 还可能对同一个输出路径弹两次保存框。项目约定统一走 ui.guard()：
        * 并发第二次直接挡掉、任何 return/throw 都会复位。 */
-      const guard = window.ui.guard;
+      const pdfGuardState = { busy: false };
+      const guard = (fn) => window.ui.guard(fn, { state: pdfGuardState });
       const mergeBtn = btn('合并为一个 PDF', 'btn-primary', guard(async () => {
         if (picker.count < 2) return toast('合并至少需要 2 个 PDF', 'warn');
         try {
@@ -454,9 +455,21 @@
        * 切页后主进程会跑完，但结果不该 toast 到新页面。 */
       let officeRunSeq = 0;
       window.App.onCleanup(() => { officeRunSeq++; });
+      /* 离页后主进程的批量转换仍会跑完；复用时按钮若保持禁用，用户只会看到
+       * 「点了没反应」。保留 running 闸（避免两批 COM 并发），但把入口恢复成
+       * 可点，并在 run() 里明确提示「上一批仍在进行」（R24-09）。 */
       const startBtn = btn('开始转换', 'btn-primary', run, 'send');
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          if (!running) return;
+          try {
+            startBtn.disabled = false;
+            status.textContent = '上一批转换仍在进行，完成后可再次开始';
+          } catch (e) {}
+        });
+      }
       async function run() {
-        if (running) return; // 防重入：重复转换会并发占用 LibreOffice/Office COM
+        if (running) { status.textContent = '上一批转换仍在进行，请稍候…'; return; }
         const runToken = ++officeRunSeq;
         running = true;
         if (!picker.count) { running = false; return toast('请先选择文件', 'warn'); }
@@ -481,7 +494,12 @@
           if (runToken !== officeRunSeq) return;
           status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`;
           toast(e.message, 'error');
-        } finally { startBtn.disabled = false; running = false; }
+        } finally {
+          startBtn.disabled = false;
+          running = false;
+          /* 页面已离开又回来：结果不该 toast，但状态行不该永远停在「转换中…」 */
+          if (runToken !== officeRunSeq) { try { status.textContent = '上一批转换已完成，可再次开始'; } catch (e) {} }
+        }
       }
       page.appendChild(div('card', div('card-title', '选择文件'), picker.el, engineEl));
       page.appendChild(div('card', div('card-title', '转换'),

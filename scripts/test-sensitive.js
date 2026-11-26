@@ -30,13 +30,31 @@ t('SE1 明确的凭据形态应被判为敏感', () => {
     ['110101199001011234', '身份证号'],
     ['4111111111111111', '银行卡号'],
     ['Abc123!@#defG', '强密码形态'],
-    ['a'.repeat(44), '长 base64 密钥串'],
+    /* 【R24-28 收紧后：纯小写 40+ 串不再算密钥】
+     * 旧用例是 'a'.repeat(44)，但那种形态与 sha1、长订单号无法区分，
+     * 判成密钥会把用户正常的哈希/订单号从剪贴板里删掉。
+     * 这里改用真实 base64 密钥形态（含大小写数字混排）。 */
+    ['dGhpc0lzQVZlcnlMb25nQmFzZTY0U2VjcmV0S2V5MTIzNDU2Nzg5MA==', '长 base64 密钥串（含 = 填充）'],
+    ['xK9mQ2pL7vN4wR8tY3uJ6hB1cF5dG0sA2zX7eM9n', '长 base64 密钥串（大小写数字混排）'],
+  ];
+  /* 【R24-28 反向】：纯小写/纯数字的长串不是密钥，不能误报 */
+  const notSecret = [
+    ['a'.repeat(44), '纯小写 40+ 串（像 sha1 摘要）'],
+    ['9'.repeat(44), '纯数字 40+ 串（像长订单号）'],
+    ['abcdef0123456789abcdef0123456789abcdef01', '全小写十六进制 sha1'],
   ];
   for (const [text, why] of yes) {
     const r = S.inspect(text);
     /* 锁的是：某一类凭据的判据被削弱/删掉 —— 那条敏感内容会一直留在明文里。 */
     assert.strictEqual(r.sensitive, true, why + ' 应判为敏感（实际 false）');
     assert.ok(r.why, why + ' 应给出判定理由');
+  }
+  /* 【R24-28 反向】长但不含大小写混合/base64 特殊字符的串，不能被误判。
+   * 锁的是：为了"更安全"把判据放宽到纯小写/纯数字，会把 sha1 与长订单号
+   * 当成密钥删掉 —— 那是删用户数据，比漏判更糟。 */
+  for (const [text, why] of notSecret) {
+    const r = S.inspect(text);
+    assert.strictEqual(r.sensitive, false, why + ' 不该被判为敏感（实际 true）');
   }
 });
 

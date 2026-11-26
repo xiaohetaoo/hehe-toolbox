@@ -143,17 +143,21 @@ chk(has('/node_modules/pdfjs-dist/build/pdf.worker.min.js'), 'pdf.js worker 在�
 chk(has('/node_modules/opencc-js/dist/umd/full.js'), 'opencc umd/full.js 在包里（简繁转换必需）');
 chk(has('/node_modules/pdf-lib/dist/pdf-lib.min.js'), 'pdf-lib dist 版在包里（PDF 合并必需）');
 
-/* ---- 4. QR / 其它 <script> 依赖 ---- */
-const htmlSrcs = [...fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
-  .matchAll(/<script src="([^"]+)"/g)].map((m) => m[1]);
+/* ---- 4. QR / 其它 <script> 依赖（五个页面都要核对，R24-50） ---- */
+const htmlSrcs = [];
+for (const page of ['index.html', 'splash.html', 'snip.html', 'pin.html', 'ruler.html']) {
+  const p = path.join(ROOT, page);
+  if (!fs.existsSync(p)) continue;
+  for (const m of fs.readFileSync(p, 'utf8').matchAll(/<script\s+src="([^"]+)"/g)) htmlSrcs.push({ page, src: m[1] });
+}
 const missingScript = [];
-for (const src of htmlSrcs) {
+for (const { page, src } of htmlSrcs) {
   if (src.startsWith('js/') || src.startsWith('node_modules/')) {
-    if (!entries.some((f) => f.endsWith('/' + src))) missingScript.push(src);
+    if (!entries.some((f) => f.endsWith('/' + src))) missingScript.push(page + ': ' + src);
   }
 }
 chk(missingScript.length === 0,
-    'index.html 引用的脚本全部在包里' + (missingScript.length ? ' -> 缺失：' + missingScript.join(', ') : ''));
+    '5 个页面引用的脚本全部在包里' + (missingScript.length ? ' -> 缺失：' + missingScript.join(', ') : ''));
 
 /* ---- 5. 应用自身文件与辅助窗口 ---- */
 ['/index.html', '/main.js', '/preload.js', '/splash.html', '/snip.html', '/pin.html', '/ruler.html', '/css/app.css', '/js/app.js', '/js/i18n.js']

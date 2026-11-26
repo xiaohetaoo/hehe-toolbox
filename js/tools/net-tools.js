@@ -541,9 +541,19 @@
       const status = h('span', { class: 'field-hint' }, '');
       let samples = [];
       let unsub;
+      let speedJobId = null;
+      let disposed = false;
+      if (window.App && App.onCleanup) {
+        App.onCleanup(() => {
+          disposed = true;
+          if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+          if (speedJobId) { invoke(Channels.CHANNELS.JOB.KILL, speedJobId).catch(() => {}); speedJobId = null; }
+        });
+      }
       const downBtn = btn('测下载', 'btn-primary', () => run('down'), 'download');
       const upBtn = btn('测上传', 'btn-secondary', () => run('up'), 'upload');
       async function run(dir) {
+        if (disposed) return;
         if (!isDesktop) return toast('桌面端可用（需联网）', 'warn');
         if (unsub) { try { unsub(); } catch (e) {} unsub = null; } // 防连点：先退订上一轮
         downBtn.disabled = upBtn.disabled = true;
@@ -568,6 +578,8 @@
               if (d.id !== speedId) return;          // 已认领：只认这一个
             } else if (window.JobPrefix && window.JobPrefix.belongsTo(String(d.id), SPEED_PREFIX)) {
               speedId = d.id;                        // 首次匹配到本前缀才认领
+              speedJobId = d.id;
+              if (disposed) { try { invoke(Channels.CHANNELS.JOB.KILL, d.id).catch(() => {}); } catch (e) {} return; }
             } else {
               return;                                // 拿到真实 id 之前，别的一律不接管
             }
@@ -589,15 +601,20 @@
         try {
           const r = await invoke(Channels.CHANNELS.NET.SPEEDTEST, { direction: dir, seconds: 10 });
           const mbps = r.mbps;
+          if (disposed) return;
           if (dir === 'down') downEl.textContent = mbps.toFixed(1);
           else upEl.textContent = mbps.toFixed(1);
           status.textContent = `完成：${fmtBytes(r.bytes)} / ${r.elapsed.toFixed(1)}s`;
           if (r.samples && r.samples.length) { samples = r.samples.map(s => s.mbps); chart.draw(samples, { max: samples.reduce((a, b) => (a > b ? a : b), 10) * 1.3 }); }
         } catch (e) {
           /* 测速走 fetch，失败时 e.message 是 "fetch failed" —— 换成中文归因 */
-          status.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message);
+          if (!disposed) status.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message);
         }
-        finally { downBtn.disabled = upBtn.disabled = false; if (unsub) unsub(); }
+        finally {
+          if (!disposed) { downBtn.disabled = upBtn.disabled = false; }
+          if (unsub) unsub();
+          speedJobId = null;
+        }
       }
       page.appendChild(div('card', div('card-title', '带宽测试'),
         div('form-row', downBtn, ' ', upBtn, status),

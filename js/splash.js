@@ -2,6 +2,20 @@
 (function () {
   var q = new URLSearchParams(location.search);
   var html = document.documentElement;
+  var isEn = q.get('lang') === 'en';
+  var EN = {
+    '正在启动…': 'Starting…', '加载界面…': 'Loading UI…', '准备界面…': 'Preparing UI…',
+    '读取配置…': 'Reading settings…', '准备就绪': 'Ready'
+  };
+  var tr = function (s) { return (isEn && EN[s]) ? EN[s] : s; };
+  if (isEn) {
+    html.lang = 'en';
+    document.title = 'HEHE Toolbox · Starting';
+    var nameEl = document.querySelector('.name');
+    if (nameEl) nameEl.textContent = 'HEHE Toolbox';
+    var init = document.getElementById('label');
+    if (init) init.textContent = tr(init.textContent);
+  }
   if (q.get('theme') === 'dark') html.dataset.theme = 'dark';
   var accent = q.get('accent');
   if (accent) html.dataset.accent = accent;
@@ -41,12 +55,12 @@
            直接替换会让这 0.7 秒里唯一有信息量的东西"跳"一下，看起来像故障。
            用 opacity 过渡而不是换元素，避免触发重排。 */
         label.style.opacity = '0.25';
-        setTimeout(function () { label.textContent = d.label; label.style.opacity = '1'; }, 90);
+        setTimeout(function () { label.textContent = tr(d.label); label.style.opacity = '1'; }, 90);
       }
     });
     window.hehe.on('splash:done', function () {
       done = true; cur = 100; target = 100; paint();
-      label.textContent = '准备就绪';
+      label.textContent = tr('准备就绪');
       label.style.opacity = '1';
       document.body.classList.add('out'); // 淡出，主进程随后关闭本窗口
     });

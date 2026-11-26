@@ -74,7 +74,11 @@ for i in $(seq 1 "$RETRIES"); do
       tail -5 "$LOG"
       # 落到下面的占用重试分支
     else
-      pack_zip
+      if ! pack_zip; then
+        echo "=== zip 打包失败，本次构建作废（不能只发布 exe） ===" | tee -a "$LOG"
+        tail -20 "$LOG"
+        exit 1
+      fi
       # 尽力清理暂存目录（被锁也不影响产物）
       rm -rf "$STAGE_SH" 2>/dev/null
       ls -lh "$DEST_SH"/*.exe "$DEST_SH"/*.zip 2>/dev/null

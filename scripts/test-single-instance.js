@@ -48,7 +48,9 @@ const appJs = fs.readFileSync(path.join(__dirname, '..', 'js', 'app.js'), 'utf8'
 /* 订阅可能写成 on(...) 或 sub(...)：sub 是「注册并登记退订」的封装
  * （切语言整壳重建时必须能退订，否则每次重建多一份监听），语义等价。 */
 chk(/(?:on|sub)\('app:already-running'/.test(appJs), '渲染层订阅了 app:already-running');
-chk(/toast\([^)]*已经在运行/.test(appJs), '渲染层弹出「已经在运行」的 toast');
+/* 锁的是「必须有提示」，不是「文案必须硬编码中文」：R24 把它改走 i18n 了。 */
+chk(/toast\(\s*(?:T\('app\.running'\)|'[^']*已经在运行)/.test(appJs),
+  '渲染层弹出「已经在运行」的 toast（中文或 T(app.running)）');
 
 /* ---- 4. 最小化场景要能恢复 ---- */
 const showFn = main.slice(main.indexOf('function showMainWindow'), main.indexOf('function showMainWindow') + 200);

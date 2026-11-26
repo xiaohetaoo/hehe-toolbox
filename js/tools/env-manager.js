@@ -261,6 +261,8 @@
         }
         lines.push('', T('确定继续？'));
         if (!(await confirmBox({ title: T('安装 {name}', { name: r.name }), message: lines.join('\n'), okText: T('开始下载') }))) return;
+        /* 确认框在飞时另一张卡可能已经开工；返回后必须再判一次（R24-31）。 */
+        if (busy) return toast(T('已有操作进行中'), 'warn');
         progressLine.textContent = T('准备下载…');
         const runToken = ++installRunSeq;
         setBusy(true);
@@ -302,6 +304,7 @@
           }),
           danger: true, okText: T('删除'),
         }))) return;
+        if (busy) return toast(T('已有操作进行中'), 'warn');
         setBusy(true);
         try {
           await invoke(Channels.CHANNELS.ENV.REMOVE, r.id);
@@ -319,6 +322,7 @@
             + (r.id === 'jdk' ? T('，并设置 JAVA_HOME') : '') + T('。\n\n新开的终端会优先使用它；系统 PATH 不会改动。'),
           okText: T('加入环境'),
         }))) return;
+        if (busy) return toast(T('已有操作进行中'), 'warn');
         setBusy(true);
         try {
           const res = await invoke(Channels.CHANNELS.ENV.APPLY, [r.id]);
@@ -338,6 +342,7 @@
             + T('已装的文件会保留。'),
           okText: T('从环境移除'),
         }))) return;
+        if (busy) return toast(T('已有操作进行中'), 'warn');
         setBusy(true);
         try {
           await invoke(Channels.CHANNELS.ENV.UNAPPLY, [r.id]);

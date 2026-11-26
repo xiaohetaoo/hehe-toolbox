@@ -99,7 +99,9 @@ register({
        * 那些 blob 会一直被 URL 表引用着（只有 Chrome 主动 GC 才回收），
        * 而 blob 是整块内存，不是小字符串。本页保活复用时也只需保留当前那张。 */
       if (window.App && App.onCleanup) App.onCleanup(dropLastUrl);
+      let loadSeq = 0;
       async function fromBlob(blob, label) {
+        ++loadSeq;
         currentImg = blob;
         preview.innerHTML = '';
         dropLastUrl();
@@ -108,8 +110,10 @@ register({
         showInList(label || '剪贴板图片', true);
       }
       async function handleFile(pathArg, blob) {
+        const my = ++loadSeq;
         if (blob) return fromBlob(blob);
         const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pathArg);
+        if (my !== loadSeq) return;   // 旧图晚到，别再顶掉新图（R24-35）
         const bin = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
         const type = pathArg.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
         await fromBlob(new Blob([bin], { type }), pathArg);

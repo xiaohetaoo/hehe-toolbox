@@ -501,15 +501,21 @@ try {
     return null;
   }
 
-  let pass = 0, fail = 0, skip = 0;
+  let pass = 0, fail = 0;
   for (const [rel, label, test] of CHECKS) {
     const src = readFromAsar(rel);
-    if (src == null) { console.log('SKIP  ' + rel + '  ' + label + '（产物里读不到该文件）'); skip++; continue; }
+    /* 产物里读不到被检文件 = 该文件没被打进去（files 白名单漏项/旧产物），
+     * 这是打包失败，不是「环境不满足」。R24-08 前这里记 SKIP 并 exit 0。 */
+    if (src == null) {
+      console.log('FAIL  ' + rel.padEnd(26) + label + '（产物里读不到该文件）');
+      fail++;
+      continue;
+    }
     const ok = test(src);
     if (ok) pass++; else fail++;
     console.log((ok ? 'PASS  ' : 'FAIL  ') + rel.padEnd(26) + label);
   }
-  console.log('\n产物校验: ' + pass + ' 通过 / ' + fail + ' 失败' + (skip ? ' / ' + skip + ' 跳过' : ''));
+  console.log('\n产物校验: ' + pass + ' 通过 / ' + fail + ' 失败');
   process.exit(fail ? 1 : 0);
 } finally {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) { /* 临时目录清不掉不影响判定 */ }

@@ -28,8 +28,10 @@ register({
         if (!out.value) return toast('还没有识别结果，请先点「开始批量识别」', 'warn');
         const p = await invoke(Channels.CHANNELS.DIALOG.SAVE, { defaultPath: 'ocr-result.txt' });
         if (!p) return;
-        await invoke(Channels.CHANNELS.FS.WRITE_TEXT, p, out.value);
-        toast('已导出：' + p, 'success');
+        try {
+          await invoke(Channels.CHANNELS.FS.WRITE_TEXT, p, out.value);
+          toast('已导出：' + p, 'success');
+        } catch (e) { toast('导出失败：' + ((e && e.message) || e), 'error'); }
       });
       /* 【防重入，并且要说清楚「上一轮还活着」】
        * 原来是一个裸 `if (running) return;` —— 用户点了没反应、也没有任何提示，

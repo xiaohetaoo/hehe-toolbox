@@ -17,17 +17,23 @@ register({
        * 之后每个后台任务的 pct 都会去改一个已经不在页面上的进度条。
        * 这里在 render 的同步阶段登记一次清理，把句柄交给它。 */
       let dlUnsub = null;
+      let disposed = false;
       if (window.App && App.onCleanup) {
-        App.onCleanup(() => { if (dlUnsub) { try { dlUnsub(); } catch (e) {} dlUnsub = null; } });
+        App.onCleanup(() => {
+          disposed = true;
+          if (dlUnsub) { try { dlUnsub(); } catch (e) {} dlUnsub = null; }
+        });
       }
       const statusBox = div('');
       const prog = progressEl(); prog.hide();
       const status = h('div', { class: 'field-hint' }, '');
       async function refresh() {
+        if (disposed) return;
         statusBox.innerHTML = '';
         statusBox.appendChild(window.ui.loadingBlock('检测 FFmpeg…'));
         try {
           const r = await invoke(Channels.CHANNELS.FFMPEG.STATUS);
+          if (disposed) return;
           statusBox.innerHTML = '';
           const card = div('card');
           card.style.border = '1px solid var(--border)';
@@ -47,7 +53,7 @@ register({
               '也可以从 ffmpeg.org 下载后手动导入。')));
           }
           statusBox.appendChild(card);
-        } catch (e) { statusBox.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
+        } catch (e) { if (!disposed) statusBox.innerHTML = `<div class="field-err">${escapeHtml(e.message)}</div>`; }
       }
       const srcSel = h('select', { class: 'select input-sm', style: { flex: '1' } },
         h('option', { value: 'npmmirror' }, 'npmmirror 国内镜像（推荐，约 59MB，含 ffprobe）'),
@@ -55,6 +61,7 @@ register({
         h('option', { value: 'btbn' }, 'BtbN GitHub 构建（约 90MB）'));
       const dlBtn = btn('一键下载安装', 'btn-primary', async () => {
         if (!isDesktop) return toast('桌面端可用', 'warn');
+        if (disposed) return;
         dlBtn.disabled = true;
         prog.show(); status.textContent = '';
         try {
@@ -72,10 +79,11 @@ register({
             } catch (e) {}
           });
           const r = await invoke(Channels.CHANNELS.FFMPEG.DOWNLOAD, srcSel.value);
+          if (disposed) return;
           toast('FFmpeg 安装完成', 'success');
           status.textContent = '✓ 安装完成：' + (r.ffmpeg || '');
-        } catch (e) { status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; toast(e.message, 'error'); }
-        finally { dlBtn.disabled = false; prog.hide(); if (dlUnsub) { try { dlUnsub(); } catch (e) {} dlUnsub = null; } refresh(); }
+        } catch (e) { if (!disposed) { status.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; toast(e.message, 'error'); } }
+        finally { if (!disposed) { dlBtn.disabled = false; prog.hide(); } if (dlUnsub) { try { dlUnsub(); } catch (e) {} dlUnsub = null; } if (!disposed) refresh(); }
       }, 'download');
       const pickBtn = btn('手动导入 ffmpeg.exe', 'btn-secondary', async () => {
         try {

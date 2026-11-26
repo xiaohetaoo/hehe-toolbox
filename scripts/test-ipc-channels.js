@@ -283,7 +283,11 @@ t('三个辅助窗口依赖的通道仍在注册', () => {
     }
   }
   assert.ok(need.size >= 5, '只从辅助窗口源码里解析出 ' + need.size + ' 个通道，正则疑似失效（这条断言会空转）');
-  const missing = [...need].filter((c) => !reg.has(c)).sort();
+  /* 纯推送事件（如 app:ui-prefs-changed）没有 handle，aux 订阅它是合法的；
+   * 与上面常量表那条使用同一份 PUSH_ONLY 豁免。 */
+  const pushOnly = new Set((require('../lib/channels').PUSH_ONLY || [])
+    .map((k) => chTable[k]).filter(Boolean));
+  const missing = [...need].filter((c) => !reg.has(c) && !pushOnly.has(c)).sort();
   assert.deepStrictEqual(missing, [], '辅助窗口用到但主进程没注册：' + missing.join(', '));
 });
 

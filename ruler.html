@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
@@ -44,6 +44,7 @@
     }
     #tip { position: fixed; background: color-mix(in srgb, var(--aux-primary) 90%, transparent); color: var(--aux-on); font: 11px Consolas, monospace; padding: 1px 6px; border-radius: 3px; pointer-events: none; display: none; white-space: nowrap; }
   </style>
+  <script src="js/channels.js"></script>
   <script src="js/auxwin/ruler-1.js"></script>
 
 </head>
@@ -53,7 +54,6 @@
   <div class="rz rz-end" id="rzEnd" title="拖动可伸长标尺"></div>
   <div id="ctrl"><div id="toggle" title="横竖切换">⇄</div><div id="close" title="关闭(或双击标尺 / Esc)">✕</div></div>
   <div id="tip"></div>
-  <script src="js/channels.js"></script>
   <script src="js/auxwin/ruler-2.js"></script>
 </body>
 </html>

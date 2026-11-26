@@ -432,6 +432,30 @@
       "test-ctxmenu.js"
     ]
   },
+  "round24": {
+    "label": "第 24 轮修复回归（门禁/lib 边界/渲染接线/可访问性/工程脚本）",
+    "src": [
+      "lib/power-gate.js",
+      "lib/target-size.js",
+      "lib/dir-move.js",
+      "lib/archive-guard.js",
+      "lib/restore-point.js",
+      "lib/errors.js",
+      "lib/acl-repair.js",
+      "lib/lan-scan.js",
+      "lib/sensitive.js",
+      "js/ui.js",
+      "js/tools/office.js",
+      "js/tools/media/audio-cut.js",
+      "js/tools/qr.js",
+      "js/cmdk.js",
+      "css/app.css",
+      "main.js"
+    ],
+    "tests": [
+      "test-round24-fixes.js"
+    ]
+  },
   "misc": {
     "label": "零散行为（不读源码的纯逻辑 / e2e 补充）",
     "_说明": "这些测试不读项目源码（纯逻辑断言、纯 e2e、或只读 npm 包），无法从源码反查归属。它们改动的触发面很窄，归到 misc 域；--changed 命中时会连带跑，全量也一定会跑到。",

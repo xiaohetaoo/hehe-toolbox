@@ -121,7 +121,7 @@
     }
     items.forEach((cmd, i) => {
       const isAction = cmd.id && cmd.id.startsWith('@');
-      const row = h('div', { class: 'cmdk-row' + (i === 0 ? ' hl' : '') });
+      const row = h('div', { class: 'cmdk-row' + (i === 0 ? ' hl' : ''), id: 'cmdk-opt-' + i, role: 'option', 'aria-selected': i === 0 ? 'true' : 'false' });
       /* 图标：工具用自己的 icon，动作用内置名。
        * 图标缺失时不报错 —— icon() 对未知名返回空 SVG，比中断渲染好。 */
       try { row.appendChild(icon(cmd.icon || 'tool')); } catch (e) { /* 图标是装饰 */ }
@@ -131,15 +131,19 @@
       if (sub) main.appendChild(h('div', { class: 'cmdk-sub' }, sub));
       row.appendChild(main);
       if (isAction) row.appendChild(h('span', { class: 'cmdk-tag' }, en() ? 'Action' : '命令'));
-      /* 行是 div：必须自己处理键盘可达性，否则 Tab 走不到（与搜索结果行同一问题） */
-      window.ui.makeButtonLike(row, label(cmd));
+      /* 行由 listbox 光标（aria-activedescendant）导航，不再单独进 Tab 序列。 */
+      row.tabIndex = -1;
       row.addEventListener('click', () => run(cmd));
       row.addEventListener('mouseenter', () => {
         hlIndex = i;
-        [...listEl.children].forEach((el, k) => el.classList.toggle('hl', k === i));
+        [...listEl.children].forEach((el, k) => {
+          el.classList.toggle('hl', k === i);
+          el.setAttribute('aria-selected', k === i ? 'true' : 'false');
+        });
       });
       listEl.appendChild(row);
     });
+    if (inputEl && items.length) inputEl.setAttribute('aria-activedescendant', 'cmdk-opt-0');
   }
 
   function run(cmd) {
@@ -159,7 +163,11 @@
       e.preventDefault();
       if (!items.length) return;
       hlIndex = (hlIndex + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-      [...listEl.children].forEach((el, i) => el.classList.toggle('hl', i === hlIndex));
+      [...listEl.children].forEach((el, i) => {
+        el.classList.toggle('hl', i === hlIndex);
+        el.setAttribute('aria-selected', i === hlIndex ? 'true' : 'false');
+      });
+      if (inputEl) inputEl.setAttribute('aria-activedescendant', 'cmdk-opt-' + hlIndex);
       const el = listEl.children[hlIndex];
       if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
       return;
@@ -191,12 +199,16 @@
       class: 'cmdk-input', type: 'text', spellcheck: 'false', autocomplete: 'off',
       placeholder: en() ? 'Search tools or commands (↑↓ to select, Enter to open)' : '搜索工具或命令（输入即搜，↑↓ 选择，回车直达）',
     });
-    inputEl.setAttribute('aria-label', '搜索工具或命令');
+    inputEl.setAttribute('aria-label', en() ? 'Search tools or commands' : '搜索工具或命令');
+    inputEl.setAttribute('role', 'combobox');
+    inputEl.setAttribute('aria-autocomplete', 'list');
+    inputEl.setAttribute('aria-expanded', 'true');
+    inputEl.setAttribute('aria-controls', 'cmdk-listbox');
     head.appendChild(icon('search'));
     head.appendChild(inputEl);
     head.appendChild(h('span', { class: 'cmdk-esc' }, 'Esc'));
     panel.appendChild(head);
-    listEl = h('div', { class: 'cmdk-list' });
+    listEl = h('div', { class: 'cmdk-list', id: 'cmdk-listbox', role: 'listbox' });
     panel.appendChild(listEl);
     panel.appendChild(h('div', { class: 'cmdk-foot' },
       h('span', null, en() ? '↑↓ select' : '↑↓ 选择'), h('span', null, en() ? '↵ open' : '↵ 打开'), h('span', null, en() ? 'Esc close' : 'Esc 关闭')));

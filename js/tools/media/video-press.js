@@ -195,8 +195,11 @@ register({
           const r = await invoke(Channels.CHANNELS.FFMPEG.PRESS, {
             items: picker.paths, outDir,
             opts: {
-              vcodec: codecSel.value, crf: parseInt(crfIn.value) || 23, preset: speedSel.value,
-              scale: scaleSel.value, fps: fpsIn.value ? parseInt(fpsIn.value) : null,
+              vcodec: codecSel.value,
+              crf: Math.min(51, Math.max(0, parseInt(crfIn.value) || 23)),
+              preset: speedSel.value,
+              scale: scaleSel.value,
+              fps: fpsIn.value ? Math.min(120, Math.max(1, parseInt(fpsIn.value) || 30)) : null,
               audio: audioSel.value, stripMeta: stripChk.checked
             }
           });
@@ -226,7 +229,7 @@ register({
             ? `，硬件编码 ${hwN} 个${fallbackN ? `，回退 CPU ${fallbackN} 个` : ''}`
             : '';
           status.textContent = `完成：成功 ${okN} / ${r.results.length}${r.canceled ? '（已取消）' : ''}${hwInfo}，共节省 ${fmtBytes(saveB)}，输出目录 ${outDir}`;
-          toast(`压制完成（${okN}/${r.results.length}）`, okN ? 'success' : 'error');
+          toast(`压制完成（${okN}/${r.results.length}）`, okN === r.results.length ? 'success' : (okN ? 'warn' : 'error'));
         } catch (e) {
           status.textContent = '✗ ' + e.message;
           toast(e.message, 'error');

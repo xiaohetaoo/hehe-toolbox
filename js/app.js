@@ -229,7 +229,7 @@
           setThemeAttr(mode);
         }
       } catch (e) {
-        toast('主题切换失败：' + e.message, 'error');
+        toast(T('app.themeFail', { err: e.message }), 'error');
       }
     };
     const supportsVT = typeof document.startViewTransition === 'function' && origin;
@@ -249,10 +249,15 @@
 
   /* ============ 收藏 / 最近使用 ============ */
   async function loadUserData() {
-    state.favorites = await invoke(Channels.CHANNELS.STORE.GET, 'favorites', []);
-    state.recents = await invoke(Channels.CHANNELS.STORE.GET, 'recents', []);
+    /* 坏 store（手改成对象/字符串/数字）不能让收藏页与首页最近直接抛。
+     * R21/R23 修过 launch 的同类问题，这里是外壳自身的读取入口。 */
+    const fav = await invoke(Channels.CHANNELS.STORE.GET, 'favorites', []);
+    const rec = await invoke(Channels.CHANNELS.STORE.GET, 'recents', []);
+    state.favorites = (Array.isArray(fav) ? fav : []).filter(x => typeof x === 'string');
+    state.recents = (Array.isArray(rec) ? rec : []).filter(x => typeof x === 'string');
   }
   async function toggleFavorite(toolId) {
+    if (!Array.isArray(state.favorites)) state.favorites = [];
     const i = state.favorites.indexOf(toolId);
     if (i >= 0) state.favorites.splice(i, 1); else state.favorites.unshift(toolId);
     await invoke(Channels.CHANNELS.STORE.SET, 'favorites', state.favorites);
@@ -272,7 +277,8 @@
      * 【为什么 slice 在 0 时也要走一遍】Prefs.get 返回 0 时 slice(0,0) 得空数组，
      * 正好就是"关闭"的语义，不需要为 0 单开分支。 */
     const limit = Prefs.get('recentLimit');
-    state.recents = [toolId, ...state.recents.filter(x => x !== toolId)].slice(0, limit);
+    if (!Array.isArray(state.recents)) state.recents = [];
+    state.recents = [toolId, ...state.recents.filter(x => x !== toolId && typeof x === 'string')].slice(0, limit);
     await invoke(Channels.CHANNELS.STORE.SET, 'recents', state.recents);
   }
 
@@ -506,7 +512,13 @@
     searchWrapEl = searchWrap;
     searchWrap.appendChild(Object.assign(div('', icon('search', 'icon')), { className: 'search-icon' }));
     searchInput = h('input', { class: 'search-input', placeholder: T('search.titlebar') });
+    searchInput.setAttribute('role', 'combobox');
+    searchInput.setAttribute('aria-autocomplete', 'list');
+    searchInput.setAttribute('aria-expanded', 'false');
+    searchInput.setAttribute('aria-controls', 'titlebar-search-results');
     searchDrop = div('search-dropdown');
+    searchDrop.id = 'titlebar-search-results';
+    searchDrop.setAttribute('role', 'listbox');
     searchWrap.appendChild(searchInput); searchWrap.appendChild(searchDrop);
     const tbRight = div('tb-right');
     const themeBtn = h('button', { class: 'tb-btn', title: T('common.theme') });
@@ -565,7 +577,7 @@
       cpuEl.className = 'sb-val ' + (cpu >= 90 ? 'bad' : cpu >= 70 ? 'warn' : 'ok');
       memEl.className = 'sb-val ' + (mem >= 90 ? 'bad' : mem >= 80 ? 'warn' : 'ok');
     });
-    sub('hotkey:pressed', () => toast('全局热键已唤起', 'info', 1000));
+    sub('hotkey:pressed', () => toast(T('app.hotkey'), 'info', 1000));
 
     /* 主进程事件路由：截图 OCR / 托盘直达工具 / 周期任务触发 / 区域截图结果 / 托盘错误 */
     sub('snip:ocr', (filePath) => {
@@ -575,7 +587,7 @@
     sub('app:open-tool', (id) => { if (R.get(id)) openTool(id); });
     /* 用户重复双击了图标：主实例已经把窗口提到前面，这里再说明一句，
        否则用户只会看到窗口「突然冒出来」，不明白刚才那次点击为什么没开新窗口。 */
-    sub('app:already-running', () => toast('核核工具箱已经在运行，已切换到当前窗口', 'info', 2500));
+    sub('app:already-running', () => toast(T('app.running'), 'info', 2500));
     sub('sched:fire', (s) => {
       // 系统通知的正文来自用户填写的任务内容（不翻译），
       // 但标题与「没有内容时的兜底文案」是我们自己的，要走 i18n。
@@ -592,10 +604,13 @@
       const results = R.search(q);
       searchDrop.innerHTML = '';
       hlIndex = -1;
-      if (!q.trim() || !results.length) { searchDrop.classList.remove('show'); return; }
+      if (!q.trim() || !results.length) { searchDrop.classList.remove('show'); searchInput.setAttribute('aria-expanded', 'false'); return; }
       const shown = results.slice(0, 10);
       shown.forEach((t, i) => {
         const item = searchResultRow(t, q);
+        item.id = 'titlebar-search-opt-' + i;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', 'false');
         item.addEventListener('click', () => { openTool(t.id); hideSearch(); });
         item.dataset.idx = i;
         searchDrop.appendChild(item);
@@ -604,8 +619,9 @@
         searchDrop.appendChild(div('sr-more', T('search.more', { n: results.length - shown.length })));
       }
       searchDrop.classList.add('show');
+      searchInput.setAttribute('aria-expanded', 'true');
     }
-    function hideSearch() { searchDrop.classList.remove('show'); searchInput.blur(); }
+    function hideSearch() { searchDrop.classList.remove('show'); searchInput.setAttribute('aria-expanded', 'false'); searchInput.blur(); }
     searchInput.addEventListener('input', window.ui.debounce(doSearch, 120));
     searchInput.addEventListener('focus', doSearch);
     searchInput.addEventListener('keydown', (e) => {
@@ -615,6 +631,8 @@
         if (!items.length) return;
         hlIndex = (hlIndex + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
         items.forEach((el, i) => el.classList.toggle('hl', i === hlIndex));
+        items.forEach((el, i) => el.setAttribute('aria-selected', i === hlIndex ? 'true' : 'false'));
+        if (items[hlIndex]) searchInput.setAttribute('aria-activedescendant', items[hlIndex].id);
         items[hlIndex].scrollIntoView({ block: 'nearest' });
       } else if (e.key === 'Enter') {
         const target = items[hlIndex] || items[0];
@@ -1281,7 +1299,7 @@
         /* 【不关闭原标签】用户可能只是想"多开一个"；而且工具页可能正在跑任务，
          * 关标签会触发页面清理、任务中断。 */
         invoke(Channels.CHANNELS.APP.OPEN_TOOL_WINDOW, st.toolId).catch((err) => {
-          toast((err && err.message) || '无法打开独立窗口', 'error');
+          toast((err && err.message) || T('app.windowFail'), 'error');
         });
         return;
       }
@@ -1777,7 +1795,7 @@
     info.appendChild(div('tc-desc', TD(t)));
     // 高危标记：已开启显示「高危」，未开启显示「未启用」并加锁，提示需去设置里开启
     if (danger) {
-      info.appendChild(div('tc-danger-tag', dangerOn ? '⚠ 高危' : '未启用'));
+      info.appendChild(div('tc-danger-tag', dangerOn ? '⚠ ' + T('badge.danger') : T('badge.disabled')));
     }
     card.appendChild(info);
     /* 工具卡是首页最主要的入口，之前纯 div + click。
@@ -2664,7 +2682,7 @@
     if (token !== undefined && token !== drawToken) return;
   }
 
-  function drawAppearance(body) {
+  function drawAppearance(body, token) {
     /* ---- 第一块：明暗模式 ---- */
     const row = div('set-row', div('', div('set-label', T('settings.mode')), div('set-desc', T('settings.appearanceDesc'))));
     body.appendChild(row);
@@ -2735,13 +2753,18 @@
       card.addEventListener('click', async (e) => {
         const rect = card.getBoundingClientRect();
         await changeTheme(m.id, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+        /* 分区已切走时这张卡属于已丢弃的 DOM，别再改 currentMode（R24-33）。 */
+        if (token !== undefined && token !== drawToken) return;
         currentMode = m.id;
         refreshSelected();
       });
       cards.push({ el: card, mode: m.id });
       grid.appendChild(card);
     }
-    invoke(Channels.CHANNELS.STORE.GET, 'settings.theme', 'system').then(m => { currentMode = m || 'system'; refreshSelected(); });
+    invoke(Channels.CHANNELS.STORE.GET, 'settings.theme', 'system').then(m => {
+      if (token !== undefined && token !== drawToken) return;
+      currentMode = m || 'system'; refreshSelected();
+    });
     // 主题卡片放在标题下方独立区域
     row.style.display = 'block';
     row.appendChild(grid);
@@ -2871,8 +2894,14 @@
     }))));
     body.appendChild(div('set-row', div('', div('set-label', T('data.clear')), div('set-desc', T('data.clearDesc'))), div('set-control', btn(T('data.clearBtn'), 'btn-sm btn-danger-plain', async () => {
       if (!(await confirmBox({ title: T('data.clear'), message: T('data.clearConfirm'), danger: true, okText: T('data.clearBtn') }))) return;
-      await invoke(Channels.CHANNELS.STORE.SET, 'recents', []);
-      await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', []);
+      try {
+        await invoke(Channels.CHANNELS.STORE.SET, 'recents', []);
+        await invoke(Channels.CHANNELS.STORE.SET, 'clipHistory', []);
+      } catch (e) {
+        /* SET 失败时本地状态不能先复位，否则界面显示"清空了"而磁盘还在（R24-33）。 */
+        toast(T('data.clearFail') + ((e && e.message) || e), 'error');
+        return;
+      }
       state.recents = [];
       toast(T('data.clearOk'), 'success');
       render();
@@ -3290,8 +3319,7 @@
     try {
       const health = await invoke(Channels.CHANNELS.STORE.HEALTH);
       if (health && health.ok === false) {
-        toast('数据文件损坏，已从默认值启动；原文件已另存为 ' +
-          (health.corruptCopy ? health.corruptCopy.split(/[\\/]/).pop() : '同目录备份'), 'error', 12000);
+        toast(T('app.storeCorrupt', { name: health.corruptCopy ? health.corruptCopy.split(/[\\/]/).pop() : '同目录备份' }), 'error', 12000);
         console.error('[store] 数据文件损坏。原文件副本：', health.corruptCopy || '(另存失败)', '当前数据文件：', health.file);
       }
     } catch (e) { /* 老版本主进程没有这条通道，忽略 */ }

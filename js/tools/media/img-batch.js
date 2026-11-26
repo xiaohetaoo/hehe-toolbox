@@ -71,11 +71,13 @@ register({
             const img = await loadImg(p);
             const canvas = document.createElement('canvas');
             let w = img.naturalWidth, h2 = img.naturalHeight;
-            const scale = parseInt(scaleIn.value) || 100;
+            const scale = Math.min(500, Math.max(10, parseInt(scaleIn.value) || 100));
             if (widthIn.value || heightIn.value) {
-              if (widthIn.value && heightIn.value) { w = +widthIn.value; h2 = +heightIn.value; }
-              else if (widthIn.value) { w = +widthIn.value; h2 = Math.round(w * img.naturalHeight / img.naturalWidth); }
-              else { h2 = +heightIn.value; w = Math.round(h2 * img.naturalWidth / img.naturalHeight); }
+              const wv = Math.max(1, Math.round(+widthIn.value) || 0);
+              const hv = Math.max(1, Math.round(+heightIn.value) || 0);
+              if (wv && hv) { w = wv; h2 = hv; }
+              else if (wv) { w = wv; h2 = Math.round(w * img.naturalHeight / img.naturalWidth); }
+              else { h2 = hv; w = Math.round(h2 * img.naturalWidth / img.naturalHeight); }
             } else if (scale !== 100) { w = Math.round(w * scale / 100); h2 = Math.round(h2 * scale / 100); }
             const rot = parseInt(rotateSel.value) || 0;
             if (rot === 90 || rot === 270) { canvas.width = h2; canvas.height = w; }

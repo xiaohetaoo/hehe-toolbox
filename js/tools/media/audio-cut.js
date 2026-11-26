@@ -59,9 +59,9 @@ register({
         if (fmt === 'keep') { const e = src.split('.').pop().toLowerCase(); fmt = ['mp3', 'm4a', 'wav', 'flac'].includes(e) ? e : 'mp3'; }
         // 固定 _cut 名会让「反复调参数试听剪辑」每次都覆盖上一次的成果
         // （ffmpeg 带 -y 直接改写）。用 fs:unique-path 生成不重名的目标。
-        const out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, src.replace(/\.\w+$/, '_cut.' + fmt));
         goBtn.disabled = true; status.textContent = '处理中…';
         try {
+          const out = await invoke(Channels.CHANNELS.FS.UNIQUE_PATH, src.replace(/\.\w+$/, '_cut.' + fmt));
           const r = await invoke(Channels.CHANNELS.FFMPEG.AUDIO_CUT, {
             input: src, out, ss: ssIn.value.trim(), dur, fadeIn: fi, fadeOut: fo, gain, format: fmt
           });

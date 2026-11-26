@@ -891,6 +891,7 @@ function createSplash() {
       query: {
         accent: storeGet('settings.accent', 'polar') || 'polar',
         theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+        lang: uiLang,
         v: app.getVersion()
       }
     });
@@ -1070,7 +1071,12 @@ function createWindow() {
       e.preventDefault(); win.hide();
     }
   });
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => {
+    /* 主窗销毁时把它名下的在飞任务一并取消，避免 app.quit 之前
+     * 还有 ffmpeg/下载等进程继续跑（R24-19）。 */
+    try { jobs.cancelOwnedBy(win.webContents.id); } catch (err) {}
+    win = null;
+  });
 }
 
 function showMainWindow() {
@@ -1779,7 +1785,10 @@ require('./ipc/net-lan')({
 /* static server */
 handle(CH.SERVER.START, async (e, root, port) => {
   if (serverMap.has('s')) throw new Error('已有服务在运行，请先停止');
-  let p = port || 8128;
+  /* 端口夹取：非数字串会被 Node 当成「管道路径」，越界值 listen 直接抛 RangeError。
+   * UI 传的是 parseInt 结果，但 IPC 入口不能依赖调用方（R24-15）。 */
+  const pnum = Number(port);
+  const p = (Number.isInteger(pnum) && pnum >= 1 && pnum <= 65535) ? pnum : 8128;
   const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8' };
   const srv = http.createServer(async (req, res) => {
     try {
@@ -2369,6 +2378,16 @@ handle(CH.HOSTS.RESTORE, async (e, backupPath) => {
     throw new Error('备份文件无效：只能还原本机生成的 hosts 备份');
   }
   if (!(await pathExists(abs))) throw new Error('备份文件不存在：' + path.basename(abs));
+  /* 备份目录里若被植入指向外部的符号链接，startsWith 字符串检查会放行，
+   * copyFile 跟随链接把外部内容写进系统 hosts。realpath 后再比一次（R24-18）。 */
+  let realDir = dir, realAbs = abs;
+  try { realDir = fs.realpathSync.native(dir); } catch (err) {}
+  try { realAbs = fs.realpathSync.native(abs); } catch (err) {}
+  if (!realAbs.startsWith(realDir + path.sep) || !/\.bak$/i.test(realAbs)) {
+    throw new Error('备份文件无效：只能还原本机生成的 hosts 备份');
+  }
+  const lst = await fsp.lstat(realAbs).catch(() => null);
+  if (!lst || !lst.isFile() || lst.isSymbolicLink()) throw new Error('备份文件无效：不是普通文件');
 
   /* 还原前必须把**当前** hosts 也备份一份。
      原来直接 copyFile(备份 -> hosts)：用户选错备份时，当前的 hosts 当场被冲掉，
@@ -2696,6 +2715,12 @@ handle(CH.OFFICE.STATUS, async () => {
 handle(CH.OFFICE.CONVERT, async (e, { files, target, outDir }) => {
   const soffice = findSoffice();
   const results = [];
+  if (!Array.isArray(files) || !files.length) throw new Error('请选择要转换的文件');
+  if (typeof outDir !== 'string' || !outDir.trim()) throw new Error('缺少输出目录');
+  /* 与 fs:mkdir 同口径：转换输出目录也要过系统保护位置检查（R24-13） */
+  if (pathGuard.isProtectedForModify(outDir) || pathGuard.isCriticalPath(outDir)) {
+    throw new Error('输出目录受系统保护：' + outDir);
+  }
   await fsp.mkdir(outDir, { recursive: true });
   if (soffice) {
     for (const f of files) {
@@ -3287,6 +3312,13 @@ async function winmgrRun(method) {
   const r = await ps('Add-Type -TypeDefinition @\'\n' + WINMGR_CS + '\n\'@\n' + method, 25000);
   return r.stdout;
 }
+/* 窗口句柄必须是正的安全整数：+hwnd 对 'abc'/NaN 会拼成 NaN 交给 C#，
+ * 报错信息只剩解析失败。四个窗口操作共用这一处校验（R24-16）。 */
+function hwndNum(v) {
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n <= 0) throw new Error('窗口句柄不合法：' + String(v));
+  return n;
+}
 handle(CH.WINMGR.LIST, async () => {
   const out = await winmgrRun('[HeheWin.Util]::List()');
   const rows = [];
@@ -3296,9 +3328,9 @@ handle(CH.WINMGR.LIST, async () => {
   }
   return rows;
 });
-handle(CH.WINMGR.TOPMOST, (e, hwnd, on) => winmgrRun(`[HeheWin.Util]::Topmost(${+hwnd}, ${on ? '$true' : '$false'})`));
-handle(CH.WINMGR.BOTTOM, (e, hwnd) => winmgrRun(`[HeheWin.Util]::Bottom(${+hwnd})`));
-handle(CH.WINMGR.OPACITY, (e, hwnd, alpha) => winmgrRun(`[HeheWin.Util]::Opacity(${+hwnd}, ${Math.max(20, Math.min(255, alpha | 0))})`));
+handle(CH.WINMGR.TOPMOST, (e, hwnd, on) => winmgrRun(`[HeheWin.Util]::Topmost(${hwndNum(hwnd)}, ${on ? '$true' : '$false'})`));
+handle(CH.WINMGR.BOTTOM, (e, hwnd) => winmgrRun(`[HeheWin.Util]::Bottom(${hwndNum(hwnd)})`));
+handle(CH.WINMGR.OPACITY, (e, hwnd, alpha) => winmgrRun(`[HeheWin.Util]::Opacity(${hwndNum(hwnd)}, ${Math.max(20, Math.min(255, alpha | 0))})`));
 /* 把窗口摆到指定矩形（窗口布局工具）。
  *
  * 【参数全部强制取整并夹取】坐标来自渲染层的布局计算，理论上已经是整数，
@@ -3316,7 +3348,7 @@ handle(CH.WINMGR.PLACE, (e, hwnd, x, y, w, hgt) => {
   /* 最小 100×80：再小就不是"窗口"了，而且有些应用会在极小时崩溃 */
   const pw = num(w, 100, 20000, 800);
   const ph = num(hgt, 80, 20000, 600);
-  return winmgrRun(`[HeheWin.Util]::Place(${+hwnd}, ${px}, ${py}, ${pw}, ${ph})`);
+  return winmgrRun(`[HeheWin.Util]::Place(${hwndNum(hwnd)}, ${px}, ${py}, ${pw}, ${ph})`);
 });
 
 /* ================= IPC: 文件占用解锁（Restart Manager） =================
@@ -3705,7 +3737,14 @@ handle(CH.SEVEN.STATUS, () => ({ za: sevenZa, full: findSevenFull() }));
 handle(CH.SEVEN.COMPRESS, async (e, { files, out, password, volumeMB }) => {
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
+  if (!Array.isArray(files) || !files.length) throw new Error('请选择要压缩的文件');
+  if (!files.every((f) => typeof f === 'string' && f.trim())) throw new Error('压缩文件列表里有非法项');
+  if (typeof out !== 'string' || !out.trim()) throw new Error('缺少输出路径');
   if (!/\.7z$/i.test(out)) out += '.7z';
+  /* 7z 的 `a` 对已存在的归档是「追加/更新」而不是新建。用户输入同名路径时
+   * 旧实现会把新内容并进旧包，看起来像成功。UI 会先取 unique-path，这里再挡一层。 */
+  const badOut = pathGuard.checkOverwritable(out);
+  if (badOut) throw pathGuard.err(badOut.code, badOut.reason);
   /* 【分卷参数必须先归一】旧写法 `if (volumeMB) args.push('-v' + Math.max(1, volumeMB) + 'm')`
    * 对 "abc"/Infinity 会拼出 `-vNaNm` / `-vInfinitym`：7z 直接失败，
    * 而错误行只剩一句看不懂的参数错误。非正数按「不分卷」处理（与界面勾选语义一致）。 */
@@ -4817,7 +4856,10 @@ function armOnceAll() {
   return keep;
 }
 
-handle(CH.SCHED.ONCE_LIST, () => storeGet('settings.schedulesOnce', []));
+handle(CH.SCHED.ONCE_LIST, () => {
+  const v = storeGet('settings.schedulesOnce', []);
+  return Array.isArray(v) ? v.filter((x) => x && typeof x === 'object') : [];
+});
 handle(CH.SCHED.ONCE_ADD, (e, payload) => {
   const p = payload || {};
   const action = p.action === 'lock' ? 'lock' : 'sleep';
@@ -4831,7 +4873,10 @@ handle(CH.SCHED.ONCE_ADD, (e, payload) => {
     fireAt: Date.now() + Math.round(mins * 60000),
     label: onceActionLabel(action),
   };
-  const list = storeGet('settings.schedulesOnce', []);
+  /* store 被手改成对象/字符串时直接 push 会抛 TypeError；
+   * 与 armOnceAll 的 Array.isArray 口径保持一致（R24-02）。 */
+  const raw = storeGet('settings.schedulesOnce', []);
+  const list = Array.isArray(raw) ? raw.filter((x) => x && typeof x === 'object') : [];
   list.push(item);
   storeSet('settings.schedulesOnce', list);
   armOnce(item);
@@ -4840,7 +4885,8 @@ handle(CH.SCHED.ONCE_ADD, (e, payload) => {
 handle(CH.SCHED.ONCE_REMOVE, (e, id) => {
   const t = schedOnceTimers.get(id);
   if (t) { clearTimeout(t); schedOnceTimers.delete(id); }
-  const list = storeGet('settings.schedulesOnce', []).filter((x) => x.id !== id);
+  const raw = storeGet('settings.schedulesOnce', []);
+  const list = (Array.isArray(raw) ? raw : []).filter((x) => x && typeof x === 'object' && x.id !== id);
   storeSet('settings.schedulesOnce', list);
   return list;
 });
@@ -4952,10 +4998,18 @@ handle(CH.NOTES.PDF, async (e, { title, html, outPath }) => {
 
 /* ================= IPC: 剪贴板图片转文件（防 store JSON 膨胀） ================= */
 handle(CH.CLIP.SAVE_IMAGE, async (e, dataUrl) => {
+  /* dataUrl 来自渲染层剪贴板，旧实现只 split(',')[1]，畸形/超大内容会直接
+   * 落盘成不可读的 .png 并撑爆内存（R24-17）。 */
+  const m = (typeof dataUrl === 'string')
+    ? /^data:image\/(?:png|jpe?g|webp|gif);base64,([A-Za-z0-9+/=\s]+)$/i.exec(dataUrl.trim())
+    : null;
+  if (!m) throw new Error('剪贴板图片格式不合法（仅支持 png/jpeg/webp/gif 的 data URL）');
+  const buf = Buffer.from(m[1].replace(/\s+/g, ''), 'base64');
+  if (!buf.length || buf.length > 32 * 1024 * 1024) throw new Error('剪贴板图片为空或超过 32MB');
   const dir = path.join(app.getPath('userData'), 'clip-img');
   await fsp.mkdir(dir, { recursive: true });
   const name = 'clip-' + Date.now() + '-' + (++clipImgSeq) + '.png';
-  await fsp.writeFile(path.join(dir, name), Buffer.from(dataUrl.split(',')[1] || '', 'base64'));
+  await fsp.writeFile(path.join(dir, name), buf);
   return { path: path.join(dir, name) };
 });
 let clipImgSeq = 0;
@@ -5498,6 +5552,14 @@ if (process.env.HEHE_SHOT) {
    * 反过来：如果进程是被强杀的，这个回调不会执行，标记留着 —— 正是我们要的信号。
    * flushStore 放在前面，确保数据先落盘；删标记失败也不影响退出。 */
   app.on('will-quit', () => {
+    /* 退出前取消所有在飞任务：detached 子进程不会随主进程自动消失，
+     * 不 cancel 会留下孤儿转码/下载（R24-19）。 */
+    try {
+      for (const [id, job] of Array.from(jobs.entries())) {
+        try { if (job && typeof job.cancel === 'function') job.cancel(); } catch (err) {}
+        jobs.delete(id);
+      }
+    } catch (err) {}
     flushStore();
     try { crashLog.clearMarker(crashLogDir()); } catch (err) {}
     try { globalShortcut.unregisterAll(); } catch (err) {}

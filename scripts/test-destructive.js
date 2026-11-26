@@ -1129,8 +1129,8 @@ t('3a alertBox 收到对象时兼容，并且 console.warn 提示调用方', () 
   const fakeH = (tag, attrs, child) => ({ tag, attrs, child });
   const fakeModal = (opts) => { modalTitle = opts.title; opts.body({ appendChild: (n) => { modalBody = n; } }); return { close() {} }; };
   const warns = [];
-  const alertBox = new Function('modal', 'h', 'console', block + '\nreturn alertBox;')(
-    fakeModal, fakeH, { warn: (...a) => warns.push(a.join(' ')) });
+  const alertBox = new Function('modal', 'h', 'console', 'TT', block + '\nreturn alertBox;')(
+    fakeModal, fakeH, { warn: (...a) => warns.push(a.join(' ')) }, (k, d) => d);
 
   alertBox({ title: '部分文件未能重命名', message: '明细文本' });
   assert.ok(modalBody && modalBody.child === '明细文本', '对象实参的 message 字段没有被取出来当正文');

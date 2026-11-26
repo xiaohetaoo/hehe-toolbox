@@ -183,7 +183,17 @@ register({
         prog.show(); status.textContent = '';
         const paths = picker.paths.slice();
         const outDir = outDirIn.value.trim() || (window.PathText.dirname(paths[0]) + '/hehe-compressed');
-        try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) {}
+        try { await invoke(Channels.CHANNELS.FS.MKDIR, outDir); } catch (e) {
+          /* 建目录失败是整批的根因，不能吞掉后让每张图各自报错（R24-32）。 */
+          if (runToken === imgRunSeq) {
+            status.textContent = '✗ 输出目录不可写：' + ((e && e.message) || e);
+            toast('输出目录不可写：' + ((e && e.message) || e), 'error');
+            prog.hide(); running = false; startBtn.disabled = false; picker.setLocked(false);
+            stopBtn.disabled = true;
+            if (pageProg === prog) pageProg = null;
+          }
+          return;
+        }
         let totalBefore = 0, totalAfter = 0, ok = 0, fail = 0, missCount = 0;
         for (let i = 0; i < paths.length; i++) {
           /* 【两个中断条件】

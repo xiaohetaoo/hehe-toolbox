@@ -12,12 +12,15 @@ register({
     keywords: ['音视频', '信息', 'ffprobe', '元数据'],
     render(page) {
       const result = div('');
+      let probeSeq = 0;
       function evalFps(fr) { try { const [a, b] = fr.split('/').map(Number); return b ? a / b : 0; } catch (e) { return 0; } }
       async function probe(p) {
+        const my = ++probeSeq;
         result.innerHTML = '';
         result.appendChild(window.ui.loadingBlock('读取媒体信息…'));
         try {
           const m = await invoke(Channels.CHANNELS.FFMPEG.PROBE, p);
+          if (my !== probeSeq) return;   // 换文件后旧的探测结果不许回写（R24-35）
           result.innerHTML = '';
           const fmt = m.format || {};
           const card = div('card');
@@ -55,6 +58,7 @@ register({
           }));
           result.appendChild(sc);
         } catch (e) {
+          if (my !== probeSeq) return;
           result.innerHTML = '';
           if (/ffprobe/.test(e.message)) {
             result.appendChild(window.ui.placeholder('film', '需要 FFmpeg 引擎', '音视频信息查看依赖 ffprobe。点击下方按钮前往安装（只需一次）。'));
