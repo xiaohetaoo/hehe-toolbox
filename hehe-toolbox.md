@@ -80,7 +80,7 @@
 | `dist/` | 产物固定位置（勿删；当前为 0.9.3 的 Portable exe + zip，0.9.4 待下载） |
 | `D:\dsh\hehe-tool.md` | 完整交接文档（外部，用户指定维护） |
 
-## 六、当前状态（2026-11-25 核对）
+## 六、当前状态（2026-11-26 核对）
 
 - 版本 `0.9.6`，tag `v0.9.6` → `17eef21`；HEAD 与 origin/main 同步。
 - **开源为 MIT**：新增 `LICENSE`（2026 hehe）、README 许可段、
@@ -93,8 +93,8 @@
   P1 21 项（lib 顶层 const 冲突致 run-token 整份 SyntaxError、path-guard
   别人 home 深处、FFmpeg 直接写坏 exe、解锁进程名未归一、剪贴板图片交接丢失等）；
   P2/P3 35 项；UI 字号整数刻度 + 圆角 4/6/8/10 + 窄窗栅格。
-- 质量门禁：`npm test` **216 脚本 / 2431 PASS / 0 失败 / 7 环境跳过**，
-  lint 0、typecheck 0；断言基线 **2404**（216 文件；dist 同版本时 2431）。
+- 质量门禁：`npm test` **218 脚本 / 2444 PASS / 0 失败 / 7 环境跳过**（371.1s），
+  lint 0、typecheck 0；断言基线 **2444**（218 文件；R23 新增测试后）。
 - `dist/` 已是 0.9.6 两个产物，产物校验 **7/7 通过**（M1~M7，含 LICENSE）。
 - **测试环境注意**：`test-critical-dirs` 曾硬编码开发机用户名，CI（runneradmin）
   下被 OTHER_HOME 规则正确拦下而误报 —— 已改为动态 `os.homedir()` 并补成对断言。
@@ -102,3 +102,19 @@
   `npm run dist:fetch <tag>` 已内置「官方优先 → 失败走镜像 + 官方 digest 双校验」。
 - 待办：P3-7 批处理「续跑 vs 即停」策略待产品决定；
   `shutdown /a` 1116 路径、缩略图网格视觉密度、真实拖拽需实机确认。
+
+## 十三、第 22 轮深度审查（2026-11-26，未提交）
+
+- 范围：0.9.6 的纯逻辑边界、归档预检、磁盘健康、快捷启动旧数据与卡片视觉；明细见 `docs/review-round22.md`。
+- 修复 6 项（按收益降序）：P2 长路径前缀 —— `lib/path-text.js` 与 `lib/env-path.js` 只认普通 `C:`，`\\?\C:\foo` 的 dirname 返回 `\\?\C:`、PATH 里退化成 `\\?\C:`，补扩展前缀盘符根；P2 归档 —— 先文件 `a` 后无尾斜杠目录 `a` 能通过预检、解压到一半才失败，补 `fileDirs` 对称检查；P3 快捷启动 —— 旧 store 的 null/缺 target 项会让整页渲染中断，跳过非对象并把字段兜成字符串；P3 磁盘健康 —— `hasAny` 漏 `startStop`，只有启停次数的盘自相矛盾地说「读不到 SMART」，补入判据；P3 视觉 —— 160px 卡片里的 40 字符无空格 URL 会横向溢出，`.tc-name/.tc-desc` 补 `max-width:100%` + `overflow-wrap:anywhere`。
+- 新增测试：`test-round22-fixes.js`（2 条）、`test-path-text` +1、`test-env-path` +1、`test-archive-guard` +1、`test-disk-health` +1；`features.json` 登记 R22 测试。
+- 门禁：`npm test` **217 脚本 / 2437 PASS / 0 失败 / 7 环境跳过**（367.7s，exit 0）；lint 0；typecheck 0；断言基线 **2437**（217 文件）；`HEHE_SMOKE=1` 111 页 PASS（cssRules=498）。
+- 提交状态：所有改动仍在工作区，未提交、未 push；`docs/copyright/` 为用户原有未跟踪资料，未触碰。
+
+## 十四、第 23 轮深度审查（2026-11-26，未提交）
+
+- 范围：归档预检数据完整性、磁盘健康数值质量、PATH 盘符语义、UNC 共享根、快捷启动旧数据/默认名与空状态；明细见 `docs/review-round23.md`。
+- 修复 6 项（按收益降序）：P2 归档 `size` 缺失/空串/NaN/Infinity 被 `|| 0` 绕过上限，改为文件条目必须有限非负、坏值 `BAD_SIZE`、目录可无 size；P2 磁盘健康空字段被 `Number('')=0` 伪装成读数、非有限数进入 verdict，统一 `numOrNull` 并让坏 `disks` 不抛；P2 PATH 把 `C:`/`C:\` 归一成同一项、根项会误删或误判已存在，且 `C:\Tools`/`C:\Tools\`/`C:/Tools` 会重复添加，分离盘符根并「先 strip 再语义去重」；P3 快捷启动 `/\.\\w+$/` 默认名正则失效、坏 store 的 null/缺 cmd 项会导致删除抛错或执行 `undefined`，改按最后一点切并过滤坏项；P3 `path-text` UNC 共享根 dirname 退化成主机名，新增共享根分支；P3 快捷项全是坏数据时只显示空网格，改为同一空状态提示。
+- 新增测试：`test-round23-fixes.js`（2）、`test-archive-guard` +1、`test-disk-health` +2、`test-env-path` +1、`test-path-text` +1；`features.json` 登记 R23。
+- 门禁：`npm test` **218 脚本 / 2444 PASS / 0 失败 / 7 环境跳过**（371.1s，exit 0）；lint 0；typecheck 0；断言基线 **2444**（218 文件）；`HEHE_SMOKE=1` 111 页 PASS（cssRules=498）。
+- 提交状态：所有改动仍在工作区，未提交、未 push；`docs/copyright/` 为用户原有未跟踪资料，未触碰。

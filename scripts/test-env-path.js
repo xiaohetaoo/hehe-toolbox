@@ -64,4 +64,27 @@ t('EP6 前置：盘符根必须保留 C:\\，不能退化成 C:', () => {
   assert.deepStrictEqual(r.added, ['C:\\', 'D:\\envs\\node']);
 });
 
+t('EP7 前置：扩展长度前缀的盘符根也不能退化成 \\\\?\\C:', () => {
+  /* 锁的是：stripTrailingSep 只认普通 C: 时，\\?\C:\ 被去尾成
+   * \\?\C:。长路径前缀下同样是「C 盘当前目录」，不是根。 */
+  const r = ep.prependEntries('', ['\\\\?\\C:\\', '\\\\?\\C:\\Tools']);
+  assert.strictEqual(r.value, '\\\\?\\C:\\;\\\\?\\C:\\Tools');
+  assert.deepStrictEqual(r.added, ['\\\\?\\C:\\', '\\\\?\\C:\\Tools']);
+});
+
+t('EP8 盘符根与盘符相对不能混为一谈，斜杠重复项要归并', () => {
+  /* 锁的是：normalizeForCompare 一律剥尾分隔符，C: 与 C:\ 都变成 c:。
+   * 后果不只是「根没加进去」：removeEntries('C:\\') 会把 PATH 里原本
+   * 表示「C 盘当前目录」的 C: 项删掉；hasEntry 也会误判根已存在。 */
+  assert.strictEqual(ep.normalizeForCompare('C:'), 'c:');
+  assert.strictEqual(ep.normalizeForCompare('C:\\'), 'c:\\');
+  assert.strictEqual(ep.hasEntry('C:', 'C:\\'), false);
+  assert.strictEqual(ep.hasEntry('C:\\', 'C:\\'), true);
+  assert.deepStrictEqual(ep.removeEntries('C:;C:\\Tools', ['C:\\']).removed, []);
+  /* 同一目录写成 C:\Tools / C:\Tools\ / C:/Tools，只能加一条。 */
+  const r = ep.prependEntries('', ['C:\\Tools', 'C:\\Tools\\', 'C:/Tools']);
+  assert.strictEqual(r.value, 'C:\\Tools');
+  assert.deepStrictEqual(r.added, ['C:\\Tools']);
+});
+
 done();

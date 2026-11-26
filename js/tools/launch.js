@@ -48,18 +48,21 @@
       async function load() {
         const rawQuick = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
         const items = Array.isArray(rawQuick) ? rawQuick : [];
+        /* 旧版/手改的 store 可能混进 null 或非对象项；先过滤再判空，
+         * 否则「有 N 项但全是坏数据」会得到一个空网格而不是空状态提示。 */
+        const valid = items.filter((it) => it && typeof it === 'object');
         list.innerHTML = '';
-        if (!items.length) { list.appendChild(div('empty-tip', '还没有快捷项，点「添加」创建一个')); return; }
+        if (!valid.length) { list.appendChild(div('empty-tip', '还没有快捷项，点「添加」创建一个')); return; }
         const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' } });
-        /* eslint-disable-next-line no-unused-vars -- 历史遗留：变量赋值后未使用（下一轮清理；本轮要求零行为改动） */
-        for (const [i, it] of items.entries()) {
+        for (const it of valid) {
+          const targetText = String(it.target == null ? '' : it.target);
           const card = div('tool-card');
           card.style.flexDirection = 'column';
           card.style.alignItems = 'center';
           card.style.textAlign = 'center';
           card.appendChild(div('tc-icon', iconFor(it.type)));
-          card.appendChild(div('tc-name', it.name));
-          card.appendChild(div('tc-desc', it.target.length > 40 ? it.target.slice(0, 40) + '…' : it.target));
+          card.appendChild(div('tc-name', String(it.name == null ? '' : it.name)));
+          card.appendChild(div('tc-desc', targetText.length > 40 ? targetText.slice(0, 40) + '…' : targetText));
           const ops = div('', { style: { display: 'flex', gap: '4px', marginTop: '8px' } });
           ops.appendChild(btn('打开', 'btn-sm btn-primary', () => open(it)));
           ops.appendChild(btn('删除', 'btn-sm btn-text', async () => {
@@ -68,9 +71,10 @@
             const cur = Array.isArray(rawDel) ? rawDel : [];
             // 旧数据没有 id 字段，只能按 name+target+type 定位；
             // 直接 findIndex(x => x.id === it.id) 会在 undefined === undefined 时命中第一条，导致删错项。
-            const idx = cur.findIndex(x => it.id
+            // 同页其它卡片可能已被手改成 null，findIndex 里也要跳过，否则点删除直接抛错。
+            const idx = cur.findIndex(x => x && typeof x === 'object' && (it.id
               ? x.id === it.id
-              : (x.name === it.name && x.target === it.target && x.type === it.type));
+              : (x.name === it.name && x.target === it.target && x.type === it.type)));
             if (idx < 0) { load(); return; } // 索引可能因并发删除过期，避免误删
             cur.splice(idx, 1);
             await invoke(Channels.CHANNELS.STORE.SET, 'quicklaunch', cur);
@@ -118,9 +122,25 @@
             target = p && p[0];
           }
           if (!target) return;
-          const name = await promptBox({ title: '命名', label: '显示名称：', value: String(target).split(/[\\/]/).pop().replace(/\\.\\w+$/, '') || '快捷项' });
+          /* 默认名从目标推导：URL 去掉查询/锚点，文件去掉最后一个扩展名。
+           * 旧写法 `/\.\\w+$/` 匹配的是「一个点 + 反斜杠 + w+」，
+           * 对 `报告.docx` 完全不命中，弹窗里永远显示带扩展名的全名。
+           * 点开头文件（.gitignore）不能把整个名字剥空。 */
+          const rawTarget = String(target);
+          let suggested = '';
+          if (type === 'url') {
+            const noQuery = rawTarget.replace(/[?#].*$/, '').replace(/[/\\]+$/, '');
+            suggested = noQuery.split(/[\\/]/).pop() || '链接';
+          } else {
+            suggested = rawTarget.split(/[\\/]/).filter(Boolean).pop() || '';
+            const dot = suggested.lastIndexOf('.');
+            if (dot > 0) suggested = suggested.slice(0, dot);
+          }
+          const name = await promptBox({ title: '命名', label: '显示名称：', value: suggested || '快捷项' });
           if (!name) return;
-          const items = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
+          const rawItems = await invoke(Channels.CHANNELS.STORE.GET, 'quicklaunch', []);
+          /* 与 load 同一口径：旧 store 可能不是数组，直接 push 会抛。 */
+          const items = Array.isArray(rawItems) ? rawItems : [];
           items.push({ id: nextId('ql'), name, target, type });
           await invoke(Channels.CHANNELS.STORE.SET, 'quicklaunch', items);
           toast('已添加', 'success');
@@ -182,7 +202,10 @@
       });
       async function load() {
         const rawCmds = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
-        const items = Array.isArray(rawCmds) ? rawCmds : [];
+        /* 坏项（null / 缺 cmd）既渲染不了也不能执行，先挡掉；
+         * 否则 renderTable 在 r.name 上直接抛，整张表都不显示。 */
+        const items = (Array.isArray(rawCmds) ? rawCmds : [])
+          .filter((x) => x && typeof x === 'object' && typeof x.cmd === 'string' && x.cmd);
         list.innerHTML = '';
         execBtns = [];
         if (!items.length) { list.appendChild(div('empty-tip', '还没有收藏命令')); return; }
@@ -199,7 +222,7 @@
                 td.appendChild(btn('删除', 'btn-sm btn-text', async () => {
                   const rawDel = await invoke(Channels.CHANNELS.STORE.GET, 'commands', []);
                   const curItems = Array.isArray(rawDel) ? rawDel : [];
-                  const idx = curItems.findIndex(x => x.id === r.id);
+                  const idx = curItems.findIndex(x => x && typeof x === 'object' && x.id === r.id);
                   // findIndex 未命中时返回 -1，splice(-1,1) 会误删最后一条，必须先挡住
                   if (idx < 0) { load(); return; }
                   curItems.splice(idx, 1);

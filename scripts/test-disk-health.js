@@ -62,6 +62,16 @@ t('有 SMART 且都正常 → 判 ok', () => {
   assert.ok(/未见异常/.test(v.text), '实际：' + v.text);
 });
 
+
+t('只有启停次数也算拿到了 SMART，不能判「完全没有数据」', () => {
+  const r = H.shape({ disks: [{ model: 'X', healthStatus: 'Healthy', operationalStatus: 'OK',
+    startStop: 120 }] });
+  const d = r.disks[0];
+  assert.strictEqual(d.hasSmart, true, '有 startStop 就该算部分 SMART');
+  assert.ok(!/读不到 SMART 明细/.test(d.verdict.text), '不能在有读数时仍说完全读不到：' + d.verdict.text);
+  assert.strictEqual(d.verdict.level, 'ok');
+});
+
 t('寿命接近上限 → 判 warn', () => {
   const r = H.shape({ disks: [{ model: 'X', healthStatus: 'Healthy', wear: 85 }] });
   const v = r.disks[0].verdict;
@@ -168,5 +178,38 @@ t('30 disk-health：wear=0 是「全新」，不能说成「厂商没给数据�
 });
 
 /* ==================== 31. target-size：负数码率不能出现在文案里 ==================== */
+
+
+t('32 空白/非有限读数必须回到 null，不能伪装成 0 或 Infinity', () => {
+  /* 锁的是：Number('')=0、Number(' ')=0，旧 shape 把空字段当成有效读数；
+   * NaN/Infinity 还让 hasSmart 误判为「有数据」，verdict 输出
+   * 「累计读写错误 Infinity 次」。 */
+  const r = H.shape({ disks: [{
+    temperature: '', powerOnHours: ' ', wear: 'abc',
+    readErrors: Infinity, writeErrors: NaN, startStop: '0',
+  }] });
+  const d = r.disks[0];
+  assert.strictEqual(d.temperature, null);
+  assert.strictEqual(d.powerOnHours, null);
+  assert.strictEqual(d.wear, null);
+  assert.strictEqual(d.readErrors, null);
+  assert.strictEqual(d.writeErrors, null);
+  assert.strictEqual(d.startStop, 0, '真实的 0 次启停是有效读数');
+  assert.ok(!/Infinity|NaN/.test(d.verdict.text), '结论文案不能带非有限数：' + d.verdict.text);
+  assert.strictEqual(H.estimateRemaining(''), null, '空串不是磨损 0%');
+  assert.strictEqual(H.estimateRemaining('   '), null, '纯空白不是磨损 0%');
+  assert.strictEqual(H.estimateRemaining(true), null, '布尔不是磨损百分比');
+});
+
+t('33 坏数组/坏条目不能让整个磁盘页崩掉', () => {
+  /* 采集层是 PowerShell/JSON，`disks` 不是数组或含 null 项时，
+   * 旧实现 `.map`/`d.model` 直接抛，用户只看到整页加载失败。 */
+  const one = H.shape({ disks: [null] });
+  assert.strictEqual(one.disks.length, 1);
+  assert.strictEqual(one.disks[0].hasSmart, false);
+  assert.strictEqual(one.disks[0].verdict.level, 'unknown');
+  const bad = H.shape({ disks: 'not-an-array' });
+  assert.deepStrictEqual(bad.disks, []);
+});
 
 done();

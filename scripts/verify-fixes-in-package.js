@@ -452,6 +452,25 @@ const CHECKS_BY_VERSION = {
     ['lib/once-schedule.js', 'M7 坏时间戳必须 drop',
       (s2) => /fireAtOf/.test(s2) && /decideOnce/.test(s2)],
   ],
+  /* v0.9.7：R22/R23 —— 长路径前缀、归档预检 fail-closed、PATH 盘符语义、数据质量 */
+  '0.9.7': [
+    ['lib/path-text.js', 'M1 dirname/basename 认 \\\\?\\C: 长路径前缀',
+      (s2) => /\\\\\?\\|DRIVE_ROOT/.test(s2) && /UNC_ROOT/.test(s2)],
+    ['lib/env-path.js', 'M2 PATH 盘符根不剥成 C:（否则是"盘符当前目录"）',
+      (s2) => /stripTrailingSep/.test(s2)],
+    ['lib/env-path.js', 'M3 三写法归并（先 strip 再去重）',
+      (s2) => /normalizeForCompare/.test(s2)],
+    ['lib/archive-guard.js', 'M4 文件/目录同名冲突双向都拒',
+      (s2) => /FILE_DIR_CONFLICT/.test(s2) && /dirLike\.has\(lower\)/.test(s2)],
+    ['lib/archive-guard.js', 'M5 坏 size fail-closed（不再 Number()\|\|0）',
+      (s2) => /BAD_SIZE/.test(s2) && /NEGATIVE_SIZE/.test(s2)],
+    ['lib/disk-health.js', 'M6 空串/NaN 不当 0 读数',
+      (s2) => /numOrNull/.test(s2)],
+    ['js/tools/launch.js', 'M7 快捷启动坏 store 过滤 + 默认名推导',
+      (s2) => /Array\.isArray/.test(s2) && /filter/.test(s2)],
+    ['css/app.css', 'M8 长 URL 卡片断行（不顶出 160px 栅格）',
+      (s2) => /overflow-wrap:\s*anywhere/.test(s2)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];

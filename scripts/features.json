@@ -49,6 +49,8 @@
       "test-lib-globals.js",
       "test-once-schedule.js",
       "test-round20-fixes.js",
+      "test-round22-fixes.js",
+      "test-round23-fixes.js",
       "test-source-assertions.js",
       "test-aux-csp.js",
       "test-window-security*",

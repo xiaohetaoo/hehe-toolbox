@@ -241,6 +241,38 @@ t('34 archive-guard：先文件后目录的顺序也要拦住冲突', () => {
   }
 });
 
-/* ==================== 35. links：drive-relative 也要认成盘符根 ==================== */
+t('35 archive-guard：先文件后同名目录条目也要拒绝', () => {
+  const AGr = require(path.join(ROOT, 'lib', 'archive-guard'));
+  /* 锁的是：checkEntryName 对没有尾斜杠的目录条目 `a` 与文件 `a` 不判
+   * 大小写冲突（seenLower 同名不报）；旧逻辑只查 fileDirs→dirLike 一个方向，
+   * 先文件后目录能通过预检，解压到一半才写盘失败。 */
+  assert.throws(() => AGr.inspectEntries([
+    { name: 'a', isDir: false, size: 1 },
+    { name: 'a', isDir: true, size: 0 },
+  ]), /FILE_DIR_CONFLICT|文件|目录/, '先文件后目录同名应被拒');
+});
+
+/* ==================== 36. archive-guard：坏大小 fail closed ==================== */
+
+t('36 archive-guard：文件缺大小/坏大小不能退化成 0 绕过上限', () => {
+  const AGr = require(path.join(ROOT, 'lib', 'archive-guard'));
+  /* 锁的是：`Number(raw.size) || 0` 把 undefined/''/NaN 都当成 0。
+   * 一个没有大小字段的文件条目会绕过单条与累计上限，而 adm-zip 可能
+   * 仍按归档里的真实声明分配内存 —— 安全预检必须 fail closed。 */
+  for (const bad of [
+    { name: 'a.bin' },
+    { name: 'b.bin', size: '' },
+    { name: 'c.bin', size: '   ' },
+    { name: 'd.bin', size: 'abc' },
+    { name: 'e.bin', size: Infinity },
+    { name: 'f.bin', size: NaN },
+  ]) {
+    assert.throws(() => AGr.inspectEntries([bad]), /BAD_SIZE|解压大小/,
+      '大小坏条目应被拒：' + JSON.stringify(bad));
+  }
+  /* 目录没有 size 是合法的；0 字节文件也是合法的。 */
+  assert.strictEqual(AGr.inspectEntries([{ name: 'dir/', isDir: true }]).ok, true);
+  assert.strictEqual(AGr.inspectEntries([{ name: 'empty.txt', size: 0 }]).ok, true);
+});
 
 done();

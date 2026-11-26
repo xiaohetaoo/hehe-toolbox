@@ -1,0 +1,3240 @@
+
+==============================================================================
+核核工具箱软件 V1.0    第 1 页 / 共 60 页
+==============================================================================
+    1  /* ==================== main.js ==================== */
+    2  'use strict';
+    3  /* 启动耗时打点（仅 HEHE_BOOTTIME 设置时启用，不影响正常运行）
+    4     注意：这里必须用 require 现场取 fs，不能引用下面 `const fs = require('fs')`。
+    5     那个 const 还没有初始化（TDZ），bootMark 里 try/catch 会把 ReferenceError
+    6     默默吞掉，导致最靠前的 main-start / electron-loaded 两条打点永远丢失。 */
+    7  const BOOT_T0 = Date.now();
+    8  const BOOT_FILE = process.env.HEHE_BOOTTIME || null;
+    9  function bootMark(name) {
+   10    if (!BOOT_FILE) return;
+   11    try { require('fs').appendFileSync(BOOT_FILE, name + '\t' + (Date.now() - BOOT_T0) + '\n'); } catch (e) {}
+   12  }
+   13  bootMark('main-start');
+   14  const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, Tray, Menu, screen, globalShortcut, nativeTheme, desktopCapturer } = require('electron');
+   15  bootMark('electron-loaded');
+   16  const path = require('path');
+   17  const fs = require('fs');
+   18  const fsp = fs.promises;
+   19  const os = require('os');
+   20  const crypto = require('crypto');
+   21  const { spawn, execFile, spawnSync } = require('child_process');
+   22  const http = require('http');
+   23  const AdmZip = require('adm-zip');
+   24  const solarlunar = require('solarlunar');
+   25  const archiveGuard = require('./lib/archive-guard'); // 解压安全预检（路径穿越/ADS/设备名/限额）
+   26  const archiveProcess = require('./lib/archive-process');
+   27  const targetSize = require('./lib/target-size');     // 目标体积压缩的多轮逼近算法
+   28  const errorInfo = require('./lib/errors');           // 结构化错误（稳定错误码 + 建议操作）
+   29  const pathGuard = require('./lib/path-guard');       // 破坏性操作的路径安全网（删/写/覆盖）
+   30  const windowSecurity = require('./lib/window-security');
+   31  const updateFile = require('./lib/update-file');
+   32  const downloadLib = require('./lib/download');
+   33  const powerGate = require('./lib/power-gate');       // 电源命令识别 + 门禁判定（与测试共享同一实现）
+   34  const psScript = require('./lib/ps-script');          // 更新/回滚脚本的 UTF-8 BOM 约定（PS 5.1 必须）
+   35  const startupInventory = require('./lib/startup-inventory'); // 自启来源归一化（纯逻辑，可单测）
+   36  const restorePoint = require('./lib/restore-point');         // 还原点时间/vssadmin 输出解析（纯逻辑）
+   37  /* lib/job-id 只在**渲染层一侧**用（js/job-prefixes.js 与它对齐）。
+   38   * 主进程从来不读这张表：事件过滤是渲染层 claimJobId 做的。
+   39   * 这里原先有一行未使用的 require，已删除 —— 留着会让「主进程也参与过滤」
+   40   * 看起来像真的，实际两份数据源靠测试脚本手工对齐，容易长期漂移。 */
+   41  const fsOps = require('./lib/fs-ops');               // 唯一名/临时名等文件命名纯逻辑
+   42  const mojibake = require('./lib/mojibake');           // 乱码识别与编码探测（纯逻辑）
+   43  const diskHealth = require('./lib/disk-health');      // 磁盘健康：诚实区分「拿到了/拿不到」（纯逻辑）
+   44  /* lanScanLib 不再在 main.js 里用：它所有的调用点都随 network 域
+   45   * 搬到了 ipc/net-lan.js（那个模块自己 require）。留在这里会让
+   46   * ESLint 报 no-unused-vars —— 这是好事，说明搬运是干净的。 */
+   47  /* 临时产物命名的**唯一来源**：生成函数与清理白名单在同一个模块里，
+   48   * 避免"新增一种产物忘了登记白名单"（.hehe-7zx-* 那次残留事故的根因）。 */
+   49  const tempNames = require('./lib/temp-names');
+   50  const onceSchedule = require('./lib/once-schedule'); // 一次性定时的时间戳解析/该不该执行（纯逻辑）
+
+==============================================================================
+核核工具箱软件 V1.0    第 2 页 / 共 60 页
+==============================================================================
+   51  /* 文件名用的**本地**时间戳。原来几处直接用 toISOString()，那是 UTC ——
+   52   * UTC+8 用户看到的 hosts 备份名会差 8 小时，在「恢复 hosts」列表里挑错备份。
+   53   * 内部诊断用的 .corrupt- 备份仍走 UTC（跨时区比对更方便），不在此列。 */
+   54  const timeStamp = require('./lib/time-stamp');
+   55  /* 崩溃日志：打包后的 exe 没有控制台，异常只写 console 等于没记。
+   56   * 这个模块负责脱敏、截断、轮转，主进程这边只提供目录与时机。 */
+   57  const crashLog = require('./lib/crash-log');
+   58  const CH = require('./lib/channels').CHANNELS;   // IPC 通道名唯一来源（见文件头说明）
+   59  /* 用户可调偏好的规格表（默认值/区间/类型）。**渲染层与主进程共用同一份** ——
+   60   * 主进程侧只有少数几项要用（标尺最小长度、崩溃日志份数、更新缓存时长），
+   61   * 但区间校验必须与设置页一致，否则"设置页夹到 20，主进程照收 999"。
+   62   * 文件在 js/ 下是因为它主要服务渲染层；这里 require 不会引入 electron 依赖。 */
+   63  const prefsSpec = require('./lib/prefs-spec');
+   64  const { OwnerJobMap } = require('./lib/job-owner');   // 任务归属（谁发起的、关窗时清账）
+   65  const { pickSendTarget } = require('./lib/ipc-route'); // 推送发给谁（三档判据，纯函数）
+   66  const toolNames = require('./lib/tool-names');      // 工具 id → 中英文名（独立窗口标题用）
+   67  /* 【任务 5 之后这里少了 5 个 require】rm-lockers / links / dir-move /
+   68   * acl-repair / channels 现在只被 ipc/dir-acl-links.js 使用 —— 那两个域连同
+   69   * handle(dirMoveCh.X.Y, ...) 一起搬过去了，模块自己 require 它们。
+   70   * 留着这些 require 就是「main.js 顶部引了但没人用」，ESLint 的
+   71   * no-unused-vars 会立刻报出来（它确实报了，我才发现的）。 */
+   72  bootMark('deps-loaded');
+   73  
+   74  const isMac = process.platform === 'darwin';
+   75  const isWin = process.platform === 'win32';
+   76  let win = null;
+   77  let tray = null;
+   78  let isQuitting = false;
+   79  let jobSeq = 0;
+   80  /* 后台任务表。形状仍是 Map（id → { cancel }），只是多记了一个 ownerWC ——
+   81   * 即「这条任务是哪个窗口发起的」。为什么要记：独立工具窗口关掉之后，
+   82   * 它启动的任务原来会继续跑，并且每条 job:stream 都被 send 的兜底逻辑
+   83   * 甩到主窗口去，冒充成主窗口的任务（详见 lib/job-owner.js 头部）。
+   84   *
+   85   * 【为什么收在这里而不是给 20 多处 jobs.set 逐个补字段】
+   86   * 那种做法漏一处就是一条静默的孤儿任务路径，而以后新写的任务默认又会忘。
+   87   * set() 里统一打标，调用点一处都不用改。
+   88   *
+   89   * 发起者从 ALS 上下文取（currentSender 会读 als）。这里传的是**函数**而不是
+   90   * 当场取到的值：als 在本行之后才声明（TDZ），而箭头体只在 set() 时才执行，
+   91   * 那时 als 早已初始化完毕。 */
+   92  const jobs = new OwnerJobMap(() => {
+   93    const s = currentSender();
+   94    return (s && typeof s.id === 'number') ? s.id : null;
+   95  });
+   96  const serverMap = new Map();
+   97  /* 静态服务的根目录与端口。服务活在主进程、跨页面存活，
+   98   * 所以这些信息必须留在主进程，供 server:status 回填界面。 */
+   99  let serverRoot = null, serverPort = null;
+  100  let lastCpuSample = null;
+
+==============================================================================
+核核工具箱软件 V1.0    第 3 页 / 共 60 页
+==============================================================================
+  101  let lastProcSnap = null;
+  102  
+  103  /* ---------------- data store ---------------- */
+  104  const storeFile = () => path.join(app.getPath('userData'), 'hehe-data.json');
+  105  /* 崩溃日志目录。放在 userData 下，与数据文件同一个根 ——
+  106   * 用户要把它发给开发者时只需要知道一个位置（设置页有「打开日志目录」入口）。 */
+  107  const crashLogDir = () => path.join(app.getPath('userData'), 'logs');
+  108  /* 上次是否异常退出。启动时读一次并清掉标记，之后固定用这个值，
+  109   * 免得中途再打开设置页时又把它当成"本次异常"。 */
+  110  let lastSessionCrashed = false;
+  111  let storeData = { settings: {}, favorites: [], recents: [], quicklaunch: [], commands: [], clipHistory: [], notes: [], autostartBackup: [] };
+  112  // 记录 store 是否加载成功。损坏的 hehe-data.json 会让 loadStore 静默回退默认值，
+  113  // 此时 clipHistory 是空的——若照常跑清扫，clip-img 里的所有图片都会被当孤儿删光。
+  114  let storeLoadFailed = false;
+  115  /* 加载失败时保存的原始损坏文件副本路径（供界面提示用户「原文件在这里」）。 */
+  116  let storeCorruptCopy = null;
+  117  let saveTimer = null;
+  118  function loadStore() {
+  119    try {
+  120      storeData = Object.assign(storeData, JSON.parse(fs.readFileSync(storeFile(), 'utf8')));
+  121    } catch (e) {
+  122      // 首次运行（ENOENT）是正常的；解析失败才是真问题，必须标记出来
+  123      if (e && e.code !== 'ENOENT') {
+  124        storeLoadFailed = true;
+  125        console.error('[store] 读取失败，本次禁用依赖 store 的清扫：', e.message);
+  126        /* 【关键：先留原始副本，再让内存回退默认值】
+  127         * loadStore 失败后 storeData 停在默认值（笔记、收藏、剪贴板历史全空）。
+  128         * 而 storeSet 是**任何**一次设置变更都会走的路（拨一个开关、自动记一条
+  129         * 剪贴板、加一条待办…），saveStore 200ms 后就把这份「空数据」原子改名
+  130         * 落到 hehe-data.json 上 —— 原文件当场被覆盖，且没有任何备份。
+  131         * 实测复现：文件尾部被截断（断电典型形态）→ 拨一下「关闭到托盘」开关
+  132         * → 100 篇笔记永久消失。
+  133         * 解析失败的 JSON 往往**大部分内容是完好的**（只是尾部截断/多了一个逗号），
+  134         * 用户/我们可以用编辑器手工救回来。所以这里原样复制一份带时间戳的副本，
+  135         * 让「救得回来」这件事至少成立；文件名也记下来，界面上能告诉用户去哪找。 */
+  136        try {
+  137          const raw = fs.readFileSync(storeFile());
+  138          const stamp = new Date().toISOString().replace(/[:T.]/g, '-').slice(0, 23);
+  139          const bak = storeFile() + '.corrupt-' + stamp + '.json';
+  140          fs.writeFileSync(bak, raw);
+  141          storeCorruptCopy = bak;
+  142          console.error('[store] 原文件已另存为', bak);
+  143        } catch (e2) {
+  144          console.error('[store] 另存损坏文件失败（原文件仍在原位）：', e2.message);
+  145        }
+  146      }
+  147    }
+  148  }
+  149  function saveStore() {
+  150    clearTimeout(saveTimer);
+
+==============================================================================
+核核工具箱软件 V1.0    第 4 页 / 共 60 页
+==============================================================================
+  151    saveTimer = setTimeout(flushStore, 200);
+  152  }
+  153  function flushStore() {
+  154    clearTimeout(saveTimer);
+  155    saveTimer = null;
+  156    try {
+  157      const tmp = storeFile() + '.tmp';
+  158      fs.writeFileSync(tmp, JSON.stringify(storeData, null, 2));
+  159      fs.renameSync(tmp, storeFile()); // 原子替换，避免断电/崩溃截断数据
+  160    } catch (e) { console.error('store save failed', e); }
+  161  }
+  162  function storeGet(key, def) {
+  163    const parts = String(key).split('.');
+  164    let cur = storeData;
+  165    for (const p of parts) { if (cur == null || typeof cur !== 'object') return def; cur = cur[p]; }
+  166    return cur === undefined ? def : cur;
+  167  }
+  168  function storeSet(key, val) {
+  169    const parts = String(key).split('.');
+  170    let cur = storeData;
+  171    for (let i = 0; i < parts.length - 1; i++) { if (typeof cur[parts[i]] !== 'object' || cur[parts[i]] === null) cur[parts[i]] = {}; cur = cur[parts[i]]; }
+  172    cur[parts[parts.length - 1]] = val;
+  173    saveStore();
+  174    return true;
+  175  }
+  176  
+  177  /** 读一项用户偏好（带区间夹取），主进程侧用。
+  178   *
+  179   *  【为什么不像渲染层那样缓存】
+  180   *  主进程用到的地方只有三处（标尺最小长度、崩溃日志份数、更新缓存时长），
+  181   *  都是低频路径（开标尺、写日志、点检查更新）。每次现读 storeData 更简单，
+  182   *  也不会出现"渲染层改了、主进程缓存没更新"的不一致。
+  183   *
+  184   *  @param {string} key SPECS 里的键
+  185   *  @returns {number|boolean} 已夹到合法区间的值；键不存在时返回 undefined
+  186   */
+  187  function prefsGet(key) {
+  188    const spec = prefsSpec.SPECS[key];
+  189    if (!spec) return undefined;
+  190    const all = storeGet('settings.prefs', null);
+  191    const raw = (all && typeof all === 'object' && all[key] !== undefined) ? all[key] : spec.def;
+  192    return prefsSpec.normalize(key, raw);
+  193  }
+  194  
+  195  /* ---------------- helpers ---------------- */
+  196  /* ============ IPC 域的显式上下文（任务 5 第 1 步）============
+  197   * main.js 是单文件 + 全闭包，任何一段 handler 想搬出去，都得先查清它隐式
+  198   * 依赖了什么 —— 而那种依赖漏一处，`node --check` 完全看不见（语法合法，
+  199   * 运行时才 ReferenceError）。所以这一步不改逻辑，只把依赖收敛成一个显式对象。
+  200   *
+
+==============================================================================
+核核工具箱软件 V1.0    第 5 页 / 共 60 页
+==============================================================================
+  201   * 访问器**故意都是 getter 语义**：win 会重建、jobSeq 会递增、jobs 表会增删。
+  202   * 做成快照对象的话，搬出去的代码拿到的就是构造那一刻的值 ——
+  203   * 表现是「第一次能用、换窗口就不对」，非常难查。
+  204   *
+  205   * nextJobSeq 与本文件的 ++jobSeq 是**同一份计数**：任务 id 一旦分裂成两套编号，
+  206   * job:stream 的 id 就可能撞车，渲染层按前缀认领（JobPrefix）会认错任务。
+  207   *
+  208   * 【必须在 send 之前声明】send 会调用 ipcCtx.send；const 有暂时性死区，
+  209   * 声明在后的话 send 在首次调用时会 ReferenceError（而 node --check 看不出来）。
+  210   */
+  211  /* ============ 多窗口：事件按「发起它的那个窗口」路由 ============
+  212   *
+  213   * 【为什么必须做这件事】
+  214   * 在「标签可以拖出来变独立窗口」之前，全进程只有一个 win，所有推送都发它，
+  215   * 从不出错。有了第二个窗口之后，同一个 IPC 通道会被两个窗口分别调用：
+  216   *   · 主窗打开「视频压制」并开始压制；
+  217   *   · 独立窗打开「磁盘分析」并开始扫描。
+  218   * 两边的 job:stream 都走同一个 send()，于是**两边的进度条互相串**：
+  219   * 主窗的压制进度被扫描进度顶掉，反之亦然。而渲染层按 job id 前缀认领
+  220   * （JobPrefix.subscribe），认领不上的就静默丢弃 —— 表现是"进度条不动"或"跳变"，
+  221   * 很难归因。
+  222   *
+  223   * 【做法】改 send() 的语义，而不是改 50 处调用点：
+  224   *   · ipcMain.handle 的包装层用 AsyncLocalStorage 把**发起调用的 webContents**
+  225   *     记进上下文；
+  226   *   · 该 handler 同步或异步派生的一切（await、spawn 的 data 回调、setTimeout）
+  227   *     都携带这个上下文 —— 已用探针验证 ALS 能穿过 spawn 回调，这是前提；
+  228   *   · send(ev, data) 优先发给上下文里的那个 webContents，
+  229   *     没有上下文（定时任务、托盘、启动期）才退回主窗口/广播。
+  230   *
+  231   * 【为什么用 ALS 而不是给每个 send 加参数】
+  232   * 50 处 send('job:stream', …) 分散在 main.js 与 4 个 ipc 模块里，逐个加参数
+  233   * 要穿透十几层调用（handler → runFfmpeg → 进度回调），改漏一处就是那个工具的
+  234   * 进度串到别的窗口去。ALS 让"谁发起的"自动流动，调用点一个都不用改。 */
+  235  const als = new (require('async_hooks').AsyncLocalStorage)();
+  236  
+  237  /* 当前 handler 调用来自哪个 webContents。没有上下文时返回 null。 */
+  238  function currentSender() {
+  239    const st = als.getStore();
+  240    return (st && st.sender) || null;
+  241  }
+  242  
+  243  const ipcCtx = require('./ipc/ctx').createIpcCtx({
+  244    getWin: () => win,
+  245    getJobs: () => jobs,
+  246    nextJobSeq: () => ++jobSeq,
+  247    getIsWin: () => isWin,
+  248    getIsMac: () => isMac,
+  249  });
+  250  
+
+==============================================================================
+核核工具箱软件 V1.0    第 6 页 / 共 60 页
+==============================================================================
+  251  /* 向「发起这次操作的窗口」推送事件；没有上下文时退回主窗口。
+  252   *
+  253   * 路由优先级：
+  254   *   1) ALS 上下文里的 webContents —— 即本次 IPC 调用来自哪个窗口
+  255   *   2) 主窗口 win —— 定时任务、托盘、启动期这些没有调用者的事件
+  256   *   3) 全都没有：静默丢弃（窗口可能还没建好或已销毁）
+  257   *
+  258   * 【第 1 条是这次改动的全部意义】见上方"多窗口：事件按发起它的那个窗口路由"。
+  259   * 没有它，两个窗口的后台任务进度会互相覆盖 —— 而渲染层按 job id 前缀认领，
+  260   * 认领不上的静默丢弃，表现成"进度条不动"，完全无法归因。
+  261   *
+  262   * 【为什么不广播给所有窗口】广播会让"主窗正在压制、独立窗正在扫描"时，
+  263   * 两边都收到对方的事件。渲染层的 JobPrefix 只认自己认领的那个 id，
+  264   * 多余的事件虽然会被丢弃，但每次都要过一遍 IPC 广播 + 监听器分发；
+  265   * 而且广播会把"哪个窗口该响应"变成渲染层的责任，主进程反而失去控制。
+  266   * 定向发送更准，也更省。
+  267   *
+  268   * 【第三档：调用者已销毁 —— 丢弃，不回退】
+  269   * 「回退主窗口」本是给**没有调用者**的场景准备的兜底（托盘 / 定时 / 启动期）。
+  270   * 用它去处理"调用者已经死了"，结果只会是串扰：独立窗里跑着 ffmpeg，
+  271   * 用户关掉那个窗口，之后每条 job:stream 都甩到主窗；主窗若开着同一个工具页，
+  272   * JobPrefix.subscribe 的「首次匹配即认领」会把它当成自己的任务 ——
+  273   * 进度条乱跳、结束弹「完成」，而用户手里连 jobId 都没有了，无从取消。
+  274   * 判据在 lib/ipc-route.js 里（纯函数，可脱离 Electron 单测）。 */
+  275  function send(ev, data) {
+  276    const target = currentSender();
+  277    switch (pickSendTarget(target)) {
+  278      case 'sender':
+  279        try { target.send(ev, data); return; } catch (e) { /* 落到下面的兜底 */ }
+  280        break;
+  281      case 'drop':
+  282        /* 不静默：排查「进度条不动」时，最想知道的就是"事件到底有没有发出去"。
+  283         * 一行 warn 就能把这条路径与「任务根本没启动」区分开。 */
+  284        console.warn('[ipc] 丢弃推送 ' + ev + '：发起它的窗口已关闭（不回退主窗口，避免串到别人的任务）');
+  285        return;
+  286      default:
+  287        break;
+  288    }
+  289    ipcCtx.send(ev, data);
+  290  }
+  291  
+  292  /* 把「全局界面偏好」推给所有窗口：主窗 + 独立工具窗 + 辅助窗口。
+  293   *
+  294   * 【为什么需要广播】语言 / 配色 / 深浅是全应用偏好，但状态所有权在渲染层：
+  295   * i18n.setLang 只作用当前窗口，data-accent / data-theme 写的是当前
+  296   * document 的 documentElement。所以主窗切了英文、换了主色、改了明暗之后，
+  297   * 已经打开的独立工具窗口（以及标尺/贴图/截图标注这些辅助窗口）
+  298   * 会一直停在旧值 —— 三个不同实例，同一个共因。
+  299   *
+  300   * 【theme 为什么传最终结果而不是原始 mode】'system' 要按 nativeTheme 解析，
+
+==============================================================================
+核核工具箱软件 V1.0    第 7 页 / 共 60 页
+==============================================================================
+  301   * 而各个窗口自己 matchMedia 得到的答案可能因为时机不同而不一致。
+  302   * 主进程这边解析一次，广播的就是确定的 dark / light。
+  303   *
+  304   * ev：{ lang, accent, theme, prefs } —— theme 是 'dark' | 'light'。
+  305   *
+  306   * 【为什么把 prefs 也带上】
+  307   * Prefs 的内存缓存（js/app.js 的 Prefs._v）是**每个渲染进程各一份**。
+  308   * 主窗口改了「图片压缩默认质量」之后，已经开着的独立工具窗口仍然用旧值 ——
+  309   * 用户会认为设置没生效。更糟的是：如果独立窗口也调 Prefs.set，
+  310   * 它会用自己那份陈旧的 _v **整对象**覆盖 store，静默回滚主窗口刚改的值。
+  311   * 带上 prefs 之后，各窗口收到广播就重跑 Prefs.load()，缓存保持一致。
+  312   * （Prefs.set 也同步改成了只写单个键，见 js/app.js —— 双保险。） */
+  313  function broadcastUiPrefs() {
+  314    const payload = {
+  315      lang: uiLang,
+  316      accent: currentAccent,
+  317      theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+  318      /* 取 store 里的实际值，而不是另存一份内存副本 ——
+  319       * 那份副本会因为「谁最后写的」而漂移。 */
+  320      prefs: storeGet('settings.prefs', null),
+  321    };
+  322    const targets = [win, ...toolWindows, ...auxWindows()];
+  323    for (const w of targets) {
+  324      if (!w || w.isDestroyed()) continue;
+  325      try { w.webContents.send(CH.APP.UI_PREFS_CHANGED, payload); } catch (e) { /* 窗口刚销毁，忽略 */ }
+  326    }
+  327  }
+  328  
+  329  function fmtErr(e) { return (e && e.message) || String(e); }
+  330  const handle = (ch, fn) => ipcMain.handle(ch, async (e, ...args) => {
+  331    if (!windowSecurity.isTrustedSender(e, __dirname)) {
+  332      return { ok: false, code: 'UNTRUSTED_SENDER', error: '拒绝非应用页面调用桌面功能', advice: '请从应用窗口使用该功能' };
+  333    }
+  334    // 高危能力门禁：未在设置里开启的能力，其 IPC 一律拒绝。
+  335    // 放在统一包装里而不是逐个 handler 里，避免以后新增 handler 时忘了加。
+  336    // sys:power / svc:action 由各自 handler 按 action 精细判定（锁屏、启动服务无害）。
+  337    const cap = CAP_GATED_CHANNELS[ch];
+  338    if (cap && !dangerousEnabled(cap)) {
+  339      /* 【门禁拒绝也要带 code / advice，形状与正常错误分支一致】
+  340       * 下面 catch 分支返回的是 { ok:false, error, code, advice }，
+  341       * 而这里原来只有 error —— 于是 js/api.js 里
+  342       *   if (r && r.code) err.code = r.code;
+  343       *   if (r && r.advice) err.advice = r.advice;
+  344       * 两行全部落空，调用方拿到的 e.code 恒为 undefined，
+  345       * 「按码分支」的逻辑（例如引导用户去设置页开启）根本走不到。
+  346       * 拒绝理由本来就知道（就是没开这个能力），没道理不告诉前端。 */
+  347      return {
+  348        ok: false,
+  349        error: dangerousDenied(cap),
+  350        code: 'CAP_DENIED',
+
+==============================================================================
+核核工具箱软件 V1.0    第 8 页 / 共 60 页
+==============================================================================
+  351        advice: dangerousDeniedAdvice(cap)
+  352      };
+  353    }
+  354    /* 【把「谁调用的」记进 ALS，供 send() 定向推送】
+  355     * als.run 的作用域必须**包住整个 fn 的执行**，包括它 await 出去的一切、
+  356     * spawn 的子进程 data 回调、以及 setTimeout —— 那些正是发 job:stream 的地方。
+  357     * 已用探针验证 ALS 能穿过 spawn 回调（这是整套路由的前提）。
+  358     *
+  359     * e.sender 指向发起调用的 webContents。它在 handler 返回后可能已被销毁
+  360     * （用户关掉了那个窗口），所以 send() 里每次都要判 isDestroyed，不能缓存。 */
+  361    return als.run({ sender: e && e.sender }, async () => {
+  362      try { return { ok: true, data: await fn(e, ...args) }; }
+  363      catch (err) {
+  364        /* 结构化错误：除了原来给渲染端用的 error 字符串，再附带稳定错误码与建议操作。
+  365           渲染端 window.api.invoke 仍然 throw new Error(error)，旧代码零改动；
+  366           需要更细信息的地方可以读 err.code / err.advice。 */
+  367        const payload = errorInfo.toPayload(err);
+  368        return { ok: false, error: payload.message, code: payload.code, advice: payload.advice };
+  369      }
+  370    });
+  371  });
+  372  /* 执行外部命令的通用入口。
+  373   *
+  374   * 【退出码语义：默认「非零不抛」，需要抛时必须显式 opts.throwOnNonZero】
+  375   * execFile 的回调里 `err` 同时表示「进程起不来」和「退出码非零」。默认路径
+  376   * 只在 `err && !stdout` 时 reject —— 也就是**有输出的非零退出码会被静默当成成功**，
+  377   * 调用方拿到的是 `{code: 1, stdout:'...'}`，必须自己检查 code。
+  378   *
+  379   * 这个设计有它的理由（很多命令用非零码表达「没查到」，比如 reg query 查一个
+  380   * 不存在的键、tasklist 过滤无结果），全项目几十处调用都依赖它，不能一刀切改成抛。
+  381   * 但它同时也是好几个真实缺陷的根因，因为写调用方的人很容易默认「没抛就是成功」：
+  382   *   · office:status 里 `...; catch{exit 1}` 完全不起作用 → 恒返回 office:true
+  383   *   · ffmpeg:pick 把任意能响应 -version 的 exe 当成 ffmpeg
+  384   * 所以新增 throwOnNonZero：需要「失败必须抛」的地方显式打开，
+  385   * 不用逐个去猜调用点。
+  386   */
+  387  /* 【火后不理的子进程必须挂 error 监听并 unref】
+  388   * 项目里有十余处 `spawn('taskkill', …)` / `spawn('shutdown', …)`，
+  389   * 都是「发出去就不管了」的辅助动作。但 Node 的 ChildProcess 在 spawn 失败时
+  390   * （ENOENT / EACCES / 系统找不到可执行文件）会 emit 'error'；
+  391   * 没有监听器时，这个 error 会升级成主进程的 uncaughtException ——
+  392   * 结果是：一条取消动作没生效，却写进 crash-log、还把下次启动标记成
+  393   * 「上次异常退出」，让用户以为程序崩过。
+  394   * 统一收口到这个助手：挂一个空 error 监听（失败就当没做成，不上升为崩溃），
+  395   * 再 unref 让子进程不拖住主进程退出。返回值仍是 ChildProcess，调用方
+  396   * 若需要 pid 之类可以继续用。 */
+  397  /* 【实现搬到 lib/spawn-detached.js】
+  398   * ipc/media-ffmpeg.js 的录制/转码域里有同样形态的 6 处 taskkill，
+  399   * 而那个模块拿不到 main.js 里的局部函数 —— 只在这里修，媒体域照旧裸 spawn，
+  400   * 就成了「修了一半」：测试断言 main.js 已经没有裸 spawn，看起来问题已解决。
+
+==============================================================================
+核核工具箱软件 V1.0    第 9 页 / 共 60 页
+==============================================================================
+  401   * 搬到 lib/ 之后两边 require 同一份，断言也能按整棵主进程树来写。
+  402   * 这里保留同名绑定，避免动几十处调用点（行为不变）。 */
+  403  const { spawnDetached } = require('./lib/spawn-detached');
+  404  
+  405  function runCmd(cmd, args, opts = {}) {
+  406    const enc = opts.encoding || 'utf8';
+  407    return new Promise((resolve, reject) => {
+  408      execFile(cmd, args, { windowsHide: true, timeout: opts.timeout || 30000, maxBuffer: 32 * 1024 * 1024, cwd: opts.cwd, encoding: enc === 'gbk' ? 'buffer' : enc }, (err, stdout, stderr) => {
+  409        if (enc === 'gbk') {
+  410          const dec = new TextDecoder('gbk');
+  411          stdout = dec.decode(stdout || Buffer.alloc(0));
+  412          stderr = dec.decode(stderr || Buffer.alloc(0));
+  413        }
+  414        const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+  415        if (opts.throwOnNonZero && err) { reject(sanitizeCmdError(err, args)); return; }
+  416        /* 【非零退出默认 reject，但**保留 allowNonZero 的老语义**】
+  417         * 原写法 `if (err && !stdout) reject(...); else resolve({code})`：
+  418         * 只要进程打印过东西（哪怕只是"拒绝访问"），非零退出也会 resolve，
+  419         * 调用方 `await runCmd(...)` 就当成功继续 —— 这是"假成功"的通用来源。
+  420         * 但本仓库有 58 处调用，其中一批**依赖**"非零也拿结果"：
+  421         *   · `reg query` 查不到项时退出码非零，但要读 stdout 判断；
+  422         *   · `where es` 未安装时非零，要据此走降级路径；
+  423         *   · `sc.exe query` 服务不存在时同样。
+  424         * 所以不能一刀切。默认改成"看退出码"（安全），这些依赖点
+  425         * 显式传 `allowNonZero: true` 表示"我自己检查 code"。
+  426         * 这样新代码默认安全，老代码的行为被逐一显式承认，不是静默例外。 */
+  427        if (code !== 0 && !opts.allowNonZero) {
+  428          const e2 = sanitizeCmdError(err, args);
+  429          /* 附上输出与退出码：排错时最需要程序自己说了什么 */
+  430          e2.stdout = stdout || '';
+  431          e2.stderr = stderr || '';
+  432          e2.code = code;
+  433          reject(e2);
+  434          return;
+  435        }
+  436        resolve({ stdout: stdout || '', stderr: stderr || '', code });
+  437      });
+  438    });
+  439  }
+  440  /* 命令行脱敏：execFile 的 err.message 是**完整命令行**。
+  441   * 7z 只支持 -p<密码> 一种传参方式，密码必然会出现在 argv 里，
+  442   * 也就必然出现在 err.message 中。这个 message 会经 handle() 原样返回渲染层，
+  443   * 渲染层再 toast 出来 —— 等于把密码弹在屏幕上。
+  444   * 这里统一把 -p<非空白> 与 password= / token= 之类抹成 ***。 */
+  445  function sanitizeCmdError(err, args) {
+  446    const msg = String((err && err.message) || err || '');
+  447    /* 脱敏规则收成一个函数：message 与 stack 都要过一遍。
+  448     * 【为什么 stack 也必须过】execFile 的 err.stack 第一行就是 err.message
+  449     * （实测：`Error: Command failed: ... -pmy secret pass`）。原实现只清理了
+  450     * message，然后把**未清理的** err.stack 原样赋给新错误 ——
+
+==============================================================================
+核核工具箱软件 V1.0    第 10 页 / 共 60 页
+==============================================================================
+  451     * lib/errors.js 的 toPayload 会把 err.stack 塞进 detail 字段（注释写的是
+  452     * 「可展开技术详情用于排查」）。今天 detail 还没回传到界面，但这是一颗
+  453     * 埋着的雷：谁把 detail 接出去，密码就跟着出去了。既然清理只要一行，就别留。 */
+  454    const mask = (text) => {
+  455      let s = String(text == null ? '' : text);
+  456      /* 【顺序是硬的：先按 args 原文精确替换，再跑正则】
+  457       * 反过来的话，`\s-p\S+` 会先把 `-pmy secret pass` 啃成 `-p*** secret pass`，
+  458       * 之后 `s.includes('-pmy secret pass')` 永远为假 —— 补丁看着写了、实际无效。
+  459       * 实测踩过这个坑（改完仍泄漏后半个密码）。 */
+  460      for (const a of (args || [])) {
+  461        const v = String(a);
+  462        if (v.length <= 2) continue;
+  463        if (/^-p./i.test(v)) {
+  464          if (s.includes(v)) s = s.split(v).join('-p***');
+  465          continue;
+  466        }
+  467        const mPwd = /^(--pass(?:word)?=)(.+)$/i.exec(v);
+  468        if (mPwd && mPwd[2] && s.includes(v)) s = s.split(v).join(mPwd[1] + '***');
+  469      }
+  470      s = s
+  471        .replace(/\s-p\S+/g, ' -p***')                       // 7z 密码
+  472        .replace(/\s--password[=\s]\S+/gi, ' --password=***')
+  473        .replace(/(password|passwd|token|secret|apikey|api_key)\s*[=:]\s*\S+/gi, '$1=***');
+  474      // 参数里若有长字符串（>=6 位）也抹掉，防止未命中上面模式的传递方式
+  475      for (const a of (args || [])) {
+  476        const v = String(a);
+  477        if (v.length >= 6 && /^[A-Za-z0-9!@#$%^&*()_+\-=\[\]{};:'",.<>\/?\\|`~]{6,}$/.test(v) && s.includes(v)) {
+  478          s = s.split(v).join('***');
+  479        }
+  480      }
+  481      return s;
+  482    };
+  483    const clean = mask(msg);
+  484    const e = new Error(clean);
+  485    e.code = (err && err.code) || 'CMD_FAILED';
+  486    if (err && err.stack) e.stack = mask(err.stack);
+  487    return e;
+  488  }
+  489  // Windows PowerShell 输出默认是 OEM 代码页（GBK），强制其以 UTF-8 输出，避免中文乱码
+  490  function ps(script, timeout = 30000, cwd) {
+  491    return runCmd('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + script], { timeout, encoding: 'utf8', cwd });
+  492  }
+  493  
+  494  /* 【容错的 ps：拿不到结果时不抛完整命令行】
+  495   * runCmd 在「非零退出且无 stdout」时会 reject，而 err.message 是**整条命令行**
+  496   * （execFile 的原样拼接）。系统还原点的查询在「没有还原点 / 系统保护未启用」
+  497   * 时就正是这种形态 —— 直接抛出去会把一条几百字符的命令弹到界面上（实测截图
+  498   * 里就是一行 "Command failed: powershell.exe ... Get-ComputerRestorePoint"）。
+  499   * 这里把失败折叠成 failed:true，由调用方给出人话提示。 */
+  500  async function psSoft(script, timeout = 30000) {
+
+==============================================================================
+核核工具箱软件 V1.0    第 11 页 / 共 60 页
+==============================================================================
+  501    try {
+  502      return await ps(script, timeout);
+  503    } catch (err) {
+  504      return { stdout: '', stderr: '', code: -1, failed: true, error: String((err && err.message) || err) };
+  505    }
+  506  }
+  507  // 异步存在性判断：批量文件操作里替代 fs.existsSync，避免阻塞主进程
+  508  async function pathExists(p) {
+  509    try { await fsp.access(p); return true; } catch (e) { return false; }
+  510  }
+  511  
+  512  /* 生成不覆盖的目标路径：已存在则自动加序号。
+  513   * 借鉴 YourCatFileAssistant「已存在的文件不覆盖，按序号生成新名称」的做法，
+  514   * 供目标体积压缩与归档解压共用。
+  515   * relName 来自压缩包条目等外部输入，必须挡住路径穿越（..）和绝对路径。 */
+  516  async function uniqueTarget(root, relName) {
+  517    const base = pathGuard.resolveInside(root, relName);
+  518    if (!(await pathExists(base))) return base;
+  519    const dir = path.dirname(base);
+  520    const ext = path.extname(base);
+  521    const stem = path.basename(base, ext);
+  522    for (let i = 1; i < 10000; i++) {
+  523      const cand = path.join(dir, `${stem}(${i})${ext}`);
+  524      if (!(await pathExists(cand))) return cand;
+  525    }
+  526    throw new Error('无法生成不重名的目标路径：' + relName);
+  527  }
+  528  
+  529  /* 把文件「搬」到目标路径，跨卷时自动退回「复制 + 删除源」。
+  530   *
+  531   * 【为什么需要它】Windows 上 fsp.rename 跨卷直接抛 EXDEV（跨设备链接不允许）。
+  532   * 本应用大量流程是「在 %TEMP% 里生成成品 → 提交到用户选的输出目录」，
+  533   * 而输出目录经常在 D:/E:（系统盘之外正是「处理大文件」最需要的地方）。
+  534   * 用裸 rename 的话，这类流程在最后一步、成果已经生成完的时候才失败 ——
+  535   * 既白等了整轮处理，失败路径还常常顺手把临时目录删掉，连成果一起没了。
+  536   *
+  537   * 只在 EXDEV 时复制；其它错误（权限、占用、目标已存在）照旧抛，
+  538   * 不掩盖真正的原因。复制成功后才删源，避免「源删了、目标没写成」。
+  539   *
+  540   * @param {string} src 现有文件
+  541   * @param {string} dst 目标路径（调用方负责保证不覆盖）
+  542   */
+  543  async function moveFile(src, dst) {
+  544    try {
+  545      await fsp.rename(src, dst);
+  546      return { moved: true, copied: false };
+  547    } catch (err) {
+  548      if (err && err.code === 'EXDEV') {
+  549        const st = await fsp.stat(src);
+  550        /* 【copyFile 只能搬文件，搬目录会 EPERM（实测）】
+
+==============================================================================
+核核工具箱软件 V1.0    第 12 页 / 共 60 页
+==============================================================================
+  551         * env-manager 安装时 moveFile 的源是「解压出来的目录」，一旦
+  552         * HEHE_TEST_DATA/挂载点/符号链接导致跨卷，走旧分支必失败，
+  553         * 回滚那一步同样失败 → 安装半残。目录必须用递归复制。 */
+  554        if (st.isDirectory()) {
+  555          await fsp.cp(src, dst, { recursive: true, force: true });
+  556          const dstSt = await fsp.stat(dst).catch(() => null);
+  557          if (!dstSt || !dstSt.isDirectory()) {
+  558            await fsp.rm(dst, { recursive: true, force: true }).catch(() => {});
+  559            throw new Error('跨盘搬运失败：目录复制后目标不存在');
+  560          }
+  561          await fsp.rm(src, { recursive: true, force: true }).catch(() => {});
+  562          return { moved: true, copied: true };
+  563        }
+  564        await fsp.copyFile(src, dst);
+  565        const dstSt = await fsp.stat(dst).catch(() => null);
+  566        if (!dstSt || dstSt.size !== st.size) {
+  567          // 复制不完整：删掉半成品，源保持不动，让调用方看到真实失败
+  568          await fsp.rm(dst, { force: true }).catch(() => {});
+  569          throw new Error('跨盘搬运失败：复制后大小不符（源 ' + st.size + ' / 目标 ' + (dstSt ? dstSt.size : 0) + '）');
+  570        }
+  571        await fsp.rm(src, { force: true }).catch(() => {});
+  572        return { moved: true, copied: true };
+  573      }
+  574      throw err;
+  575    }
+  576  }
+  577  
+  578  /* 本应用在系统临时目录里创建的临时产物（统一 hehe- 前缀）。
+  579     自动清理只允许碰这些文件，绝不能整目录清空——%TEMP% 是全机器共享的，
+  580     里面还有别的程序正在使用的文件，整目录删除会导致它们崩溃或丢数据。
+  581  
+  582     【白名单已经搬到 lib/temp-names.js —— 不要再往这里加正则】
+  583     原来的问题是：生成临时名的字符串散落在十几处，白名单却靠这里的**手写正则**
+  584     描述 —— 两份独立事实，只能靠人肉同步。真实事故：.hehe-7zx-* 带前导点，
+  585     白名单写成 ^hehe-7zx-（不带点），于是那个暂存目录永远匹配不上，
+  586     7z 解压崩溃后永久残留、而「清理临时文件」扫不到它。
+  587     现在生成函数与白名单在同一个模块里，scripts/test-temp-names.js 会逐个验证
+  588     「每个生成函数产出的名字都能被白名单命中」—— 新增产物忘登记时测试立刻红。 */
+  589  function isOwnTempName(name) { return tempNames.isOwnTempName(name); }
+  590  
+  591  /* 批量 PowerShell 查询的分块大小（公共常量，放在文件靠前处）。
+  592   *
+  593   * 【为什么必须分块】把几百个路径拼成一个数组字面量一次传进去会撞上
+  594   * Windows 命令行上限（约 32767 字符），Node 直接抛 spawn ENAMETOOLONG，
+  595   * PowerShell 根本没启动。实测：单路径 91 字符时，500 个就超限。
+  596   * 每块 60 个路径：即便单个路径 200 字符也只占 1.2 万字符，留足余量。
+  597   *
+  598   * 使用者：link:scan（取 LinkType）、linkNatures（判链接性质）、
+  599   * rmQueryLockers（Restart Manager 查占用 —— 这条曾经漏了分块，
+  600   * 200 个深路径直接 ENAMETOOLONG，占用查询整个失效）。 */
+
+==============================================================================
+核核工具箱软件 V1.0    第 13 页 / 共 60 页
+==============================================================================
+  601  const PS_PATH_BATCH = 60;
+  602  
+  603  
+  604  /* ---------------- 高危功能开关 ----------------
+  605     高危 = 可能造成数据丢失或系统级不可逆影响（删文件、清空回收站、杀进程、
+  606     改 hosts、重启系统…）。这类能力默认关闭，必须先在「设置 → 高危功能」里
+  607     显式开启才能使用。
+  608     门禁放在主进程而不是渲染层：渲染层的 if 只是界面约束，任何一次误改或
+  609     绕过都可能让删文件的 IPC 直接生效。主进程这里是最后一道闸。 */
+  610  /* 【高危能力的名称与描述是双语的，且必须留在主进程】
+  611   * 这些名字会出现在三个地方：
+  612   *   1) 设置页的能力清单（渲染层直接显示 dangerous:list 的结果）
+  613   *   2) 门禁拒绝时的错误文案（dangerousDenied 在主进程生成）
+  614   *   3) 部分锁工具顶部的提示卡（渲染层复述「哪一项被锁」）
+  615   * 早期只有中文，托盘修了、这里没跟上：英文界面下「设置 → 高危功能」
+  616   * 整页中英混排（分区标题是英文，每一项能力名却是中文）。
+  617   * 语言用渲染层通过 app:set-lang 传过来的 uiLang，与托盘同一份。 */
+  618  const CAP_TEXT = {
+  619    zh: {
+  620      'file-delete': ['删除文件', '删除重复文件、空目录、笔记、剪贴板图片等（不进回收站）'],
+  621      'junk-clean': ['垃圾清理', '清理临时文件、浏览器缓存、缩略图、下载目录安装包与系统日志（安装包默认不勾选）'],
+  622      'recycle-empty': ['清空回收站', '永久清空系统回收站，不可恢复'],
+  623      'process-kill': ['结束进程', '强制结束任意进程，未保存数据会丢失'],
+  624      'service-stop': ['停止系统服务', '停止正在运行的 Windows 服务，依赖它的程序可能异常退出'],
+  625      'system-power': ['关机 / 重启 / 休眠', '执行关机、重启、休眠等系统电源操作（锁屏与睡眠不受限制）'],
+  626      'hosts-edit': ['编辑 Hosts', '写入系统 hosts 文件并刷新 DNS，影响全机解析'],
+  627      'registry-edit': ['注册表与右键菜单', '删除开机自启项、切换 Win11 经典右键菜单'],
+  628      /* 目录搬家最坏的结果是「源目录删了、链接是坏的、数据在别处」——
+  629       * 用户会以为文件丢了。中间态（已改名但链接没建成）尤其危险，
+  630       * 所以它必须是独立的高危能力，不能借用 file-delete。 */
+  631      'dir-move': ['目录搬家（建链接替身）', '把目录搬到别处并在原位置建目录联接；失败时可能留下坏链接'],
+  632      'acl-repair': ['取得所有权 / 修复权限', '改文件所有者并授予完全控制；会放宽该路径（及其子项）的访问权限'],
+  633      /* 还原点删除会连带清掉该卷上的其它卷影副本（备份软件、文件历史也可能用），
+  634       * 且不可恢复 —— 所以它是独立能力，不借用 file-delete。 */
+  635      'restore-point-delete': ['删除系统还原点', '删除卷影副本（系统还原点）；不可恢复，且会同时清掉该卷上的其它卷影副本'],
+  636    },
+  637    en: {
+  638      'file-delete': ['Delete files', 'Delete duplicate files, empty folders, notes, clipboard images, etc. (bypassing the Recycle Bin)'],
+  639      'junk-clean': ['Junk cleanup', 'Clean temp files, browser caches, thumbnails, downloaded installers and system logs (installers are unchecked by default)'],
+  640      'recycle-empty': ['Empty Recycle Bin', 'Permanently empty the Recycle Bin; this cannot be undone'],
+  641      'process-kill': ['Kill processes', 'Force-kill any process; unsaved work is lost'],
+  642      'service-stop': ['Stop services', 'Stop running Windows services; programs that depend on them may fail'],
+  643      'system-power': ['Shutdown / restart / hibernate', 'Shut down, restart or hibernate the system (lock and sleep are not restricted)'],
+  644      'hosts-edit': ['Edit hosts', 'Write the system hosts file and flush DNS; affects name resolution machine-wide'],
+  645      'registry-edit': ['Registry and context menu', 'Remove startup entries, switch to the Windows 11 classic context menu'],
+  646      'dir-move': ['Folder move (with link)', 'Move a folder elsewhere and leave a directory junction behind; a failed run may leave a broken link'],
+  647      'acl-repair': ['Take ownership / repair permissions', 'Change the owner and grant full control; widens access for that path and everything under it'],
+  648      'restore-point-delete': ['Delete restore points', 'Delete shadow copies (restore points); cannot be undone and also clears other shadow copies on that volume'],
+  649    },
+  650  };
+
+==============================================================================
+核核工具箱软件 V1.0    第 14 页 / 共 60 页
+==============================================================================
+  651  /* 清单顺序即设置页展示顺序（显式列出，不靠对象键顺序）。 */
+  652  const DANGEROUS_CAP_IDS = [
+  653    'file-delete', 'junk-clean', 'recycle-empty', 'process-kill', 'service-stop',
+  654    'system-power', 'hosts-edit', 'registry-edit', 'dir-move', 'acl-repair',
+  655    'restore-point-delete',
+  656  ];
+  657  function capText(id) {
+  658    const pack = CAP_TEXT[uiLang] || CAP_TEXT.zh;
+  659    const pair = pack[id] || CAP_TEXT.zh[id] || [id, ''];
+  660    return { name: pair[0], desc: pair[1] };
+  661  }
+  662  /* 用取值器而不是快照：语言切换后同一处代码（dangerousDenied / dangerous:list）
+  663   * 立刻给出新语言的文案，不需要重建这个对象。 */
+  664  const DANGEROUS_CAPS = {};
+  665  for (const id of DANGEROUS_CAP_IDS) {
+  666    Object.defineProperty(DANGEROUS_CAPS, id, { get() { return capText(id); }, enumerable: true });
+  667  }
+  668  // 默认全部关闭；用户在设置里开启的存到 settings.dangerousCaps（数组）
+  669  function dangerousEnabled(cap) {
+  670    const list = storeGet('settings.dangerousCaps', []);
+  671    return Array.isArray(list) && list.indexOf(cap) !== -1;
+  672  }
+  673  // 需要高危权限的 IPC 通道 → 所属能力
+  674  const CAP_GATED_CHANNELS = {
+  675    'fs:delete': 'file-delete',
+  676    'fs:delete-empty': 'file-delete',
+  677    /* 【fs:rename 为什么也归到 file-delete】
+  678     * 它是一个「移动文件到任意位置」的原语：可以把自己的文件搬进 Startup 实现自启，
+  679     * 也可以在 overwrite=true 时覆盖目标同名文件（等于删掉了目标那份）。
+  680     * 语义上它就是「删除 + 新建」的组合，而同一批写盘通道
+  681     * （fs:write-text / fs:write-file-b64 / fs:merge-parts / zip:compress）
+  682     * 都走 checkOverwritable 闸门，唯独它既没闸门、也不在门禁表里 ——
+  683     * 等于一个不受任何高位约束的任意外写入口。
+  684     * 现在两者都补上：目标路径过 checkOverwritable，通道归 file-delete 门禁。 */
+  685    'fs:rename': 'file-delete',
+  686    'clip:remove-images': 'file-delete',
+  687    /* 曾经还有一条 'clip:gc-images': 'file-delete'。
+  688     * 那个通道已经删了（孤图清扫改成启动时走 sweepClipImages()），
+  689     * 但门禁表里留了这一行 —— 门禁是「通道名 → 能力」的映射表，
+  690     * 条目指向一个不存在的通道时不会报错，只会永远不被查到。
+  691     * 它不会造成安全漏洞，但会让「表里有多少条、对应多少通道」这种
+  692     * 对账永远差一条，也让后来者以为还有这么个入口可用。
+  693     * 现在由 test-ipc-channels 强制对账（表里每条都必须真注册过），删掉才绿。 */
+  694    'fs:clean-junk': 'junk-clean',
+  695    'sys:recycle-empty': 'recycle-empty',
+  696    'proc:kill': 'process-kill',
+  697    'file:unlock': 'process-kill',
+  698    'svc:action': 'service-stop',
+  699    'hosts:write': 'hosts-edit',
+  700    'hosts:restore': 'hosts-edit',
+
+==============================================================================
+核核工具箱软件 V1.0    第 15 页 / 共 60 页
+==============================================================================
+  701    'autostart:delete': 'registry-edit',
+  702    'autostart:enable': 'registry-edit',
+  703    'ctxmenu:classic': 'registry-edit',
+  704    // 逐条禁用/启用右键菜单项改的是同一类 HKCR 键，与「Win11 经典菜单」等价，
+  705    // 之前漏在门禁外：没开开关的用户也能直接调它写注册表。
+  706    'ctxmenu:toggle': 'registry-edit',
+  707    /* 清理僵尸链接 = 删除文件系统条目，按删除门禁管 */
+  708    'link:remove': 'file-delete',
+  709    /* 目录搬家会复制/改名/建链接/删备份，最坏情况是「数据在别处、链接是坏的」，
+  710     * 单独一个能力，不能借用 file-delete */
+  711    'dir:move': 'dir-move',
+  712    /* 【权限修复必须走门禁】
+  713     * 早期 DANGEROUS_CAPS 里声明了 acl-repair，但没有任何通道映射到它，
+  714     * TOOL_DANGEROUS_CAPS 里也没有这个工具 —— 结果是设置页的开关拨了不生效、
+  715     * 工具卡片不标红、只要以管理员运行就能直接调 acl:repair。
+  716     * 而「改所有者 + 递归放宽整棵子树的权限」是这批功能里影响面最大的一个
+  717     * （对目录递归就是一次性放开其下所有条目），所以它不能只靠「用户看得见」。 */
+  718    'acl:repair': 'acl-repair',
+  719    /* 删除还原点会连带清掉该卷的其它卷影副本，且不可恢复 —— 单独能力 */
+  720    'sys:restore-delete': 'restore-point-delete'
+  721  };
+  722  // sys:power 通道里既有危险动作（关机/重启/休眠）也有无害动作（锁屏/睡眠），
+  723  // 睡眠只是把内存转成待机状态、不会丢数据，所以不纳入高危门禁。
+  724  const DANGEROUS_POWER_ACTIONS = ['hibernate', 'restart', 'shutdown'];
+  725  /* 门禁拒绝文案也要双语：它会直接弹在界面上（toast / 错误提示）。
+  726   * 只翻能力名是不够的 —— 整句「…属于高危功能，已默认关闭…」同样是中文。 */
+  727  const GATE_TEXT = {
+  728    zh: (name) => `「${name}」属于高危功能，已默认关闭。请到「设置 → 高危功能」中开启后再使用。`,
+  729    en: (name) => `"${name}" is a high-risk feature and is currently off. Enable it under Settings → High-risk features first.`,
+  730  };
+  731  function dangerousDenied(cap) {
+  732    const pack = GATE_TEXT[uiLang] || GATE_TEXT.zh;
+  733    return pack(DANGEROUS_CAPS[cap].name);
+  734  }
+  735  /* 门禁拒绝时的「下一步该做什么」。
+  736   * 与 dangerousDenied 分开成两个函数，是因为它们回答的是不同问题：
+  737   *   前者说「为什么被拦」，后者说「怎么才能用」。
+  738   * js/api.js 会把 advice 拼在错误文本后面（errText 里 `msg + '\n建议：' + advice`），
+  739   * 所以这里给一句可直接照做的操作路径，不要重复上面那句。 */
+  740  const GATE_ADVICE = {
+  741    zh: (name) => `打开「设置 → 高危功能」，找到「${name}」并打开开关，然后重试。`,
+  742    en: (name) => `Open Settings → High-risk features, turn on "${name}", then try again.`,
+  743  };
+  744  function dangerousDeniedAdvice(cap) {
+  745    const pack = GATE_ADVICE[uiLang] || GATE_ADVICE.zh;
+  746    return pack(DANGEROUS_CAPS[cap].name);
+  747  }
+  748  handle(CH.DANGEROUS.LIST, () => ({
+  749    caps: DANGEROUS_CAP_IDS.map(id => ({
+  750      id, name: DANGEROUS_CAPS[id].name, desc: DANGEROUS_CAPS[id].desc, enabled: dangerousEnabled(id)
+
+==============================================================================
+核核工具箱软件 V1.0    第 16 页 / 共 60 页
+==============================================================================
+  751    })),
+  752    enabled: DANGEROUS_CAP_IDS.filter(dangerousEnabled)
+  753  }));
+  754  handle(CH.DANGEROUS.SET, (e, cap, on) => {
+  755    if (!DANGEROUS_CAP_IDS.includes(cap)) throw new Error('未知的高危功能项');
+  756    const list = new Set(Array.isArray(storeGet('settings.dangerousCaps', [])) ? storeGet('settings.dangerousCaps', []) : []);
+  757    if (on) list.add(cap); else list.delete(cap);
+  758    storeSet('settings.dangerousCaps', [...list]);
+  759    return { id: cap, enabled: on };
+  760  });
+  761  // 工具 id → 涉及的高危能力。渲染层据此把工具卡片标红。
+  762  // 显式列出而不是从通道名反推：通道前缀（fs:、sys:…）跟工具 id 对不上，
+  763  // 反推会把「文件处理」整个模块都标红，失去区分意义。
+  764  const TOOL_DANGEROUS_CAPS = {
+  765    'junk-clean': ['junk-clean'],
+  766    'empty-dir-clean': ['file-delete'],
+  767    /* 【批量重命名 / 批量改后缀 也依赖 file-delete】
+  768     * fs:rename 归到 file-delete 门禁之后（见 CAP_GATED_CHANNELS 的说明），
+  769     * 这两个工具就成了"必须开启该能力才能用"的功能。若不在这里登记，
+  770     * 设置页的开关拨了不生效、工具卡片也不标红 —— 用户看到的是
+  771     * 「功能点了没反应」，而不是「需要先开启高危能力」。 */
+  772    'batch-rename': ['file-delete'],
+  773    'batch-ext': ['file-delete'],
+  774    'dedupe': ['file-delete'],
+  775    'local-notes': ['file-delete'],
+  776    'clipboard-history': ['file-delete'],
+  777    'process-manager': ['process-kill'],
+  778    'file-unlock': ['process-kill'],
+  779    'port-occupy': ['process-kill'],
+  780    'services-power': ['service-stop'],
+  781    'quick-ops': ['system-power', 'recycle-empty'],
+  782    'hosts-edit': ['hosts-edit'],
+  783    'autostart': ['registry-edit'],
+  784    'win-classic-menu': ['registry-edit'],
+  785    'dir-move': ['dir-move'],
+  786    'link-doctor': ['file-delete'],
+  787    /* 诊断（acl:diagnose）是只读的，不进这张表；只有真正改权限的 acl:repair 计入 */
+  788    'acl-repair': ['acl-repair'],
+  789    /* 还原点工具里「列出 / 创建 / 启用保护」都是无害的，只有删除要能力；
+  790     * 因此它进 DELETE_ONLY_TOOLS（部分锁定），不整页锁死。 */
+  791    'restore-points': ['restore-point-delete']
+  792  };
+  793  handle(CH.DANGEROUS.TOOL_CAPS, () => {
+  794    const out = {};
+  795    for (const [tool, caps] of Object.entries(TOOL_DANGEROUS_CAPS)) {
+  796      out[tool] = { caps, enabled: caps.some(c => dangerousEnabled(c)) };
+  797    }
+  798    return out;
+  799  });
+  800  
+
+==============================================================================
+核核工具箱软件 V1.0    第 17 页 / 共 60 页
+==============================================================================
+  801  /* ---------------- window ---------------- */
+  802  // 系统主题变化时广播到渲染端（跟随系统模式下同步深浅色）
+  803  nativeTheme.on('updated', () => {
+  804    send('settings.theme-changed', nativeTheme.shouldUseDarkColors);
+  805  });
+  806  /* ---------------- 启动进度窗 ---------------- */
+  807  // 两条启动路径的耗时结构完全不同，所以启动窗只对慢的那条启用：
+  808  //
+  809  // 【便携版单 exe】双击 → NSIS 解压整个 Electron（实测 6~16s）→ 启动应用（~0.85s）→ 主窗
+  810  //   解压阶段由打包时的 NSIS splashImage（assets/splash.bmp）显示；
+  811  //   但它只覆盖到解压完成，portable.nsi 在 ExecWait 前就 BgImage::Destroy 了，
+  812  //   之后到主窗出现还有 ~0.85s 什么都没画。本启动窗接管这一段，让全程都有反馈。
+  813  //
+  814  // 【zip 免安装目录版】双击 → 启动应用（~0.64s）→ 主窗
+  815  //   快到弹启动窗只会「闪一下」，反而更难看，所以不弹。
+  816  //
+  817  // 判别依据：PORTABLE_EXECUTABLE_FILE 由 portable.nsi 在 ExecWait 前注入环境变量，
+  818  // 只有单文件便携版才有。zip 解压出来的 exe 没有这个变量。
+  819  //
+  820  // 环境变量：HEHE_SPLASH=1 强制显示（调试用）；HEHE_NOSPLASH=1 关闭；自检（SMOKE/SHOT）一律关闭。
+  821  let splashWin = null;
+  822  let splashVisible = false; // 启动窗是否真的显示过（没显示过就不需要等淡出）
+  823  let mainShown = false;
+  824  let splashStage = { pct: 8, label: '正在启动…' }; // 记住最新阶段：启动窗还没加载完时消息会丢，就绪后补发
+  825  
+  826  function splashEnabled() {
+  827    if (process.env.HEHE_NOSPLASH || process.env.HEHE_SMOKE || process.env.HEHE_SHOT) return false;
+  828    if (process.env.HEHE_SPLASH) return true;  // 调试：强制显示
+  829    return !!process.env.PORTABLE_EXECUTABLE_FILE; // 只有单文件便携版慢到值得弹
+  830  }
+  831  
+  832  function splashSend(ev, data) {
+  833    if (ev === 'splash:step' && data) splashStage = data;
+  834    if (!splashWin || splashWin.isDestroyed()) return;
+  835    try { splashWin.webContents.send(ev, data); } catch (e) {}
+  836  }
+  837  
+  838  function destroySplash() {
+  839    if (!splashWin || splashWin.isDestroyed()) { splashWin = null; return; }
+  840    const s = splashWin;
+  841    splashWin = null;
+  842    try { s.destroy(); } catch (e) {}
+  843  }
+  844  
+  845  // 启动窗位置：屏幕正中偏上，避免正好压住主窗将来的位置
+  846  function centerSplash(self) {
+  847    try {
+  848      const d = screen.getPrimaryDisplay();
+  849      const wa = d.workArea;
+  850      const [w, h] = self.getSize();
+
+==============================================================================
+核核工具箱软件 V1.0    第 18 页 / 共 60 页
+==============================================================================
+  851      self.setPosition(
+  852        Math.round(wa.x + (wa.width - w) / 2),
+  853        Math.round(wa.y + (wa.height - h) / 2 - Math.round(wa.height * 0.06))
+  854      );
+  855    } catch (e) {}
+  856  }
+  857  
+  858  function createSplash() {
+  859    if (!splashEnabled()) return;
+  860    try {
+  861      splashWin = new BrowserWindow({
+  862        width: 396, height: 188,
+  863        frame: false, transparent: true, resizable: false, movable: true,
+  864        minimizable: false, maximizable: false, fullscreenable: false,
+  865        skipTaskbar: true, alwaysOnTop: true, hasShadow: false,
+  866        show: false, backgroundColor: '#00000000',
+  867        webPreferences: {
+  868          preload: path.join(__dirname, 'preload.js'),
+  869          contextIsolation: true, nodeIntegration: false, sandbox: false, spellcheck: false,
+  870          /* 与主窗口/标尺/贴图/截图窗保持一致：preload 的 isDev 完全依赖这个注入，
+  871           * 漏掉就按开发态处理。splash 目前没用 isDev，但这是隐患 ——
+  872           * 一旦 splash.js 以后要按打包态分支，就会静默走错分支。 */
+  873          additionalArguments: ['--hehe-packaged=' + (app.isPackaged ? '1' : '0')]
+  874        }
+  875      });
+  876      hardenWindow(splashWin);
+  877      const self = splashWin;
+  878      // 便携版：NSIS 在 ExecWait 前已经 BgImage::Destroy 拆掉了自己的解压画面，
+  879      // 之后到主窗出现这一段是「什么都没画」的空档，所以启动窗要立刻显示，越早越好。
+  880      // （zip 版不会走到这里，splashEnabled 已按 PORTABLE_EXECUTABLE_FILE 过滤）
+  881      self.setAlwaysOnTop(true, 'screen-saver');
+  882      centerSplash(self);
+  883      self.on('closed', () => { if (splashWin === self) splashWin = null; });
+  884      // 一有内容就显示（用 ready-to-show 而不是固定延时：延时短了会闪空白窗口，长了又拉大空档）
+  885      self.once('ready-to-show', () => {
+  886        if (mainShown || self.isDestroyed()) return;
+  887        splashVisible = true;
+  888        try { self.showInactive(); } catch (e) { try { self.show(); } catch (e2) {} }
+  889        splashSend('splash:step', splashStage); // 补发启动窗加载期间错过的阶段
+  890      });
+  891      self.loadFile('splash.html', {
+  892        query: {
+  893          accent: storeGet('settings.accent', 'polar') || 'polar',
+  894          theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+  895          v: app.getVersion()
+  896        }
+  897      });
+  898      // 兜底：启动窗自身出问题也不允许拖住主界面。
+  899      // 但只能在真实进度还没超过它时才发，否则会把已经跑到的 70% 阶段
+  900      // 反向改写回 55% —— 渲染端 pct 有 Math.max 保护，label 却是无条件覆盖的。
+
+==============================================================================
+核核工具箱软件 V1.0    第 19 页 / 共 60 页
+==============================================================================
+  901      setTimeout(() => {
+  902        if (mainShown || splashStage.pct >= 55) return;
+  903        splashSend('splash:step', { pct: 55, label: '加载界面…' });
+  904      }, 300);
+  905      // 兜底：万一主窗 ready-to-show 一直不触发（渲染层崩溃等），启动窗也不能永远盖在最前面
+  906      setTimeout(() => {
+  907        if (mainShown) return;
+  908        mainShown = true;
+  909        try { if (win && !win.isDestroyed()) win.show(); } catch (e) {}
+  910        destroySplash();
+  911      }, 30000);
+  912    } catch (e) {
+  913      console.error('splash failed', e.message);
+  914      splashWin = null;
+  915    }
+  916  }
+  917  
+  918  // 主窗显示：先让主窗在启动窗**下面**画好，再让启动窗淡出。
+  919  /* 【为什么不能「先淡出、等 260ms、再显示主窗」】
+  920   * 原来这里发 splash:done 之后 setTimeout(reveal, 260)，而 reveal 里才 win.show()。
+  921   * 于是那 260ms 里启动窗正在淡出，主窗却还没显示 —— 用户看到的就是
+  922   * 「弹窗没了，中间空一下，主界面才冒出来」。实测用户明确反馈了这个空档。
+  923   *
+  924   * 正确顺序是反过来的：
+  925   * 1) 先 win.show()：主窗渲染层在 ready-to-show 时就已经画好了，
+  926   *    它在启动窗下面，不会打断淡出观感；
+  927   * 2) 再发 splash:done 让启动窗淡出（启动窗是 alwaysOnTop，仍盖在上面）；
+  928   * 3) 淡出结束销毁启动窗 —— 此时它底下已经是完整的主界面。
+  929   * 这样启动窗消失的那一帧，主界面必然已经就位，不存在空白。
+  930   */
+  931  function showWindowAfterSplash() {
+  932    if (mainShown) return;
+  933    mainShown = true;
+  934    if (!win || win.isDestroyed()) { destroySplash(); return; }
+  935  
+  936    try { win.show(); } catch (e) {}
+  937    bootMark('window-shown');
+  938  
+  939    // 启动窗根本没显示过（启动太快）→ 没有淡出动画要等，直接销毁
+  940    if (!splashVisible || !splashWin || splashWin.isDestroyed()) { destroySplash(); return; }
+  941  
+  942    splashSend('splash:done', {});
+  943    // splash.html 的淡出是 0.18s（transition），等它彻底透明再销毁；
+  944    // 主窗此时已经在下面画好，所以这一帧切换是无缝的。
+  945    setTimeout(destroySplash, 200);
+  946  }
+  947  
+  948  /* ============================================================
+  949   * 窗口安全加固：每个 BrowserWindow 建好后都必须走一遍
+  950   *
+
+==============================================================================
+核核工具箱软件 V1.0    第 20 页 / 共 60 页
+==============================================================================
+  951   * 【为什么必须有】Electron 的默认行为里有两件事是"全开"的：
+  952   *   ① 权限请求默认批准（官方文档：可以设置 handler 覆盖"默认全部授予"）
+  953   *   ② window.open() 默认新建一个继承 webPreferences 的 BrowserWindow
+  954   *
+  955   * 本项目的页面只加载本地 file://，但**渲染的是大量用户可控文本**
+  956   * （Markdown 预览、笔记、OCR 结果、diff、日志查看）。任何一处漏掉净化
+  957   * 都可能变成：开出一个不受控的新窗口，或者申请到地理位置/MIDI 这类
+  958   * 与本应用毫无关系的权限。
+  959   *
+  960   * 【为什么不逐个手写】主进程有 5 处以上 new BrowserWindow
+  961   * （主窗、独立工具窗、标尺、贴图、截图、离屏 PDF）。逐处写必然漏一处，
+  962   * 而漏的那处不会有任何提示。收成一个函数，新建窗口时照抄一行。
+  963   * ============================================================ */
+  964  function hardenWindow(w) {
+  965    if (!w || w.isDestroyed()) return w;
+  966    try {
+  967      /* ① 一律拒绝新开窗口。需要"点链接开浏览器"的地方走 SHELL.OPEN_URL
+  968       *    （它只允许 http/https，见 ipc/fs-ops.js）。 */
+  969      w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  970      // Only main-process loadFile/loadURL may replace a document. Local file://
+  971      // links are untrusted too; a new document would inherit this window's preload.
+  972      w.webContents.on('will-navigate', ev => ev.preventDefault());
+  973      w.webContents.on('will-frame-navigate', ev => ev.preventDefault());
+  974      /* ③ 权限：白名单放行，其余拒绝。
+  975       *    · media            —— 录屏要麦克风/摄像头，OCR 要枚举设备 label
+  976       *    · notifications    —— 番茄钟、定时提醒
+  977       *    · clipboard-read   —— 剪贴板历史要读系统剪贴板
+  978       *    · clipboard-sanitized-write —— copyText 走的是渲染层 API，
+  979       *      不需要这条；留注释说明为什么没列它，避免以后乱加。
+  980       *    · fullscreen       —— 截图/贴图窗口进入全屏
+  981       *    其余（geolocation / midi / midiSysex / hid / serial / usb /
+  982       *    background-sync / accelerometer 等）一律拒绝并记一条日志。 */
+  983      const ALLOWED = new Set(['media', 'notifications', 'clipboard-read', 'fullscreen']);
+  984      const ses = w.webContents.session;
+  985      /* 【session 是共享的】主窗与各辅助窗用的是同一个 defaultSession，
+  986       * 所以这两个 handler 只需要装一次；重复装会覆盖，行为仍然一致。
+  987       * 用标记位避免每个窗口都重装一遍（重装本身无害，但会让"到底装了几次"
+  988       * 变得说不清）。 */
+  989      if (!ses.__hehePermBound) {
+  990        ses.__hehePermBound = true;
+  991        ses.setPermissionRequestHandler((wc, permission, callback) => {
+  992          const granted = !!wc && windowSecurity.isTrustedPage(wc.getURL(), __dirname) && ALLOWED.has(permission);
+  993          if (!granted) console.warn('[security] 拒绝权限请求：', permission);
+  994          callback(granted);
+  995        });
+  996        /* 【必须有 checkHandler，而且口径要与 requestHandler 一致】
+  997         * 只装 request 不装 check 会出现"请求被拒但检查通过"的矛盾状态
+  998         * （Chromium 有些路径先问 check 再决定要不要发 request）。 */
+  999        ses.setPermissionCheckHandler((wc, permission) => !!wc && windowSecurity.isTrustedPage(wc.getURL(), __dirname) && ALLOWED.has(permission));
+ 1000      }
+
+==============================================================================
+核核工具箱软件 V1.0    第 21 页 / 共 60 页
+==============================================================================
+ 1001    } catch (e) {
+ 1002      console.warn('[security] 窗口加固失败：', fmtErr(e));
+ 1003    }
+ 1004    return w;
+ 1005  }
+ 1006  
+ 1007  function createWindow() {
+ 1008    bootMark('create-window-start');
+ 1009    mainShown = false; // 窗口可能被销毁后重建（从托盘重新打开），需要重新走一次显示流程
+ 1010    /* preload 在渲染进程里拿不到 app（typeof app === 'undefined'，
+ 1011     * 直接读 app.isPackaged 会抛 TypeError 并被兜底成 isDev=true，
+ 1012     * 于是打包版也当自己是开发态、测试钩子常驻）。
+ 1013     * 这里由主进程判断好，通过 additionalArguments 注入给 preload 读。 */
+ 1014    const packagedArg = '--hehe-packaged=' + (app.isPackaged ? '1' : '0');
+ 1015    win = new BrowserWindow({
+ 1016      width: 1000, height: 660, minWidth: 860, minHeight: 580,
+ 1017      frame: false, show: false,
+ 1018      backgroundColor: nativeTheme.shouldUseDarkColors ? '#202020' : '#F2F3F5',
+ 1019      icon: path.join(__dirname, 'assets', 'icon.png'),
+ 1020      title: '核核工具箱',
+ 1021      webPreferences: {
+ 1022        preload: path.join(__dirname, 'preload.js'),
+ 1023        contextIsolation: true, nodeIntegration: false, sandbox: false,
+ 1024        additionalArguments: [packagedArg],
+ 1025        spellcheck: false
+ 1026      }
+ 1027    });
+ 1028    hardenWindow(win);
+ 1029    Menu.setApplicationMenu(null);
+ 1030    bootMark('window-created');
+ 1031    win.loadFile('index.html');
+ 1032    win.webContents.on('console-message', (...args) => {
+ 1033      let level, message, source, line;
+ 1034      if (typeof args[1] === 'number') { level = args[1]; message = args[2]; line = args[3]; source = args[4]; }
+ 1035      else { const ev = args[0]; level = ev.level; message = ev.message; source = ev.sourceId; line = ev.lineNumber; }
+ 1036      console.log(`[renderer:${level}]`, message, `(${source}:${line})`);
+ 1037    });
+ 1038    /* 渲染进程崩溃（OOM / 被杀 / asar 被动过）在主进程这边只有一个事件，
+ 1039     * 界面上表现为「整片白了」或「窗口没了」。这里必须落盘：
+ 1040     * 渲染进程自己的 console 随进程一起消失，之前什么都留不下。
+ 1041     *
+ 1042     * 崩溃后 Electron 会留下一个"死掉"的 webContents。不去 reload 的话，
+ 1043     * 用户看到的就是一张永久白屏的窗口 —— 那正是最让人困惑的状态。
+ 1044     * 所以这里记录后主动 reload 一次（只是恢复界面，不重放导致崩溃的操作）。 */
+ 1045    win.webContents.on('render-process-gone', (e, details) => {
+ 1046      const reason = details && details.reason;
+ 1047      const exitCode = details && details.exitCode;
+ 1048      recordCrash('render-process-gone', {
+ 1049        detail: crashLog.describeGone(reason, exitCode),
+ 1050        err: null
+
+==============================================================================
+核核工具箱软件 V1.0    第 22 页 / 共 60 页
+==============================================================================
+ 1051      });
+ 1052      // 用户主动退出（isQuitting）时不重载，否则会拖住退出流程
+ 1053      if (isQuitting) return;
+ 1054      // 'killed' 常常是用户在任务管理器里主动结束子进程，也不该自动复活
+ 1055      if (reason === 'killed' || reason === 'clean-exit') return;
+ 1056      try {
+ 1057        setTimeout(() => {
+ 1058          try {
+ 1059            if (win && !win.isDestroyed()) win.webContents.reload();
+ 1060          } catch (err) {}
+ 1061        }, 1200);
+ 1062      } catch (err) {}
+ 1063    });
+ 1064    win.once('ready-to-show', () => { bootMark('ready-to-show'); showWindowAfterSplash(); });
+ 1065    win.webContents.once('dom-ready', () => splashSend('splash:step', { pct: 72, label: '准备界面…' }));
+ 1066    win.webContents.once('did-finish-load', () => { bootMark('renderer-loaded'); });
+ 1067    win.on('maximize', () => send('win:maximized', true));
+ 1068    win.on('unmaximize', () => send('win:maximized', false));
+ 1069    win.on('close', (e) => {
+ 1070      if (!isQuitting && storeGet('settings.closeToTray', true) && tray) {
+ 1071        e.preventDefault(); win.hide();
+ 1072      }
+ 1073    });
+ 1074    win.on('closed', () => { win = null; });
+ 1075  }
+ 1076  
+ 1077  function showMainWindow() {
+ 1078    if (!win) { createWindow(); return; }
+ 1079    if (win.isMinimized()) win.restore();
+ 1080    win.show(); win.focus();
+ 1081  }
+ 1082  
+ 1083  /* ---------------- tray ---------------- */
+ 1084  /* 主进程侧没有 i18n 体系（渲染层的 js/i18n.js 只在窗口里跑）。
+ 1085   * 托盘菜单和系统通知是主进程自己画的，所以这里放一份**极小的**双语表，
+ 1086   * 只覆盖托盘与通知用到的几条文案。语言由渲染层通过 app:set-lang 传过来，
+ 1087   * 切换语言时会重新建菜单 —— 否则英文用户看到的中文托盘菜单永远不跟着变。
+ 1088   * 新增托盘项时请同时补两套文案，不要只写中文。 */
+ 1089  const TRAY_I18N = {
+ 1090    zh: { tooltip: '核核工具箱', show: '显示主界面', snip: '✂️ 截图标注',
+ 1091          pin: '📌 贴剪贴板图片', notes: '📝 记事', ocr: '🔍 OCR 剪贴板图片',
+ 1092          quit: '退出', noClipImg: '剪贴板中没有图片' },
+ 1093    en: { tooltip: 'HeHe Toolbox', show: 'Show main window', snip: '✂️ Annotate screenshot',
+ 1094          pin: '📌 Pin clipboard image', notes: '📝 Notes', ocr: '🔍 OCR clipboard image',
+ 1095          quit: 'Quit', noClipImg: 'No image in clipboard' },
+ 1096  };
+ 1097  let uiLang = 'zh';
+ 1098  function trayText(key) {
+ 1099    const pack = TRAY_I18N[uiLang] || TRAY_I18N.zh;
+ 1100    return pack[key] != null ? pack[key] : TRAY_I18N.zh[key];
+
+==============================================================================
+核核工具箱软件 V1.0    第 23 页 / 共 60 页
+==============================================================================
+ 1101  }
+ 1102  
+ 1103  function createTray() {
+ 1104    try {
+ 1105      tray = new Tray(path.join(__dirname, 'assets', 'icon32.png'));
+ 1106      tray.setToolTip(trayText('tooltip'));
+ 1107      const menu = Menu.buildFromTemplate([
+ 1108        { label: trayText('show'), click: showMainWindow },
+ 1109        { type: 'separator' },
+ 1110        { label: trayText('snip'), click: () => { snipStart('annotate').catch(() => {}); } },
+ 1111        { label: trayText('pin'), click: () => { pinClipboardImage().catch((e2) => { showMainWindow(); send('tray:err', e2.message); }); } },
+ 1112        { label: trayText('notes'), click: () => { showMainWindow(); send('app:open-tool', 'local-notes'); } },
+ 1113        { label: trayText('ocr'), click: async () => {
+ 1114            const img = clipboard.readImage();
+ 1115            if (img.isEmpty()) { showMainWindow(); send('tray:err', trayText('noClipImg')); return; }
+ 1116            const file = snipTmp();
+ 1117            await fsp.writeFile(file, img.toPNG());
+ 1118            showMainWindow();
+ 1119            send('snip:ocr', file);
+ 1120          } },
+ 1121        { type: 'separator' },
+ 1122        { label: trayText('quit'), click: () => { isQuitting = true; app.quit(); } }
+ 1123      ]);
+ 1124      tray.setContextMenu(menu);
+ 1125      tray.on('double-click', showMainWindow);
+ 1126    } catch (e) { console.error('tray failed', e); tray = null; }
+ 1127  }
+ 1128  
+ 1129  /* 渲染层切换界面语言时通知主进程，让托盘菜单跟着换。
+ 1130   * 只重建托盘菜单，不动别的状态。语言值不认识时保守回中文。
+ 1131   *
+ 1132   * 【写完必须广播】托盘只是主进程自己画的那一半；语言真正的消费者是各窗口的
+ 1133   * 渲染层。不广播的话，主窗切成英文后，已经打开的独立工具窗口仍是中文 ——
+ 1134   * 而它是用户刚刚从这里拖出去的，两秒之内就看到两种语言。 */
+ 1135  handle(CH.APP.SET_LANG, (e, lang) => {
+ 1136    const next = lang === 'en' ? 'en' : 'zh';
+ 1137    if (next === uiLang && tray) return true; // 没变就不用重建
+ 1138    uiLang = next;
+ 1139    if (tray) {
+ 1140      try { tray.destroy(); } catch (err) {}
+ 1141      tray = null;
+ 1142      createTray();
+ 1143    }
+ 1144    broadcastUiPrefs();
+ 1145    return true;
+ 1146  });
+ 1147  
+ 1148  /* ---------------- global hotkey ---------------- */
+ 1149  let currentHotkey = null;
+ 1150  function applyHotkey(acc) {
+
+==============================================================================
+核核工具箱软件 V1.0    第 24 页 / 共 60 页
+==============================================================================
+ 1151    if (!acc) {
+ 1152      try { if (currentHotkey) globalShortcut.unregister(currentHotkey); } catch (e) {}
+ 1153      currentHotkey = null;
+ 1154      return true;
+ 1155    }
+ 1156    if (acc === currentHotkey) return true;
+ 1157    let ok = false;
+ 1158    try { ok = globalShortcut.register(acc, () => { showMainWindow(); send('hotkey:pressed', acc); }); } catch (e) { ok = false; }
+ 1159    if (!ok) return false; // 新键注册失败时保留旧热键
+ 1160    try { if (currentHotkey) globalShortcut.unregister(currentHotkey); } catch (e) {}
+ 1161    currentHotkey = acc;
+ 1162    return true;
+ 1163  }
+ 1164  
+ 1165  /* 逻辑核心数（缓存 60 秒：核数不会变，但 os.cpus() 每次都要构造整张表） */
+ 1166  let _coreCountCache = null, _coreCountAt = 0;
+ 1167  function cpuCoreCount() {
+ 1168    if (_coreCountCache && Date.now() - _coreCountAt < 60000) return _coreCountCache;
+ 1169    try { _coreCountCache = os.cpus().length || 1; } catch (e) { _coreCountCache = _coreCountCache || 1; }
+ 1170    _coreCountAt = Date.now();
+ 1171    return _coreCountCache;
+ 1172  }
+ 1173  
+ 1174  /* ---------------- cpu sampler ----------------
+ 1175   * 【只枚举一次】原实现每次采样要跑三遍 os.cpus()：
+ 1176   * sampleCpu() 里一遍、接着 interval 里又两遍 reduce。
+ 1177   * os.cpus() 会枚举所有逻辑核心并构造对象数组，在 32 核机器上开销不小，
+ 1178   * 而且每 1.5 秒一次。
+ 1179   * 现在一次枚举同时算出「当前总量」与「给下次用的基线」。 */
+ 1180  function readCpuTimes() {
+ 1181    const cpus = os.cpus();
+ 1182    let idle = 0, total = 0, cores = cpus.length;
+ 1183    for (const c of cpus) {
+ 1184      idle += c.times.idle;
+ 1185      total += c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq;
+ 1186    }
+ 1187    return { idle, total, cores };
+ 1188  }
+ 1189  setInterval(() => {
+ 1190    // 窗口不可见（最小化到托盘/隐藏）时不必推送状态，避免无谓唤醒渲染进程
+ 1191    if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return;
+ 1192    const cur = readCpuTimes();
+ 1193    let cpu = 0;
+ 1194    if (lastCpuSample) {
+ 1195      const idleD = cur.idle - lastCpuSample.idle, totalD = cur.total - lastCpuSample.total;
+ 1196      cpu = totalD > 0 ? Math.min(100, Math.max(0, (1 - idleD / totalD) * 100)) : 0;
+ 1197    }
+ 1198    lastCpuSample = { idle: cur.idle, total: cur.total };
+ 1199    const totalMem = os.totalmem(), freeMem = os.freemem();
+ 1200    send('sys:stats', { cpu: Math.round(cpu * 10) / 10, memUsed: totalMem - freeMem, memTotal: totalMem, memPct: Math.round((1 - freeMem / totalMem) * 1000) / 10 });
+
+==============================================================================
+核核工具箱软件 V1.0    第 25 页 / 共 60 页
+==============================================================================
+ 1201  }, 1500);
+ 1202  
+ 1203  /* ================= IPC: app / window / store ================= */
+ 1204  /* 【窗口控制必须作用于「发起调用的那个窗口」】
+ 1205   * 这三个通道原来直接操作主窗 win。独立工具窗口出现之后，
+ 1206   * 用户点独立窗上的最小化，被最小化的是**主窗** —— 独立窗纹丝不动，
+ 1207   * 看起来像按钮坏了；点关闭则关掉主窗，而用户想关的是手上这个。
+ 1208   *
+ 1209   * 优先按 ALS 上下文取发起者（BrowserWindow.fromWebContents），
+ 1210   * 取不到才退回主窗 —— 托盘、快捷键这些没有调用者的路径仍然走主窗。 */
+ 1211  function senderWindow() {
+ 1212    const wc = currentSender();
+ 1213    if (wc && !wc.isDestroyed()) {
+ 1214      try { const w = BrowserWindow.fromWebContents(wc); if (w && !w.isDestroyed()) return w; } catch (e) {}
+ 1215    }
+ 1216    return (win && !win.isDestroyed()) ? win : null;
+ 1217  }
+ 1218  handle(CH.WIN.MINIMIZE, () => { const w = senderWindow(); if (w) w.minimize(); });
+ 1219  handle(CH.WIN.MAXIMIZE, () => {
+ 1220    const w = senderWindow();
+ 1221    if (!w) return;
+ 1222    w.isMaximized() ? w.unmaximize() : w.maximize();
+ 1223  });
+ 1224  handle(CH.WIN.CLOSE, () => { const w = senderWindow(); if (w) w.close(); });
+ 1225  /* 截取调用方窗口的内容区，缩成小图给标签拖拽做跟手预览。
+ 1226   *
+ 1227   * 【为什么需要它】浏览器拖标签时会跟着一个页面缩略图，用户立刻明白
+ 1228   * "我正在搬运这个东西"。只让标签变半透明的话，拖动过程中没有任何
+ 1229   * 东西跟着鼠标，观感是"拖了一下、松手后别处冒出个窗口"。
+ 1230   *
+ 1231   * 【为什么在主进程做，不在渲染层用 html2canvas】
+ 1232   * 渲染层拿不到自己的像素（contextIsolation + 无 nodeIntegration）。
+ 1233   * 而 webContents.capturePage 是主进程 API，且**实测很快**：
+ 1234   * 区域截图预热之后 5ms（全窗口 15ms），缩到 360px 宽后约 14KB 的 data URL。
+ 1235   * 一次截图的开销远低于拖拽时每帧移位的开销，不会让拖动变卡。
+ 1236   *
+ 1237   * @param {{x:number,y:number,width:number,height:number}} [rect]
+ 1238   *   内容区在窗口内的 DIP 矩形；不传则截整窗。
+ 1239   * @returns {Promise<string|null>} data:image/png;base64,… ；失败返回 null
+ 1240   *   （不做成抛错：拖拽预览拿不到图是可以接受的降级，不该打断拖拽本身）
+ 1241   */
+ 1242  handle(CH.WIN.THUMBNAIL, async (e, rect) => {
+ 1243    const w = senderWindow();
+ 1244    if (!w) return null;
+ 1245    try {
+ 1246      const opts = (rect && rect.width > 0 && rect.height > 0)
+ 1247        ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
+ 1248        : undefined;
+ 1249      const img = await w.webContents.capturePage(opts);
+ 1250      if (!img || img.isEmpty()) return null;
+
+==============================================================================
+核核工具箱软件 V1.0    第 26 页 / 共 60 页
+==============================================================================
+ 1251      /* 缩到 360px 宽：够看清是哪个工具页，又不至于让 IPC 传几百 KB。
+ 1252       * 高度按比例，不裁剪 —— 预览图长宽比与真实页面一致才像"缩略图"。 */
+ 1253      const sz = img.getSize();
+ 1254      const targetW = 360;
+ 1255      const scaled = sz.width > targetW
+ 1256        ? img.resize({ width: targetW, height: Math.round(sz.height * targetW / sz.width) })
+ 1257        : img;
+ 1258      return scaled.toDataURL();
+ 1259    } catch (err) {
+ 1260      return null;
+ 1261    }
+ 1262  });
+ 1263  /* 让渲染层知道「这次是从默认值起来的」。
+ 1264   * 不加这条的话，用户只会看到笔记/收藏/剪贴板历史全空了，却不知道
+ 1265   * 是数据文件损坏、也不知道原文件已被另存到哪 —— 只会以为程序把数据弄丢了。
+ 1266   * 正常启动时 storeLoadFailed 为 false，界面不受任何影响。 */
+ 1267  handle(CH.STORE.HEALTH, () => ({
+ 1268    ok: !storeLoadFailed,
+ 1269    corruptCopy: storeCorruptCopy,
+ 1270    file: storeFile(),
+ 1271  }));
+ 1272  handle(CH.APP.GET_INFO, () => ({
+ 1273    appVersion: app.getVersion(),
+ 1274    electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome,
+ 1275    platform: process.platform,
+ 1276    userData: app.getPath('userData'),
+ 1277    /* 主显示器工作区（不含任务栏）。窗口布局工具靠它算格子 ——
+ 1278     * 用 workArea 而不是 bounds：后者含任务栏区域，摆过去的窗口底部会被挡住。 */
+ 1279    workArea: (function(){ const d = screen.getPrimaryDisplay(); return d.workArea; })(),
+ 1280    exePath: app.getPath('exe'),
+ 1281    hostname: os.hostname(),
+ 1282    username: os.userInfo().username
+ 1283  }));
+ 1284  handle(CH.STORE.GET, (e, key, def) => storeGet(key, def));
+ 1285  handle(CH.STORE.SET, (e, key, val) => {
+ 1286    const parts = String(key).split('.');
+ 1287    if (parts[0] === 'updateCache' || parts.some(part => ['__proto__', 'constructor', 'prototype'].includes(part))) {
+ 1288      throw new Error('该存储路径由主进程管理，不能从页面修改');
+ 1289    }
+ 1290    const r = storeSet(key, val);
+ 1291    /* 【偏好值改动要广播给所有窗口】
+ 1292     * 主窗口改 set，独立工具窗口的 Prefs 缓存不会自动更新 —— 用户会认为
+ 1293     * 「设置没生效」。广播一次，各窗口重跑 Prefs.applyFromStore。
+ 1294     * 只对 settings.prefs* 这一个命名空间广播：其它 store 键（笔记、
+ 1295     * 剪贴板历史、缓存）改动极其频繁，全广播会把 UI 打满。 */
+ 1296    if (typeof key === 'string' && key.startsWith('settings.prefs')) broadcastUiPrefs();
+ 1297    return r;
+ 1298  });
+ 1299  /* store:remove 已移除：全项目没有任何调用方（渲染层只删收藏/历史时用的是
+ 1300   * store:set 置空）。js/api.js 的浏览器模拟分支曾保留它，也一并删掉。 */
+
+==============================================================================
+核核工具箱软件 V1.0    第 27 页 / 共 60 页
+==============================================================================
+ 1301  /* ============ 独立工具窗口（v0.6.0）============
+ 1302   * 渲染层把标签拖出标签栏时调用它，把该工具弹成一个独立窗口。
+ 1303   *
+ 1304   * 【为什么复用 index.html 而不是另做一个 tool.html】
+ 1305   * 工具页依赖整套外壳：js/ui.js 的组件、Registry、i18n、channels 常量表、
+ 1306   * JobPrefix、i18n 工具正文表…… 另做一个页面就要复制这 20 多个 <script>，
+ 1307   * 两份迟早分叉（改了一条通道常量、独立窗仍是旧的）。复用同一个页面 +
+ 1308   * 一个 standalone 启动参数，加载的是同一批文件、同一个启动路径。
+ 1309   *
+ 1310   * 【用 query 参数而不是 additionalArguments】
+ 1311   * additionalArguments 在 preload 里读（process.argv），
+ 1312   * 而"要打开哪个工具"是渲染层的事，preload 不该知道。
+ 1313   * 用 loadFile 的 query 传 tool / standalone，渲染层启动时读 location.search。
+ 1314   *
+ 1315   * 【独立窗口不继承主窗口的标签栏状态】
+ 1316   * 它就是"一个工具占一个窗口"，没有标签栏、没有侧边栏，只有标题栏 + 工具页。
+ 1317   * 这样拖出去之后用户得到的是一个干净的专注窗口，而不是一个缩小版主窗。 */
+ 1318  let toolWindows = [];
+ 1319  
+ 1320  function openToolWindow(toolId) {
+ 1321    if (!toolId || typeof toolId !== 'string') throw new Error('缺少工具 id');
+ 1322    /* 同一个工具已经弹出去过：聚焦那一个，而不是开第二个。
+ 1323     * 用户拖出去两次通常是不确定"上次成没成"，再开一个反而更乱。 */
+ 1324    for (const w of toolWindows) {
+ 1325      if (w && !w.isDestroyed() && w.__heheToolId === toolId) {
+ 1326        try { if (w.isMinimized()) w.restore(); w.focus(); } catch (e) {}
+ 1327        return { focused: true, id: w.id };
+ 1328      }
+ 1329    }
+ 1330    const packagedArg = '--hehe-packaged=' + (app.isPackaged ? '1' : '0');
+ 1331    const w = new BrowserWindow({
+ 1332      /* 比主窗小一圈：它是"一个工具"，不需要主窗那么大的画布。
+ 1333       * 宽高给得够放常见的表单 + 结果区。 */
+ 1334      width: 900, height: 640, minWidth: 560, minHeight: 420,
+ 1335      frame: false, show: false,
+ 1336      backgroundColor: nativeTheme.shouldUseDarkColors ? '#202020' : '#F2F3F5',
+ 1337      icon: path.join(__dirname, 'assets', 'icon.png'),
+ 1338      /* 【标题必须带上工具名】原来所有独立窗口都叫「核核工具箱」：开三个之后，
+ 1339       * 任务栏与 Alt+Tab 里是三个同名条目，只能靠缩略图辨认哪个是哪个。
+ 1340       * 名字从 lib/tool-names.js 取 —— 主进程读不到渲染层的注册表（js/tools/*
+ 1341       * 是浏览器脚本，require 会立刻 TypeError），而给 100 多个工具文件加 UMD
+ 1342       * 适配只为拿一个名字，不值得。两张表由 scripts/test-tool-window-title.js
+ 1343       * 守着一致性，新增工具漏登记会直接红。 */
+ 1344      title: toolNames.toolTitle(toolId, uiLang),
+ 1345      webPreferences: {
+ 1346        preload: path.join(__dirname, 'preload.js'),
+ 1347        contextIsolation: true, nodeIntegration: false, sandbox: false,
+ 1348        additionalArguments: [packagedArg],
+ 1349        spellcheck: false,
+ 1350      }
+
+==============================================================================
+核核工具箱软件 V1.0    第 28 页 / 共 60 页
+==============================================================================
+ 1351    });
+ 1352    hardenWindow(w);
+ 1353    w.__heheToolId = toolId;
+ 1354    /* 【窗口的 webContents id 要在创建时记下来】'closed' 触发时 webContents
+ 1355     * 已经销毁，那时 getWebContents() 拿不到 id —— 而没有它就无法判断
+ 1356     * 「哪些任务是这个窗口发起的」。 */
+ 1357    let wcId = null;
+ 1358    try { wcId = w.webContents.id; } catch (e) { wcId = null; }
+ 1359    w.loadFile('index.html', { query: { tool: toolId, standalone: '1' } });
+ 1360    w.once('ready-to-show', () => { try { w.show(); } catch (e) {} });
+ 1361    w.on('closed', () => {
+ 1362      toolWindows = toolWindows.filter((x) => x !== w);
+ 1363      /* 【关窗必须连带取消它启动的任务，否则任务变孤儿、事件漏到主窗口】
+ 1364       * 用户关掉正在跑 ffmpeg 的独立窗口，任务却继续在后台跑：
+ 1365       *   · 没有任何 UI 能再取消它（jobId 已随窗口消失）；
+ 1366       *   · 之后每条 job:stream 都会命中 send() 的"调用者已销毁"那一档，
+ 1367       *     要么被丢弃、要么（在老代码里）漏到主窗口，被主窗同工具页的
+ 1368       *     JobPrefix 认领成自己的任务 —— 进度条乱跳、结束时弹「完成」。
+ 1369       * 归属是在 jobs.set 时打上的（见 lib/job-owner.js），这里按 id 清账。 */
+ 1370      const killed = jobs.cancelOwnedBy(wcId);
+ 1371      if (killed > 0) console.warn('[job] 独立窗口关闭，已取消它启动的 ' + killed + ' 个任务');
+ 1372    });
+ 1373    toolWindows.push(w);
+ 1374    return { focused: false, id: w.id };
+ 1375  }
+ 1376  
+ 1377  handle(CH.APP.OPEN_TOOL_WINDOW, (e, toolId) => openToolWindow(toolId));
+ 1378  /* 主题：nativeTheme 是系统级开关，改完各窗口的 CSS 却不会自动跟着变 ——
+ 1379   * 它们看的是自己 documentElement 上的 data-theme。所以必须广播。
+ 1380   * 返回值带上最终明暗，调用方（主窗）不用再猜 'system' 解出来是什么。 */
+ 1381  handle(CH.APP.SET_THEME, (e, mode) => {
+ 1382    nativeTheme.themeSource = mode;
+ 1383    broadcastUiPrefs();
+ 1384    return nativeTheme.shouldUseDarkColors;
+ 1385  });
+ 1386  handle(CH.APP.SET_AUTOSTART, (e, enable) => {
+ 1387    if (isWin || isMac) app.setLoginItemSettings({ openAtLogin: !!enable });
+ 1388    return app.getLoginItemSettings().openAtLogin;
+ 1389  });
+ 1390  handle(CH.APP.GET_AUTOSTART, () => (isWin || isMac) ? app.getLoginItemSettings().openAtLogin : false);
+ 1391  handle(CH.APP.SET_HOTKEY, (e, acc) => applyHotkey(acc));
+ 1392  
+ 1393  /* ---- 崩溃日志的界面入口 ----
+ 1394   * 只读为主，不需要门禁（清空也只删 logs/ 下的 crash*.log，不碰用户数据）。
+ 1395   * 四个通道：
+ 1396   *   info   上次是否异常退出 + 日志文件列表（设置页显示一行摘要）
+ 1397   *   read   最近一条日志的尾部（用户点「查看」时按需读，不预热）
+ 1398   *   reveal 在文件管理器里定位日志目录（用户要发给开发者）
+ 1399   *   clear  清空已有日志（会话标记是另一套语义，不受影响） */
+ 1400  handle(CH.APP.CRASH_INFO, () => {
+
+==============================================================================
+核核工具箱软件 V1.0    第 29 页 / 共 60 页
+==============================================================================
+ 1401    const logs = crashLog.listLogs(crashLogDir());
+ 1402    return {
+ 1403      lastSessionCrashed: lastSessionCrashed,
+ 1404      dir: crashLogDir(),
+ 1405      count: logs.length,
+ 1406      totalBytes: logs.reduce((a, b) => a + b.size, 0),
+ 1407      latest: logs.length ? { name: logs[0].name, size: logs[0].size, mtime: logs[0].mtime } : null
+ 1408    };
+ 1409  });
+ 1410  handle(CH.APP.CRASH_READ, (e, maxBytes) => {
+ 1411    // 上限夹一下：渲染层传大值也不能让它把几 MB 文本塞进 IPC
+ 1412    const n = Math.min(64 * 1024, Math.max(1024, Number(maxBytes) || 16 * 1024));
+ 1413    return crashLog.tail(crashLogDir(), n);
+ 1414  });
+ 1415  handle(CH.APP.CRASH_REVEAL, async () => {
+ 1416    const dir = crashLogDir();
+ 1417    try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+ 1418    // showItemInFolder 需要文件路径；目录直接 openPath 更稳
+ 1419    try { await shell.openPath(dir); return true; } catch (e) { return false; }
+ 1420  });
+ 1421  handle(CH.APP.CRASH_CLEAR, () => {
+ 1422    // 清空日志：删除所有 crash*.log。会话标记不动（那是另一套语义）
+ 1423    const logs = crashLog.listLogs(crashLogDir());
+ 1424    let n = 0;
+ 1425    for (const l of logs) {
+ 1426      try { fs.rmSync(l.path, { force: true }); n++; } catch (e) {}
+ 1427    }
+ 1428    return n;
+ 1429  });
+ 1430  
+ 1431  /* ================= IPC: dialog ================= */
+ 1432  /* 【对话框必须归属「发起调用的那个窗口」】
+ 1433   * 原来写死 dialog.showOpenDialog(win, …)：独立工具窗口里点「选择文件/保存文件」
+ 1434   * 时，对话框挂在主窗上 —— 不居中于发起它的窗口、不是它的模态子窗口，
+ 1435   * 用户还能继续点独立窗，容易连点出好几个对话框。
+ 1436   * 这与 WIN.MINIMIZE/MAXIMIZE/CLOSE 的 senderWindow() 修复是同一类问题
+ 1437   * （窗口控制按发起者路由、dialog 漏了），也与 ipc/media-ffmpeg.js 的
+ 1438   * ffmpeg:pick 用的 ctx.win getter 同理。
+ 1439   * 优先按 ALS 上下文取发起窗口；托盘/定时这类无调用者的路径退回主窗。 */
+ 1440  handle(CH.DIALOG.OPEN, async (e, opts = {}) => {
+ 1441    const r = await dialog.showOpenDialog(senderWindow(), {
+ 1442      title: opts.title, defaultPath: opts.defaultPath,
+ 1443      properties: opts.properties || ['openFile'],
+ 1444      filters: opts.filters
+ 1445    });
+ 1446    return r.canceled ? null : r.filePaths;
+ 1447  });
+ 1448  handle(CH.DIALOG.SAVE, async (e, opts = {}) => {
+ 1449    const r = await dialog.showSaveDialog(senderWindow(), { title: opts.title, defaultPath: opts.defaultPath, filters: opts.filters });
+ 1450    return r.canceled ? null : r.filePath;
+
+==============================================================================
+核核工具箱软件 V1.0    第 30 页 / 共 60 页
+==============================================================================
+ 1451  });
+ 1452  /* dialog:message 已移除：全项目无调用方（需要确认时用渲染层的 confirmBox，
+ 1453   * 需要系统原生提示时走 dialog:save / dialog:open 那条线）。 */
+ 1454  
+ 1455  /* ================= IPC: 乱码修复 / 编码探测 =================
+ 1456   * 中文 Windows 上最常见的三种乱码（锟斤拷、GBK 当 UTF-8 读、
+ 1457   * UTF-8 当 latin1 读）都在这里处理。核心逻辑在 lib/mojibake.js。
+ 1458   *
+ 1459   * 输入有两种形态：
+ 1460   *   - 用户粘贴的一段乱码文本（字符串）
+ 1461   *   - 一个文件（原始字节，探测最准）
+ 1462   * 两者都走同一条分析链，返回排序后的候选 + 每条的分数。
+ 1463   */
+ 1464  handle(CH.TEXT.DETECT_ENCODING, async (e, input, opts = {}) => {
+ 1465    const o = opts || {};
+ 1466    if (!input) throw new Error('没有要分析的内容');
+ 1467  
+ 1468    /* 文件形态：直接读字节，交给编码探测（最准，因为拿的是原始数据） */
+ 1469    if (o.isFile) {
+ 1470      const st = await fsp.stat(input).catch(() => null);
+ 1471      if (!st) throw new Error('文件不存在：' + input);
+ 1472      if (st.size > 16 * 1024 * 1024) throw new Error('文件过大（>16MB），请改用「文件编码转换」');
+ 1473      const buf = await fsp.readFile(input);
+ 1474      const cands = mojibake.detectEncodings(buf);
+ 1475      /* 【把候选统一成 from/to 形状再返回】
+ 1476       * lib 里 detectEncodings 的字段是 encodings/label/text/score（见
+ 1477       * lib/mojibake.js 的签名注释；那个字段名叫 encodings 是历史拼写，
+ 1478       * 有测试与外部引用，不在主进程这边改名）。
+ 1479       * 而渲染层读的是 from/to —— 早期直接把原始对象透出去，于是文件模式的
+ 1480       * 「最可能的结果」显示「? → ?」、候选表的「转换」列全是「? → ?」、
+ 1481       * rowKey 全为空串，真正有用的编码名一个字都没显示出来。
+ 1482       * 文件模式存在的意义就是告诉用户「这文件其实是 GBK」，所以这里补上：
+ 1483       *   from = '原始字节'（文件模式没有「从某个编码解过来」这一步，是原始字节换解码器）
+ 1484       *   to   = label（真正要显示的东西）
+ 1485       * 同时保留 label / encodings 原字段，外部若有引用不受影响。 */
+ 1486      const shaped = cands.slice(0, 6).map((c) => Object.assign({}, c, {
+ 1487        from: '原始字节',
+ 1488        to: c.label || c.encodings || '?',
+ 1489      }));
+ 1490      return {
+ 1491        source: 'file', path: input, size: st.size,
+ 1492        best: shaped[0] || null,
+ 1493        candidates: shaped,
+ 1494        kuen: false,
+ 1495        note: cands.length ? '' : '这个运行时缺少可用的编码解码器',
+ 1496      };
+ 1497    }
+ 1498  
+ 1499    /* 文本形态。
+ 1500     * 【锟斤拷这类乱码以前只能识别、修不了】
+
+==============================================================================
+核核工具箱软件 V1.0    第 31 页 / 共 60 页
+==============================================================================
+ 1501  /* ==================== lib/run-token.js ==================== */
+ 1502  'use strict';
+ 1503  /* 「这份异步结果还算不算数」的判据 —— 抽成纯函数以便真正单测。
+ 1504   *
+ 1505   * ============ 为什么需要这个模块 ============
+ 1506   * 项目里大量工具页是「点一次按钮 → invoke 一个阻塞式主进程 handler →
+ 1507   * 返回后写界面」。用户可能在等待期间**再次点击**或**切走页面**。
+ 1508   * 这两件事都必须让**旧的那次请求**作废，否则：
+ 1509   *   · 旧请求的 catch 会退掉新请求的订阅、复位新请求的按钮、
+ 1510   *     把新请求的 jobId 置 null —— 新请求静默死亡且无法停止；
+ 1511   *   · 旧请求的成功分支会用过期数据覆盖新请求的界面；
+ 1512   *   · 旧请求还在主进程里建出了任务，没人收尾（孤儿）。
+ 1513   *
+ 1514   * 历史上这里用过布尔 `pageDead`，但它有两处硬伤：
+ 1515   *   ① 复位窗口：`onEnter` 把 pageDead 置 false 之后，**旧请求**回来时
+ 1516   *      看到的是 false，于是被当成有效（漏杀）；
+ 1517   *   ② 无法区分「旧」与「新」：布尔只有一个值，知道"页面还在"，
+ 1518   *      但不知道"这份结果属于哪一趟"。
+ 1519   *
+ 1520   * 所以统一改成 **per-run 序号（token）**：每次开跑 +1，异步返回时比对；
+ 1521   * 不一致就是过期，过期请求必须
+ 1522   *   · 不碰任何界面状态；
+ 1523   *   · 不弹任何提示；
+ 1524   *   · 如果它在主进程里建出了任务 id，自己把它 kill 掉。
+ 1525   *
+ 1526   * 这个模块只负责**判定**（纯函数、可单测）；"过期后做什么"留在调用点，
+ 1527   * 因为那里才知道有没有 job id 要 kill、要不要退订。
+ 1528   */
+ 1529  
+ 1530  /**
+ 1531   * 这份异步结果是否仍有效。
+ 1532   *
+ 1533   * @param {number} capturedAt 请求发起时捕获的序号
+ 1534   * @param {number} current 当前序号
+ 1535   * @returns {boolean} true = 仍然有效（可以写界面）；false = 已过期
+ 1536   */
+ 1537  function isCurrentRun(capturedAt, current) {
+ 1538    const a = Number(capturedAt);
+ 1539    const b = Number(current);
+ 1540    /* 非数值一律当作过期：拿不到序号就无法证明它是当前这趟，
+ 1541     * 宁可丢弃（丢弃的后果只是界面不更新一次），也不能让它去改别人的状态。 */
+ 1542    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+ 1543    return a === b;
+ 1544  }
+ 1545  
+ 1546  /**
+ 1547   * 过期请求的收尾动作清单。
+ 1548   *
+ 1549   * 【为什么要返回一个列表而不是直接执行】调用方需要按自己的资源形态
+ 1550   * 决定做什么（有 job id 才 kill、有订阅才退订）。这里给出**必须做的最小集**，
+
+==============================================================================
+核核工具箱软件 V1.0    第 32 页 / 共 60 页
+==============================================================================
+ 1551   * 让调用点不必每次重新推理，也便于测试覆盖"过期就什么都不该碰"。
+ 1552   *
+ 1553   * @param {object} p
+ 1554   * @param {number} p.capturedAt 请求发起时的序号
+ 1555   * @param {number} p.current 当前序号
+ 1556   * @param {string|number|null} [p.jobId] 这次请求在主进程里建出的任务 id
+ 1557   * @returns {{stale:boolean, killJobId:string|number|null, touchUi:boolean, toast:boolean}}
+ 1558   */
+ 1559  function planStaleCleanup(p) {
+ 1560    /** @type {{capturedAt?:number, current?:number, jobId?:string|number|null}} */
+ 1561    const x = p || {};
+ 1562    const stale = !isCurrentRun(x.capturedAt, x.current);
+ 1563    if (!stale) {
+ 1564      return { stale: false, killJobId: null, touchUi: true, toast: true };
+ 1565    }
+ 1566    return {
+ 1567      stale: true,
+ 1568      /* 过期请求若建出了任务，必须自己杀掉 —— 否则它在主进程里继续跑，
+ 1569       * 而没有任何界面能取消它（新请求的 jobId 是另一个）。 */
+ 1570      killJobId: x.jobId == null ? null : x.jobId,
+ 1571      /* 过期的请求**不许**碰界面：按钮、状态行、列表都属于新一趟。 */
+ 1572      touchUi: false,
+ 1573      /* 也不许弹提示：用户已经在看新一趟，旧错误会让人以为新操作失败了。 */
+ 1574      toast: false,
+ 1575    };
+ 1576  }
+ 1577  
+ 1578  /* 【顶层标识符必须带模块前缀】
+ 1579   * index.html 用经典 <script>（不是 module）加载本文件，顶层 const 进的是
+ 1580   * **同一个全局词法环境**。曾与 lib/img-pick.js 的 `const API` / `const root`
+ 1581   * 撞名，导致后加载的这份整脚本抛 SyntaxError、window.RunToken 永远不出现。 */
+ 1582  const RunTokenApi = { isCurrentRun, planStaleCleanup };
+ 1583  /* UMD 形态照 lib/safe-name.js / lib/img-pick.js：node 走 module.exports，
+ 1584   * 浏览器挂到 root。必须先赋给局部变量再挂属性，否则 tsc 报
+ 1585   * `Property 'RunToken' does not exist on type 'Window'`。 */
+ 1586  if (typeof module === 'object' && module && module.exports) module.exports = RunTokenApi;
+ 1587  const tokenRoot = typeof window !== 'undefined' ? window
+ 1588    : (typeof globalThis !== 'undefined' ? globalThis : null);
+ 1589  if (tokenRoot) tokenRoot.RunToken = RunTokenApi;
+ 1590  
+ 1591  /* ==================== lib/once-schedule.js ==================== */
+ 1592  'use strict';
+ 1593  /* 一次性定时任务的「时间戳解析 / 该不该执行」纯逻辑（主进程与测试共用）。
+ 1594   *
+ 1595   * 【为什么单独抽出来】
+ 1596   * main.js 的 armOnceAll 原来直接写：
+ 1597   *     if (!item || !item.id || !item.fireAt) continue;
+ 1598   *     if (Number(item.fireAt) <= now) { ... }
+ 1599   * 而 `fireAt` 来自本地 store，是用户可见、可手改的文件。只要它变成
+ 1600   * `"abc"` / `NaN` / 对象，`Number(...)` 就是 NaN：既不 `<= now`，也不
+
+==============================================================================
+核核工具箱软件 V1.0    第 33 页 / 共 60 页
+==============================================================================
+ 1601   * 被跳过，于是 armOnce 里 `setTimeout(..., NaN)` 会被 Node 当成 1ms ——
+ 1602   * **应用一启动就立刻执行「睡眠」或「锁屏」**。这不是"定时不准"，是
+ 1603   * 一条坏记录把电脑直接挂起。坏数据必须在进入计时器之前被明确丢掉。
+ 1604   *
+ 1605   * 解析规则与用户输入校验口径一致：只接受正有限数（时间戳毫秒）。
+ 1606   * 空串、空白串、负数、Infinity、NaN 一律返回 null（= 丢弃）。
+ 1607   */
+ 1608  
+ 1609  /** 从任务项里取合法的 fireAt；不合法返回 null。 */
+ 1610  function fireAtOf(item) {
+ 1611    const raw = item && item.fireAt;
+ 1612    if (raw == null) return null;
+ 1613    if (typeof raw === 'string' && !raw.trim()) return null;
+ 1614    const n = Number(raw);
+ 1615    if (!Number.isFinite(n) || n <= 0) return null;
+ 1616    return n;
+ 1617  }
+ 1618  
+ 1619  /**
+ 1620   * 决定一条一次性任务该怎么处理。
+ 1621   * @param {any} item
+ 1622   * @param {number} now
+ 1623   * @param {number} catchupMs 过期多久以内仍补执行
+ 1624   * @returns {{kind:'run'|'keep'|'drop', fireAt?:number}}
+ 1625   *   run  = 已到点且仍在补执行窗口内，应立即执行
+ 1626   *   keep = 未来任务，应挂计时器
+ 1627   *   drop = 无 id / 时间戳损坏 / 过期太久，直接丢弃
+ 1628   */
+ 1629  function decideOnce(item, now, catchupMs) {
+ 1630    if (!item || !item.id) return { kind: 'drop' };
+ 1631    const fireAt = fireAtOf(item);
+ 1632    if (fireAt == null) return { kind: 'drop' };
+ 1633    const n = Number(now);
+ 1634    const base = Number.isFinite(n) ? n : Date.now();
+ 1635    if (fireAt <= base) {
+ 1636      const catchup = Number(catchupMs);
+ 1637      const limit = Number.isFinite(catchup) && catchup > 0 ? catchup : 0;
+ 1638      return (base - fireAt <= limit) ? { kind: 'run', fireAt } : { kind: 'drop', fireAt };
+ 1639    }
+ 1640    return { kind: 'keep', fireAt };
+ 1641  }
+ 1642  
+ 1643  module.exports = { fireAtOf, decideOnce };
+ 1644  
+ 1645  /* ==================== lib/errors.js ==================== */
+ 1646  'use strict';
+ 1647  /* 结构化错误：稳定的错误码 + 友好说明 + 建议操作。
+ 1648   *
+ 1649   * 借鉴 YourCatFileAssistant 的 ConversionError 设计：
+ 1650   *   错误对象同时携带「给用户看的说明」和「给开发者看的诊断」，
+
+==============================================================================
+核核工具箱软件 V1.0    第 34 页 / 共 60 页
+==============================================================================
+ 1651   *   界面默认只展示说明与建议，技术细节折叠在"高级"里。
+ 1652   *
+ 1653   * 核核现状：handler 抛 new Error(中文语句)，渲染端 toast 原文。
+ 1654   * 问题在于同一类失败（磁盘满、权限、占用）散落在各处、措辞不一，
+ 1655   * 用户拿不到"下一步该做什么"，也无法据此做程序化判断。
+ 1656   *
+ 1657   * 本模块把常见失败映射成 (code, message, advice) 三元组，
+ 1658   * 并提供 toPayload() 供 IPC 信封携带结构化信息。
+ 1659   */
+ 1660  
+ 1661  const CODES = {
+ 1662    DISK_FULL: { code: 'DISK_FULL', advice: '清理目标磁盘空间后重试，或换一个输出目录' },
+ 1663    PERMISSION: { code: 'PERMISSION', advice: '换到有写入权限的目录，或以管理员身份运行' },
+ 1664    FILE_LOCKED: { code: 'FILE_LOCKED', advice: '关闭正在占用该文件的程序后重试' },
+ 1665    NOT_FOUND: { code: 'NOT_FOUND', advice: '确认文件仍然存在、路径未被移动' },
+ 1666    INVALID_INPUT: { code: 'INVALID_INPUT', advice: '检查输入格式是否符合该工具要求' },
+ 1667    ENGINE_MISSING: { code: 'ENGINE_MISSING', advice: '先到「FFmpeg 环境」或相应设置页安装所需引擎' },
+ 1668    TOO_LARGE: { code: 'TOO_LARGE', advice: '目标体积过小，换更大的目标或缩短内容' },
+ 1669    CANCELLED: { code: 'CANCELLED', advice: '任务已按你的操作停止' },
+ 1670    UNKNOWN: { code: 'UNKNOWN', advice: '可展开技术详情用于排查' }
+ 1671  };
+ 1672  
+ 1673  /* 从 Node 错误对象推断稳定错误码。按 errno/code 字段判断，不看中文文案。 */
+ 1674  function classify(err) {
+ 1675    const raw = (err && (err.code || err.errno || '')) + '';
+ 1676    const msg = (err && err.message) || String(err || '');
+ 1677    if (/ENOSPC/.test(raw) || /no space left/i.test(msg)) return CODES.DISK_FULL;
+ 1678    if (/EACCES|EPERM/.test(raw) || /permission denied|拒绝访问/i.test(msg)) return CODES.PERMISSION;
+ 1679    if (/EBUSY/.test(raw) || /resource busy|being used by another|正被占用/i.test(msg)) return CODES.FILE_LOCKED;
+ 1680    if (/ENOENT/.test(raw) || /no such file|找不到/i.test(msg)) return CODES.NOT_FOUND;
+ 1681    if (/已取消|ABORTED|cancel/i.test(msg)) return CODES.CANCELLED;
+ 1682    if (/未找到 ffmpeg|未找到 ffprobe|未找到 7z/i.test(msg)) return CODES.ENGINE_MISSING;
+ 1683    if (/目标体积|码率仅剩|无法压到目标/i.test(msg)) return CODES.TOO_LARGE;
+ 1684    return CODES.UNKNOWN;
+ 1685  }
+ 1686  
+ 1687  /**
+ 1688   * 构造结构化错误载荷。
+ 1689   * @param {Error|string|null|undefined} err 原始错误（非 Error 时没有 message/stack，下面都做了兜底）
+ 1690   * @param {object} [extra]   额外字段（如 stage、file）
+ 1691   * @returns {{code:string, message:string, advice:string, detail:string, stage?:string, file?:string}}
+ 1692   */
+ 1693  function toPayload(err, extra = {}) {
+ 1694    const base = classify(err);
+ 1695    /* err 允许是字符串/数字/null（IPC 那层什么都会收到）：
+ 1696     * 只有真是 Error 才有 .message/.stack，运行时靠 `err && err.message` 兜底。
+ 1697     * 这里把类型收窄一下，让 checkJs 别把「本来就有兜底」当成缺陷。 */
+ 1698    const e = /** @type {Error|null} */ (err instanceof Error ? err : null);
+ 1699    const message = (e && e.message) || String(err || '未知错误');
+ 1700  
+
+==============================================================================
+核核工具箱软件 V1.0    第 35 页 / 共 60 页
+==============================================================================
+ 1701    /* 【自带 code 的错误必须透传，不能被 classify 抹成 UNKNOWN】
+ 1702     * lib/path-guard.js 与 lib/archive-guard.js 的 err() 会给 Error 挂上
+ 1703     * 明确的 code（CRITICAL / ADS / DEVICE_NAME …）和可操作的 advice；
+ 1704     * lib/ocr-guard.js 挂 OCR_TIMEOUT；主进程门禁挂 CAP_DENIED。
+ 1705     * 但 classify() 只认得 errno 那一套（ENOSPC/EACCES…），这些自定义码
+ 1706     * 一律归到 UNKNOWN，于是：
+ 1707     *   · 渲染层拿到的 e.code 恒为 'UNKNOWN'，按码分支的逻辑全部失效；
+ 1708     *   · 用户看不到「请换一个目标路径」这种真正有用的建议，
+ 1709     *     只看到通用的「可展开技术详情用于排查」。
+ 1710     * 实测：toPayload(pathGuard.err('CRITICAL','这是系统关键目录','请换一个目标路径'))
+ 1711     * 返回 {code:'UNKNOWN', advice:'可展开技术详情用于排查'}。
+ 1712     *
+ 1713     * 只在 classify 判不出来（UNKNOWN）时透传 —— 认得的 errno 优先，
+ 1714     * 免得一个带了 code 但其实是被包装的 EACCES 反而丢掉准确分类。 */
+ 1715    const errAny = /** @type {any} */ (err);
+ 1716    const ownCode = (errAny && typeof errAny.code === 'string') ? errAny.code : null;
+ 1717    const code = (base.code === CODES.UNKNOWN.code && ownCode) ? ownCode : base.code;
+ 1718  
+ 1719    /* advice 同理：自带的可操作建议优先，没有才用分类里的通用建议。 */
+ 1720    const ownAdvice = (errAny && typeof errAny.advice === 'string') ? errAny.advice : null;
+ 1721  
+ 1722    return Object.assign({
+ 1723      code,
+ 1724      message,
+ 1725      advice: ownAdvice || base.advice,
+ 1726      // detail 只给"需要排查的人"看，界面上折叠
+ 1727      detail: (e && e.stack) ? String(e.stack).split('\n').slice(0, 6).join('\n') : message
+ 1728    }, extra);
+ 1729  }
+ 1730  
+ 1731  /** 把结构化载荷渲染成一段可读文本（用于 alertBox / 列表行）。 */
+ 1732  function format(payload) {
+ 1733    const p = payload || /** @type {typeof payload} */ ({});
+ 1734    let s = p.message || '操作失败';
+ 1735    if (p.advice) s += '\n建议：' + p.advice;
+ 1736    return s;
+ 1737  }
+ 1738  
+ 1739  module.exports = { CODES, classify, toPayload, format };
+ 1740  
+ 1741  /* ==================== lib/safe-name.js ==================== */
+ 1742  'use strict';
+ 1743  /* 从 URL / 标题推导**安全文件名**的纯函数（渲染层与 Node 测试共用）。
+ 1744   *
+ 1745   * ============ 为什么搬到 lib/ ============
+ 1746   * 原实现内联在 js/tools/net-tools.js 的 render 作用域里，于是测试只能
+ 1747   * 「从源码里切出函数体再 new Function 求值」——那种做法极度脆弱：
+ 1748   * 剥注释后花括号位置变化、CI 与本地换行差异，都会让切出来的代码不完整，
+ 1749   * 表现为 `ReferenceError: xxx is not defined`（本仓库 v0.9.2 的 CI
+ 1750   * 就这么红过一次）。判据本身是纯字符串处理，没有任何理由留在渲染层。
+
+==============================================================================
+核核工具箱软件 V1.0    第 36 页 / 共 60 页
+==============================================================================
+ 1751   *
+ 1752   * 搬到 lib/ 之后：渲染层用 <script> 引入拿 window.SafeName，
+ 1753   * Node 侧 require 拿同一个对象，测试断言的是**真实调用的那份实现**。
+ 1754   *
+ 1755   * 写法与 lib/exif.js / lib/pinyin.js / lib/fail-text.js 一致（双独立 if 挂载）。
+ 1756   */
+ 1757  (function () {
+ 1758    /* Windows 保留设备名。与 lib/path-guard.js 的 checkFileName 同一套规则。 */
+ 1759    const BAD_NAME_BASE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+ 1760    const MAX_LEN = 180;
+ 1761  
+ 1762    /**
+ 1763     * 从 URL 推出安全的保存文件名。
+ 1764     *
+ 1765     * 【必须挡住 %2F..%2F】decodeURIComponent 会把 %2F 还原成 /，
+ 1766     * 直接把结果拼到 userData 后面就逃出目录（历史缺陷：
+ 1767     * `.../a%2F..%2F..%2FWindows%2Fwin.ini` 能写到 C:\Windows 附近）。
+ 1768     * 所以解码后只取最后一段。
+ 1769     *
+ 1770     * 【点开头的名字要保留】早期实现无条件 `.replace(/^\.+/, '')`，
+ 1771     * 把 `.bashrc` / `.gitignore` / `.env` 剥成 `bashrc` / `gitignore` / `env`
+ 1772     * ——下载下来的隐藏配置文件当场改名。现在只剥「纯点」（`.` / `..` / `...`），
+ 1773     * 正常的点开头名保留；尾部的点与空格仍要剥（Windows 不允许，会被静默吞掉）。
+ 1774     *
+ 1775     * @param {string} url
+ 1776     * @returns {string} 安全的单段文件名，无法推导时回退 'download.bin'
+ 1777     */
+ 1778    function fromUrl(url) {
+ 1779      let raw = '';
+ 1780      try {
+ 1781        raw = decodeURIComponent(String(url).split('?')[0].split('#')[0].split('/').pop() || '');
+ 1782      } catch (e) {
+ 1783        /* 非法百分号编码（如 %zz）会让 decodeURIComponent 抛，
+ 1784         * 此时退回「不解码」的原始末段，比直接给 download.bin 更接近用户预期。 */
+ 1785        raw = String(url).split('?')[0].split('#')[0].split('/').pop() || '';
+ 1786      }
+ 1787      // 只保留最后一段（挡掉解码后出现的 / 和 \）
+ 1788      raw = raw.split(/[\\/]/).pop() || '';
+ 1789      // 去掉控制字符与 Windows 非法字符，剥尾部点与空格
+ 1790      raw = raw.replace(/[\x00-\x1f<>:"|?*]/g, '_').replace(/[. ]+$/, '');
+ 1791      // 纯点（. / .. / ...）没有实际文件名，回退默认名
+ 1792      if (!raw || /^\.+$/.test(raw)) return 'download.bin';
+ 1793      if (BAD_NAME_BASE.test(raw.split('.')[0])) raw = '_' + raw;
+ 1794      if (raw.length > MAX_LEN) {
+ 1795        const dot = raw.lastIndexOf('.');
+ 1796        const ext = dot > 0 ? raw.slice(dot) : '';
+ 1797        /* 【扩展名本身超预算时不能硬保】keep 为负时 slice(0, 负数) 从尾部数，
+ 1798         * 拼回 ext 反而更长（实测 'x.'+300 字符 → 482 > 180，违反长度契约，
+ 1799         * 落盘会 ENAMETOOLONG）。此时放弃保扩展名，直接硬截断。 */
+ 1800        const keep = MAX_LEN - ext.length;
+
+==============================================================================
+核核工具箱软件 V1.0    第 37 页 / 共 60 页
+==============================================================================
+ 1801        raw = keep > 0 ? raw.slice(0, keep) + ext : raw.slice(0, MAX_LEN);
+ 1802        /* 硬截断可能正好停在点或空格上：Windows 落盘时会把结尾的点/空格
+ 1803         * 静默去掉，于是「我们以为写的是 A」和「磁盘上实际叫 B」分家，
+ 1804         * 后续引用路径（清理/覆盖判断）就对不上。截断后再剥一次尾。 */
+ 1805        raw = raw.replace(/[. ]+$/, '');
+ 1806        if (!raw) return 'download.bin';
+ 1807      }
+ 1808      return raw;
+ 1809    }
+ 1810  
+ 1811    /**
+ 1812     * 把用户输入的标题净化成可用的笔记文件名（不含扩展名）。
+ 1813     * 空标题回退「未命名」，保留设备名加前缀。
+ 1814     * @param {string} raw
+ 1815     * @param {string} [ext] 扩展名（含点），默认 '.md'
+ 1816     * @returns {string}
+ 1817     */
+ 1818    function fromTitle(raw, ext) {
+ 1819      const suffix = ext == null ? '.md' : String(ext);
+ 1820      let s = String(raw == null ? '' : raw).trim() || '未命名';
+ 1821      s = s.replace(/[\x00-\x1f\\/:*?"<>|]/g, '_');
+ 1822      s = s.replace(/^\.+/, '').replace(/[. ]+$/, '');
+ 1823      if (!s) s = '未命名';
+ 1824      if (BAD_NAME_BASE.test(s.split('.')[0])) s = '_' + s;
+ 1825      /* 与 fromUrl 同一个坑：suffix 本身超预算时 max 为负，slice(0, 负数)
+ 1826       * 从尾部数反而更长（实测 320 > 120）。夹到 0，最后整体硬截断保证契约。 */
+ 1827      const max = Math.max(0, 120 - suffix.length);
+ 1828      if (s.length > max) s = s.slice(0, max);
+ 1829      return (s + suffix).slice(0, 120);
+ 1830    }
+ 1831  
+ 1832    const api = { fromUrl, fromTitle, BAD_NAME_BASE, MAX_LEN };
+ 1833    if (typeof module === 'object' && module && module.exports) module.exports = api;
+ 1834    const root = typeof window !== 'undefined' ? window
+ 1835      : (typeof globalThis !== 'undefined' ? globalThis : null);
+ 1836    if (root) root.SafeName = api;
+ 1837  })();
+ 1838  
+ 1839  /* ==================== ipc/net-lan.js ==================== */
+ 1840  'use strict';
+ 1841  /* 网络运维域：网卡信息 / 公网 IP / TCP 连通 / 局域网扫描 / 端口扫描 / HTTP 探测 / 测速。
+ 1842   *
+ 1843   * 【从 main.js 搬出来的原因】
+ 1844   * main.js 一度 4600+ 行、114 个字面量通道，合并冲突面太大。
+ 1845   * 这一批是**最内聚的一块**：全部与"本机网络"相关，依赖只有
+ 1846   * handle / runCmd / jobs 三个外部能力，没有穿插别的域。
+ 1847   *
+ 1848   * 【拆分纪律】
+ 1849   * · 整段照抄，只做机械替换（jobs 通过 deps 注入）
+ 1850   * · handle 必须用注入的那个：CAP_GATED_CHANNELS 门禁只在 main.js 的包装层里，
+
+==============================================================================
+核核工具箱软件 V1.0    第 38 页 / 共 60 页
+==============================================================================
+ 1851   *   模块自己再定义一个 handle 会让这些通道绕过「高危功能」开关
+ 1852   * · parseIpconfig 一并搬来（只有本域用）
+ 1853   */
+ 1854  
+ 1855  const os = require('os');
+ 1856  /* net / dns 在块内部按需 require（原文如此）。
+ 1857   * 提到顶部反而让块内的 const net = require('net') 变成 no-shadow。 */
+ 1858  const lanScanLib = require('../lib/lan-scan');
+ 1859  const CH = require('../lib/channels').CHANNELS;   // IPC 通道名唯一来源
+ 1860  
+ 1861  /**
+ 1862   * @param {{handle: Function, runCmd: Function, jobs: Map,
+ 1863   *          nextJobSeq: Function, setLatestCancelable: Function,
+ 1864   *          send: Function, ps: Function}} ctx
+ 1865   *
+ 1866   * 【为什么这几个必须注入而不是自己实现】
+ 1867   * · handle         —— CAP_GATED_CHANNELS 门禁只在 main.js 的包装层里
+ 1868   * · nextJobSeq     —— 全局任务编号，各自编号会撞车（job:stream 靠它区分）
+ 1869   * · setLatestCancelable —— 只允许取消"最近一个可取消任务"，是全局状态
+ 1870   * · send           —— 主进程→渲染事件，必须用主窗口的 webContents
+ 1871   * · ps             —— 执行 PowerShell 的统一封装（含超时/编码处理）
+ 1872   */
+ 1873  module.exports = function register(ctx) {
+ 1874    const {
+ 1875      handle, runCmd, jobs,
+ 1876      nextJobSeq, setLatestCancelable, send, ps,
+ 1877    } = ctx;
+ 1878  
+ 1879  /* ================= IPC: network ================= */
+ 1880  handle(CH.NET.INTERFACES, async () => {
+ 1881    const ifaces = os.networkInterfaces();
+ 1882    const out = [];
+ 1883    for (const [name, addrs] of Object.entries(ifaces)) {
+ 1884      for (const a of addrs || []) {
+ 1885        out.push({ name, family: a.family, address: a.address, mac: a.mac, internal: a.internal, cidr: a.cidr });
+ 1886      }
+ 1887    }
+ 1888    let ipall = '';
+ 1889    try { ipall = (await runCmd('ipconfig', ['/all'], { timeout: 15000, encoding: 'gbk' })).stdout; } catch (err) {}
+ 1890    const info = parseIpconfig(ipall);
+ 1891    return { addrs: out, adapters: info, hostname: os.hostname() };
+ 1892  });
+ 1893  function parseIpconfig(text) {
+ 1894    // very tolerant parse of Chinese ipconfig /all
+ 1895    const adapters = [];
+ 1896    let cur = null;
+ 1897    for (let line of text.split(/\r?\n/)) {
+ 1898      line = line.replace(/\s+$/, '');
+ 1899      if (!line.trim()) continue;
+ 1900      if (/^[^\s].*:/.test(line) && !/^\s{2,}/.test(line)) {
+
+==============================================================================
+核核工具箱软件 V1.0    第 39 页 / 共 60 页
+==============================================================================
+ 1901        // adapter header contains 网卡/适配器 (zh) or adapter (en)
+ 1902        if (/网卡|适配器|adapter/i.test(line) && line.includes(':')) {
+ 1903          if (cur) adapters.push(cur);
+ 1904          cur = { name: line.replace(/[:：].*$/, '').replace(/^\d+\.?/, '').trim(), status: '', ipv4: [], gateway: [], dns: [], dhcp: '', dhcpEnabled: '', mac: '', desc: '' };
+ 1905          const m = line.match(/[:：]\s*(.*)$/); if (m && /已启用|已连接|connected/i.test(m[1])) cur.status = m[1].trim();
+ 1906          continue;
+ 1907        }
+ 1908      }
+ 1909      if (!cur) continue;
+ 1910      const kv = line.match(/^\s*(.+?)\s*[.·]*\s*[:：]\s*(.*)$/);
+ 1911      if (!kv) continue;
+ 1912      const k = kv[1], v = kv[2].trim();
+ 1913      if (/描述|Description/i.test(k)) cur.desc = v;
+ 1914      else if (/物理地址|Physical Address/i.test(k)) cur.mac = v;
+ 1915      else if (/DHCP 已启用/.test(k)) cur.dhcpEnabled = v;
+ 1916      else if (/DHCP 服务器/.test(k)) cur.dhcp = v;
+ 1917      else if (/IPv4/.test(k)) cur.ipv4.push(v.replace(/\(首选\)/, '').trim());
+ 1918      else if (/默认网关|Default Gateway/i.test(k)) { if (v) cur.gateway.push(v); }
+ 1919      else if (/DNS 服务器|DNS Servers/i.test(k)) { if (v) cur.dns.push(v); }
+ 1920      else if (/媒体状态|Media State/i.test(k)) cur.status = v;
+ 1921    }
+ 1922    if (cur) adapters.push(cur);
+ 1923    return adapters.filter(a => a.ipv4.length || a.mac);
+ 1924  }
+ 1925  handle(CH.NET.PUBLIC_IP, async () => {
+ 1926    const ctrl = new AbortController();
+ 1927    const t = setTimeout(() => ctrl.abort(), 6000);
+ 1928    try {
+ 1929      const r = await fetch('https://api.ipify.org?format=json', { signal: ctrl.signal });
+ 1930      const j = await r.json();
+ 1931      return { ip: j.ip };
+ 1932    } finally { clearTimeout(t); }
+ 1933  });
+ 1934  handle(CH.NET.TCP_TEST, (e, host, port, timeoutMs = 4000) => {
+ 1935    const net = require('net');
+ 1936    return new Promise((resolve) => {
+ 1937      const start = Date.now();
+ 1938      const sock = new net.Socket();
+ 1939      let done = false;
+ 1940      const finish = (open) => { if (done) return; done = true; sock.destroy(); resolve({ open, ms: Date.now() - start }); };
+ 1941      sock.setTimeout(timeoutMs);
+ 1942      sock.once('connect', () => finish(true));
+ 1943      sock.once('timeout', () => finish(false));
+ 1944      sock.once('error', () => finish(false));
+ 1945      sock.connect(parseInt(port, 10), host);
+ 1946    });
+ 1947  });
+ 1948  /* ================= IPC: 局域网设备扫描 =================
+ 1949   * 「网里有谁」—— 现有 net 模块只有「我这台机器」的视角（端口/连通/路由）。
+ 1950   *
+
+==============================================================================
+核核工具箱软件 V1.0    第 40 页 / 共 60 页
+==============================================================================
+ 1951   * 【方法】ARP + ping 合并（原因见 lib/lan-scan.js 顶部注释）：
+ 1952   *   1. 先并发 ping 一轮本机所在 /24 段，把 ARP 缓存催起来；
+ 1953   *   2. 读 arp -a 拿到 IP + MAC（这是最可靠的来源）；
+ 1954   *   3. 合并两者，ARP 为主、ping 补充。
+ 1955   *
+ 1956   * 【并发】复用 net:scan 的分批并发模型：254 个地址一次全发会打满句柄，
+ 1957   * 按 20 个一批、每批等完成再下一批。
+ 1958   */
+ 1959  handle(CH.LAN.SCAN, async (e, opts = {}) => {
+ 1960    const net = require('net');
+ 1961    const o = opts || {};
+ 1962  
+ 1963    /* 取本机 IPv4 与默认网关：用 ipconfig 而不是 WMI，因为 ipconfig 更稳且已在本项目里用了 */
+ 1964    let selfIp = '';
+ 1965    let adapterName = '';
+ 1966    let ifaces = [];
+ 1967    try {
+ 1968      const r = await runCmd('ipconfig', ['/all'], { timeout: 15000, encoding: 'gbk' });
+ 1969      const txt = String(r.stdout || '');
+ 1970      /* 交给 lib 解析出**全部** IPv4 与网卡名，不再取第一个（见下方注释） */
+ 1971      ifaces = lanScanLib.parseIpconfig(txt);
+ 1972    } catch (err) { ifaces = []; }
+ 1973  
+ 1974    /* 【必须收集全部 IPv4 再挑，不能取第一个】
+ 1975     * 装了 VMware / Hyper-V / VirtualBox / WSL 的机器上，虚拟网卡常排在前面，
+ 1976     * 直接取第一个会去扫虚拟网段（结果「一台设备都没有」，用户以为工具坏了），
+ 1977     * 本机在公网地址上还会去打别人的 /24。
+ 1978     * 所以：解析全部候选 → 默认选第一个私有网段 → 没有私有网段就明确报错。
+ 1979     * 渲染层也可以用 opts.ip 指定网卡（多网卡机器上要让用户能切换）。 */
+ 1980    const wanted = String(o.ip || o.iface || '').trim();
+ 1981    if (wanted) {
+ 1982      const hit = ifaces.find((x) => x.ip === wanted || (x.adapter && x.adapter.indexOf(wanted) !== -1));
+ 1983      if (hit) { selfIp = hit.ip; adapterName = hit.adapter || ''; }
+ 1984    }
+ 1985    if (!selfIp) {
+ 1986      const pick = lanScanLib.pickScanTarget(ifaces);
+ 1987      if (pick) { selfIp = pick.ip; adapterName = pick.adapter || ''; }
+ 1988    }
+ 1989    if (!selfIp) {
+ 1990      /* 没有私有网段：明确报错，不要退回去照扫一个公网 /24。
+ 1991       * 把找到了哪些地址一并说明，用户才知道为什么被拒。 */
+ 1992      const found = ifaces.map((x) => x.ip).filter(Boolean);
+ 1993      throw new Error('本机没有可扫描的私有网段（10/8、172.16/12、192.168/16）。' +
+ 1994        (found.length
+ 1995          ? '当前检测到的 IPv4：' + found.join('、') + '。请连回内网后重试。'
+ 1996          : '未能从 ipconfig 读到任何 IPv4 地址，请检查网络连接。'));
+ 1997    }
+ 1998  
+ 1999    const sub = lanScanLib.subnetOf(selfIp);
+ 2000    if (!sub) throw new Error('本机 IP 不属于常规 IPv4 地址：' + selfIp);
+
+==============================================================================
+核核工具箱软件 V1.0    第 41 页 / 共 60 页
+==============================================================================
+ 2001  
+ 2002    const hosts = lanScanLib.hostsToScan(selfIp);
+ 2003    const id = 'lanscan' + (nextJobSeq());
+ 2004    const cancelRef = { canceled: false };
+ 2005    jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
+ 2006  
+ 2007    /* ---- 1) 并发 ping ---- */
+ 2008    const pinged = [];
+ 2009    const BATCH = 20;
+ 2010    const TIMEOUT = 1200;
+ 2011    let done = 0;
+ 2012  
+ 2013    async function pingOne(ip) {
+ 2014      return new Promise((resolve) => {
+ 2015        const s = new net.Socket();
+ 2016        let finished = false;
+ 2017        const fin = (ok) => {
+ 2018          if (finished) return;
+ 2019          finished = true;
+ 2020          try { s.destroy(); } catch (err) {}
+ 2021          resolve(ok);
+ 2022        };
+ 2023        s.setTimeout(TIMEOUT);
+ 2024        s.once('connect', () => fin(true));
+ 2025        s.once('timeout', () => fin(false));
+ 2026        s.once('error', () => fin(false));
+ 2027        try { s.connect(80, ip); } catch (err) { fin(false); }
+ 2028        /* 用 TCP 80 而不是 ICMP ping：Node 没有原生 ICMP，
+ 2029         * 且很多设备不响应 ICMP 但开了 80/443。
+ 2030         * 端口不通不代表设备不在线 —— 那一部分靠 ARP 兜底，
+ 2031         * 而「催 ARP 缓存」这个目的也达到了（连过就会进 ARP 表）。 */
+ 2032      });
+ 2033    }
+ 2034  
+ 2035    try {
+ 2036      for (let i = 0; i < hosts.length; i += BATCH) {
+ 2037        if (cancelRef.canceled) break;
+ 2038        const slice = hosts.slice(i, i + BATCH);
+ 2039        const res = await Promise.all(slice.map(pingOne));
+ 2040        for (let k = 0; k < res.length; k++) if (res[k]) pinged.push(slice[k]);
+ 2041        done += slice.length;
+ 2042        send('job:progress', { id, kind: 'lan', phase: 'scan', done, total: hosts.length, found: pinged.length });
+ 2043      }
+ 2044    } finally {
+ 2045      jobs.delete(id);
+ 2046    }
+ 2047    if (cancelRef.canceled) throw new Error('已取消');
+ 2048  
+ 2049    /* ---- 2) 读 ARP 表 ---- */
+ 2050    let arpRows = [];
+
+==============================================================================
+核核工具箱软件 V1.0    第 42 页 / 共 60 页
+==============================================================================
+ 2051    try {
+ 2052      const r = await runCmd('arp', ['-a'], { timeout: 15000, encoding: 'gbk' });
+ 2053      arpRows = lanScanLib.parseArp(String(r.stdout || ''));
+ 2054    } catch (err) { arpRows = []; }
+ 2055  
+ 2056    /* ---- 3) 反查主机名（只查前若干个，避免拖太久） ----
+ 2057     * 【这个阶段必须也推进度，否则界面会「卡住」5~10 秒】
+ 2058     * 实测：ping 阶段约 10 秒（254 个地址分 13 批，有进度条在动）；
+ 2059     * 之后这段反查最多 30 个 IP × 每个最长 6 秒 —— 而它**一个进度事件都不发**。
+ 2060     * 于是界面上进度条停在 100%、状态文字停在「扫描中 254/254」，
+ 2061     * 点完到出结果之间有一段完全没有反馈的空档，用户会以为卡死并反复点。
+ 2062     *
+ 2063     * phase 字段是这次新加的：渲染层据此把「反查主机名」与「扫描网段」分开描述。
+ 2064     * 老渲染层只读 done/total/found，多一个字段不影响它（向前兼容）。 */
+ 2065    /** @type {Record<string,string>} 反查到的设备名，按 IP 索引 */
+ 2066    const names = {};
+ 2067    const toResolve = arpRows.slice(0, 30);
+ 2068    for (let k = 0; k < toResolve.length; k++) {
+ 2069      if (cancelRef.canceled) break;
+ 2070      const row = toResolve[k];
+ 2071      try {
+ 2072        const r = await ps(`(Resolve-DnsName -Name '${row.ip}' -NameType A -ErrorAction SilentlyContinue).NameHost`, 6000);
+ 2073        const n = String(r.stdout || '').trim().split(/\r?\n/)[0];
+ 2074        if (n && !/^\d+\./.test(n)) names[row.ip] = n;
+ 2075      } catch (err) { /* 反查失败很常见，忽略即可 */ }
+ 2076      send('job:progress', { id, kind: 'lan', phase: 'resolve', done: k + 1, total: toResolve.length, found: pinged.length });
+ 2077    }
+ 2078  
+ 2079    /* ---- 4) 合并 ---- */
+ 2080    const devices = lanScanLib.mergeDevices({ arp: arpRows, pinged, selfIp, names });
+ 2081    const arpOnly = devices.filter((d) => d.source === 'arp').length;
+ 2082    const pingOnly = devices.filter((d) => d.source === 'ping').length;
+ 2083  
+ 2084    return {
+ 2085      selfIp, subnet: sub, scanned: hosts.length,
+ 2086      /* adapter：本机实际用的网卡名（多网卡时用户要知道扫的是哪张）
+ 2087       * ifaces：全部候选地址，界面据此给一个网卡切换下拉 ——
+ 2088       * 默认判断可能仍有偏差（比如虚拟网卡也报了私有段），让用户能自己改。 */
+ 2089      adapter: adapterName || null,
+ 2090      ifaces,
+ 2091      devices,
+ 2092      stats: { total: devices.length, arpOnly, pingOnly, pingedCount: pinged.length },
+ 2093      caveats: lanScanLib.caveats({ arpOnly, pingOnly }),
+ 2094    };
+ 2095  });
+ 2096  
+ 2097  handle(CH.NET.SCAN, async (e, host, ports, opts = {}) => {
+ 2098    const net = require('net');
+ 2099    const concurrency = opts.concurrency || 300, timeout = opts.timeout || 500;
+ 2100    const id = 'scanp' + (nextJobSeq());
+
+==============================================================================
+核核工具箱软件 V1.0    第 43 页 / 共 60 页
+==============================================================================
+ 2101    const cancelRef = { canceled: false };
+ 2102    jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
+ 2103    const open = [];
+ 2104    let idx = 0, done = 0;
+ 2105    async function worker() {
+ 2106      while (!cancelRef.canceled) {
+ 2107        const i = idx++;
+ 2108        if (i >= ports.length) return;
+ 2109        const port = ports[i];
+ 2110        await new Promise((res) => {
+ 2111          const s = new net.Socket();
+ 2112          const fin = () => { s.destroy(); res(); };
+ 2113          s.setTimeout(timeout); s.once('connect', () => { open.push(port); fin(); });
+ 2114          s.once('timeout', fin); s.once('error', fin);
+ 2115          try { s.connect(port, host); } catch (err) { fin(); }
+ 2116        });
+ 2117        done++;
+ 2118        if (done % 100 === 0) send('job:progress', { id, kind: 'ports', done, total: ports.length, open: open.length });
+ 2119      }
+ 2120    }
+ 2121    try {
+ 2122      await Promise.all(Array.from({ length: Math.min(concurrency, ports.length) }, worker));
+ 2123    } finally { jobs.delete(id); }
+ 2124    if (cancelRef.canceled) throw new Error('已取消');
+ 2125    return { open: open.sort((a, b) => a - b), scanned: ports.length };
+ 2126  });
+ 2127  handle(CH.NET.HTTP, async (e, opts) => {
+ 2128    const { method = 'GET', url, headers = {}, body, timeoutMs = 30000 } = opts;
+ 2129    const ctrl = new AbortController();
+ 2130    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+ 2131    const start = Date.now();
+ 2132    try {
+ 2133      const r = await fetch(url, { method, headers, body: method === 'GET' || method === 'HEAD' ? undefined : body, signal: ctrl.signal });
+ 2134      const buf = Buffer.from(await r.arrayBuffer());
+ 2135      const text = buf.length > 1024 * 512 ? buf.toString('utf8', 0, 1024 * 512) + '\n…[已截断，共 ' + buf.length + ' 字节]' : buf.toString('utf8');
+ 2136      return { status: r.status, statusText: r.statusText, /* Headers 在旧版 lib.dom 类型里没有 entries()；用 forEach 累加，
+ 2137     * 运行时行为完全一致，且不受类型定义版本影响。 */
+ 2138        headers: (function () { const h = {}; r.headers.forEach((val, key) => { h[key] = val; }); return h; })(), body: text, bytes: buf.length, ms: Date.now() - start };
+ 2139    } finally { clearTimeout(timer); }
+ 2140  });
+ 2141  /* speedtest job */
+ 2142  handle(CH.NET.SPEEDTEST, async (e, opts = {}) => {
+ 2143    /** @type {{direction?:string, url?:string, seconds?:number}} */
+ 2144    const o = opts || {};
+ 2145    const { direction, url, seconds = 10 } = o;
+ 2146    const id = 'speed' + (nextJobSeq());
+ 2147    const ctrl = new AbortController();
+ 2148    jobs.set(id, { cancel: () => ctrl.abort() });
+ 2149    setLatestCancelable(() => ctrl.abort());
+ 2150    /* 【必须有硬超时，不能只靠用户点取消】
+
+==============================================================================
+核核工具箱软件 V1.0    第 44 页 / 共 60 页
+==============================================================================
+ 2151     * 下行原来只在「收到数据且距上次采样 >300ms」时才检查 seconds：
+ 2152     * 服务器接受连接后既不发数据也不断开（弱网/中间设备挂死）时，
+ 2153     * reader.read() 会一直挂着，job 永远不结束、进度条停在 0，
+ 2154     * 用户只能自己发现后再点取消。上行更直接：fetch 没有超时，
+ 2155     * POST 卡住就一直等。
+ 2156     * seconds 先夹到 1..120 —— 手改 IPC 参数传 Infinity 时，
+ 2157     * setTimeout(Infinity) 会因溢出立刻触发（TimeoutOverflowWarning），
+ 2158     * 等于刚开始就中止。 */
+ 2159    const sec = Math.min(120, Math.max(1, Number(seconds) || 10));
+ 2160    let timedOut = false;
+ 2161    const hardStop = setTimeout(() => { timedOut = true; ctrl.abort(); }, (sec + 15) * 1000);
+ 2162    const started = Date.now();
+ 2163    try {
+ 2164      if (direction === 'down') {
+ 2165        const r = await fetch(url || 'https://speed.cloudflare.com/__down?bytes=104857600', { signal: ctrl.signal });
+ 2166        if (!r.ok) throw new Error('测速服务器响应 ' + r.status);
+ 2167        const reader = r.body.getReader();
+ 2168        let bytes = 0, samples = [];
+ 2169        let lastT = Date.now(), lastB = 0;
+ 2170        while (true) {
+ 2171          const { done, value } = await reader.read();
+ 2172          if (done) break;
+ 2173          bytes += value.length;
+ 2174          const now = Date.now();
+ 2175          if (now - lastT > 300) {
+ 2176            const inst = (bytes - lastB) / ((now - lastT) / 1000) * 8 / 1e6;
+ 2177            samples.push({ t: now - started, mbps: inst });
+ 2178            send('job:stream', { id, data: JSON.stringify({ bytes, elapsed: now - started, samples: samples.slice(-40) }) });
+ 2179            lastT = now; lastB = bytes;
+ 2180            if ((now - started) / 1000 > sec + 5) break;
+ 2181          }
+ 2182        }
+ 2183        const elapsed = (Date.now() - started) / 1000;
+ 2184        return { mbps: bytes * 8 / 1e6 / elapsed, bytes, elapsed, samples };
+ 2185      } else {
+ 2186        const size = 10 * 1024 * 1024;
+ 2187        const payload = Buffer.alloc(size, 1);
+ 2188        const r = await fetch(url || 'https://speed.cloudflare.com/__up', { method: 'POST', body: payload, signal: ctrl.signal });
+ 2189        await r.arrayBuffer();
+ 2190        const elapsed = (Date.now() - started) / 1000;
+ 2191        return { mbps: size * 8 / 1e6 / elapsed, bytes: size, elapsed, samples: [] };
+ 2192      }
+ 2193    } catch (err) {
+ 2194      /* abort 有两个来源：用户点取消 / 上面的硬超时。只有后者要换成可读文案，
+ 2195       * 用户主动取消应保持原来的「已取消」语义（渲染层按 abort 处理）。 */
+ 2196      if (timedOut) throw new Error('测速超时：服务器长时间无响应，或网络已中断');
+ 2197      throw err;
+ 2198    } finally { clearTimeout(hardStop); jobs.delete(id); }
+ 2199  });
+ 2200  };
+
+==============================================================================
+核核工具箱软件 V1.0    第 45 页 / 共 60 页
+==============================================================================
+ 2201  
+ 2202  /* ==================== ipc/media-ffmpeg.js ==================== */
+ 2203  'use strict';
+ 2204  /* 媒体与 FFmpeg 的两个 IPC 域：
+ 2205   *   · ffmpeg:* / target:*  —— FFmpeg 环境检测与下载、音视频转码压缩
+ 2206   *   · rec:*                —— 屏幕录制（gdigrab，区域/声音/暂停分段/GIF）
+ 2207   *
+ 2208   * ============ 为什么这两个域放在同一个文件里 ============
+ 2209   * 录制域**直接用 ffmpeg**：listDshowDevices / recSpawnSeg / recStartSeg 都调
+ 2210   * findFfmpeg()，录完转 GIF 走同一套 runCmd 与参数拼装。
+ 2211   * 拆成 ipc/ffmpeg.js + ipc/rec.js 的话，每一次录制调用都要跨模块取 ffmpeg
+ 2212   * 路径查找，把「录制依赖 ffmpeg」这条本来很清楚的依赖变成两处维护。
+ 2213   * 所以按**真实依赖**组织，与 ipc/dir-acl-links.js 的处理方式一致。
+ 2214   *
+ 2215   * ============ 搬迁原则：逐字搬，只改依赖表达方式 ============
+ 2216   * 函数体与 handler 体原样来自 main.js（任务 6，947 行），**没有改任何语义**。
+ 2217   * 只做了三类机械替换 + 注入：
+ 2218   *   · `++jobSeq`            → `ctx.nextJobSeq()`
+ 2219   *     （原来靠闭包自增 main.js 的计数器；ctx 的那一项委托回同一个变量，
+ 2220   *      所以序号序列与搬走前完全一致）
+ 2221   *   · `latestCancelable = X` → `setLatestCancelable(X)`
+ 2222   *     （该变量只写不读，main.js 保留它并在注释里说明将来可能加「一键取消全部」）
+ 2223   *   · `app.getPath('temp' | 'userData')` → `tempDir()` / `userDataDir()`
+ 2224   *     （app 只能在 Electron 主进程里取，由 main.js 注入）
+ 2225   * 其余一律靠 deps 注入，见下方形参说明。
+ 2226   *
+ 2227   * 【为什么 deps 有这么多项，而不是让模块自己 require】
+ 2228   * handle 带着统一的高危门禁与结构化错误包装（CAP_GATED_CHANNELS 在 main.js
+ 2229   * 的包装层里执行）。搬出去后必须仍走同一个包装 —— 否则渲染层可以直接
+ 2230   * invoke 绕过门禁，而那正是这个项目最不能破的一条。
+ 2231   * runCmd 的「非零不抛」语义被几十处依赖，pathExists 的容错分支也一样，
+ 2232   * 都不能复制第二份。
+ 2233   *
+ 2234   * ============ 搬完之后 main.js 里留下了什么 ============
+ 2235   * 只留下 register(ctx, deps) 这一次调用（与 dir-acl-links 同一形态）。
+ 2236   * scripts/test-ipc-split.js 守着「搬出去的代码不直接引用 win / send / jobSeq」
+ 2237   * 这条不变量；scripts/test-ipc-channels.js 守着通道总数。
+ 2238   */
+ 2239  
+ 2240  const fs = require('fs');
+ 2241  const fsp = fs.promises;
+ 2242  const path = require('path');
+ 2243  const zlib = require('zlib');
+ 2244  const { spawn, spawnSync } = require('child_process');
+ 2245  /* 火后不理的 taskkill 必须挂 error 监听：见 lib/spawn-detached.js 顶部说明。
+ 2246   * 这个域原来有 6 处裸 spawn('taskkill', …)，与 main.js 里已修的那批同款 ——
+ 2247   * 但这里拿不到 main.js 的局部助手，于是「修了一半」。 */
+ 2248  const { spawnDetached } = require('../lib/spawn-detached');
+ 2249  /* dialog 只在 ffmpeg:pick 里用（选 ffmpeg.exe / ffprobe.exe）。
+ 2250   * 它是 Electron 主进程 API，必须在主进程侧 require。 */
+
+==============================================================================
+核核工具箱软件 V1.0    第 46 页 / 共 60 页
+==============================================================================
+ 2251  const { dialog } = require('electron');
+ 2252  const CH = require('../lib/channels').CHANNELS;   // IPC 通道名唯一来源
+ 2253  /* 硬件编码：探测本机可用的编码器并把 crf 换算成 cq。
+ 2254   * 全部逻辑在 lib/ 里（纯函数，可单测），这里只负责「探测一次 + 缓存 + 拼参数」。 */
+ 2255  const hwEncode = require('../lib/hw-encode');
+ 2256  /* concat 清单行的转义（单引号路径）：纯函数，与测试共享同一份。 */
+ 2257  const { concatFileLine } = require('../lib/fs-ops');
+ 2258  
+ 2259  /**
+ 2260   * @param {object} ctx  见 ipc/ctx.js（win / jobs / isWin / send / nextJobSeq）
+ 2261   * @param {object} deps 由 main.js 注入
+ 2262   * @param {Function} deps.handle         带门禁与错误包装的 ipcMain.handle 包装
+ 2263   * @param {Function} deps.send           向发起调用的窗口推送（ALS 三档路由版；
+ 2264   *   不能用 ctx.send —— 那个只发主窗，独立工具窗口的进度会全部跑到主窗去）
+ 2265   * @param {Function} deps.runCmd         跑命令（非零不抛）
+ 2266   * @param {Function} deps.pathExists
+ 2267   * @param {Function} deps.fmtErr
+ 2268   * @param {Function} deps.storeGet
+ 2269   * @param {Function} deps.storeSet
+ 2270   * @param {Function} deps.moveFile
+ 2271   * @param {Function} deps.uniqueTarget
+ 2272   * @param {Function} deps.setLatestCancelable  等价于搬走前的 `latestCancelable = X`
+ 2273   * @param {Function} deps.tempDir        等价于 app.getPath('temp')
+ 2274   * @param {Function} deps.userDataDir    等价于 app.getPath('userData')
+ 2275   * @param {object}   deps.pathGuard      lib/path-guard
+ 2276   * @param {object}   deps.tempNames      lib/temp-names
+ 2277   * @param {object}   deps.targetSize     lib/target-size
+ 2278   * @param {new (p?: string) => {getEntries: Function, extractEntryTo: Function}} deps.AdmZip
+ 2279   *                                      adm-zip 的构造函数（用 new 调用）
+ 2280   * @param {Function} deps.downloadToFile  通用断点续传下载器（定义在 main.js，
+ 2281   *                                       net:download 与 ffmpeg:download 共用）
+ 2282   * @returns {void} 全部 IPC 都在这里就地注册，没有返回值
+ 2283   */
+ 2284  module.exports = function register(ctx, deps) {
+ 2285    const {
+ 2286      handle, runCmd, pathExists, fmtErr, send,
+ 2287      storeGet, storeSet, moveFile, uniqueTarget, setLatestCancelable,
+ 2288      tempDir, userDataDir, pathGuard, tempNames, targetSize, AdmZip, downloadToFile,
+ 2289    } = deps;
+ 2290  
+ 2291    const { jobs, isWin } = ctx;
+ 2292  
+ 2293    /* ============ 硬件编码：探测一次，缓存到进程内存 ============
+ 2294     *
+ 2295     * 【为什么缓存在模块级变量而不是每次现探】
+ 2296     * 探测要真跑一次编码（实测 961ms：3 个编码器各跑 321ms）。转码一个批次
+ 2297     * 可能是几十个文件，每次现探等于把「加速」的收益吃掉。
+ 2298     *
+ 2299     * 【为什么缓存要跟着 ffmpeg 路径失效】
+ 2300     * 用户可能在设置里换一个 ffmpeg（比如从 essentials 换成 full build，
+
+==============================================================================
+核核工具箱软件 V1.0    第 47 页 / 共 60 页
+==============================================================================
+ 2301     * 后者才有 QSV）。缓存里存了当时的 ffmpeg 路径，路径变了就重探。
+ 2302     *
+ 2303     * 【为什么用"已 promise"而不是"已结果"】
+ 2304     * 两个转码任务并发的场景下，第二个会在第一个探测完成前到达。
+ 2305     * 存 promise 让第二个直接 await 同一个探测，而不是再跑一遍 961ms。
+ 2306     */
+ 2307    let hwCache = { ffmpeg: null, promise: null };
+ 2308  
+ 2309    /**
+ 2310     * 取硬件编码探测结果（带缓存）。
+ 2311     * @returns {Promise<{available:boolean,family:string|null,name:string|null,encoders:object}>}
+ 2312     */
+ 2313    function getHwProbe() {
+ 2314      const ffmpeg = findFfmpeg();
+ 2315      if (!ffmpeg) return Promise.resolve({ available: false, family: null, name: null, encoders: {}, probed: [] });
+ 2316      if (hwCache.ffmpeg === ffmpeg && hwCache.promise) return hwCache.promise;
+ 2317      const p = (async () => {
+ 2318        try {
+ 2319          const r = await runCmd(ffmpeg, ['-hide_banner', '-encoders'], { timeout: 15000 });
+ 2320          const cands = hwEncode.listCandidates(r.stdout);
+ 2321          if (!cands.length) return { available: false, family: null, name: null, encoders: {}, probed: [] };
+ 2322          return hwEncode.detectEncoder(ffmpeg, cands);
+ 2323        } catch (e) {
+ 2324          /* 【探测失败必须降级成「无硬件」，不能把异常抛给调用方】
+ 2325           * 探测只是个优化路径：它失败时转码应该退回 CPU 正常跑，
+ 2326           * 而不是让「转码」这个功能整个不可用。 */
+ 2327          console.error('[hw-encode] 探测失败，回退 CPU：', e && e.message);
+ 2328          return { available: false, family: null, name: null, encoders: {}, probed: [] };
+ 2329        }
+ 2330      })();
+ 2331      hwCache = { ffmpeg, promise: p };
+ 2332      return p;
+ 2333    }
+ 2334  
+ 2335    /**
+ 2336     * 组装视频编码参数（CPU 或硬件）。
+ 2337     *
+ 2338     * 【这个函数是「为什么用户觉得加速没生效」的唯一答案】
+ 2339     * 三条回退路径都在这里显式返回 hw:false，调用方据此在进度里如实告知：
+ 2340     *   ① 用户没开开关            → 用 CPU
+ 2341     *   ② 本机没有可用硬件        → 用 CPU
+ 2342     *   ③ 探测到的是 h264 但用户要 hevc → 用 CPU（两个能力位独立）
+ 2343     *
+ 2344     * @param {object} o
+ 2345     * @param {string} o.vcodec 界面选的 vcodec（'' / 'libx265' / 'copy'）
+ 2346     * @param {number} o.crf
+ 2347     * @param {string} o.preset CPU preset（硬件走自己的 preset）
+ 2348     * @returns {Promise<{args:string[], hw:boolean, encoder:string, family:string|null}>}
+ 2349     */
+ 2350    async function videoEncodeArgs(o) {
+
+==============================================================================
+核核工具箱软件 V1.0    第 48 页 / 共 60 页
+==============================================================================
+ 2351      const want = o && o.vcodec === 'libx265' ? 'hevc' : 'h264';
+ 2352      /* 【设置缺省值 = null 而不是 false，这个区别很重要】
+ 2353       * 用户的要求是「检测到可用硬件就默认开启」，所以"没设置过"要落到
+ 2354       * "探测完再定"，而不是直接 false：
+ 2355       *   · null（从没设置过）→ 探测到可用硬件就自动开
+ 2356       *   · true / false       → 用户显式选过，尊重它
+ 2357       * 如果这里写成 storeGet(..., false)，那台有 N 卡的机器永远默认走 CPU，
+ 2358       * 「默认开启」就形同虚设。 */
+ 2359      let pref = null;
+ 2360      try { pref = await storeGet('settings.hwAccel', null); } catch (e) { pref = null; }
+ 2361      let enabled;
+ 2362      let probe = { available: false, encoders: {} };
+ 2363      if (pref === null || pref === undefined) {
+ 2364        /* 没设置过：先探一次，能探到就默认用硬件（这就是用户要的"默认开启"） */
+ 2365        probe = await getHwProbe();
+ 2366        enabled = !!probe.available;
+ 2367      } else {
+ 2368        enabled = pref === true;
+ 2369        if (enabled) probe = await getHwProbe();
+ 2370      }
+ 2371      const pick = hwEncode.pickVideoEncoder({ enabled, probe, codec: want });
+ 2372      if (pick.hw) {
+ 2373        return {
+ 2374          args: ['-c:v', pick.name, ...hwEncode.hwQualityArgs(pick.family, o.crf)],
+ 2375          hw: true, encoder: pick.name, family: pick.family,
+ 2376        };
+ 2377      }
+ 2378      const name = want === 'hevc' ? 'libx265' : 'libx264';
+ 2379      return { args: ['-c:v', name, '-crf', String(o.crf || 23), '-preset', String(o.preset || 'veryfast')], hw: false, encoder: name, family: null };
+ 2380    }
+ 2381  
+ 2382    /* ============ 硬件编码失败后自动退回 CPU ============
+ 2383     *
+ 2384     * 【为什么必须有这一层】
+ 2385     * 探测通过只说明"这一刻"能跑。实际用起来还有几种会让硬件编码失败的情况，
+ 2386     * 而它们发生时代价很大 —— 整批转码到了一个文件就停住，用户看到「转换失败」：
+ 2387     *   · 驱动在会话中途更新/重置（笔记本切换独显直连时最常见）
+ 2388     *   · 显卡被另一个程序吃满显存（游戏、另一个转码任务）
+ 2389     *   · 睡眠唤醒后 CUDA 上下文失效
+ 2390     *   · 某些奇特的分辨率/像素格式硬件不接（例如 4096 宽、10bit 源）
+ 2391     *
+ 2392     * 【为什么是"重跑一次"而不是"预检"】
+ 2393     * 上述情况无法在开始前可靠预测。唯一可靠的判据是"跑一遍看结果"。
+ 2394     * 代价是失败时要多花一次时间，但那只发生在少数情况下；
+ 2395     * 而"直接失败"是每次都会发生的用户体验灾难。
+ 2396     *
+ 2397     * 【为什么只回退一次】
+ 2398     * 回退到 CPU 后再失败，就是真失败了（源文件损坏、磁盘满等），
+ 2399     * 再重试只会让用户多等一遍。用 triedCpu 标志挡住二次回退。
+ 2400     *
+
+==============================================================================
+核核工具箱软件 V1.0    第 49 页 / 共 60 页
+==============================================================================
+ 2401     * @param {object} o
+ 2402     * @param {string[]} o.args 已拼好的参数（含硬件编码参数）
+ 2403     * @param {boolean} o.hw 这批是不是走硬件
+ 2404     * @param {Function} o.rebuildCpu 硬件失败时，用它重建一份纯 CPU 的参数
+ 2405     * @returns {Promise<{code:number, errOut:string, usedHw:boolean, fellBack:boolean}>}
+ 2406     */
+ 2407    async function runEncodeWithFallback(o) {
+ 2408      const once = (args) => new Promise((resolve) => {
+ 2409        const proc = spawn(findFfmpeg(), args, { windowsHide: true });
+ 2410        o.onProc && o.onProc(proc);
+ 2411        let errOut = '', progBuf = '';
+ 2412        proc.stdout.on('data', (d) => {
+ 2413          progBuf += String(d);
+ 2414          const lines = progBuf.split('\n');
+ 2415          progBuf = lines.pop() || '';
+ 2416          for (const line of lines) o.onLine && o.onLine(line);
+ 2417        });
+ 2418        proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
+ 2419        proc.on('exit', (code) => resolve({ code, errOut }));
+ 2420        proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
+ 2421      });
+ 2422  
+ 2423      const first = await once(o.args);
+ 2424      if (first.code === 0 || !o.hw) return { ...first, usedHw: !!o.hw, fellBack: false };
+ 2425      /* 【取消时不回退】
+ 2426       * 用户主动点了取消，这时不该"贴心地"再用 CPU 跑一遍 ——
+ 2427       * 那会让他点了取消却看到 CPU 风扇转起来。 */
+ 2428      if (o.isCancelled && o.isCancelled()) return { ...first, usedHw: true, fellBack: false };
+ 2429      try { await fsp.rm(o.out, { force: true }); } catch (e) {}
+ 2430      const cpuArgs = typeof o.rebuildCpu === 'function' ? o.rebuildCpu() : null;
+ 2431      if (!cpuArgs) return { ...first, usedHw: true, fellBack: false };
+ 2432      /* 告诉界面"硬件没成，正在改用 CPU" —— 否则用户会以为软件卡住了 */
+ 2433      if (o.notify) o.notify();
+ 2434      const second = await once(cpuArgs);
+ 2435      return { ...second, usedHw: false, fellBack: true };
+ 2436    }
+ 2437  
+ 2438    /* ============ ffmpeg 进程树的统一收尾 ============
+ 2439     *
+ 2440     * 【为什么要有这个函数】
+ 2441     * 本文件此前有 5 处几乎一样的「杀 ffmpeg」内联代码：
+ 2442     *     try { state.proc && state.proc.kill && state.proc.kill(); } catch (err) {}
+ 2443     *     if (isWin && state.proc && state.proc.pid) spawnDetached('taskkill', [...'/t','/f']);
+ 2444     * 每次新增一条需要取消的通道，就得把这四行再抄一遍 —— 漏抄 'taskkill' 那行，
+ 2445     * proc.kill() 在 Windows 上只杀得掉 ffmpeg 自己，它 fork 出去的编码子进程会留下，
+ 2446     * 表现是「点了取消，CPU 还满载」。抽出成函数后调用点只需一行。
+ 2447     *
+ 2448     * 【为什么先 proc.kill() 再 taskkill】
+ 2449     * proc.kill() 是同步的、立刻发出；taskkill 要起一个进程，慢一拍。
+ 2450     * 两个都做是刻意的冗余：proc.kill() 处理「进程还活着、信号能送达」的常见情况，
+
+==============================================================================
+核核工具箱软件 V1.0    第 50 页 / 共 60 页
+==============================================================================
+ 2451     * taskkill /t /f 处理它已经僵死或还有子进程的情况。顺序反过来会让
+ 2452     * 「紧接着读进程状态」的调用方看到还没死的旧状态。
+ 2453     *
+ 2454     * @param {import('child_process').ChildProcess|null} proc
+ 2455   */
+ 2456    function killFfmpegTree(proc) {
+ 2457      if (!proc) return;
+ 2458      try { if (typeof proc.kill === 'function') proc.kill(); } catch (err) { /* 已退出 */ }
+ 2459      if (isWin && proc.pid) {
+ 2460        /* 火后不理：spawnDetached 内部已挂 error 监听，起不来也不会变成 uncaughtException。 */
+ 2461        try { spawnDetached('taskkill', ['/pid', String(proc.pid), '/t', '/f']); } catch (err) { /* 进程可能刚好自己退了 */ }
+ 2462      }
+ 2463    }
+ 2464    /* 【win 不能解构 —— 那会把 getter 当场求值成常量】
+ 2465     * `const { win } = ctx` 在**解构那一刻**就求值了 getter，而本模块的
+ 2466     * register 在 main.js 顶层执行、远早于 createWindow()，所以拿到的恒是 null；
+ 2467     * 此后主窗建好、甚至关闭重建，这个值都不会变。
+ 2468     * ipc/ctx.js 头部专门写了"用快照会『第一次能用、换窗口就不对』，所以做成
+ 2469     * getter"—— 机制写对了，用法又错回去了。
+ 2470     *
+ 2471     * 后果：dialog.showOpenDialog(null, …) 合法但退化成**无父窗口**的对话框：
+ 2472     * 不居中、不是主窗的模态子窗口，用户开着对话框还能继续点主窗
+ 2473     * （容易连点出好几个）；在独立工具窗里点「选择 ffmpeg.exe」时也不归属那个窗口。
+ 2474     *
+ 2475     * 所以下面一律用 `ctx.win`（每次读都走 getter，拿的是当前值）。
+ 2476     * jobs 返回同一个 Map、isWin 是布尔，都不变，可以安全解构。 */
+ 2477  
+ 2478    /* 【send 必须来自 deps，不能从 ctx 取】
+ 2479     * ctx.send 是 v0.6.0 之前那版「只发主窗口」的实现；v0.6.0 起 main.js 的
+ 2480     * send() 升级成三档路由（ALS 里的 sender / 无调用者回退主窗 / 调用者已销毁丢弃，
+ 2481     * 判据在 lib/ipc-route.js）。本模块从 ctx 取 send，等于把整个域的多窗口路由
+ 2482     * 关掉了：独立工具窗口里跑视频压制/目标体积/FFmpeg 安装时，进度事件全发到主窗口 ——
+ 2483     *   · 发起窗口的进度条完全不动，取消按钮拿不到 runJobId（它是从 job:stream 里取的），
+ 2484     *     点了没反应；
+ 2485     *   · 主窗口若开着同一个工具页，JobPrefix 的「首次匹配前缀就认领」会把这个
+ 2486     *     不属于它的任务认领走 —— 进度条乱跳、结束时弹「完成」。
+ 2487     * 这正好抵消了 v0.6.4 修的孤儿任务防串扰。
+ 2488     * fs-ops / net-lan 早就是从 deps 取 send 的，本模块照同一形态改。 */
+ 2489  
+ 2490    /* ======================= 以下为逐字搬来的实现 ======================= */
+ 2491  
+ 2492  /* ================= IPC: ffmpeg 环境与音视频处理 ================= */
+ 2493  function binDir() { return path.join(userDataDir(), 'bin'); }
+ 2494  function findFfmpeg() {
+ 2495    const custom = storeGet('settings.ffmpegPath', null);
+ 2496    if (custom && fs.existsSync(custom)) return custom;
+ 2497    if (fs.existsSync(path.join(binDir(), 'ffmpeg.exe'))) return path.join(binDir(), 'ffmpeg.exe');
+ 2498    try {
+ 2499      const r = spawnSync('where', ['ffmpeg'], { windowsHide: true, timeout: 5000, encoding: 'utf8' });
+ 2500      const p = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('ffmpeg.exe'));
+
+==============================================================================
+核核工具箱软件 V1.0    第 51 页 / 共 60 页
+==============================================================================
+ 2501      if (p) return p.trim();
+ 2502    } catch (e) {}
+ 2503    return null;
+ 2504  }
+ 2505  function findFfprobe() {
+ 2506    const custom = storeGet('settings.ffprobePath', null);
+ 2507    if (custom && fs.existsSync(custom)) return custom;
+ 2508    const ff = findFfmpeg(); // 只探测一次，避免 PATH-only 环境下重复 where
+ 2509    const sameDir = ff && path.join(path.dirname(ff), 'ffprobe.exe');
+ 2510    if (sameDir && fs.existsSync(sameDir)) return sameDir;
+ 2511    if (fs.existsSync(path.join(binDir(), 'ffprobe.exe'))) return path.join(binDir(), 'ffprobe.exe');
+ 2512    try {
+ 2513      const r = spawnSync('where', ['ffprobe'], { windowsHide: true, timeout: 5000, encoding: 'utf8' });
+ 2514      const p = (r.stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().endsWith('ffprobe.exe'));
+ 2515      if (p) return p.trim();
+ 2516    } catch (e) {}
+ 2517    return null;
+ 2518  }
+ 2519  handle(CH.FFMPEG.STATUS, async () => {
+ 2520    const ffmpeg = findFfmpeg(), ffprobe = findFfprobe();
+ 2521    let version = null;
+ 2522    if (ffmpeg) {
+ 2523      try { version = ((await runCmd(ffmpeg, ['-version'], { timeout: 8000 })).stdout || '').split(/\r?\n/)[0]; } catch (e) {}
+ 2524    }
+ 2525    return { ffmpeg, ffprobe, binDir: binDir(), version };
+ 2526  });
+ 2527  
+ 2528  /* ============ 硬件编码能力探测 ============
+ 2529   * 设置页用它显示「你的机器能用什么」，转码页用它显示「这次会走哪个编码器」。
+ 2530   * 结果是真实跑出来的，不是读显卡型号猜的 —— 见 lib/hw-encode.js 顶部说明。 */
+ 2531  handle(CH.FFMPEG.HW_PROBE, async () => {
+ 2532    const ffmpeg = findFfmpeg();
+ 2533    /* 【没有 ffmpeg 时不要报错】
+ 2534     * 「FFmpeg 环境」页在没装 ffmpeg 时也要能正常打开，设置页同理。
+ 2535     * 返回 available:false + 一句原因，界面按「未安装」展示即可。 */
+ 2536    if (!ffmpeg) return { available: false, family: null, name: null, encoders: {}, probed: [], reason: 'NO_FFMPEG' };
+ 2537    const probe = await getHwProbe();
+ 2538    let enabled = false;
+ 2539    try { enabled = (await storeGet('settings.hwAccel', false)) === true; } catch (e) {}
+ 2540    return { ...probe, enabled, ffmpeg };
+ 2541  });
+ 2542  handle(CH.FFMPEG.PICK, async (e) => {
+ 2543    /* ctx.win 是 getter，每次读都是当前主窗（见上方解构处的说明） */
+ 2544    const picked = await dialog.showOpenDialog(ctx.win || null, {
+ 2545      title: '选择 ffmpeg.exe（可多选，同时选上 ffprobe.exe）',
+ 2546      properties: ['openFile', 'multiSelections'],
+ 2547      filters: [{ name: '可执行文件', extensions: ['exe'] }]
+ 2548    });
+ 2549    if (picked.canceled || !picked.filePaths.length) return { picked: [] };
+ 2550    await fsp.mkdir(binDir(), { recursive: true });
+
+==============================================================================
+核核工具箱软件 V1.0    第 52 页 / 共 60 页
+==============================================================================
+ 2551    const copied = [];
+ 2552    for (const src of picked.filePaths) {
+ 2553      const name = path.basename(src).toLowerCase();
+ 2554      if (name === 'ffmpeg.exe' || name === 'ffprobe.exe') {
+ 2555        /* 同上面 gz 分支：先临时名再改名，避免复制中断留下半截 exe */
+ 2556        const dest = path.join(binDir(), name);
+ 2557        const tmp = tempNames.writeTmp(dest, 'ffpick' + process.pid + '-' + Date.now());
+ 2558        try {
+ 2559          await fsp.copyFile(src, tmp);
+ 2560          await fsp.rename(tmp, dest);
+ 2561        } catch (err) {
+ 2562          await fsp.rm(tmp, { force: true }).catch(() => {});
+ 2563          throw err;
+ 2564        }
+ 2565        copied.push(name);
+ 2566      }
+ 2567    }
+ 2568    if (!copied.includes('ffmpeg.exe')) {
+ 2569      /* 用户可能把 ffmpeg 存成了别的名字（如 ffmpeg-6.1.exe）。
+ 2570       * 【判据必须是「输出里真的有 ffmpeg version」，不能只看进程能不能跑】
+ 2571       * 原实现是 `await runCmd(first, ['-version'])` —— runCmd 默认对非零退出码
+ 2572       * 不抛异常，而且任何程序响应 -version 都能"成功"，于是用户在同一个对话框里
+ 2573       * 先选了 ffprobe.exe（或随便一个会打印版本号的 exe）且没有任何一项 basename
+ 2574       * 恰好是 ffmpeg.exe 时，那个文件会被复制成 bin/ffmpeg.exe，
+ 2575       * **覆盖掉原本可用的 ffmpeg**。之后所有转码全部失败，且用户不知道是这一步造成的。
+ 2576       * 现在：① 要求退出码为 0；② 要求 stdout/stderr 里出现 'ffmpeg version'；
+ 2577       * ③ 已经在 bin 里有可用 ffmpeg 时不覆盖，只提示。 */
+ 2578      const first = picked.filePaths[0];
+ 2579      try {
+ 2580        const r = await runCmd(first, ['-version'], { timeout: 8000, throwOnNonZero: true });
+ 2581        const ver = String(r.stdout || '') + String(r.stderr || '');
+ 2582        if (!/ffmpeg version/i.test(ver)) throw new Error('输出里没有 ffmpeg version，不是 ffmpeg');
+ 2583        const dest = path.join(binDir(), 'ffmpeg.exe');
+ 2584        if (fs.existsSync(dest)) {
+ 2585          const old = await runCmd(dest, ['-version'], { timeout: 8000 }).catch(() => null);
+ 2586          if (old && /ffmpeg version/i.test(String(old.stdout || ''))) {
+ 2587            // 已有可用的 ffmpeg，不覆盖：静默替换是破坏性的，且用户没要求
+ 2588            return { picked: copied, binDir: binDir(), skipped: '已有可用的 ffmpeg，未覆盖' };
+ 2589          }
+ 2590        }
+ 2591        const tmp2 = tempNames.writeTmp(dest, 'ffpick2-' + process.pid + '-' + Date.now());
+ 2592        try {
+ 2593          await fsp.copyFile(first, tmp2);
+ 2594          await fsp.rename(tmp2, dest);
+ 2595        } catch (e) {
+ 2596          await fsp.rm(tmp2, { force: true }).catch(() => {});
+ 2597          throw e;
+ 2598        }
+ 2599        copied.push('ffmpeg.exe');    } catch (err) { /* 不是 ffmpeg：保持原状，不复制 */ }
+ 2600    }
+
+==============================================================================
+核核工具箱软件 V1.0    第 53 页 / 共 60 页
+==============================================================================
+ 2601    return { picked: copied, binDir: binDir() };
+ 2602  });
+ 2603  const FFMPEG_SOURCES = {
+ 2604    npmmirror: { name: 'npmmirror 国内镜像（推荐，约 59MB，含 ffprobe）', type: 'gz-pair', base: 'https://registry.npmmirror.com/-/binary/ffmpeg-static/b6.1.1' },
+ 2605    gyan: { name: 'gyan.dev 官方整合包（约 114MB，含 ffprobe）', url: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip', type: 'zip' },
+ 2606    btbn: { name: 'BtbN GitHub 构建（约 90MB，含 ffprobe）', url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip', type: 'zip' }
+ 2607  };
+ 2608  
+ 2609  handle(CH.FFMPEG.DOWNLOAD, async (e, sourceId) => {
+ 2610    const src = FFMPEG_SOURCES[sourceId] || FFMPEG_SOURCES.npmmirror;
+ 2611    const id = 'dl' + (ctx.nextJobSeq());
+ 2612    const ctrl = new AbortController();
+ 2613    jobs.set(id, { cancel: () => ctrl.abort() });
+ 2614    setLatestCancelable(() => ctrl.abort());
+ 2615    await fsp.mkdir(binDir(), { recursive: true });
+ 2616    try {
+ 2617      if (src.type === 'gz-pair') {
+ 2618        const files = [['ffmpeg-win32-x64.gz', 'ffmpeg.exe'], ['ffprobe-win32-x64.gz', 'ffprobe.exe']];
+ 2619        let idx = 0;
+ 2620        for (const [gzName, exeName] of files) {
+ 2621          idx++;
+ 2622          const tmp = path.join(tempDir(), 'hehe-' + gzName);
+ 2623          const emitLabel = () => send('job:stream', { id, data: JSON.stringify({ stage: 'label', label: `文件 ${idx}/2：${exeName}` }) });
+ 2624          emitLabel();
+ 2625          await downloadToFile(src.base + '/' + gzName, tmp, id, ctrl, `文件 ${idx}/2：${exeName}`);
+ 2626          send('job:stream', { id, data: JSON.stringify({ stage: 'extract', label: `解压 ${exeName}` }) });
+ 2627          /* 【解压失败的临时 gz 必须清掉】
+ 2628           * 原来 gunzip 抛错（下载被截断 / 镜像给了 HTML 错误页）时直接
+ 2629           * 冒到 handler 的 catch，而 fs.rmSync(tmp) 写在成功路径末尾 ——
+ 2630           * 几十 MB 的 .gz 永远留在 %TEMP%。现在用 try/finally 收口。 */
+ 2631          try {
+ 2632            const gz = fs.readFileSync(tmp);
+ 2633            const out = zlib.gunzipSync(gz);
+ 2634            /* 【先写临时名再改名，不能直接覆盖 bin 里的 exe】
+ 2635             * 直接 writeFileSync 到 bin/ffmpeg.exe 时，写到一半失败（磁盘满、
+ 2636             * 杀软拦截）会把原来能用的 ffmpeg 变成半截文件，而 findFfmpeg 只看
+ 2637             * 「文件存在」就认它 —— 之后所有转码都失败，用户不知道是这一步造成的。
+ 2638             * 同目录临时名 + rename 保证要么是旧的、要么是完整的新文件。 */
+ 2639            const dest = path.join(binDir(), exeName);
+ 2640            const wtmp = tempNames.writeTmp(dest, 'ffdl' + process.pid + '-' + Date.now());
+ 2641            try {
+ 2642              fs.writeFileSync(wtmp, out);
+ 2643              fs.renameSync(wtmp, dest);
+ 2644            } catch (e) {
+ 2645              try { fs.rmSync(wtmp, { force: true }); } catch (e2) {}
+ 2646              throw e;
+ 2647            }
+ 2648          } finally {
+ 2649            fs.rmSync(tmp, { force: true });
+ 2650          }
+
+==============================================================================
+核核工具箱软件 V1.0    第 54 页 / 共 60 页
+==============================================================================
+ 2651        }
+ 2652        const ffmpeg = findFfmpeg();
+ 2653        send('job:stream', { id, data: JSON.stringify({ stage: 'done' }) });
+ 2654        return { ok: true, ffmpeg, ffprobe: findFfprobe(), found: 2 };
+ 2655      }
+ 2656      // zip 整合包
+ 2657      const zipPath = tempNames.ffmpegZip({ tempDir: tempDir() });
+ 2658      try {
+ 2659        await downloadToFile(src.url, zipPath, id, ctrl, '整合包');
+ 2660        send('job:stream', { id, data: JSON.stringify({ stage: 'extract' }) });
+ 2661        const zip = new AdmZip(zipPath);
+ 2662        let found = 0;
+ 2663        for (const entry of zip.getEntries()) {
+ 2664          const n = entry.entryName.replace(/\\/g, '/');
+ 2665          if (n.endsWith('/ffmpeg.exe') || n.endsWith('/ffprobe.exe')) {
+ 2666            zip.extractEntryTo(entry, binDir(), false, true);
+ 2667            found++;
+ 2668          }
+ 2669        }
+ 2670        if (!found) throw new Error('压缩包中未找到 ffmpeg.exe / ffprobe.exe');
+ 2671        const ffmpeg = findFfmpeg();
+ 2672        send('job:stream', { id, data: JSON.stringify({ stage: 'done' }) });
+ 2673        return { ok: true, ffmpeg, ffprobe: findFfprobe(), found };
+ 2674      } finally { await fsp.rm(zipPath, { force: true }).catch(() => {}); }
+ 2675    } catch (err) {
+ 2676      if (err.name === 'AbortError') throw new Error('下载已取消');
+ 2677      throw err;
+ 2678    } finally { jobs.delete(id); }
+ 2679  });
+ 2680  handle(CH.FFMPEG.REMOVE, async () => {
+ 2681    await fsp.rm(binDir(), { recursive: true, force: true });
+ 2682    storeSet('settings.ffmpegPath', undefined);
+ 2683    storeSet('settings.ffprobePath', undefined);
+ 2684    return true;
+ 2685  });
+ 2686  handle(CH.FFMPEG.PROBE, async (e, p) => {
+ 2687    const ffprobe = findFfprobe();
+ 2688    if (!ffprobe) throw new Error('未找到 ffprobe，请先在「FFmpeg 环境」中安装');
+ 2689    const r = await runCmd(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', p], { timeout: 30000 });
+ 2690    return JSON.parse(r.stdout);
+ 2691  });
+ 2692  
+ 2693  /* ================= IPC: 目标体积压缩（音视频） =================
+ 2694   * 借鉴 YourCatFileAssistant 的核心设计：不是"压一次看运气"，而是
+ 2695   * 最多 8 轮候选输出，每轮按实际结果调整码率，达标才提交。
+ 2696   * 关键约束（与对方一致）：
+ 2697   *   - 绝不截断时长、绝不删音轨来凑体积
+ 2698   *   - 每轮输出先写到任务专属临时文件，体积检查通过后才改名
+ 2699   *   - 源文件本来就达标时直接另存并标注「已符合上限」
+ 2700   *   - 进度最多 99%，提交成功才 100%
+
+==============================================================================
+核核工具箱软件 V1.0    第 55 页 / 共 60 页
+==============================================================================
+ 2701   */
+ 2702  handle(CH.TARGET.COMPRESS_AV, async (e, { items, outDir, targetBytes, mode, ratio }) => {
+ 2703    const ffmpeg = findFfmpeg();
+ 2704    if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+ 2705    const ffprobe = findFfprobe();
+ 2706    const id = 'tgt' + (ctx.nextJobSeq());
+ 2707    const state = { cancel: false, proc: null };
+ 2708    const killProc = () => killFfmpegTree(state.proc);
+ 2709    jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
+ 2710    setLatestCancelable(() => { state.cancel = true; killProc(); });
+ 2711  
+ 2712    await fsp.mkdir(outDir, { recursive: true });
+ 2713    const results = [];
+ 2714  
+ 2715    /* 读时长与音轨信息。时长拿不到就无法按体积反推码率，直接给出可读失败。 */
+ 2716    async function probeMedia(p) {
+ 2717      if (!ffprobe) return { duration: 0, hasAudio: false, width: 0, height: 0 };
+ 2718      try {
+ 2719        const r = await runCmd(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', p], { timeout: 30000 });
+ 2720        const j = JSON.parse(r.stdout);
+ 2721        const v = (j.streams || []).find(s => s.codec_type === 'video' && !(s.disposition && s.disposition.attached_pic));
+ 2722        const a = (j.streams || []).find(s => s.codec_type === 'audio');
+ 2723        return {
+ 2724          duration: parseFloat((j.format || {}).duration) || (v && parseFloat(v.duration)) || 0,
+ 2725          hasAudio: !!a,
+ 2726          width: v ? v.width : 0,
+ 2727          height: v ? v.height : 0
+ 2728        };
+ 2729      } catch (err) { return { duration: 0, hasAudio: false, width: 0, height: 0 }; }
+ 2730    }
+ 2731  
+ 2732    try {
+ 2733      for (let i = 0; i < items.length; i++) {
+ 2734        if (state.cancel) break;
+ 2735        const input = items[i];
+ 2736        /* 【单个文件读不到不能中断整批】
+ 2737         * 批量压缩时用户很可能在资源管理器里删/改队列里的文件。原实现直接
+ 2738         * `await fsp.stat(input)`，ENOENT 一路冒到外层 finally —— 整批中断，
+ 2739         * 而函数是「抛异常」而不是「返回 results」，前面已经压好的若干条记录
+ 2740         * 随返回值一起消失，用户既拿不到成果清单，也不知道哪几个已完成。
+ 2741         * 这里降级成「这一条失败，记下来，继续下一个」。 */
+ 2742        let srcSize = 0;
+ 2743        try {
+ 2744          srcSize = (await fsp.stat(input)).size;
+ 2745        } catch (err) {
+ 2746          results.push({ input, out: null, ok: false, srcSize: 0, target: 0, err: '无法读取源文件：' + fmtErr(err) });
+ 2747          send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(String(input || '')), pct: 100, done: true, ok: false, error: '无法读取源文件' }) });
+ 2748          continue;
+ 2749        }
+ 2750        const want = mode === 'ratio'
+
+==============================================================================
+核核工具箱软件 V1.0    第 56 页 / 共 60 页
+==============================================================================
+ 2751          ? targetSize.tierTargetBytes(srcSize, ratio)
+ 2752          : Math.floor(targetBytes);
+ 2753        const base = path.basename(input).replace(/\.[^.]+$/, '');
+ 2754  
+ 2755        send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), stage: 'probe', pct: 1 }) });
+ 2756  
+ 2757        /* 源文件本来就达标：直接另存一份，标「已符合上限」。
+ 2758           这是对方明确处理的场景 —— 用户的文件本来就够小，不该被重编码白白降低画质。 */
+ 2759        if (srcSize <= want) {
+ 2760          const dst = await uniqueTarget(outDir, base + path.extname(input));
+ 2761          await fsp.copyFile(input, dst);
+ 2762          results.push({ input, out: dst, ok: true, srcSize, outSize: srcSize, target: want, alreadyFits: true, rounds: 0 });
+ 2763          send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: true, alreadyFits: true }) });
+ 2764          continue;
+ 2765        }
+ 2766  
+ 2767        const media = await probeMedia(input);
+ 2768        if (!(media.duration > 0)) {
+ 2769          results.push({ input, out: null, ok: false, srcSize, target: want, err: '无法获取媒体时长，无法按体积反推码率' });
+ 2770          send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: false }) });
+ 2771          continue;
+ 2772        }
+ 2773  
+ 2774        const tmpDir = tempNames.tgtTmpDir({ tempDir: tempDir() });
+ 2775        await fsp.mkdir(tmpDir, { recursive: true });
+ 2776        let finalOut = null;
+ 2777        let lastErr = '';
+ 2778        let usedRounds = 0;
+ 2779        /* 两遍法的 stats 文件：**每个输入文件只分析一次**，8 轮逼近全部复用。
+ 2780         * passlog 记录的是帧复杂度，与 -b:v 目标值无关，换码率无需重新分析。
+ 2781         * 路径统一成正斜杠：ffmpeg 在 Windows 上对 -passlogfile 的反斜杠转义处理
+ 2782         * 不一致，曾出现 stats 写到奇怪位置、pass 2 读不到而静默降级。 */
+ 2783        const passlogFile = path.join(tmpDir, 'x264pass').replace(/\\/g, '/');
+ 2784        let pass1Done = false;
+ 2785  
+ 2786        try {
+ 2787          /* ---- 两遍法：分析趟只做一次，8 轮逼近全部复用同一份 stats ----
+ 2788           * 单遍 ABR 实际输出常偏离目标 10%~30%；两遍法按帧复杂度精确分配码率，
+ 2789           * 实测把「3.09MB → 15% 目标」从 5 轮降到 2 轮。
+ 2790           * 分析失败（老版本 ffmpeg、异常退出）时自动回退单遍，不影响功能。 */
+ 2791          const progressOf = (round, inRound) => Math.min(99, ((i + (round + inRound) / targetSize.MAX_ROUNDS) / items.length) * 100);
+ 2792          const runFfmpeg = (args, round) => new Promise((resolve) => {
+ 2793            const proc = spawn(ffmpeg, args, { windowsHide: true });
+ 2794            state.proc = proc;
+ 2795            let buf = '', errOut = '';
+ 2796            proc.stdout.on('data', (d) => {
+ 2797              buf += String(d);
+ 2798              const lines = buf.split('\n'); buf = lines.pop() || '';
+ 2799              for (const line of lines) {
+ 2800                const m = line.match(/out_time_us=(\d+)/);
+
+==============================================================================
+核核工具箱软件 V1.0    第 57 页 / 共 60 页
+==============================================================================
+ 2801                if (m && media.duration > 0) {
+ 2802                  const inRound = Math.min(1, parseInt(m[1]) / 1e6 / media.duration);
+ 2803                  send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: progressOf(round, inRound), round: round + 1 }) });
+ 2804                }
+ 2805              }
+ 2806            });
+ 2807            proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
+ 2808            proc.on('exit', (code) => resolve({ code, errOut }));
+ 2809            proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
+ 2810          });
+ 2811  
+ 2812          const plan0 = targetSize.planBitrates({
+ 2813            targetBytes: want, durationSec: media.duration,
+ 2814            hasAudio: media.hasAudio, round: 0
+ 2815          });
+ 2816          if (plan0.ok) {
+ 2817            send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), stage: 'analyze', pct: 0 }) });
+ 2818            const p1 = await runFfmpeg(targetSize.buildPass1Args({
+ 2819              input, videoKbps: plan0.videoKbps, passlogFile
+ 2820            }), 0);
+ 2821            if (p1.code === 0 && fs.existsSync(passlogFile + '-0.log')) pass1Done = true;
+ 2822          }
+ 2823          if (state.cancel) lastErr = '已取消';
+ 2824  
+ 2825          for (let round = 0; round < targetSize.MAX_ROUNDS; round++) {
+ 2826            usedRounds = round + 1;
+ 2827            if (state.cancel) break;
+ 2828  
+ 2829            const plan = targetSize.planBitrates({
+ 2830              targetBytes: want, durationSec: media.duration,
+ 2831              hasAudio: media.hasAudio, round
+ 2832            });
+ 2833            if (!plan.ok) { lastErr = plan.reason; break; }
+ 2834  
+ 2835            const cand = path.join(tmpDir, `r${round}.mp4`);
+ 2836            // 两遍法：读 pass 1 的 stats 精确分配码率；分析没成功就退回单遍
+ 2837            const args = pass1Done
+ 2838              ? targetSize.buildPass2Args({
+ 2839                  input, output: cand, videoKbps: plan.videoKbps,
+ 2840                  audioKbps: plan.audioKbps, hasAudio: media.hasAudio, passlogFile
+ 2841                })
+ 2842              : targetSize.buildSinglePassArgs({
+ 2843                  input, output: cand, videoKbps: plan.videoKbps,
+ 2844                  audioKbps: plan.audioKbps, hasAudio: media.hasAudio
+ 2845                });
+ 2846  
+ 2847            const r = await runFfmpeg(args, round);
+ 2848  
+ 2849            if (state.cancel) { lastErr = '已取消'; break; }
+ 2850            if (r.code !== 0) {
+
+==============================================================================
+核核工具箱软件 V1.0    第 58 页 / 共 60 页
+==============================================================================
+ 2851              lastErr = r.errOut.split(/\r?\n/).filter(l => l.trim()).slice(-2).join(' ') || ('退出码 ' + r.code);
+ 2852              break;
+ 2853            }
+ 2854            let outBytes = 0;
+ 2855            try { outBytes = (await fsp.stat(cand)).size; } catch (err) {}
+ 2856            const verdict = targetSize.evaluateRound({ outBytes, targetBytes: want, round });
+ 2857            if (verdict.ok) { finalOut = { file: cand, size: outBytes }; break; }
+ 2858            if (verdict.done) { lastErr = verdict.reason; break; }
+ 2859            try { await fsp.unlink(cand); } catch (err) {} // 未达标候选立刻删掉，省磁盘
+ 2860          }
+ 2861  
+ 2862          if (finalOut) {
+ 2863            /* 校验通过才提交：改成最终名（同名自动编号，不覆盖已有文件）。
+ 2864             * 【跨卷必须退回「复制 + 删除」】临时目录在 %TEMP%（通常 C:），
+ 2865             * 而输出目录完全可能被用户选到 D:/E:。Windows 上 rename 跨卷
+ 2866             * 抛 EXDEV —— 八轮编码全部达标、成果就在 finalOut，却在最后一步
+ 2867             * 失败，异常冒泡让 results 里连一条记录都没有，而 finally 还会把
+ 2868             * tmpDir 整个删掉（成果一起没了）。项目在 7z 解压那边已经为同一个
+ 2869             * EXDEV 坑写过注释，这里是同一类问题。 */
+ 2870            const dst = await uniqueTarget(outDir, base + '.mp4');
+ 2871            await moveFile(finalOut.file, dst);
+ 2872            results.push({ input, out: dst, ok: true, srcSize, outSize: finalOut.size, target: want, rounds: usedRounds });
+ 2873            send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: true }) });
+ 2874          } else {
+ 2875            results.push({ input, out: null, ok: false, srcSize, target: want, rounds: usedRounds, err: lastErr || '未能压到目标体积' });
+ 2876            send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: 100, done: true, ok: false }) });
+ 2877          }
+ 2878        } finally {
+ 2879          // 只清理自己的临时目录；已提交的最终文件不在其中
+ 2880          try { await fsp.rm(tmpDir, { recursive: true, force: true }); } catch (err) {}
+ 2881        }
+ 2882      }
+ 2883    } finally { jobs.delete(id); }
+ 2884    return { id, results, canceled: state.cancel };
+ 2885  });
+ 2886  
+ 2887  /* 图片的目标体积压缩：按质量与尺寸双维度多轮逼近。
+ 2888   * 与音视频不同，图片编码在渲染进程用 canvas 完成（已有链路），
+ 2889   * 主进程只负责规划每轮参数与判定体积，实际重编码由渲染层完成。 */
+ 2890  handle(CH.TARGET.PLAN_IMAGE, (e, { round }) => {
+ 2891    const q = targetSize.planImageQuality(round);
+ 2892    return { quality: q.quality, scale: q.scale, round, maxRounds: targetSize.MAX_ROUNDS };
+ 2893  });
+ 2894  handle(CH.TARGET.EVAL_IMAGE, (e, { outBytes, targetBytes, round }) => {
+ 2895    return targetSize.evaluateRound({ outBytes, targetBytes, round });
+ 2896  });
+ 2897  
+ 2898  handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
+ 2899    const ffmpeg = findFfmpeg();
+ 2900    if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+
+==============================================================================
+核核工具箱软件 V1.0    第 59 页 / 共 60 页
+==============================================================================
+ 2901    const id = 'avc' + (ctx.nextJobSeq());
+ 2902    const state = { cancel: false, proc: null };
+ 2903    jobs.set(id, { cancel: () => { state.cancel = true; killFfmpegTree(state.proc); } });
+ 2904    setLatestCancelable(() => { state.cancel = true; killFfmpegTree(state.proc); });
+ 2905    const extMap = { mp4: 'mp4', webm: 'webm', mkv: 'mkv', mp3: 'mp3', wav: 'wav', flac: 'flac', gif: 'gif', m4a: 'm4a' };
+ 2906    await fsp.mkdir(outDir, { recursive: true });
+ 2907    const results = [];
+ 2908    try {
+ 2909      for (let i = 0; i < items.length; i++) {
+ 2910        if (state.cancel) break;
+ 2911        const input = items[i];
+ 2912        const base = path.basename(input).replace(/\.[^.]+$/, '');
+ 2913        const ext = extMap[opts.format] || 'mp4';
+ 2914        let out = path.join(outDir, `${base}.${ext}`);
+ 2915        for (let k = 1; await pathExists(out); k++) out = path.join(outDir, `${base}(${k}).${ext}`);
+ 2916        let dur = 0;
+ 2917        try {
+ 2918          const ffprobe = findFfprobe();
+ 2919          if (ffprobe) {
+ 2920            const r = await runCmd(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', input], { timeout: 15000 });
+ 2921            dur = parseFloat((JSON.parse(r.stdout).format || {}).duration) || 0;
+ 2922          }
+ 2923        } catch (err) {}
+ 2924        const args = ['-hide_banner', '-y', '-nostats'];
+ 2925        if (opts.ss) args.push('-ss', String(opts.ss));
+ 2926        args.push('-i', input);
+ 2927        if (opts.to) args.push('-t', String(opts.to));
+ 2928        /* 【纯音频容器必须先算出来，不能只列 mp3/m4a】
+ 2929         * 下面 3180 行用 isAudioOut 判断「不加 -c:v」，包含 wav/flac；
+ 2930         * 而这一行的 -vn 列表只有 mp3/m4a/mute —— 于是选 WAV/FLAC 且没勾静音时，
+ 2931         * 既不 -vn（视频流还在）也不 -c:v（没有视频编码器），ffmpeg 试图把
+ 2932         * 源视频流塞进 wav 容器 → 直接失败；失败分支还会 rm(out) 删掉半成品，
+ 2933         * 用户只看到「转换失败」，看不到真正原因。
+ 2934         * 统一用同一个判据，避免两份列表各写各的。 */
+ 2935        const isAudioOut = ['mp3', 'm4a', 'wav', 'flac'].includes(opts.format);
+ 2936        if (isAudioOut) args.push('-vn');
+ 2937        if (opts.mute) { args.push('-an'); }
+ 2938        else {
+ 2939          // 音频编码按容器选择：wav→PCM、flac→无损 flac（aac 进这两个容器会被拒绝/非标）
+ 2940          const ac = opts.acodec || (opts.format === 'webm' ? 'libopus' : opts.format === 'mp3' ? 'libmp3lame' : opts.format === 'wav' ? 'pcm_s16le' : opts.format === 'flac' ? 'flac' : 'aac');
+ 2941          args.push('-c:a', ac);
+ 2942          if (ac === 'aac') args.push('-b:a', '160k');
+ 2943          if (ac === 'libmp3lame') args.push('-q:a', '2');
+ 2944          if (ac === 'libopus') args.push('-b:a', '128k');
+ 2945        }
+ 2946        /* 【enc 要在循环内取，因为每个文件的编码族可能不同吗？不会——
+ 2947         * opts.vcodec 对整批相同。但 videoEncodeArgs 是 async（要读设置 + 探测缓存），
+ 2948         * 放在循环内只是 await 同一个已 resolve 的 promise，开销可忽略；
+ 2949         * 好处是不必把 enc 变量提到循环外，避免"忘了在批次开头初始化"这类错。 */
+ 2950        let enc = null;
+
+==============================================================================
+核核工具箱软件 V1.0    第 60 页 / 共 60 页
+==============================================================================
+ 2951        if (!isAudioOut) {
+ 2952          if (opts.vcodec === 'copy') args.push('-c:v', 'copy');
+ 2953          else if (opts.format === 'webm') { args.push('-c:v', 'libvpx-vp9', '-crf', String(opts.crf || 34), '-b:v', '0', '-row-mt', '1'); }
+ 2954          else if (opts.format === 'gif') { args.push('-an', '-vf', `fps=${opts.fps || 12},scale=${opts.gifWidth || 480}:-2:flags=lanczos`); }
+ 2955          else {
+ 2956            enc = await videoEncodeArgs({ vcodec: opts.vcodec, crf: opts.crf, preset: 'veryfast' });
+ 2957            args.push(...enc.args);
+ 2958            /* 【与视频压制的 scale 同一套语义：装进 N×N 方框，不放大】
+ 2959             * 这里原先是 `scale=${opts.scale}:-2` —— 竖屏源会被拉宽、奇数源
+ 2960             * 会因宽高非偶数在 yuv420p 下编码失败。统一改成方框 + decrease +
+ 2961             * 强制偶数。详见下方 press 分支的注释。 */
+ 2962            if (opts.scale) {
+ 2963              const t = Number(opts.scale);
+ 2964              if (Number.isFinite(t) && t > 0) {
+ 2965                args.push('-vf', `scale=w='min(${t},iw)':h='min(${t},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`);
+ 2966              }
+ 2967            }
+ 2968            if (opts.fps) args.push('-r', String(opts.fps));
+ 2969            if (opts.format === 'mp4') args.push('-movflags', '+faststart');
+ 2970          }
+ 2971        }
+ 2972        args.push('-progress', 'pipe:1', out);
+ 2973        /* 【把实际用的编码器报给界面】
+ 2974         * 用户开了硬件加速却没看到速度变化时，这一行是唯一能自证的地方：
+ 2975         * 是他没开开关、还是本机没有可用硬件、还是这批文件走的是 copy/gif。 */
+ 2976        send('job:stream', { id, data: JSON.stringify({
+ 2977          i, name: path.basename(input), stage: 'start',
+ 2978          encoder: enc ? enc.encoder : (opts.vcodec === 'copy' ? 'copy' : null),
+ 2979          hw: enc ? enc.hw : false,
+ 2980        }) });
+ 2981        const r = await new Promise((resolve) => {
+ 2982          const proc = spawn(ffmpeg, args, { windowsHide: true });
+ 2983          state.proc = proc;
+ 2984          let lastPct = 0, errOut = '', progBuf = '';
+ 2985          proc.stdout.on('data', (d) => {
+ 2986            progBuf += String(d);
+ 2987            const lines = progBuf.split('\n');
+ 2988            progBuf = lines.pop() || ''; // 保留末行未完结部分，数字跨块分裂时不丢进度
+ 2989            for (const line of lines) {
+ 2990              const m = line.match(/out_time_us=(\d+)/);
+ 2991              if (m && dur > 0) {
+ 2992                lastPct = Math.min(99, parseInt(m[1]) / 1e6 / dur * 100);
+ 2993                send('job:stream', { id, data: JSON.stringify({ i, name: path.basename(input), pct: lastPct }) });
+ 2994              }
+ 2995            }
+ 2996          });
+ 2997          proc.stderr.on('data', (d) => { errOut += String(d); if (errOut.length > 20000) errOut = errOut.slice(-8000); });
+ 2998          proc.on('exit', (code) => resolve({ code, errOut }));
+ 2999          proc.on('error', (err) => resolve({ code: -1, errOut: err.message }));
+ 3000        });
