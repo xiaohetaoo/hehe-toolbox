@@ -1,6 +1,6 @@
 # hehe-toolbox（核核工具箱）项目约定
 
-> 工作区：`D:\zcode\hehe` · 版本：`0.9.7` · 更新：2026-11-26
+> 工作区：`D:\zcode\hehe` · 版本：`0.9.8` · 更新：2026-11-28
 > 本文件记录**项目重要事项与协作约定**（协作规则第 3 条）。
 > 完整交接文档在 `D:\dsh\hehe-tool.md`（架构、逐域说明、踩坑大全、发版流程）。
 
@@ -46,13 +46,25 @@
 
 ## 三、发版流程（与协作约定 1 配合）
 
-1. 本地全绿：`npm test`（213 脚本 / 2403 断言基线；dist 与 package 同版本时会多跑 test-packaged-assets 的 27 条）+ `npm run lint` + `npm run typecheck`；
+1. 本地全绿：`npm test`（**226 脚本 / 2562 断言基线**；dist 与 package 同版本时会多跑 test-packaged-assets 的 27 条）+ `npm run lint` + `npm run typecheck`；
 2. 升版本：`node scripts/version.js --next --write` + 同步 `package-lock.json`；
 3. 写 `docs/release-notes/vX.Y.Z.md`（≥400 字）；
 4. commit → **先问用户** → push → 等 CI 绿；
 5. **再问用户** → `git tag -a vX.Y.Z` → push tag → Release workflow 自动构建发布；
-6. 发布后：下载产物到 `dist/` 并核对 SHA256、跑 `verify-fixes-in-package.js`、
-   更新 `D:\dsh\hehe-tool.md` 的 0/0.2/3.1/11/12 章与断言基线。
+6. 发布后：`npm run dist:fetch vX.Y.Z`（并行下载 + 官方 digest 双校验）、
+   `npm run dist:verify`（产物内修复点校验）、更新本文件与断言基线。
+
+**发布提速（v0.9.8 起）**
+- CI：断言数守卫改为读上一步落盘的日志（`--no-run`），不再重跑全量 ——
+  实测 CI 从 608s 降到 **374s**。
+- Release：自动判断是否跳过全量测试。条件是「同一 commit 有 CI 成功 run」
+  **且**「该 CI run 的 head_sha == tag SHA」，任一不满足就老实跑全量。
+  `FORCE_RELEASE_TESTS=1` 可强制全量。
+  > 注意别用 `commits/{sha}/check-runs` 查 CI 状态 —— 它返回的 name 是 **job 名**
+  > （本仓库是 `check`），不是 workflow 名，用它过滤永远匹配不到。
+- `scripts/fetch-dist.js` 是并行下载（实测比串行快 42%）。
+  **调用时不要用 `| Select-Object -First N`** —— PowerShell 提前关管道会让
+  Node 收到 SIGPIPE 被掐掉，留下 0 字节 .part，而退出码是 Select-Object 的。
 
 ## 四、质量门禁（改代码前必读）
 
@@ -80,44 +92,45 @@
 | `dist/` | 产物固定位置（勿删；当前为 0.9.7 的 Portable exe + zip） |
 | `D:\dsh\hehe-tool.md` | 完整交接文档（外部，用户指定维护） |
 
-## 六、当前状态（2026-11-26 核对）
+## 六、当前状态（2026-11-28 核对）
 
-- 版本 `0.9.7`，tag `v0.9.7` → `979c03f`；`dist/` 为 0.9.7 的 Portable exe + zip。
-- **开源为 MIT**：新增 `LICENSE`（2026 hehe）、README 许可段、
-  `build.files` 纳入 LICENSE（原来产物里没有许可声明）。
-- 上一版 Release（v0.9.6）：https://github.com/xiaohetaoo/hehe-toolbox/releases/tag/v0.9.6
-  （zip 153.93 MB + Portable 99.17 MB，正文 3778 字，run 45562796271 success）
-- **v0.9.6 内容**：R18~R21 四轮审查共 **62 项**修复 ——
-  P0 6 项（批量停止按钮未接线、running 不复位、无 per-run 序号并发写盘、
-  批量改名可重入、Unicode 解码坏的、电源门禁 5 类绕过）；
-  P1 21 项（lib 顶层 const 冲突致 run-token 整份 SyntaxError、path-guard
-  别人 home 深处、FFmpeg 直接写坏 exe、解锁进程名未归一、剪贴板图片交接丢失等）；
-  P2/P3 35 项；UI 字号整数刻度 + 圆角 4/6/8/10 + 窄窗栅格。
-- 质量门禁：`npm test` **218 脚本 / 2444 PASS / 0 失败 / 7 环境跳过**（371.1s），
-  lint 0、typecheck 0；断言基线 **2444**（218 文件；R23 新增测试后）。
-- `dist/` 已是 0.9.6 两个产物，产物校验 **7/7 通过**（M1~M7，含 LICENSE）。
-- **测试环境注意**：`test-critical-dirs` 曾硬编码开发机用户名，CI（runneradmin）
-  下被 OTHER_HOME 规则正确拦下而误报 —— 已改为动态 `os.homedir()` 并补成对断言。
-- **下载通道**：官方 CDN 仍时好时坏（本次 zip 官方成功、exe 卡住后自动走镜像），
-  `npm run dist:fetch <tag>` 已内置「官方优先 → 失败走镜像 + 官方 digest 双校验」。
-- 待办：P3-7 批处理「续跑 vs 即停」策略待产品决定；
-  `shutdown /a` 1116 路径、缩略图网格视觉密度、真实拖拽需实机确认。
+- 版本 `0.9.8`，tag `v0.9.8` → `1e02ebd` 之前；`HEAD` 为 `a4f9139`（与 origin/main 同步）。
+- Release：https://github.com/xiaohetaoo/hehe-toolbox/releases/tag/v0.9.8
+  （zip 161,253,830 B + Portable 103,916,696 B，正文 3397 字）
+- **v0.9.8 内容**：R24~R29 六轮审查共 **62 项**修复 + 发布流程提速。
+  - 竞态 11 处（旧请求晚到覆盖新状态）：磁盘分析、PDF 换文件、压缩包预览、
+    Office 预览、PDF 水印、网速测试。网速页最典型 —— `disposed` 不复位导致
+    保活复用后永久失效，而简单复位又会引入"旧轮写新页"，最终用
+    `disposed` + `speedRunSeq` 双判据。
+  - 路径语义 4 处：`C:`（盘符当前目录）与 `C:\`（盘符根）混用；
+    补长路径前缀 `\\?\C:` 与 UNC 共享根。
+  - 归档预检 fail-open 2 处（安全）：文件/目录同名只查一个方向、
+    `Number(raw.size) || 0` 把坏值全当 0 → 大小上限形同虚设。
+  - 同类 `|| 0` 2 处：磁盘健康空串被当有效读数（假 0°C、"错误 Infinity 次"）；
+    敏感判定把纯小写 40+ 串当 base64 密钥 → sha1 与长订单号会被误删。
+- 质量门禁：`npm test` **226 脚本 / 2562 PASS / 0 失败 / 7 环境跳过**，
+  lint 0、typecheck 0；断言基线 **2562**（226 文件）。
+- `dist/` 已是 0.9.8 两个产物，产物校验 **12/12 通过**（N1~N12）。
+- **v0.9.7 没有失败**：第一次 Release run 因英文 CI 假红失败，把 tag 移到
+  `979c03f` 后重跑成功（两个资产齐全）。曾误报为"失败状态"，已核实更正。
+- 待办：`fetch-dist.js` 并行版已实测可用（409s vs 串行 706s）；
+  Release 自动跳过测试尚未在真实发版中验证（判断出错只会回退为跑，不会漏测）。
 
-## 十三、第 22 轮深度审查（2026-11-26，未提交）
+## 十三、第 22 轮深度审查（2026-11-26，已随 v0.9.7 发布）
 
 - 范围：0.9.6 的纯逻辑边界、归档预检、磁盘健康、快捷启动旧数据与卡片视觉；明细见 `docs/review-round22.md`。
 - 修复 6 项（按收益降序）：P2 长路径前缀 —— `lib/path-text.js` 与 `lib/env-path.js` 只认普通 `C:`，`\\?\C:\foo` 的 dirname 返回 `\\?\C:`、PATH 里退化成 `\\?\C:`，补扩展前缀盘符根；P2 归档 —— 先文件 `a` 后无尾斜杠目录 `a` 能通过预检、解压到一半才失败，补 `fileDirs` 对称检查；P3 快捷启动 —— 旧 store 的 null/缺 target 项会让整页渲染中断，跳过非对象并把字段兜成字符串；P3 磁盘健康 —— `hasAny` 漏 `startStop`，只有启停次数的盘自相矛盾地说「读不到 SMART」，补入判据；P3 视觉 —— 160px 卡片里的 40 字符无空格 URL 会横向溢出，`.tc-name/.tc-desc` 补 `max-width:100%` + `overflow-wrap:anywhere`。
 - 新增测试：`test-round22-fixes.js`（2 条）、`test-path-text` +1、`test-env-path` +1、`test-archive-guard` +1、`test-disk-health` +1；`features.json` 登记 R22 测试。
 - 门禁：`npm test` **217 脚本 / 2437 PASS / 0 失败 / 7 环境跳过**（367.7s，exit 0）；lint 0；typecheck 0；断言基线 **2437**（217 文件）；`HEHE_SMOKE=1` 111 页 PASS（cssRules=498）。
-- 提交状态：所有改动仍在工作区，未提交、未 push；`docs/copyright/` 为用户原有未跟踪资料，未触碰。
+- 提交状态：相关改动已随 v0.9.7 / v0.9.8 发布；`docs/copyright/` 为用户原有资料，未触碰。
 
-## 十四、第 23 轮深度审查（2026-11-26，未提交）
+## 十四、第 23 轮深度审查（2026-11-26，已随 v0.9.7 发布）
 
 - 范围：归档预检数据完整性、磁盘健康数值质量、PATH 盘符语义、UNC 共享根、快捷启动旧数据/默认名与空状态；明细见 `docs/review-round23.md`。
 - 修复 6 项（按收益降序）：P2 归档 `size` 缺失/空串/NaN/Infinity 被 `|| 0` 绕过上限，改为文件条目必须有限非负、坏值 `BAD_SIZE`、目录可无 size；P2 磁盘健康空字段被 `Number('')=0` 伪装成读数、非有限数进入 verdict，统一 `numOrNull` 并让坏 `disks` 不抛；P2 PATH 把 `C:`/`C:\` 归一成同一项、根项会误删或误判已存在，且 `C:\Tools`/`C:\Tools\`/`C:/Tools` 会重复添加，分离盘符根并「先 strip 再语义去重」；P3 快捷启动 `/\.\\w+$/` 默认名正则失效、坏 store 的 null/缺 cmd 项会导致删除抛错或执行 `undefined`，改按最后一点切并过滤坏项；P3 `path-text` UNC 共享根 dirname 退化成主机名，新增共享根分支；P3 快捷项全是坏数据时只显示空网格，改为同一空状态提示。
 - 新增测试：`test-round23-fixes.js`（2）、`test-archive-guard` +1、`test-disk-health` +2、`test-env-path` +1、`test-path-text` +1；`features.json` 登记 R23。
 - 门禁：`npm test` **218 脚本 / 2444 PASS / 0 失败 / 7 环境跳过**（371.1s，exit 0）；lint 0；typecheck 0；断言基线 **2444**（218 文件）；`HEHE_SMOKE=1` 111 页 PASS（cssRules=498）。
-- 提交状态：所有改动仍在工作区，未提交、未 push；`docs/copyright/` 为用户原有未跟踪资料，未触碰。
+- 提交状态：相关改动已随 v0.9.7 / v0.9.8 发布；`docs/copyright/` 为用户原有资料，未触碰。
 
 ## 十五、第 24 轮深度审查与修复（2026-11-26，v0.9.7）
 
@@ -132,16 +145,16 @@
 - 测试环境限制：本机 Chromium 单实例锁文件创建失败（error 5），冒烟时临时绕过 `requestSingleInstanceLock`，跑完已恢复，`main.js` SHA256 与改前一致；仓库未保留临时改动。
 - 提交状态：本轮未 commit、未 push；`docs/copyright/` 未触碰；未跑 dist、未构建发布产物。
 
-## 十六、第 25 轮深度审查与修复（2026-11-26，未提交）
+## 十六、第 25 轮深度审查与修复（2026-11-26，已随 v0.9.8 发布）
 
-- 范围：在 R24 未提交改动上继续做全仓静态审查，重点补路径闸门、任务生命周期、解压/下载边界、网络探测内存上限与窄窗布局；明细见 `docs/review-round25.md`。
+- 范围：在 R24 改动的基础上继续做全仓静态审查，重点补路径闸门、任务生命周期、解压/下载边界、网络探测内存上限与窄窗布局；明细见 `docs/review-round25.md`。
 - 主要修复：盘符相对路径（`C:foo`）在删除/覆盖/改权限/改名四处一致拒绝；`walkDir`/空目录扫描/垃圾扫描/清理全部跳过 junction，清理链接只删链接本身；`scan-empty-dirs` 不再把用户选中的扫描根列进待删清单；媒体批处理先校验输出目录再登记 job，避免幽灵任务；`FFMPEG.DOWNLOAD` 先建 bin 目录再登记 job；更新包 PE 校验与 SHA-256 改用同一文件句柄；`notes:pdf` 直传已存在路径拒绝覆盖；静态服务修正 `D:\` 根前缀；`NET.HTTP` 加 64MB 流式上限；测速采满时间窗后取消响应流；`archive-process` 最终复查不容忍根目录缺失；`SCHED.ONCE_ADD` 拒绝未知动作；启动临时清扫跳过链接；`package.json` asar 排除 `.ts/.d.ts/README/CHANGELOG`。
 - 新增测试：`scripts/test-round25-fixes.js` **26 条**（全部 PASS）；`test-crypt-guard` 改为按完整 `cryptStream` 函数体取片段，6 条 PASS。
 - 门禁：`npm run lint` 0；`npm run typecheck` 0；`npm run test:unit` **188 脚本 / 2109 PASS / 0 失败 / 3 环境跳过**（114.3s）；`test-source-assertions` 6 条 PASS。
 - 未修/风险：R24-45 release/updater 分叉、R24-51 jsconfig 覆盖、R24-43 辅助窗逐字符串翻译仍留待后续；`test-i18n-assertions` 未递归；`HOSTS.BACKUP` 未并入 hosts 串行锁；UI 固定宽度候选已逐项核对，仍建议真实窗口截图复核。
 - 提交状态：本轮未 commit、未 push；`docs/copyright/` 未触碰；未跑 dist、未构建发布产物。
 
-## 十七、第 26 轮连续深查与修复（2026-11-27 凌晨，未提交）
+## 十七、第 26 轮连续深查与修复（2026-11-27 凌晨，已随 v0.9.8 发布）
 
 - 范围：承接 R25 工作区，继续静态审查搜索、Office 转换、媒体任务、hosts、辅助窗语言、局域网扫描与 i18n 守卫；明细见 `docs/review-round26.md`。
 - 主要修复：Office COM 在 `ps` 超时/抛异常时也清半截目标；四条搜索入口的 limit 统一为有限正数、空内容查询直接拒绝、`drive` 大小写归一；内容搜索 `walkDir` 失败也发 `done` 并在 `finally` 清任务；视频裁剪在探测前/探测失败/spawn 前补取消检查；LAN 扫描旧一趟不再拆新一趟订阅或藏进度条；`HOSTS.BACKUP` 并入 hosts 串行锁；辅助窗 `loadFile` 带 `lang` 且首次打开按语言渲染提示/按钮；实时坐标页离开时复位开关；i18n 源码断言守卫递归子目录。
@@ -150,7 +163,7 @@
 - 未修/风险：R24-45 release/updater 分叉、R24-51 jsconfig 覆盖仍留待后续；辅助窗已打开后再切语言的问题已在 R27 补齐（见下）；`HOSTS.BACKUP` 未做真实 hosts 写入实测；UI 固定宽度仍建议真实窗口截图复核。
 - 提交状态：本轮未 commit、未 push；`docs/copyright/` 未触碰；未跑 dist、未构建发布产物。
 
-## 十八、第 27 轮连续深查续（2026-11-27 凌晨，未提交）
+## 十八、第 27 轮连续深查续（2026-11-27 凌晨，已随 v0.9.8 发布）
 
 - 范围：补齐 R26 遗留的「辅助窗已打开后切语言不更新」；继续复核网络测速上限与局域网扫描进度隔离。明细见 `docs/review-round27.md`。
 - 主要修复：`pin-1/ruler-1/snip-1` 收到 `UI_PREFS_CHANGED` 后只在语言真变时派发 `hehe-lang`；`pin` 提示文字、`ruler` 四个 title、`snip` 工具条/调色板/线宽提示即时重画；`snip` 的 `EN` 改为可变，重建工具条时保留 `tool/color/size`；截图工具 `TOOLS` 改为四元组按当前语言取 label；`NET.SPEEDTEST` 上行响应改用 `readHttpCapped` 截断并检查 `r.ok`；分片/合并/7z/ZIP 长操作按钮统一 `ui.guard` 防双击并发；`LAN.SCAN` 进度带本轮 token，旧一趟不能覆盖新一趟。
@@ -158,7 +171,7 @@
 - 门禁：`npm run lint` 0；`npm run typecheck` 0；`test-snip-e2e` 9 条、`test-snip-toolbar-ui` 13 条、`test-aux-windows-csp` 18 条、`test-net-tools` 1 条全过；完整 `test:count:write` **224 脚本 / 2545 PASS**，基线已重拍，`--no-run` 核对无文件低于基线；`test-source-assertions` 6 条（源码断言 1751、1287 条已写「锁的是」）、`test-i18n-assertions` 226 条全过。
 - 提交状态：本轮未 commit、未 push；`docs/copyright/` 未触碰；未跑 dist、未构建发布产物。
 
-## 十九、第 28 轮五小时深查（2026-11-27 夜间，未提交）
+## 十九、第 28 轮五小时深查（2026-11-27 夜间，已随 v0.9.8 发布）
 
 - 范围：只查代码，不手工实机；重点复核页面保活后的长任务状态、异步换文件竞态、窄窗布局。明细见 `docs/review-round28.md`。
 - 主要修复：磁盘分析页 cleanup/onEnter/finally 与进度序号复位，空目录扫描防双击；PDF 页面管理 `loadSeq` 防止旧读取覆盖新文档；压缩包预览 `pvSeq` 丢弃旧 LIST；文档预览捕获 `target` + `previewSeq` 停笔；PDF 水印/提取/瘦身捕获 `srcPath`；屏幕坐标 4 格、实时速率 5 格改 `auto-fit` 窄窗落列。
@@ -166,7 +179,7 @@
 - 门禁：`npm run lint` 0；`npm run typecheck` 0；完整 `test:count:write` **225 脚本 / 2555 PASS**，基线重拍；`test-source-assertions` 6 条（源码断言 1784、1320 条已写「锁的是」）；`test-i18n-assertions` 227 条；`test-round28-fixes`、`test-pdf-pages`、`test-round16-behavior`、`test-round25-fixes` 全过。
 - 提交状态：未 commit、未 push；`docs/copyright/` 与 `dist/` 未触碰；7 个环境脚本按既有原因跳过。
 
-## 二十、第 29 轮继续深查（2026-11-28 凌晨，未提交）
+## 二十、第 29 轮继续深查（2026-11-28 凌晨，已随 v0.9.8 发布）
 
 - 范围：承接第 28 轮继续查页面保活生命周期，重点看 `onCleanup` 后没有 `onEnter` 复位的页面。明细见 `docs/review-round29.md`。
 - 主要修复：网速测试页的 `disposed` 在切页后永久为 true，复用回来按钮静默失效；新增 `speedRunSeq` 每轮序号与 `onEnter` 复位，旧 await 结果、旧 `job:stream`、旧 `finally` 都不再碰当前轮。工具链 `runChain` 增加 `shouldStop`，离开页面后不再启动下一步（当前步无法中断）。
