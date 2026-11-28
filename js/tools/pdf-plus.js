@@ -114,7 +114,10 @@
       const status = h('span', { class: 'field-hint' }, '');
 
       const runBtn = btn('生成 PDF', 'btn-primary', async () => {
-        if (!pdfPath) return toast('请先选择 PDF', 'warn');
+        /* 【捕获本次源文件】处理/保存框都有 await；期间用户若在 picker 里
+         * 换了 B，后续再读 pdfPath 就会把 A 内容存成 B-stamped.pdf。 */
+        const srcPath = pdfPath;
+        if (!srcPath) return toast('请先选择 PDF', 'warn');
         const wantWm = !!wmText.value.trim();
         const wantNum = numOn.checked;
         if (!wantWm && !wantNum) return toast('水印和页码都没启用，没事可做', 'warn');
@@ -133,7 +136,7 @@
           if (!PDFLib) throw new Error('pdf-lib 未加载');
           const { PDFDocument, StandardFonts, rgb, degrees } = PDFLib;
 
-          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pdfPath);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, srcPath);
           const doc = await PDFDocument.load(r.b64, { ignoreEncryption: true });
           const pages = doc.getPages();
           const total = pages.length;
@@ -240,7 +243,7 @@
           const bytes = await doc.save();
           const outPath = await invoke(Channels.CHANNELS.DIALOG.SAVE, {
             title: '保存带水印的 PDF',
-            defaultPath: String(pdfPath).replace(/\.pdf$/i, '') + '-stamped.pdf',
+            defaultPath: String(srcPath).replace(/\.pdf$/i, '') + '-stamped.pdf',
             filters: [{ name: 'PDF', extensions: ['pdf'] }],
           });
           if (!outPath) { status.textContent = ''; runBtn.disabled = false; return; }
@@ -328,14 +331,15 @@
       });
 
       const runBtn = btn('提取文字', 'btn-primary', async () => {
-        if (!pdfPath) return toast('请先选择 PDF', 'warn');
+        const srcPath = pdfPath;
+        if (!srcPath) return toast('请先选择 PDF', 'warn');
         if (!window.pdfjsLib) return toast('pdf.js 未加载', 'error');
         status.textContent = '读取中…';
         runBtn.disabled = true;
         const runToken = ++txtRunSeq;
         try {
           window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
-          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pdfPath);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, srcPath);
           const bin = atob(r.b64);
           const arr = new Uint8Array(bin.length);
           for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
@@ -471,7 +475,8 @@
       });
 
       const runBtn = btn('开始瘦身', 'btn-primary', async () => {
-        if (!pdfPath) return toast('请先选择 PDF', 'warn');
+        const srcPath = pdfPath;
+        if (!srcPath) return toast('请先选择 PDF', 'warn');
         status.textContent = '处理中…';
         runBtn.disabled = true;
         result.innerHTML = '';
@@ -481,7 +486,7 @@
           if (!PDFLib) throw new Error('pdf-lib 未加载');
           const { PDFDocument } = PDFLib;
 
-          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pdfPath);
+          const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, srcPath);
           const beforeBytes = Math.floor(r.b64.length * 0.75);
 
           const doc = await PDFDocument.load(r.b64, { ignoreEncryption: true, updateMetadata: false });
@@ -502,7 +507,7 @@
 
           const outPath = await invoke(Channels.CHANNELS.DIALOG.SAVE, {
             title: '保存瘦身后的 PDF',
-            defaultPath: String(pdfPath).replace(/\.pdf$/i, '') + '-slim.pdf',
+            defaultPath: String(srcPath).replace(/\.pdf$/i, '') + '-slim.pdf',
             filters: [{ name: 'PDF', extensions: ['pdf'] }],
           });
           if (!outPath) { status.textContent = ''; runBtn.disabled = false; return; }

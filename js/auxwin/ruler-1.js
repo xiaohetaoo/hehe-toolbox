@@ -2,15 +2,27 @@
   (function () {
     var ids = ['polar','mist','jade','violet','rose','gold','teal','sand','mono'];
     function apply(id) { if (ids.indexOf(id) !== -1) document.documentElement.dataset.accent = id; }
+    function setLang(l) {
+      var next = l === 'en' ? 'en' : 'zh-CN';
+      if (document.documentElement.lang === next) return false;
+      document.documentElement.lang = next;
+      return true;
+    }
     try {
-      var q = new URLSearchParams(location.search).get('accent');
-      if (q) apply(q);
+      var q = new URLSearchParams(location.search);
+      var accent = q.get('accent');
+      if (accent) apply(accent);
+      if (q.get('lang')) setLang(q.get('lang'));
     } catch (e) {}
     if (window.hehe && window.hehe.on) {
       try { window.hehe.on('aux:accent', apply); } catch (e) {}
       try {
-        window.hehe.on(Channels.CHANNELS.APP.UI_PREFS_CHANGED, function (p) {
-          document.documentElement.lang = (p && p.lang === 'en') ? 'en' : 'zh-CN';
+        window.hehe.on(window.Channels.CHANNELS.APP.UI_PREFS_CHANGED, function (p) {
+          if (setLang(p && p.lang)) {
+            /* 通知本窗口的 DOM 逻辑：语言变了，按钮/title/提示要即时重画。
+             * UI_PREFS_CHANGED 也会随主题/主色广播；语言没变就不要重画。 */
+            try { window.dispatchEvent(new Event('hehe-lang')); } catch (e) {}
+          }
         });
       } catch (e) {}
     }

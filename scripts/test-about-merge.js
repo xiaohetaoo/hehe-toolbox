@@ -239,7 +239,8 @@ if (R.fatal) {
       '显示关于时侧栏「设置」仍高亮（不是空高亮）: '
       + JSON.stringify(by['nav-active'] && by['nav-active'].active));
 
-  chk(by.breadcrumb && /设置/.test(by.breadcrumb.text || ''),
+  /* 【两种语言都要认】英文系统上面包屑是 "Settings"，只认中文会在 CI 上假红。 */
+  chk(by.breadcrumb && /设置|Settings/i.test(by.breadcrumb.text || ''),
       '面包屑含「设置」: ' + (by.breadcrumb && by.breadcrumb.text));
 
   chk(R.errors.length === 0, '无未捕获 JS 错误' + (R.errors.length ? ': ' + JSON.stringify(R.errors) : ''));

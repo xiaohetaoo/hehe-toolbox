@@ -297,23 +297,34 @@
     keywords: ['预览', 'preview', 'pdf', 'word', 'excel', '查看'],
     render(page) {
       let filePath = '';
+      let previewSeq = 0;
       const picker = filePicker({
         text: '拖入或选择文档（pdf / txt / md / doc(x) / xls(x) / ppt(x)）',
         single: true,
         emptyText: '还没有选择文档',
-        onChange: (items) => { filePath = items.length ? items[0].path : ''; }
+        onChange: (items) => {
+          /* 换文件立刻作废在飞的预览：旧 canvas/旧文本不能继续往新文件名下画。 */
+          previewSeq++;
+          filePath = items.length ? items[0].path : '';
+          try { view.innerHTML = ''; status.textContent = ''; } catch (e) {}
+        }
       });
       const status = h('span', { class: 'field-hint' }, '');
       const view = div('doc-preview-box', { style: { maxHeight: '70vh', overflow: 'auto', padding: '8px', background: 'var(--bg-2)', borderRadius: '8px', marginTop: '8px' } });
       async function previewRun() {
-        if (!filePath) return toast('请先选择文档', 'warn');
+        /* 捕获本次要预览的文件与轮次：预览过程中用户可能已在选择器里换了文件，
+         * 后续 await 再读 filePath 会把新文件塞进旧预览流程；旧渲染也必须停笔。 */
+        const target = filePath;
+        const mySeq = ++previewSeq;
+        if (!target) return toast('请先选择文档', 'warn');
         view.innerHTML = '';
-        const ext = filePath.split('.').pop().toLowerCase();
+        const ext = target.split('.').pop().toLowerCase();
         try {
-          if (ext === 'pdf') return await renderPdf(filePath);
-          if (ext === 'txt' || ext === 'md' || ext === 'markdown') return await renderText(filePath, ext !== 'txt');
+          if (ext === 'pdf') return await renderPdf(target, mySeq);
+          if (ext === 'txt' || ext === 'md' || ext === 'markdown') return await renderText(target, ext !== 'txt', mySeq);
           if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf'].includes(ext)) {
             const st = await invoke(Channels.CHANNELS.OFFICE.STATUS);
+            if (mySeq !== previewSeq) return;
             if (!st.soffice) {
               status.textContent = 'Office 文档预览需要 LibreOffice（PDF/TXT/MD 可直接预览）';
               toast('未检测到 LibreOffice，无法预览 Office 文档', 'warn');
@@ -321,39 +332,51 @@
             }
             status.textContent = '经 LibreOffice 转换中…（首次较慢）';
             const tmpDir = (await invoke(Channels.CHANNELS.APP.GET_INFO)).userData + '/preview-tmp';
-            const r = await invoke(Channels.CHANNELS.OFFICE.CONVERT, { files: [filePath], target: 'pdf', outDir: tmpDir });
+            if (mySeq !== previewSeq) return;
+            const r = await invoke(Channels.CHANNELS.OFFICE.CONVERT, { files: [target], target: 'pdf', outDir: tmpDir });
+            if (mySeq !== previewSeq) return;
             const res = r.results && r.results[0];
             if (!res || !res.ok) throw new Error('转换失败：' + ((res && res.err) || '未知'));
             status.textContent = '转换完成，渲染中…';
-            return await renderPdf(res.out);
+            return await renderPdf(res.out, mySeq);
           }
           toast(`不支持预览 .${ext} 文件；可预览 PDF / TXT / MD / Word / Excel / PPT`, 'warn');
-        } catch (e) { status.textContent = '✗ ' + e.message; toast(e.message, 'error'); }
+        } catch (e) {
+          if (mySeq !== previewSeq) return;
+          status.textContent = '✗ ' + e.message;
+          toast(e.message, 'error');
+        }
       }
       /* 【防重入】Office 转 PDF 要拉起 LibreOffice（首次可达十几秒），
        * 连点会并发拉起两个 soffice 进程、预览框内容互相覆盖。 */
       const preview = window.ui.guard(previewRun);
-      async function renderPdf(p) {
+      async function renderPdf(p, seqToken) {
         if (!window.pdfjsLib) return toast('pdf.js 未加载', 'error');
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'node_modules/pdfjs-dist/build/pdf.worker.min.js';
         const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, p);
+        if (seqToken != null && seqToken !== previewSeq) return;
         const bytes = Uint8Array.from(atob(r.b64), c => c.charCodeAt(0));
         const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+        if (seqToken != null && seqToken !== previewSeq) return;
         const pages = Math.min(pdf.numPages, 20);
         for (let i = 1; i <= pages; i++) {
+          if (seqToken != null && seqToken !== previewSeq) return;
           const pg = await pdf.getPage(i);
+          if (seqToken != null && seqToken !== previewSeq) return;
           const vp = pg.getViewport({ scale: 1.4 });
           const canvas = document.createElement('canvas');
           canvas.width = vp.width; canvas.height = vp.height;
           canvas.style.cssText = 'display:block;margin:0 auto 10px;box-shadow:0 1px 6px rgba(0,0,0,.25);background:#fff';
           await pg.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+          if (seqToken != null && seqToken !== previewSeq) return;
           view.appendChild(canvas);
           status.textContent = `渲染 ${i}/${pages} 页`;
         }
         status.textContent = `✓ 共 ${pdf.numPages} 页${pdf.numPages > pages ? `（预览前 ${pages} 页）` : ''}`;
       }
-      async function renderText(p, isMd) {
+      async function renderText(p, isMd, seqToken) {
         const r = await invoke(Channels.CHANNELS.FS.READ_TEXT, p);
+        if (seqToken != null && seqToken !== previewSeq) return;
         if (isMd && window.marked) {
           const box = div('md-view');
           /* 【无 sanitizer 时退化为纯文本，不是原样渲染】

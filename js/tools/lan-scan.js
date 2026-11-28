@@ -82,10 +82,23 @@
          * 两边对不上，于是进度条恒为 0、状态文字停在「正在扫描…」，扫描 10-30 秒
          * 期间界面完全静止，用户会以为卡死并反复点。
          * 统一到 job:progress（与本项目其它按 kind 过滤的工具一致），
-         * 只按 kind === 'lan' 过滤，不额外匹配 id —— 同一时刻只会有一次扫描。 */
+         * 只按 kind === 'lan' 过滤；同一页面内 guard 保证不会并发，
+         * 但离开页面后上一轮主进程扫描仍可能收尾发进度，所以再按
+         * 本轮 token 过滤（见下方 myToken）。 */
+        const myToken = 'lan' + runToken;
         if (unsub) { try { unsub(); } catch (e) {} }
-        unsub = window.api.on('job:progress', (d) => {
+        /* 【订阅句柄必须按「这一趟」保存，不能共用外层的 unsub】
+         * 旧实现 run1 触发 run2 时，run2 会把 unsub 换成自己的监听；
+         * run1 的 finally 却对着这个共享变量执行 unsub()/置 null，
+         * 于是**把 run2 刚建立的进度订阅拆掉**，run2 在整个扫描期间
+         * 收不到 job:progress，进度条停在 0。这里用局部 myUnsub，
+         * 旧的一趟只清理自己那份。 */
+        let myUnsub = null;
+        myUnsub = window.api.on('job:progress', (d) => {
           if (!d || d.kind !== 'lan') return;
+          /* 不属于本轮扫描的进度（旧页面/旧一趟收尾）直接丢。
+           * 老版本主进程不带 token 时按原行为接收，避免升级瞬间没进度。 */
+          if (d.token && d.token !== myToken) return;
           /* 【两个阶段分开描述，不要只看 done/total】
            * 扫描阶段 total=254，反查阶段 total≤30。若统一按「扫描中 x/y」显示，
            * 反查时会突然变成「扫描中 3/30」—— 用户以为扫描重头开始了。
@@ -101,10 +114,13 @@
           prog.set(pct);
           status.textContent = '扫描中 ' + d.done + '/' + d.total + '，已发现 ' + (d.found || 0) + ' 台响应';
         });
+        /* 外层仍记「当前那一份」，供离开页面时统一退订；旧的一趟在
+         * finally 里只碰自己的 myUnsub，不会把这里指向的新监听清掉。 */
+        unsub = myUnsub;
 
         try {
           /* 带上用户选定的网卡地址（没选就传空，由主进程按私有网段默认挑） */
-          const r = await invoke(Channels.CHANNELS.LAN.SCAN, state.ip ? { ip: state.ip } : {});
+          const r = await invoke(Channels.CHANNELS.LAN.SCAN, { ip: state.ip || '', token: myToken });
           /* 【过期就直接丢】这趟扫描期间用户可能离开了页面或又点了一次扫描。
            * 不判的话，旧结果会覆盖新扫描的中间状态（两者都写 state.result
            * 与 resultBox），界面在两次结果之间来回闪。 */
@@ -118,8 +134,11 @@
           status.textContent = '✗ ' + e.message;
           toast(e.message, 'error');
         } finally {
-          if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
-          prog.hide();
+          /* 只退自己那一份；共享的 unsub 可能已经指向新一趟的监听。 */
+          if (myUnsub) { try { myUnsub(); } catch (e) {} }
+          if (unsub === myUnsub) unsub = null;
+          /* 进度条同理：旧的一趟收尾时不能把新一趟正在用的进度条藏掉。 */
+          if (runToken === scanRunSeq) prog.hide();
           /* 【按钮必须在这里恢复】doScan 走了 guard：这个 async 函数返回后
            * guard 才解锁，但按钮的 disabled 是 doScanOnce 自己置的，
            * 没人恢复就会一直灰着 —— 用户以为扫描没结束。

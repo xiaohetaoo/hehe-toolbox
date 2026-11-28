@@ -116,7 +116,15 @@ let storeCorruptCopy = null;
 let saveTimer = null;
 function loadStore() {
   try {
-    storeData = Object.assign(storeData, JSON.parse(fs.readFileSync(storeFile(), 'utf8')));
+    /* 用 reviver 去掉 __proto__ / constructor / prototype。
+     * JSON.parse 会把 "__proto__" 建成普通 own 属性，但紧接着的
+     * Object.assign(storeData, parsed) 会触发 setter，把 storeData 的
+     * 原型换成攻击者提供的对象 —— 之后任何 storeGet('任意键') 都可能
+     * 从被污染的原型链上取值。store 文件是本地可编辑的，必须先净化。 */
+    storeData = Object.assign(storeData, JSON.parse(fs.readFileSync(storeFile(), 'utf8'), (k, v) => {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') return undefined;
+      return v;
+    }));
   } catch (e) {
     // 首次运行（ENOENT）是正常的；解析失败才是真问题，必须标记出来
     if (e && e.code !== 'ENOENT') {
@@ -1289,7 +1297,19 @@ handle(CH.APP.GET_INFO, () => ({
 handle(CH.STORE.GET, (e, key, def) => storeGet(key, def));
 handle(CH.STORE.SET, (e, key, val) => {
   const parts = String(key).split('.');
-  if (parts[0] === 'updateCache' || parts.some(part => ['__proto__', 'constructor', 'prototype'].includes(part))) {
+  /* 这些键由主进程状态机维护，页面直接改会绕过对应的校验/确认流程：
+   *   envInstalled → ENV.CLEAN/REMOVE 按其中的 dir 做删除
+   *   settings.dangerousCaps → 高危通道门禁
+   *   settings.ffmpegPath/ffprobePath → 后续 spawn 的二进制路径
+   * 页面仍可通过专用通道（dangerous:set、ffmpeg:pick、env:*）修改，
+   * 那里有参数校验与 UI 确认；store:set 不再作为旁路。 */
+  const MAIN_OWNED = new Set([
+    'updateCache', 'envInstalled', 'envApplied', 'envVarsBackup', 'settings.dangerousCaps',
+    'settings.ffmpegPath', 'settings.ffprobePath',
+  ]);
+  const owned = MAIN_OWNED.has(parts[0]) ||
+    (parts[0] === 'settings' && ['dangerousCaps', 'ffmpegPath', 'ffprobePath'].includes(parts[1]));
+  if (owned || parts.some(part => ['__proto__', 'constructor', 'prototype'].includes(part))) {
     throw new Error('该存储路径由主进程管理，不能从页面修改');
   }
   const r = storeSet(key, val);
@@ -1384,7 +1404,9 @@ handle(CH.APP.OPEN_TOOL_WINDOW, (e, toolId) => openToolWindow(toolId));
  * 它们看的是自己 documentElement 上的 data-theme。所以必须广播。
  * 返回值带上最终明暗，调用方（主窗）不用再猜 'system' 解出来是什么。 */
 handle(CH.APP.SET_THEME, (e, mode) => {
-  nativeTheme.themeSource = mode;
+  /* nativeTheme.themeSource 只接受 system/light/dark；损坏的 store 或
+   * 直接构造的 IPC 传别的值会在 setter 里抛错，把设置页整个打断。 */
+  nativeTheme.themeSource = (mode === 'light' || mode === 'dark' || mode === 'system') ? mode : 'system';
   broadcastUiPrefs();
   return nativeTheme.shouldUseDarkColors;
 });
@@ -1712,7 +1734,9 @@ handle(CH.PROC.LIST, async () => {
   return out;
 });
 handle(CH.PROC.DETAIL, async (e, pid) => {
-  const r = await ps(`Get-CimInstance Win32_Process -Filter "ProcessId=${parseInt(pid, 10)}" | Select-Object ExecutablePath,CommandLine | ConvertTo-Json -Compress`, 15000);
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) throw new Error('进程 ID 无效');
+  const r = await ps(`Get-CimInstance Win32_Process -Filter "ProcessId=${n}" | Select-Object ExecutablePath,CommandLine | ConvertTo-Json -Compress`, 15000);
   if (!r.stdout.trim()) return { path: '', cmdline: '' };
   const j = JSON.parse(r.stdout);
   return { path: j.ExecutablePath || '', cmdline: j.CommandLine || '' };
@@ -1819,7 +1843,10 @@ handle(CH.SERVER.START, async (e, root, port) => {
       const resolveInsideRoot = (candidate) => {
         const real = realpathSafe(candidate);
         const lq = real.toLowerCase(), lr = realRoot.toLowerCase();
-        const ok = lq === lr || lq.startsWith(lr + path.sep) || lq.startsWith(lr + '/');
+        /* 根目录本身可能以分隔符结尾（例如用户把 D:\ 当站点根）。
+         * 直接拼 lr + sep 会得到 D:\\，任何子文件都不再匹配。 */
+        const prefix = lr.endsWith(path.sep) ? lr : lr + path.sep;
+        const ok = lq === lr || lq.startsWith(prefix) || lq.startsWith(lr + '/');
         if (!ok) return null;
         return real;
       };
@@ -2305,7 +2332,19 @@ handle(CH.AUTOSTART.DISABLED_LIST, () => {
 /* hosts */
 const HOSTS_PATH = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts');
 handle(CH.HOSTS.READ, async () => ({ content: await fsp.readFile(HOSTS_PATH, 'utf8'), path: HOSTS_PATH }));
-handle(CH.HOSTS.WRITE, async (e, content) => {
+/* hosts 写入/还原串行化。
+ * 两个窗口（主窗 + 弹出工具窗）可以同时点「应用」。原实现共用固定的
+ * `%SystemRoot%\System32\drivers\etc\hosts.hehe.tmp` / `.hehe.restore.tmp`：
+ * A 刚把内容写进 tmp，B 又覆盖同一文件，随后两个 rename/rm 交错，可能把
+ * 系统 hosts 短暂删掉、甚至把 B 的内容当成 A 的结果。备份名带随机后缀挡不住
+ * 这个竞态 —— 必须让整段「备份 → 写 tmp → 替换 → flushdns」互斥。 */
+let hostsChain = Promise.resolve();
+function withHostsLock(fn) {
+  const run = hostsChain.then(fn, fn);
+  hostsChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+handle(CH.HOSTS.WRITE, async (e, content) => withHostsLock(async () => {
   // 直接覆盖系统 hosts 有风险（写入中途失败会留下半截文件，影响全机 DNS）。
   // 先自动备份，再写临时文件后原子替换。
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
@@ -2357,19 +2396,23 @@ handle(CH.HOSTS.WRITE, async (e, content) => {
   }
   try { await runCmd('ipconfig', ['/flushdns'], { timeout: 10000 }); } catch (err) {}
   return true;
-});
-handle(CH.HOSTS.BACKUP, async () => {
+}));
+/* 手动备份也必须并进同一把 hosts 锁：它与 WRITE/RESTORE 共用同一个
+ * hosts-backup 目录，且备份要在「写之前」还是「写之后」取文件，取决于
+ * 它排在哪一步。不串行的话，用户一边点备份一边写 hosts，备份里可能是
+ * 半写状态的文件，真出问题时拿来还原反而把半截内容写回去。 */
+handle(CH.HOSTS.BACKUP, async () => withHostsLock(async () => {
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
   await fsp.mkdir(dir, { recursive: true });
   const name = `hosts-${timeStamp.localStampDashMs(new Date())}-${crypto.randomBytes(2).toString('hex')}.bak`;
   await fsp.copyFile(HOSTS_PATH, path.join(dir, name));
   return { name };
-});
+}));
 handle(CH.HOSTS.BACKUPS, async () => {
   const dir = path.join(app.getPath('userData'), 'hosts-backup');
   try { return (await fsp.readdir(dir)).map(n => path.join(dir, n)).reverse(); } catch (err) { return []; }
 });
-handle(CH.HOSTS.RESTORE, async (e, backupPath) => {
+handle(CH.HOSTS.RESTORE, async (e, backupPath) => withHostsLock(async () => {
   // 只允许还原本机制作、且位于 hosts-backup 目录内的备份，
   // 避免误传/构造任意路径把无关文件写进系统 hosts。
   const dir = path.resolve(path.join(app.getPath('userData'), 'hosts-backup'));
@@ -2400,21 +2443,39 @@ handle(CH.HOSTS.RESTORE, async (e, backupPath) => {
     throw new Error('备份当前 hosts 失败，已中止还原（避免无法退回）：' + fmtErr(err));
   }
   const tmp = HOSTS_PATH + '.hehe.restore.tmp';
+  let tmpReady = false;
   try {
     await fsp.copyFile(abs, tmp);
+    tmpReady = true;
     await fsp.rename(tmp, HOSTS_PATH);
   } catch (err) {
-    await fsp.rm(tmp, { force: true }).catch(() => {});
-    // 与 hosts:write 同理：不能退化成直接覆盖写
+    /* 复制阶段失败：hosts 还没动，清掉半截 tmp 即可中止。
+     * 只有 tmp 已完整写好时才可以进入「删旧 + 改名」的退化路径；
+     * 原来不分阶段直接 rm(tmp) 再 copyFile(abs, HOSTS_PATH)，
+     * 等于用一次非原子的覆盖写替换系统 hosts —— 写到一半断电/被杀
+     * 就留下半截 hosts。这里保留 tmp，失败时用它把 hosts 补回来。 */
+    if (!tmpReady) {
+      await fsp.rm(tmp, { force: true }).catch(() => {});
+      throw new Error('还原 hosts 失败，原 hosts 未被改动：' + fmtErr(err));
+    }
     try {
-      await fsp.copyFile(abs, HOSTS_PATH);
-    } catch (e2) {
-      throw new Error('还原 hosts 失败：' + fmtErr(err) + '（当前 hosts 的备份已保存在 hosts-backup 目录）');
+      await fsp.rm(HOSTS_PATH, { force: true });
+      await fsp.rename(tmp, HOSTS_PATH);
+    } catch (err2) {
+      /* hosts 可能已被删、tmp 还在：先用 tmp 补回，再决定是否清 tmp。 */
+      try {
+        await fsp.copyFile(tmp, HOSTS_PATH);
+        await fsp.rm(tmp, { force: true }).catch(() => {});
+      } catch (e3) {
+        throw new Error('还原 hosts 失败且无法恢复：' + fmtErr(err2) +
+          '；临时文件已保留在 ' + tmp + '，当前 hosts 的备份在 hosts-backup 目录');
+      }
+      throw new Error('还原 hosts 失败：' + fmtErr(err2) + '（原 hosts 已从临时文件恢复，已保留备份）');
     }
   }
   try { await runCmd('ipconfig', ['/flushdns'], { timeout: 10000 }); } catch (err) {}
   return true;
-});
+}));
 
 /* 配色主题（accent）广播：主窗口改了配色后，标尺/贴图/截图标注这些辅助窗口
    也要跟着换主色，否则它们会一直显示旧主题的蓝色。 */
@@ -2495,7 +2556,7 @@ handle(CH.WIN.RULER, (e, dir) => {
   self.on('closed', () => {
     if (rulerWin === self) { rulerWin = null; rulerGeom = null; }
   });
-  rulerWin.loadFile('ruler.html', { query: { dir: horizontal ? 'h' : 'v', accent: currentAccent } });
+  rulerWin.loadFile('ruler.html', { query: { dir: horizontal ? 'h' : 'v', accent: currentAccent, lang: uiLang } });
   return true;
 });
 handle(CH.WIN.RULER_CLOSE, () => {
@@ -2717,9 +2778,18 @@ handle(CH.OFFICE.CONVERT, async (e, { files, target, outDir }) => {
   const results = [];
   if (!Array.isArray(files) || !files.length) throw new Error('请选择要转换的文件');
   if (typeof outDir !== 'string' || !outDir.trim()) throw new Error('缺少输出目录');
-  /* 与 fs:mkdir 同口径：转换输出目录也要过系统保护位置检查（R24-13） */
-  if (pathGuard.isProtectedForModify(outDir) || pathGuard.isCriticalPath(outDir)) {
-    throw new Error('输出目录受系统保护：' + outDir);
+  /* 与 fs:mkdir 同口径：转换输出目录也要过系统保护位置检查（R24-13）。
+   * 注意 isProtectedForModify 返回的是对象，不是布尔 —— 直接把它放进
+   * `if (...)` 会把「未受保护」也当成真，导致这个功能对所有目录都拒绝。 */
+  const outProt = pathGuard.isProtectedForModify(outDir);
+  if (outProt.protected || pathGuard.isCriticalPath(outDir)) {
+    throw new Error('输出目录受系统保护：' + (outProt.reason || outDir));
+  }
+  /* target 会拼进输出文件名与 soffice 参数；只允许纯扩展名，
+   * 避免 `../../x` 之类借目标名做路径穿越（uniqueTarget 虽有 resolveInside，
+   * 也不该把这种值送进外部进程）。 */
+  if (typeof target !== 'string' || !/^[a-z0-9]{2,8}$/i.test(target)) {
+    throw new Error('目标格式不合法：' + String(target));
   }
   await fsp.mkdir(outDir, { recursive: true });
   if (soffice) {
@@ -2813,8 +2883,19 @@ handle(CH.OFFICE.CONVERT, async (e, { files, target, outDir }) => {
       }
       const r = await ps(script, 180000);
       const ok = await pathExists(out);
+      if (!ok) {
+        /* uniqueTarget 保证 out 是本次新建的目标；COM 失败时可能已落下一份
+         * 半截文件（密码保护/进程被杀/磁盘满）。不清理的话用户看到“失败”，
+         * 目录里却多了一个打不开的同名产物。 */
+        await fsp.rm(out, { force: true }).catch(() => {});
+      }
       results.push({ input: f, out: ok ? out : null, ok, err: ok ? '' : (r.stdout + r.stderr).slice(-200) || '转换失败（文件可能受密码保护）' });
     } catch (err) {
+      /* ps() 本身也可能超时/抛异常（COM 卡死、Office 弹窗被策略拦下），
+       * 此时上面那条「产出不存在 → 清理」根本执行不到。这里同样按
+       * uniqueTarget 的保证清掉本次新建的目标，避免失败后目录里留下
+       * 一个打不开的半截同名文件。 */
+      try { await fsp.rm(out, { force: true }); } catch (e2) {}
       results.push({ input: f, out: null, ok: false, err: (err.message || '').includes('Cannot create') || /0x80040154/.test(err.message) ? '未检测到 Microsoft Office，请安装 Office 或 LibreOffice' : fmtErr(err) });
     }
   }
@@ -3073,7 +3154,8 @@ handle(CH.SEARCH.QUERY, async (e, { q, drive, limit, stat }) => {
   const query = String(q || '').trim().toLowerCase();
   if (!query) return { rows: [], total: 0, ms: 0 };
   const t0 = Date.now();
-  const cap = Math.min(2000, limit || 300);
+  const limitRaw = Number(limit);
+  const cap = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(2000, Math.floor(limitRaw)) : 300;
   const rows = [];
   const scanIdx = (driveLetter, idx) => {
     for (const [frn, rec] of idx.map) {
@@ -3084,7 +3166,8 @@ handle(CH.SEARCH.QUERY, async (e, { q, drive, limit, stat }) => {
     }
     return false;
   };
-  if (drive && searchIndexes.has(drive)) scanIdx(drive, searchIndexes.get(drive));
+  const driveKey = typeof drive === 'string' ? drive.trim().toUpperCase() : '';
+  if (driveKey && searchIndexes.has(driveKey)) scanIdx(driveKey, searchIndexes.get(driveKey));
   else for (const [driveLetter, idx] of searchIndexes) { if (scanIdx(driveLetter, idx)) break; }
   for (const r of rows) { r.path = searchResolvePath(r.drive, r.frn); delete r.frn; }
   if (stat) {
@@ -3101,7 +3184,9 @@ handle(CH.SEARCH.ES, async (e, { q, limit }) => {
   const query = String(q || '').trim();
   if (!query) return { rows: [], total: 0, ms: 0 };
   const t0 = Date.now();
-  const r = await runCmd(es, ['-n', String(Math.min(2000, limit || 300)), query], { timeout: 15000, encoding: 'utf8' });
+  const limitRaw = Number(limit);
+  const esLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(2000, Math.floor(limitRaw)) : 300;
+  const r = await runCmd(es, ['-n', String(esLimit), query], { timeout: 15000, encoding: 'utf8' });
   const rows = [];
   for (const line of (r.stdout || '').split(/\r?\n/)) {
     const p = line.trim();
@@ -3123,7 +3208,8 @@ handle(CH.SEARCH.QUICK, (e, { root, q, limit }) => {
   latestCancelable = kill;
   (async () => {
     const t0 = Date.now();
-    const cap = Math.min(3000, limit || 500);
+    const limitRaw = Number(limit);
+    const cap = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(3000, Math.floor(limitRaw)) : 500;
     let matched = 0, scanned = 0, lastSend = 0;
     let batch = [];
     const sendBatch = () => { if (batch.length) { send('job:stream', { id, data: JSON.stringify({ rows: batch }) }); batch = []; } };
@@ -3161,6 +3247,7 @@ handle(CH.SEARCH.QUICK, (e, { root, q, limit }) => {
 
 /* ================= IPC: 文件内容搜索（流式） ================= */
 handle(CH.CONTENT.SEARCH, (e, { root, q, useRegex, ci, exts, limit }) => {
+  if (typeof q !== 'string' || !q.trim()) throw new Error('请输入搜索内容');
   const id = 'cs' + (++jobSeq);
   const cancelRef = { canceled: false };
   const kill = () => { cancelRef.canceled = true; };
@@ -3172,37 +3259,48 @@ handle(CH.CONTENT.SEARCH, (e, { root, q, useRegex, ci, exts, limit }) => {
     try { re = useRegex ? new RegExp(q, ci ? 'i' : '') : new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), ci ? 'i' : ''); }
     catch (err) { send('job:stream', { id, data: JSON.stringify({ done: true, error: '正则无效：' + err.message }) }); jobs.delete(id); return; }
     const extSet = new Set(String(exts || '').split(/[,\s]+/).map(x => x.toLowerCase().replace(/^\./, '')).filter(Boolean));
-    const cap = Math.min(3000, limit || 500);
+    const limitRaw = Number(limit);
+    const cap = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(3000, Math.floor(limitRaw)) : 500;
     let matched = 0, scanned = 0, lastSend = 0, batch = [];
     const sendBatch = () => { if (batch.length) { send('job:stream', { id, data: JSON.stringify({ rows: batch }) }); batch = []; } };
-    await walkDir(root, { _cancelRef: cancelRef }, async (item) => {
-      if (cancelRef.canceled || item.type !== 'file') return;
-      scanned++;
-      if (extSet.size && !extSet.has(path.extname(item.path).slice(1).toLowerCase())) return;
-      try {
-        const st = await fsp.stat(item.path);
-        if (st.size > 20 * 1024 * 1024) return;
-        const buf = await fsp.readFile(item.path);
-        if (buf.includes(0)) return; // 跳过二进制
-        let text = buf.toString('utf8');
-        if (text.includes('\uFFFD')) { try { text = new TextDecoder('gbk').decode(buf); } catch (err) {} }
-        const lines = text.split(/\r?\n/);
-        for (let ln = 0; ln < lines.length; ln++) {
-          if (re.test(lines[ln])) {
-            matched++;
-            batch.push({ path: item.path, line: ln + 1, text: lines[ln].length > 300 ? lines[ln].slice(0, 300) + '…' : lines[ln] });
-            if (batch.length >= 30) sendBatch();
-            if (matched >= cap) break;
+    try {
+      await walkDir(root, { _cancelRef: cancelRef }, async (item) => {
+        if (cancelRef.canceled || item.type !== 'file') return;
+        scanned++;
+        if (extSet.size && !extSet.has(path.extname(item.path).slice(1).toLowerCase())) return;
+        try {
+          const st = await fsp.stat(item.path);
+          if (st.size > 20 * 1024 * 1024) return;
+          const buf = await fsp.readFile(item.path);
+          if (buf.includes(0)) return; // 跳过二进制
+          let text = buf.toString('utf8');
+          if (text.includes('\uFFFD')) { try { text = new TextDecoder('gbk').decode(buf); } catch (err) {} }
+          const lines = text.split(/\r?\n/);
+          for (let ln = 0; ln < lines.length; ln++) {
+            if (re.test(lines[ln])) {
+              matched++;
+              batch.push({ path: item.path, line: ln + 1, text: lines[ln].length > 300 ? lines[ln].slice(0, 300) + '…' : lines[ln] });
+              if (batch.length >= 30) sendBatch();
+              if (matched >= cap) break;
+            }
           }
-        }
-        const now = Date.now();
-        if (now - lastSend > 400) { lastSend = now; sendBatch(); send('job:stream', { id, data: JSON.stringify({ scanned, matched }) }); }
-      } catch (err) {}
-      if (matched >= cap) cancelRef.canceled = true;
-    });
-    sendBatch();
-    send('job:stream', { id, data: JSON.stringify({ done: true, matched, scanned, ms: Date.now() - t0 }) });
-    jobs.delete(id);
+          const now = Date.now();
+          if (now - lastSend > 400) { lastSend = now; sendBatch(); send('job:stream', { id, data: JSON.stringify({ scanned, matched }) }); }
+        } catch (err) {}
+        if (matched >= cap) cancelRef.canceled = true;
+      });
+      sendBatch();
+      send('job:stream', { id, data: JSON.stringify({ done: true, matched, scanned, ms: Date.now() - t0 }) });
+    } catch (err) {
+      /* 【任务必须自己收尾】walkDir 在根目录不存在/无权读取时会抛，
+       * 原实现没有 catch/finally：job 永远留在 jobs 里，界面收不到 done，
+       * 一直停在「正在搜索」。搜索根是用户选的目录，盘符拔出、网络盘
+       * 断线、权限被改都能触发，不是理论路径。 */
+      sendBatch();
+      send('job:stream', { id, data: JSON.stringify({ done: true, matched, scanned, error: err.message || String(err), ms: Date.now() - t0 }) });
+    } finally {
+      jobs.delete(id);
+    }
   })();
   return { id };
 });
@@ -3252,7 +3350,7 @@ async function createPinWindow(srcPath) {
       if (tempNames.isOwnTempName(path.basename(srcPath))) fs.rmSync(srcPath, { force: true });
     } catch (e) {}
   });
-  await bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath, accent: currentAccent } });
+  await bw.loadFile('pin.html', { query: { id: String(bw.id), src: srcPath, accent: currentAccent, lang: uiLang } });
   return { id: bw.id, w: size.width, h: size.height };
 }
 /* win:pin-image 通道已移除：截图「贴图」与「贴剪贴板图片」都直接调
@@ -3717,11 +3815,13 @@ async function scanDirForGuard(root, relBase = '') {
   try { items = await fsp.readdir(path.join(root, relBase), { withFileTypes: true }); } catch (e) { return out; }
   for (const it of items) {
     const rel = relBase ? relBase + '/' + it.name : it.name;
-    if (it.isDirectory()) {
+    /* 先判链接再判目录：Windows 上 junction 的 Dirent 也可能带目录属性，
+     * 若先递归会顺着链接扫到 staging 之外，把外部文件带进条目清单。 */
+    if (it.isSymbolicLink()) {
+      out.push({ name: rel, isFile: false, isSymlink: true });
+    } else if (it.isDirectory()) {
       out.push({ name: rel, isDir: true, size: 0 });
       out.push(...await scanDirForGuard(root, rel));
-    } else if (it.isSymbolicLink()) {
-      out.push({ name: rel, isFile: false, isSymlink: true });
     } else {
       let size = 0;
       try { size = (await fsp.stat(path.join(root, relBase, it.name))).size; } catch (e) {}
@@ -3743,6 +3843,7 @@ handle(CH.SEVEN.COMPRESS, async (e, { files, out, password, volumeMB }) => {
   if (!/\.7z$/i.test(out)) out += '.7z';
   /* 7z 的 `a` 对已存在的归档是「追加/更新」而不是新建。用户输入同名路径时
    * 旧实现会把新内容并进旧包，看起来像成功。UI 会先取 unique-path，这里再挡一层。 */
+  if (fs.existsSync(out)) throw new Error('输出文件已存在，为避免覆盖已拒绝：' + out);
   const badOut = pathGuard.checkOverwritable(out);
   if (badOut) throw pathGuard.err(badOut.code, badOut.reason);
   /* 【分卷参数必须先归一】旧写法 `if (volumeMB) args.push('-v' + Math.max(1, volumeMB) + 'm')`
@@ -3766,11 +3867,17 @@ handle(CH.SEVEN.COMPRESS, async (e, { files, out, password, volumeMB }) => {
   return { out: first, size };
 });
 handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
+  if (typeof outDir !== 'string' || !outDir.trim()) throw new Error('解压目标目录不能为空');
+  const outProtected = pathGuard.isProtectedForModify(outDir);
+  if (outProtected.protected) {
+    throw pathGuard.err('PROTECTED_TARGET', '拒绝解压到受保护位置：' + outProtected.reason);
+  }
   const bin = findSevenFull() || sevenZa;
   if (!bin) throw new Error('未找到 7z 引擎');
   const listing = await runSeven(bin, ['l', '-slt', '-ba', '-sccUTF-8', '--', archive], { password });
   if (listing.code !== 0) throw new Error('无法读取压缩包目录：' + (listing.stderr || listing.stdout));
   const declared = archiveGuard.inspectSevenListing(listing.stdout, (await fsp.stat(archive)).size);
+  const outDirExisted = fs.existsSync(outDir);
   await fsp.mkdir(outDir, { recursive: true });
 
   /* 先解到任务专属临时目录，全部成功后再合并到 outDir。
@@ -3784,6 +3891,7 @@ handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
   const staging = tempNames.sevenStagingDir(outDir);
   await fsp.mkdir(staging, { recursive: true });
   const movedTo = [];   // 已搬到 outDir 的目标路径，用于失败回滚
+  const createdDirs = []; // 本次为合并新建的目录（catch 里要访问，必须声明在 try 外）
   try {
     const args = ['x', '-y', '-bd', '-o' + staging, archive];
     const r = await runSeven(bin, args, { password, outputDir: staging });
@@ -3804,8 +3912,9 @@ handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
        若目录 sub/ 因冲突改名为 sub(1)/，而文件 sub/b.txt 仍写进原来的 sub/，
        归档内容就会混进用户已有目录（zip:extract 那边踩过同样的坑）。
        所以：目录条目一律不改名（已存在就复用），只有文件冲突才编号。 */
+    if (!outDirExisted) createdDirs.push(path.resolve(outDir));
     const dirFor = async (rel) => {
-      return pathGuard.ensureDirectoryInside(outDir, rel);
+      return pathGuard.ensureDirectoryInsideTracked(outDir, rel, createdDirs);
     };
     let moved = 0;
     for (const ent of verdict.entries) {
@@ -3840,6 +3949,13 @@ handle(CH.SEVEN.EXTRACT, async (e, { archive, outDir, password }) => {
       } catch (e) {
         /* 搬不回去（被占用）就保持原样：宁可多留一份，也不误删。 */
       }
+    }
+    /* 本次为合并新建的空目录（含 outDir 本身如果原本不存在）也要回收；
+     * 只 rmdir 空目录，非空说明有并发写入/搬回失败的内容，保留。
+     * 先清 staging，否则 outDir 里还压着 staging，rmdir(outDir) 必然 ENOTEMPTY。 */
+    try { await fsp.rm(staging, { recursive: true, force: true }); } catch (e) {}
+    for (let i = createdDirs.length - 1; i >= 0; i--) {
+      try { await fsp.rmdir(createdDirs[i]); } catch (e) {}
     }
     throw err;
   } finally {
@@ -3920,6 +4036,12 @@ handle(CH.TTS.SPEAK, (e, { text, voice, rate, volume }) => {
 });
 handle(CH.TTS.WAV, async (e, { text, out, voice, rate, volume }) => {
   if (!out || typeof out !== 'string') throw new Error('导出路径无效');
+  /* 导出会先在目标同目录写 .hehe-w-* 临时 WAV，再原子替换。临时文件
+   * 也属于「往这个目录写」，所以覆盖闸门必须在 mkdir/合成**之前**：
+   * 原实现只靠最后的 writeFileAtomic 兜底，保护目录里仍会被创建临时文件
+   * （甚至先白白合成整段语音）。 */
+  const outBad = pathGuard.checkOverwritable(out);
+  if (outBad) throw pathGuard.err(outBad.code, outBad.reason, '请换一个导出路径（不要指向系统目录或盘符根）');
   if (String(text == null ? '' : text).length > 5000) throw new Error('文本过长（>5000 字），请分段导出');
   /* 【先写临时文件，成功后再原子替换】SetOutputToWaveFile 是直接创建/截断
    * 目标文件的：语音合成到一半失败（音色不可用、磁盘满、进程被杀）时，
@@ -4162,7 +4284,7 @@ async function snipStart(mode) {
     src: file, mode: mode === 'region' ? 'region' : 'annotate',
     dx: String(display.bounds.x), dy: String(display.bounds.y),
     scale: String(display.scaleFactor), w: String(display.bounds.width), h: String(display.bounds.height),
-    accent: currentAccent
+    accent: currentAccent, lang: uiLang
   } });
   snipWin.show();
   return { ok: true };
@@ -4862,7 +4984,8 @@ handle(CH.SCHED.ONCE_LIST, () => {
 });
 handle(CH.SCHED.ONCE_ADD, (e, payload) => {
   const p = payload || {};
-  const action = p.action === 'lock' ? 'lock' : 'sleep';
+  if (p.action !== 'lock' && p.action !== 'sleep') throw new Error('一次性定时动作必须是 lock 或 sleep');
+  const action = p.action;
   const mins = Number(p.minutes);
   if (!Number.isFinite(mins) || mins < 1 || mins > 60 * 24 * 7) {
     throw new Error('定时时长不合法（1 ~ 10080 分钟）');
@@ -4955,11 +5078,20 @@ function sanitizeNoteHtml(html) {
 
 handle(CH.NOTES.PDF, async (e, { title, html, outPath }) => {
   let outFile = outPath || '';
+  let fromDialog = false;
   if (!outFile) {
     const out = await dialog.showSaveDialog(win || null, { defaultPath: (title || '笔记') + '.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] });
     if (out.canceled || !out.filePath) return null;
     outFile = out.filePath;
+    fromDialog = true;
   }
+  /* 正常路径由保存对话框负责覆盖确认；但 IPC 通道本身可被直接调用，
+   * 不能让 notes:pdf 变成一个「把任意目标文件改写成 PDF」的写入原语。
+   * 受保护位置一律拒绝；绕过对话框直接传的已有文件也拒绝。 */
+  if (typeof outFile !== 'string' || !outFile.trim()) throw new Error('PDF 输出路径无效');
+  const pdfBad = pathGuard.checkOverwritable(outFile);
+  if (pdfBad) throw pathGuard.err(pdfBad.code, pdfBad.reason, '请换一个保存路径');
+  if (!fromDialog && fs.existsSync(outFile)) throw new Error('目标文件已存在，为避免覆盖已拒绝：' + outFile);
   /* sandbox:true + javascript:false + 无 preload —— 这个窗口只是排版器，
    * 不需要任何脚本能力。加上之后即使净化漏掉一处，也没有执行面。 */
   const bw = hardenWindow(new BrowserWindow({
@@ -5123,9 +5255,17 @@ async function sweepTempFiles(maxAgeMs = 24 * 3600 * 1000) {
     if (!isOwnTempName(n)) continue;
     const full = path.join(tmp, n);
     try {
-      const st = await fsp.stat(full);
-      if (now - st.mtimeMs <= maxAgeMs) continue; // 最近的保留
-      if (st.isDirectory()) await fsp.rm(full, { recursive: true, force: true });
+      const lst = await fsp.lstat(full);
+      /* 链接/junction 只清链接本身，绝不递归其目标。否则有人在 %TEMP%
+       * 放一个 hehe-xxx 链接指向用户目录，启动清扫就会把目标内容删掉。 */
+      if (lst.isSymbolicLink()) {
+        if (now - lst.mtimeMs > maxAgeMs) {
+          try { await fsp.unlink(full); removed++; } catch (e) {}
+        }
+        continue;
+      }
+      if (now - lst.mtimeMs <= maxAgeMs) continue; // 最近的保留
+      if (lst.isDirectory()) await fsp.rm(full, { recursive: true, force: true });
       else await fsp.unlink(full);
       removed++;
     } catch (e) {}
@@ -5257,7 +5397,8 @@ if (!gotLock) {
     bootMark('store-loaded');
     // themeSource 必须在建窗之前设置：主窗的 backgroundColor 和启动窗的明暗
     // 都直接读 nativeTheme.shouldUseDarkColors，设晚了会按系统默认值画一帧再跳变。
-    nativeTheme.themeSource = storeGet('settings.theme', 'system');
+    const bootTheme = storeGet('settings.theme', 'system');
+    nativeTheme.themeSource = (bootTheme === 'light' || bootTheme === 'dark' || bootTheme === 'system') ? bootTheme : 'system';
     createSplash(); // 配置读完后起启动窗（要用到用户选的配色），页面极小，抢在加载主界面前画出进度
     splashSend('splash:step', { pct: 62, label: '读取配置…' });
     createWindow();

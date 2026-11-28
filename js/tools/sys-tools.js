@@ -396,7 +396,43 @@
       /* 【per-run 序号】SCAN_TREE 是阻塞式长操作（全盘扫描可能几分钟），
        * 切页后结果不该写回新页面。 */
       let diskScanSeq = 0;
-      window.App.onCleanup(() => { diskScanSeq++; });
+      /* 【页面会被保活复用，但扫描仍然只允许一趟】
+       * SCAN_TREE 是阻塞式长操作，主进程没有可取消的 job id；切页只
+       * 能让结果作废，不能让扫描提前结束。因此离开页面时保留 busy 闸：
+       *   · 旧扫描的进度/结果都按序号丢弃；
+       *   · 旧扫描的 finally 仍然负责把 progress/按钮恢复 —— 否则用户
+       *     切回来会看到一个永远灰着的「开始分析」；
+       *   · 在它收尾之前不允许再起第二趟，避免两条 job:progress 争同一个
+       *     状态行（SCAN_TREE 的进度事件不带本轮 token）。 */
+      window.App.onCleanup(() => {
+        diskScanSeq++;
+        try {
+          prog.hide();
+          if (busy) {
+            status.textContent = '已离开页面，上一轮分析会在后台收尾';
+            scanBtn.disabled = true;
+          }
+        } catch (e) {}
+      });
+      if (window.App.onEnter) {
+        window.App.onEnter(() => {
+          diskScanSeq++;
+          try {
+            if (busy) {
+              /* 旧扫描还没结束：按钮先保持禁用，等它的 finally 恢复。 */
+              prog.hide();
+              scanBtn.disabled = true;
+              status.textContent = '上一轮分析仍在后台收尾，完成后可重新开始';
+            } else {
+              prog.hide();
+              scanBtn.disabled = false;
+              if (/正在分析|分析中|扫描中|已离开页面/.test(status.textContent || '')) {
+                status.textContent = '上一次分析已中断，可重新开始';
+              }
+            }
+          } catch (e) {}
+        });
+      }
 
       const pickBtn = btn('选择目录', 'btn-secondary btn-sm', async () => {
         const d = await invoke(Channels.CHANNELS.DIALOG.OPEN, { properties: ['openDirectory'] });
@@ -406,11 +442,14 @@
       async function scan() {
         const dir = dirIn.value.trim();
         if (!dir) return toast('请选择目录', 'warn');
-        if (busy) return;
+        if (busy) return toast('正在分析，请稍候', 'warn');
         const runToken = ++diskScanSeq;
         busy = true;
+        scanBtn.disabled = true;
         result.innerHTML = ''; prog.show(); status.textContent = '扫描中…';
         const unsub = on('job:progress', (d) => {
+          /* 旧一趟的进度不能写进新一趟：页面保活复用后序号会变。 */
+          if (runToken !== diskScanSeq) return;
           if (d.kind === 'scan') status.textContent = `已扫描 ${fmtNum(d.files)} 个文件，${fmtBytes(d.size)}`;
         });
         try {
@@ -426,7 +465,20 @@
         } catch (e) {
           if (runToken !== diskScanSeq) return;
           status.textContent = '✗ ' + e.message;
-        } finally { prog.hide(); busy = false; unsub(); }
+        } finally {
+          /* 不管这一趟是否已被页面切换作废，都要恢复「可再次开始」：
+           * 主进程的扫描已经结束，busy 若留着就会把按钮永久锁死。
+           * 结果/进度行仍按 token 丢弃，只有按钮和进度条归位。 */
+          try {
+            prog.hide();
+            busy = false;
+            scanBtn.disabled = false;
+            if (runToken !== diskScanSeq && /扫描中|正在分析|收尾/.test(status.textContent || '')) {
+              status.textContent = '上一轮分析已完成，可重新开始';
+            }
+          } catch (e) {}
+          unsub();
+        }
       }
 
       /* 面包屑：从扫描根到当前目录的每一段都可点。
@@ -711,9 +763,15 @@
       const status = h('span', { class: 'field-hint' }, '');
       const box = div('');
       let dirs = [];
+      let scanningDirs = false;
       const scanBtn = btn('扫描空目录', 'btn-primary', async () => {
         const dir = dirIn.value.trim();
         if (!dir) return toast('请选择目录', 'warn');
+        /* SCAN_EMPTY_DIRS 会递归整棵目录树；双击/两指连点会并发两趟，
+         * 后一趟覆盖前一趟的 dirs，删除按钮就可能拿着半截列表去删。 */
+        if (scanningDirs) return toast('正在扫描，请稍候', 'warn');
+        scanningDirs = true;
+        scanBtn.disabled = true;
         box.innerHTML = ''; status.textContent = '扫描中…';
         try {
           const r = await invoke(Channels.CHANNELS.FS.SCAN_EMPTY_DIRS, dir);
@@ -721,6 +779,7 @@
           status.textContent = dirs.length ? `发现 ${dirs.length} 个空目录` : '没有空目录 ✓';
           draw();
         } catch (e) { status.textContent = '✗ ' + e.message; }
+        finally { scanningDirs = false; scanBtn.disabled = false; }
       });
       function draw() {
         box.innerHTML = '';

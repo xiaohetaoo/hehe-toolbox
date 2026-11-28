@@ -224,6 +224,12 @@
     let clip;
     try {
       clip = await readClipboard();
+    } catch (e) {
+      /* readClipboard 目前内部会吞掉单次 IPC 失败并返回 null；这里兜的是
+       * 将来改动或 Image 构造等同步异常。不能让它变成未处理 rejection，
+       * 否则用户按快捷键只会看到「没反应」，控制台里才有错误。 */
+      try { ui.toast('读取剪贴板失败：' + ((e && e.message) || String(e)), 'error'); } catch (err) {}
+      return;
     } finally {
       opening = false;                  // 只挡 IPC 往返窗口，后续同步建 DOM 不再放行第二次
     }

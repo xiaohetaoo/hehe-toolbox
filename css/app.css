@@ -395,8 +395,14 @@ body {
    沿用输入框的 440px 会把说明压成「Zİ…」这种只有省略号的东西，等于没有信息。
    居中展开并留 40px 边距，窄窗口下不会顶出右边界。 */
 .titlebar .search-dropdown {
-  left: 50%; right: auto; width: 560px; margin-left: -280px;
-  max-width: calc(100vw - 40px);
+  /* 用 max() 同时完成「居中」与「窄窗留 20px 边距」：
+   * 旧写法 width:560 + margin-left:-280 在视口小于 560px 时，
+   * max-width 会把宽度压到 100vw-40，但负外边距仍是 -280，
+   * 结果是左侧越界 20px 以上、右侧还留着空白。max() 让左边距
+   * 永远不小于 20px，宽度与右边距一起收缩，窄窗也能完整显示。 */
+  left: max(20px, calc(50% - 280px)); right: auto;
+  width: min(560px, calc(100vw - 40px));
+  margin-left: 0;
 }
 .search-dropdown.show { display: block; animation: fadeIn 0.15s ease; }
 .search-result {
@@ -911,6 +917,12 @@ body {
 
 /* 表单 */
 .form-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+/* flex 子项的默认 min-width:auto 等于「内容最小宽度」：一行里塞了长路径、
+   长进程名或长便签时，即使父容器允许换行，这个子项也会把整行撑出横向滚动。
+   允许收缩，并让纯文本 span 在极端长串上按任意位置断行。输入框/按钮不强制
+   断词，只放开 min-width，让它们在窄工具窗里能正常压缩。 */
+.form-row > *:not(button):not(.btn) { min-width: 0; }
+.form-row > span { overflow-wrap: anywhere; }
 
 /* 科学计算器的函数键盘（v0.6.6）。
  *
@@ -1643,6 +1655,28 @@ kbd { background: var(--page-bg); border: 1px solid var(--border); border-radius
 @media (max-width: 820px) {
   .card { padding: 18px 16px; }
   .form-row { gap: 8px; }
+}
+
+/* 【窄窗设置页改为上下布局】
+ * 设置页是 180px 固定侧栏 + 右侧卡片。独立工具窗最小宽度 560px 时，
+ * 内容区只剩 ~512px，卡片再扣掉 52px 内边距，右侧实际只有 ~272px：
+ * 「标签 + 开关/输入框」经常挤到换行，描述文字也被压成窄柱。
+ * 760px 以下把侧栏改成横向可滚动的标签条，内容占满整宽。 */
+@media (max-width: 760px) {
+  .settings-wrap { flex-direction: column; gap: 10px; min-height: 0; }
+  .settings-nav { width: 100%; flex: none; display: flex; gap: 4px; padding: 2px 0; overflow-x: auto; overflow-y: hidden; }
+  .settings-nav-item { flex: none; margin-bottom: 0; white-space: nowrap; }
+  .settings-nav-item.active::before {
+    left: 9px; right: 9px; top: auto; bottom: 0; width: auto; height: 3px;
+    border-radius: 2px 2px 0 0;
+  }
+  .settings-body { width: 100%; padding: 18px 16px; }
+  .set-row { flex-wrap: wrap; gap: 8px 12px; }
+  .set-control { margin-left: 0; }
+}
+/* 560px 工具窗的 24px 左右留白占比过大；窄窗统一收到 16px。 */
+@media (max-width: 680px) {
+  .content { padding: 14px 16px 18px; }
 }
 
 /* 系统开启「减少动态效果」时，入场淡入/缩放、hover 位移与 toast 滑入都不再播放（R24-44）。

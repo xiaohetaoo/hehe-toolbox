@@ -39,7 +39,7 @@ function extractZipCompress() {
   }
   assert.ok(end > open, '找不到 zip:compress 的函数体结尾');
   const body = mainSrc.slice(open + 1, end);
-  return new AsyncFunction('e', 'paths', 'outZip', 'fs', 'fsp', 'path', 'pathGuard', 'AdmZip', body);
+  return new AsyncFunction('e', 'paths', 'outZip', 'fs', 'fsp', 'path', 'pathGuard', 'AdmZip', 'tempNames', body);
 }
 
 /* zip:compress 的 handler 体是 async 的，抽出来时要包成 AsyncFunction。 */
@@ -173,7 +173,7 @@ t('4a zip:compress 行为：两个不同目录下的同名子目录，内容都�
 
     const run = extractZipCompress();
     await run(null, [a, b], out, fs, fs.promises, path,
-      require(path.join(ROOT, 'lib', 'path-guard')), AdmZip);
+      require(path.join(ROOT, 'lib', 'path-guard')), AdmZip, require(path.join(ROOT, 'lib', 'temp-names')));
 
     const zip = new AdmZip(out);
     const names = zip.getEntries().map((x) => x.entryName);
@@ -198,7 +198,8 @@ t('4b zip:compress：顶层同名*文件*的去重没有被这次改动破坏', 
     const out = path.join(dir, 'o.zip');
     const run = extractZipCompress();
     await run(null, [path.join(d1, 'same.txt'), path.join(d2, 'same.txt')], out,
-      fs, fs.promises, path, require(path.join(ROOT, 'lib', 'path-guard')), AdmZip);
+      fs, fs.promises, path, require(path.join(ROOT, 'lib', 'path-guard')), AdmZip,
+      require(path.join(ROOT, 'lib', 'temp-names')));
     const zip = new AdmZip(out);
     const bodies = zip.getEntries().map((x) => x.getData().toString()).sort();
     assert.deepStrictEqual(bodies, ['ONE', 'TWO'], '同名文件必须各自保留，实际：' + JSON.stringify(bodies));

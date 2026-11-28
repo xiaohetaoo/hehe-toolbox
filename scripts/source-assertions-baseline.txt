@@ -26,6 +26,7 @@ scripts/test-acl-repair.js | A=4 | B=34 | legacy-read
 scripts/test-assertion-guard.js | A=2 | B=0 | exact:那 2 处读的是 scripts/run-tests.js 与 scripts/check-assertion-count.js 的**字面量集合成员**（EXIT_ONLY 表），必须拿原始文本 —— readSrc 只服务 js/ 下的应用源码，且它剥注释的语义与这里无关（要的就是源码里写的名字）。B=0：本用例靠直接比对两张表的成员来锁「口径一致」，不是匹配源码形态的断言。
 scripts/test-aux-csp.js | A=4 | B=0 | legacy-source-assertion
 scripts/test-aux-windows-csp.js | A=4 | B=8 | legacy-read
+scripts/test-aux-lang-live.js | A=1 | B=0 | exact:那 1 处 fs.readFileSync 读的是本测试刚让 Electron 子进程写出的 result.json（运行时探针结果，不是项目源码；readSrc 的剥注释/项目根语义都不适用）
 scripts/test-batch-cancel.js | A=1 | B=1 | exact:读三个批量工具原文核对取消标志的声明/循环检查/停止按钮/收尾复位。行为断言需要真实跑批量（几十张图几分钟）且无法验证取消时机，源码形态断言成本最低。
 scripts/test-chain.js | A=1 | B=0 | exact:读源码核对工具链的操作通道签名（位置参数 vs 对象、单文件 vs 批量、图片压缩走 canvas）。这类错误传错了也不报错，只能对源码判；真机跑一遍已在 CDP 覆盖。
 scripts/test-channels-sync.js | A=2 | B=1 | legacy-read
@@ -96,7 +97,7 @@ scripts/test-report-fixes.js | A=1 | B=35 | legacy-read
 scripts/test-runcmd.js | A=0 | B=1 | legacy-source-assertion
 scripts/test-schedule.js | A=0 | B=3 | legacy-source-assertion
 scripts/test-shell-unsub.js | A=0 | B=1 | exact:shellCleanup 的 splice 形态与 9 个事件的 sub 登记，行为面已由本文件前 3 条真实 bus 断言覆盖，这 3 条锁的是源码里确实这么写
-scripts/test-single-instance.js | A=2 | B=13 | legacy-read
+scripts/test-single-instance.js | A=2 | B=12 | legacy-read
 scripts/test-snip-temp.js | A=0 | B=3 | legacy-source-assertion
 scripts/test-source-assertions.js | A=1 | B=0 | meta-self
 scripts/test-spawn-detached.js | A=1 | B=0 | exact:那 1 处读的是**主进程树的每一个文件**（main.js + ipc/*.js，文件名在循环里动态拼出），要的是"这一批文件里还有没有裸 spawn"。readSrc/readMain 都不接受动态清单 —— readMain 只返回拼接后的一整串，行号与文件对不上；而这条断言报错时必须指出**是哪个文件**漏改（历史回归：只修 main.js、ipc/media-ffmpeg.js 的 6 处 taskkill 没动，断言却绿）。所以这里必须逐文件读，并自己 stripComments 后扫描

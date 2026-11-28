@@ -80,8 +80,70 @@ jobs:
             echo "非 tag 触发，跳过一致性检查"
           fi
 
+      # ============ 是否跳过 Release 内的全量测试 ============
+      # Release 跑的是 `npm test`（实测约 4 分钟，占整条的一多半）。
+      # 而同一个 commit 的 ci.yml 已经跑过完全相同的全量测试
+      # （"Pure-function regression tests" + "Assertion count guard"）。
+      # 所以这里的重复劳动可以直接省掉 —— 但**必须先证明它真的是同一个 commit**。
+      #
+      # 判据（两步都要过）：
+      #   1) CI 在**这个 commit** 上有一次成功的 run；
+      #   2) 该 commit 的 git tree 与 HEAD 完全一致
+      #      （tag 有可能指向一个旧提交，版本号对得上但内容不同）。
+      # 任一不满足 → 老老实实跑全量测试。宁慢勿错。
+      #
+      # 强制全量：把仓库变量 SKIP_RELEASE_TESTS 设为 0（或不设任何变量，
+      # 默认就是"能省则省但先验证"）。想强制跑请设 FORCE_RELEASE_TESTS=1。
+      - name: Decide whether tests must run
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          if [ "${{ vars.FORCE_RELEASE_TESTS }}" = "1" ]; then
+            echo "强制全量测试（FORCE_RELEASE_TESTS=1）"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SHA=$(git rev-parse HEAD)
+          TREE=$(git rev-parse HEAD^{tree})
+          echo "本次发布 commit=$SHA tree=$TREE"
+
+          # 1) 找这个 commit 上是否有成功的 CI run
+          #    （ci.yml 的 name 是 "CI"；用 head_sha 精确匹配，不用分支名）
+          CI_STATUS=$(gh api "repos/${{ github.repository }}/commits/$SHA/check-runs" \
+            --jq '[.check_runs[] | select(.name=="CI" or (.name|startswith("CI "))) | .conclusion] | first // "none"' 2>/dev/null || echo "none")
+          echo "同 commit 的 CI 结论：$CI_STATUS"
+
+          # 2) 该 commit 的 tree 必须与 HEAD 一致（防 tag 指旧提交）
+          #    HEAD 就是我们检出的这个 tag，所以 tree 天然一致；
+          #    真正要防的是"CI 跑的不是这个 tree"—— 用 CI run 的 head_sha 反查它的 tree。
+          CI_SHA=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // "none"' 2>/dev/null || echo "none")
+          echo "CI run 的 head_sha：$CI_SHA"
+
+          if [ "$CI_STATUS" = "success" ] && [ "$CI_SHA" = "$SHA" ]; then
+            echo "✓ 同一 commit 的 CI 已通过，且 tree 一致 —— 跳过 Release 内全量测试"
+            echo "::notice::复用同 commit 的 CI 结果（$SHA），Release 不再重复跑全量测试"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::无法确认同一 commit 的 CI 已通过（CI=$CI_STATUS, CI_SHA=$CI_SHA）"
+            echo "::warning::保守起见，Release 仍跑一遍全量测试"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run tests
+        if: steps.decide.outputs.run == 'true'
         run: npm test
+
+      - name: Tests reused from CI
+        if: steps.decide.outputs.run == 'false'
+        run: |
+          echo "本次 Release 复用了同 commit 的 CI 结果，未重复跑全量测试。"
+          echo "CI run：${{ github.server_url }}/${{ github.repository }}/actions"
+          echo "如需强制全量，设置仓库变量 FORCE_RELEASE_TESTS=1。"
 
       - name: Build portable exe + zip
         run: npm run dist

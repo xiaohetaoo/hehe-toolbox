@@ -3,6 +3,14 @@
     const src = params.get('src');
     const img = document.getElementById('pic');
     const hint = document.getElementById('hint');
+    function applyHintLang() {
+      hint.textContent = document.documentElement.lang === 'en'
+        ? 'Drag to move · Scroll to zoom · Double-click / Esc to close'
+        : '拖动移动 · 滚轮缩放 · 双击 / Esc 关闭';
+    }
+    applyHintLang();
+    /* 贴图窗可能一直开着；主窗切语言后只改 <html lang> 不够，提示文字也要跟着换。 */
+    window.addEventListener('hehe-lang', applyHintLang);
     img.src = 'file:///' + encodeURI(src.replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
     img.onload = () => { hint.classList.add('show'); setTimeout(() => hint.classList.remove('show'), 2600); };
 

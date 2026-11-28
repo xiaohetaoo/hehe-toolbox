@@ -165,7 +165,9 @@ const PROBE = `(async function () {
   const eta = prog.el.querySelector('.progress-eta');
   chk('B6 达到一定进度后显示剩余时间', !!eta && eta.style.display !== 'none',
     eta ? ('text=' + eta.textContent) : 'no node');
-  chk('B6 剩余时间文案可读', !!eta && /约|即将/.test(eta.textContent), eta ? eta.textContent : '');
+  /* 【两种界面语言都要认】CI 的 windows-latest 是英文系统，应用会切到英文，
+   * 文案变成 "About 10s" / "Almost done"。断言只认中文就会在 CI 上假红。 */
+  chk('B6 剩余时间文案可读', !!eta && /约|即将|About|Almost/.test(eta.textContent), eta ? eta.textContent : '');
 
   /* ---- B6b: 同一个进度条跑第二轮时，ETA 必须复位 ----
    *
@@ -211,7 +213,7 @@ const PROBE = `(async function () {
   /* 前置：ETA 必须真的显示出来了。否则「estSec=0 秒」可能只是
    * 标签隐藏（textContent 为空）导致的恒真，断言就白写了。 */
   chk('B6b 第二轮确实有 ETA 文案（否则下面的秒数比较是恒真）',
-    eta2.style.display !== 'none' && /即将完成|约/.test(txt), 'display=' + eta2.style.display + ' text=' + txt);
+    eta2.style.display !== 'none' && /即将完成|约|Almost|About/.test(txt), 'display=' + eta2.style.display + ' text=' + txt);
   chk('B6b 第二轮进度条的 ETA 不复用上一轮起点', estSec < 2,
     '显示「' + txt + '」→ 估 ' + estSec + ' 秒（把 1.2s 空白算进去会到 ~7s）');
 

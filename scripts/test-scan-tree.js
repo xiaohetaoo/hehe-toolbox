@@ -27,6 +27,9 @@ t('17a 根路径归一：尾随分隔符不影响统计口径', () => {
   assert.strictEqual(f('D:' + B + 'foo'), 'D:' + B + 'foo', '正常路径不该变');
   assert.strictEqual(f('D:' + B), 'D:' + B, '盘符根必须保留原有形态');
   assert.strictEqual(f('D:/foo//'), 'D:' + B + 'foo', '正斜杠与重复分隔符也要归一');
+  /* 空串 / 盘符相对不能悄悄落到 cwd；后者会把应用自己的目录当成扫描根。 */
+  assert.throws(() => f(''), /不能为空/);
+  assert.throws(() => f('C:foo'), /盘符相对/);
 });
 
 t('17b 聚合用的是路径比较，不是字符串长度', () => {

@@ -209,6 +209,17 @@
 
     /* ---------- 选区 ---------- */
     const tip = document.getElementById('tip'), sizeTip = document.getElementById('sizeTip');
+    let EN = document.documentElement.lang === 'en';
+    function syncLang() {
+      EN = document.documentElement.lang === 'en';
+      tip.textContent = EN ? 'Drag to select an area, release to annotate' : '拖动选择区域，松开后进行标注';
+      /* 工具条已经建好时才重画；还没框选时 bar 是空的。重画会保留 tool/color/size，
+       * 因为它们都在闭包里，showBar 只重建 DOM。 */
+      if (bar.firstChild) { showBar(); syncBar(); }
+    }
+    syncLang();
+    /* 截图窗可能一直开着；主窗切语言后工具栏 tooltip、调色板、线宽提示都要即时换。 */
+    window.addEventListener('hehe-lang', syncLang);
     setTimeout(() => { tip.style.display = 'block'; setTimeout(() => tip.style.display = 'none', 3000); }, 400);
     stage.addEventListener('mousedown', (e) => {
       if (!sel) {
@@ -293,11 +304,11 @@
       return '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">' + (SVG[name] || '') + '</svg>';
     }
     const TOOLS = [
-      ['rect', 'rect', '矩形'],
-      ['arrow', 'arrow', '箭头'],
-      ['pen', 'pen', '画笔'],
-      ['text', 'text', '文字'],
-      ['mosaic', 'mosaic', '马赛克'],
+      ['rect', 'rect', '矩形', 'Rectangle'],
+      ['arrow', 'arrow', '箭头', 'Arrow'],
+      ['pen', 'pen', '画笔', 'Pen'],
+      ['text', 'text', '文字', 'Text'],
+      ['mosaic', 'mosaic', '马赛克', 'Mosaic'],
     ];
     /* 【常用色 + 调色板】
      * 原来只有 6 个固定色块，想用别的颜色（比如标注截图里的品牌色）没有办法。
@@ -314,7 +325,8 @@
     const SIZE_MIN = 1, SIZE_MAX = 12;
     function showBar() {
       bar.innerHTML = '';
-      for (const [id, iconName, label] of TOOLS) {
+      for (const [id, iconName, zh, en] of TOOLS) {
+        const label = EN ? en : zh;
         const b = document.createElement('button');
         b.className = 'tbtn' + (tool === id ? ' on' : '');
         b.innerHTML = svgIcon(iconName);
@@ -343,8 +355,8 @@
       /* 调色板：原生取色器藏在色块后面，点色块 = 点取色器 */
       const custom = document.createElement('label');
       custom.className = 'sw sw-custom';
-      custom.title = '调色板：自定义颜色';
-      custom.setAttribute('aria-label', '调色板');
+      custom.title = EN ? 'Palette: custom color' : '调色板：自定义颜色';
+      custom.setAttribute('aria-label', EN ? 'Palette' : '调色板');
       const picker = document.createElement('input');
       picker.type = 'color';
       picker.id = 'colorPicker';
@@ -389,8 +401,8 @@
       slider.max = String(SIZE_MAX);
       slider.step = '1';
       slider.value = String(size);
-      slider.title = '线宽 ' + size + ' px';
-      slider.setAttribute('aria-label', '线宽');
+      slider.title = (EN ? 'Stroke width ' : '线宽 ') + size + ' px';
+      slider.setAttribute('aria-label', EN ? 'Stroke width' : '线宽');
       const val = document.createElement('span');
       val.className = 'sz-num';
       val.id = 'sizeNum';
@@ -400,8 +412,8 @@
       slider.oninput = () => {
         size = Number(slider.value);
         val.textContent = String(size);
-        slider.title = '线宽 ' + size + ' px';
-        slider.setAttribute('aria-valuetext', size + ' 像素');
+        slider.title = (EN ? 'Stroke width ' : '线宽 ') + size + ' px';
+        slider.setAttribute('aria-valuetext', EN ? size + ' px' : size + ' 像素');
         /* 更新已填充轨道比例（原生 range 无法只用 CSS 做双色轨道） */
         const fill = ((size - SIZE_MIN) / (SIZE_MAX - SIZE_MIN)) * 100;
         slider.style.setProperty('--fill', fill.toFixed(1) + '%');
@@ -419,12 +431,12 @@
       bar.appendChild(szWrap);
       bar.appendChild(sep());
 
-      bar.appendChild(mkBtn('撤销', 'tbtn texty', () => { shapes.pop(); render(); }, 'undo'));
-      bar.appendChild(mkBtn('重选', 'tbtn texty', () => { sel = null; shapes = []; bar.style.display = 'none'; render(); }, 'redo'));
+      bar.appendChild(mkBtn(EN ? 'Undo' : '撤销', 'tbtn texty', () => { shapes.pop(); render(); }, 'undo'));
+      bar.appendChild(mkBtn(EN ? 'Reselect' : '重选', 'tbtn texty', () => { sel = null; shapes = []; bar.style.display = 'none'; render(); }, 'redo'));
       bar.appendChild(sep());
-      bar.appendChild(mkBtn('复制', 'tbtn act texty', () => finish('copy'), 'copy'));
-      bar.appendChild(mkBtn('保存', 'tbtn act texty', () => finish('save'), 'save'));
-      bar.appendChild(mkBtn('贴图', 'tbtn act texty', () => finish('pin'), 'pin'));
+      bar.appendChild(mkBtn(EN ? 'Copy' : '复制', 'tbtn act texty', () => finish('copy'), 'copy'));
+      bar.appendChild(mkBtn(EN ? 'Save' : '保存', 'tbtn act texty', () => finish('save'), 'save'));
+      bar.appendChild(mkBtn(EN ? 'Pin' : '贴图', 'tbtn act texty', () => finish('pin'), 'pin'));
       bar.appendChild(mkBtn('OCR', 'tbtn act texty', () => finish('ocr'), 'ocr'));
       bar.style.display = 'flex';
       syncBar();

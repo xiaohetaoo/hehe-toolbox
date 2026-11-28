@@ -33,26 +33,28 @@ const { t, done, readSrc } = require('./lib/harness');
 
 const src = readSrc('ipc/fs-ops.js');
 
-t('CS1 cryptStream 调用 checkOverwritable（与其它写盘实现一致）', () => {
+function cryptBody() {
   const i = src.indexOf('async function cryptStream');
-  assert.ok(i > 0, '找不到 cryptStream');
-  const body = src.slice(i, i + 3000);
-  /* 锁的是：加密输出能落在系统关键目录里而无人拦。 */
+  const end = src.indexOf('handle(CH.FS.ENCRYPT_FILE', i);
+  return src.slice(i, end > i ? end : i + 6000);
+}
+
+t('CS1 cryptStream 调用 checkOverwritable（与其它写盘实现一致）', () => {
+  const body = cryptBody();
+  /* 锁的是：加密输出能落到系统关键目录而无人拦截（CS1/CS2 共用同一段闸门）。 */
   assert.ok(/pathGuard\.checkOverwritable\(outPath\)/.test(body),
     'cryptStream 没有调 checkOverwritable(outPath)');
 });
 
 t('CS2 cryptStream 调用 checkFileName（拒绝尾点 / 尾空格）', () => {
-  const i = src.indexOf('async function cryptStream');
-  const body = src.slice(i, i + 3000);
-  /* 锁的是：能生成 a.b. / 'a.b ' 这类在资源管理器里存不住的非法名。 */
+  const body = cryptBody();
+  /* 锁的是：输出文件名带尾点/尾空格时资源管理器存不住，用户以为加密成功。 */
   assert.ok(/pathGuard\.checkFileName\(\s*path\.basename\(/.test(body),
     'cryptStream 没有调 checkFileName');
 });
 
 t('CS3 同源判定用 pathGuard.canonical 归一（不各自拼字符串）', () => {
-  const i = src.indexOf('async function cryptStream');
-  const body = src.slice(i, i + 3000);
+  const body = cryptBody();
   /* 锁的是：realpath(p) 与「realpath(dir)+sep+basename」直接比 ——
    * 长度前缀、尾点、8.3 短名在这两条路径上展开不一致时会漏判同源。 */
   assert.ok(/pathGuard\.canonical\(p\)\s*===\s*pathGuard\.canonical\(outPath\)/.test(body),
@@ -60,8 +62,7 @@ t('CS3 同源判定用 pathGuard.canonical 归一（不各自拼字符串）', (
 });
 
 t('CS4 闸门放在读取源文件之前（不先白读一遍再拒）', () => {
-  const i = src.indexOf('async function cryptStream');
-  const body = src.slice(i, i + 3000);
+  const body = cryptBody();
   /* 锁的是：把闸门挪到 pipeline 之后 —— 那时已经把整份文件加密写进临时文件了，
    * 拒绝得越晚浪费越大，而且临时文件清理路径也更复杂。 */
   const iGuard = body.indexOf('checkOverwritable(outPath)');

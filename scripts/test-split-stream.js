@@ -61,8 +61,8 @@ t('13b 行为：预置同名分片后调用，reject 且不残留', async () => 
   const body = code.slice(open, j);
   /* 形参名是 (e, p, chunkMB, outDir)，包装层必须同名地把参数传进去，
    * 否则 body 里引用 p 会得到 "p is not defined"（第一次跑就撞上了）。 */
-  const fn = new Function('path', 'fsp', 'fs', 'send',
-    'return async (e, p, chunkMB, outDir) => ' + body + ';')(path, fs.promises, fs, () => {});
+  const fn = new Function('path', 'fsp', 'fs', 'send', 'pathGuard',
+    'return async (e, p, chunkMB, outDir) => ' + body + ';')(path, fs.promises, fs, () => {}, require('../lib/path-guard'));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r15-split-'));
   try {
     const src = path.join(dir, 'big.bin');

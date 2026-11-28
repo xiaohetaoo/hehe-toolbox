@@ -1,4 +1,17 @@
     const params = new URLSearchParams(location.search);
+    let EN = document.documentElement.lang === 'en';
+    function applyLang() {
+      EN = document.documentElement.lang === 'en';
+      const rzS = document.getElementById('rzStart'), rzE = document.getElementById('rzEnd');
+      const toggle = document.getElementById('toggle'), close = document.getElementById('close');
+      if (rzS) rzS.title = EN ? 'Drag to shorten' : '拖动可缩短标尺';
+      if (rzE) rzE.title = EN ? 'Drag to lengthen' : '拖动可伸长标尺';
+      if (toggle) toggle.title = EN ? 'Toggle orientation' : '横竖切换';
+      if (close) close.title = EN ? 'Close (or double-click ruler / Esc)' : '关闭(或双击标尺 / Esc)';
+    }
+    applyLang();
+    /* 标尺窗可能开着很久：主窗切语言后，四个 title 要即时换，不能等重开。 */
+    window.addEventListener('hehe-lang', applyLang);
     let dir = params.get('dir') === 'v' ? 'v' : 'h';
     /* 方向挂到 <html> 上，让 CSS 决定把手该贴在哪两条边（见 ruler.html 的 .rz）。 */
     document.documentElement.dataset.dir = dir;

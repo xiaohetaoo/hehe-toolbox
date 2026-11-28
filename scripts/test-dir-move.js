@@ -419,4 +419,19 @@ t('34 dir-move：D: 这类盘符相对写法必须在 resolve 之前判（第四
   }
 });
 
+t('35 dir-move：空路径与 C:foo / D:foo 必须在 resolve 前拒绝', () => {
+  const code = stripComments(read('ipc/dir-acl-links.js'));
+  const a = code.indexOf('function requireMovePaths');
+  const b = code.indexOf('async function dirMoveRun');
+  assert.ok(a >= 0 && b > a, '没有找到 requireMovePaths');
+  const fn = new Function('pathGuard', code.slice(a, b) + '\nreturn requireMovePaths;')(
+    require('../lib/path-guard'));
+  assert.throws(() => fn('', 'D:' + BS + 'dst'), /非空/);
+  assert.throws(() => fn('D:' + BS + 'src', '   '), /非空/);
+  assert.throws(() => fn('C:foo', 'D:' + BS + 'dst'), /盘符相对/);
+  assert.throws(() => fn('D:' + BS + 'src', 'D:foo'), /盘符相对/);
+  assert.deepStrictEqual(fn('D:' + BS + 'src', ' D:' + BS + 'dst '),
+    { srcRaw: 'D:' + BS + 'src', dstRaw: 'D:' + BS + 'dst' }, '正常绝对路径应放行');
+});
+
 done();

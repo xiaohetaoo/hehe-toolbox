@@ -258,7 +258,7 @@
    * 返回逐文件的执行报告，供 UI 展示。
    * 【为什么按文件记状态而不是只记步骤】用户最关心「我这个文件到底成了没成」，
    * 而不是「第 2 步整体成功」。所以每个文件带一条状态链。 */
-  async function runChain(chain, files, onProgress) {
+  async function runChain(chain, files, onProgress, shouldStop) {
     const steps = (chain.steps || []).map((id) => OP_BY_ID.get(id)).filter(Boolean);
     if (!steps.length) throw new Error('这条工具链没有可用步骤');
     /* 每个文件维护自己的当前路径与失败信息 */
@@ -266,6 +266,12 @@
     let cur = state.map((s) => s.cur);
 
     for (let si = 0; si < steps.length; si++) {
+      /* 页面已经离开（或用户放弃这一轮）时，不再启动下一步。
+       * 当前正在执行的这一步无法中断（IPC 操作没有取消通道），
+       * 但它完成后不会再拿产出继续改下一批文件。 */
+      if (shouldStop && shouldStop()) {
+        return { state, outputs: cur, canceled: true };
+      }
       const op = steps[si];
       /* 只把上一轮还活着、且未被合并进别的产物的文件投进去。
        * 【merged 必须排除】zip 这类 N→1 的步骤之后，被合并文件的 cur
@@ -499,9 +505,12 @@
         try {
           const t0 = Date.now();
           const rep = await runChain(chain, files.slice(), (p) => {
+            /* 旧轮的 onProgress 仍可能在切页后触发；不再把“第 X 步”
+             * 写回复用回来的页面（cleanup 已经清过一次进度行）。 */
+            if (runToken !== chainRunSeq) return;
             const sub = p.subTotal ? '（' + p.subDone + '/' + p.subTotal + '）' : '';
             progressLine.textContent = '第 ' + p.step + '/' + p.totalSteps + ' 步：' + p.label + sub;
-          });
+          }, () => runToken !== chainRunSeq);
           if (runToken !== chainRunSeq) return;   // 页面已离开，结果不写回
           const secs = ((Date.now() - t0) / 1000).toFixed(1);
           const okCount = rep.state.filter((s) => !s.failed).length;

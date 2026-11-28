@@ -88,6 +88,19 @@ module.exports = function register(ctx, deps) {
 
   const { jobs, isWin } = ctx;
 
+  /* 批量媒体工具的输出目录一律先过系统位置闸门。
+   * 这些 handler 会用 fsp.mkdir(outDir,{recursive:true}) 并在里面写成品；
+   * 只靠渲染层的目录选择器不够 —— IPC 通道本身可被直接调用/
+   * 被脚本误用，不能让 outDir 指到 C:\\Windows 或别的用户家目录。 */
+  function assertOutDir(dir, label = '输出目录') {
+    if (typeof dir !== 'string' || !dir.trim()) throw new Error(label + '不能为空');
+    const prot = pathGuard.isProtectedForModify(dir);
+    if (prot.protected || pathGuard.isCriticalPath(dir)) {
+      throw new Error(label + '位于受保护位置，已拒绝：' + (prot.reason || dir));
+    }
+    return dir;
+  }
+
   /* ============ 硬件编码：探测一次，缓存到进程内存 ============
    *
    * 【为什么缓存在模块级变量而不是每次现探】
@@ -408,16 +421,19 @@ handle(CH.FFMPEG.DOWNLOAD, async (e, sourceId) => {
   const src = FFMPEG_SOURCES[sourceId] || FFMPEG_SOURCES.npmmirror;
   const id = 'dl' + (ctx.nextJobSeq());
   const ctrl = new AbortController();
+  await fsp.mkdir(binDir(), { recursive: true });
   jobs.set(id, { cancel: () => ctrl.abort() });
   setLatestCancelable(() => ctrl.abort());
-  await fsp.mkdir(binDir(), { recursive: true });
   try {
     if (src.type === 'gz-pair') {
       const files = [['ffmpeg-win32-x64.gz', 'ffmpeg.exe'], ['ffprobe-win32-x64.gz', 'ffprobe.exe']];
       let idx = 0;
       for (const [gzName, exeName] of files) {
         idx++;
-        const tmp = path.join(tempDir(), 'hehe-' + gzName);
+        /* 临时名必须带 job id/随机串：两个窗口同时点下载时，固定
+         * %TEMP%/hehe-ffmpeg-win32-x64.gz 会互相覆盖，线程 A 还没 gunzip
+         * 完，线程 B 已把文件截断成自己的半成品。 */
+        const tmp = tempNames.tempPathFor(path.join(tempDir(), gzName), 'ffdl' + id);
         const emitLabel = () => send('job:stream', { id, data: JSON.stringify({ stage: 'label', label: `文件 ${idx}/2：${exeName}` }) });
         emitLabel();
         await downloadToFile(src.base + '/' + gzName, tmp, id, ctrl, `文件 ${idx}/2：${exeName}`);
@@ -452,15 +468,26 @@ handle(CH.FFMPEG.DOWNLOAD, async (e, sourceId) => {
       return { ok: true, ffmpeg, ffprobe: findFfprobe(), found: 2 };
     }
     // zip 整合包
-    const zipPath = tempNames.ffmpegZip({ tempDir: tempDir() });
+    /* 同样不能固定：两个并发安装会写同一个 zip，AdmZip 读到半个文件。 */
+    const zipPath = tempNames.tempPathFor(path.join(tempDir(), 'ffmpeg-pack.zip'), 'ffdl' + id);
     try {
       await downloadToFile(src.url, zipPath, id, ctrl, '整合包');
       send('job:stream', { id, data: JSON.stringify({ stage: 'extract' }) });
       const zip = new AdmZip(zipPath);
       let found = 0;
       for (const entry of zip.getEntries()) {
-        const n = entry.entryName.replace(/\\/g, '/');
-        if (n.endsWith('/ffmpeg.exe') || n.endsWith('/ffprobe.exe')) {
+        const n = String(entry.entryName || '').replace(/\\/g, '/');
+        /* 只取 exe，但名字仍可能是 `../../ffmpeg.exe`。extractEntryTo 会按
+         * 条目名拼目标路径，构造包可借它写到 binDir 之外；先做与项目
+         * archive-guard 同口径的穿越检查。 */
+        if (!n || n.startsWith('/') || /^[A-Za-z]:/.test(n) || n.split('/').includes('..')) {
+          throw new Error('ffmpeg 安装包包含不安全路径：' + n);
+        }
+        if (n === 'ffmpeg.exe' || n === 'ffprobe.exe' || n.endsWith('/ffmpeg.exe') || n.endsWith('/ffprobe.exe')) {
+          const declared = Number(entry.header && entry.header.size);
+          if (!Number.isFinite(declared) || declared > 300 * 1024 * 1024) {
+            throw new Error('ffmpeg 安装包条目大小异常，已拒绝解压');
+          }
           zip.extractEntryTo(entry, binDir(), false, true);
           found++;
         }
@@ -504,10 +531,13 @@ handle(CH.TARGET.COMPRESS_AV, async (e, { items, outDir, targetBytes, mode, rati
   const id = 'tgt' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
   const killProc = () => killFfmpegTree(state.proc);
+  /* 输出目录校验/创建必须先于 jobs.set：非法 or 受保护目录会在
+   * assertOutDir/mkdir 处抛错，若 job 已登记，取消列表里会留下一个
+   * 永远无法结束的幽灵任务（后续“取消全部”也会拿到它）。 */
+  assertOutDir(outDir);
+  await fsp.mkdir(outDir, { recursive: true });
   jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
   setLatestCancelable(() => { state.cancel = true; killProc(); });
-
-  await fsp.mkdir(outDir, { recursive: true });
   const results = [];
 
   /* 读时长与音轨信息。时长拿不到就无法按体积反推码率，直接给出可读失败。 */
@@ -696,12 +726,28 @@ handle(CH.TARGET.EVAL_IMAGE, (e, { outBytes, targetBytes, round }) => {
 handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  if (!Array.isArray(items) || !items.length) throw new Error('请选择要转换的文件');
+  if (!opts || typeof opts !== 'object') throw new Error('转换参数无效');
+  /* ss/to/fps/gifWidth 会进入 argv 或滤镜串。这里统一归一：
+   *  - ss/to 必须有限非负（避免 NaN 时长）；
+   *  - fps 是 0–120 的有限数（gif 分支会拼进 fps=... 滤镜）；
+   *  - gifWidth 限制在 16–8192，防止 `480,scale=...` 注入额外滤镜。 */
+  const ssRaw = (opts.ss == null || String(opts.ss).trim() === '') ? 0 : Number(opts.ss);
+  if (!Number.isFinite(ssRaw) || ssRaw < 0) throw new Error('开始时间必须是非负数字（秒）');
+  const toRaw = (opts.to == null || String(opts.to).trim() === '') ? 0 : Number(opts.to);
+  if (!Number.isFinite(toRaw) || toRaw < 0) throw new Error('结束时间必须是非负数字（秒）');
+  const fpsRaw = (opts.fps == null || String(opts.fps).trim() === '') ? 0 : Number(opts.fps);
+  if (!Number.isFinite(fpsRaw) || fpsRaw < 0 || fpsRaw > 120) throw new Error('帧率必须在 0–120 之间');
+  const gifWidthRaw = (opts.gifWidth == null || String(opts.gifWidth).trim() === '') ? 480 : Number(opts.gifWidth);
+  if (!Number.isFinite(gifWidthRaw) || gifWidthRaw < 16 || gifWidthRaw > 8192) throw new Error('GIF 宽度必须是 16–8192 之间的数字');
+  opts = Object.assign({}, opts, { ss: ssRaw, to: toRaw, fps: Math.round(fpsRaw), gifWidth: Math.round(gifWidthRaw) });
   const id = 'avc' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
+  const extMap = { mp4: 'mp4', webm: 'webm', mkv: 'mkv', mp3: 'mp3', wav: 'wav', flac: 'flac', gif: 'gif', m4a: 'm4a' };
+  assertOutDir(outDir);
+  await fsp.mkdir(outDir, { recursive: true });
   jobs.set(id, { cancel: () => { state.cancel = true; killFfmpegTree(state.proc); } });
   setLatestCancelable(() => { state.cancel = true; killFfmpegTree(state.proc); });
-  const extMap = { mp4: 'mp4', webm: 'webm', mkv: 'mkv', mp3: 'mp3', wav: 'wav', flac: 'flac', gif: 'gif', m4a: 'm4a' };
-  await fsp.mkdir(outDir, { recursive: true });
   const results = [];
   try {
     for (let i = 0; i < items.length; i++) {
@@ -749,7 +795,7 @@ handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
       if (!isAudioOut) {
         if (opts.vcodec === 'copy') args.push('-c:v', 'copy');
         else if (opts.format === 'webm') { args.push('-c:v', 'libvpx-vp9', '-crf', String(opts.crf || 34), '-b:v', '0', '-row-mt', '1'); }
-        else if (opts.format === 'gif') { args.push('-an', '-vf', `fps=${opts.fps || 12},scale=${opts.gifWidth || 480}:-2:flags=lanczos`); }
+        else if (opts.format === 'gif') { args.push('-an', '-vf', `fps=${opts.fps || 12},scale=${opts.gifWidth}:-2:flags=lanczos`); }
         else {
           enc = await videoEncodeArgs({ vcodec: opts.vcodec, crf: opts.crf, preset: 'veryfast' });
           args.push(...enc.args);
@@ -810,12 +856,18 @@ handle(CH.FFMPEG.CONVERT, async (e, { items, outDir, opts }) => {
 handle(CH.FFMPEG.PRESS, async (e, { items, outDir, opts }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  if (!Array.isArray(items) || !items.length) throw new Error('请选择要压制的文件');
+  if (!opts || typeof opts !== 'object') throw new Error('压制参数无效');
+  const fpsRaw = (opts.fps == null || String(opts.fps).trim() === '') ? 0 : Number(opts.fps);
+  if (!Number.isFinite(fpsRaw) || fpsRaw < 0 || fpsRaw > 120) throw new Error('帧率必须在 0–120 之间');
+  opts = Object.assign({}, opts, { fps: Math.round(fpsRaw) });
   const id = 'prs' + (ctx.nextJobSeq());
   const state = { cancel: false, proc: null };
   const killProc = () => killFfmpegTree(state.proc);
+  assertOutDir(outDir);
+  await fsp.mkdir(outDir, { recursive: true });
   jobs.set(id, { cancel: () => { state.cancel = true; killProc(); } });
   setLatestCancelable(() => { state.cancel = true; killProc(); });
-  await fsp.mkdir(outDir, { recursive: true });
   const results = [];
   try {
     for (let i = 0; i < items.length; i++) {
@@ -923,19 +975,37 @@ handle(CH.FFMPEG.PRESS, async (e, { items, outDir, opts }) => {
 handle(CH.FFMPEG.FRAMES, async (e, { input, outDir, mode, ss, every, count, width }) => {
   const ffmpeg = findFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，请先在「FFmpeg 环境」中安装');
+  assertOutDir(outDir);
+  /* width/every/count/ss 都会进入 ffmpeg 的 argv 或 -vf 字符串。
+   * 旧实现里 `width` 直接拼 `scale=${width}:-2`，传入 `480,scale=...`
+   * 就是一条额外的滤镜链；count/every 是 NaN 时则写出负帧数/NaN fps。
+   * 统一转成有限数值；非法 width 直接拒绝，其余夹到 UI 的合法区间。 */
+  const widthRaw = (width == null || String(width).trim() === '') ? 0 : Number(width);
+  if (width != null && String(width).trim() !== '' &&
+      (!Number.isFinite(widthRaw) || widthRaw < 16 || widthRaw > 8192)) {
+    throw new Error('输出宽度必须是 16–8192 之间的数字');
+  }
+  const widthNum = Math.round(widthRaw);
+  const ssNum = (ss == null || String(ss).trim() === '') ? 0 : Number(ss);
+  if (!Number.isFinite(ssNum) || ssNum < 0) throw new Error('开始时间必须是非负数字（秒）');
+  const everyRaw = (every == null || String(every).trim() === '') ? 1 : Number(every);
+  if (!Number.isFinite(everyRaw) || everyRaw <= 0) throw new Error('截帧间隔必须是正数（秒）');
+  const countRaw = (count == null || String(count).trim() === '') ? 20 : Number(count);
+  if (!Number.isFinite(countRaw) || countRaw < 1) throw new Error('截帧数量必须是正整数');
+  const countNum = Math.min(500, Math.floor(countRaw));
   await fsp.mkdir(outDir, { recursive: true });
   const base = path.basename(input).replace(/\.[^.]+$/, '');
   const args = ['-hide_banner', '-y'];
   let out;
   if (mode === 'single') {
-    if (ss) args.push('-ss', String(ss));
+    if (ssNum > 0) args.push('-ss', String(ssNum));
     args.push('-i', input, '-frames:v', '1', '-q:v', '2');
-    if (width) args.push('-vf', `scale=${width}:-2`);
+    if (widthNum) args.push('-vf', `scale=${widthNum}:-2`);
     out = path.join(outDir, `${base}_frame.jpg`);
     args.push(out);
   } else {
-    const fps = Math.max(0.05, 1 / Math.max(1, every || 1));
-    args.push('-i', input, '-vf', `fps=${fps}${width ? `,scale=${width}:-2` : ''}`, '-frames:v', String(Math.min(500, count || 20)), '-q:v', '3');
+    const fps = Math.max(0.05, 1 / Math.max(1, everyRaw));
+    args.push('-i', input, '-vf', `fps=${fps}${widthNum ? `,scale=${widthNum}:-2` : ''}`, '-frames:v', String(countNum), '-q:v', '3');
     out = path.join(outDir, `${base}_%03d.jpg`);
     args.push(out);
   }
@@ -1026,6 +1096,13 @@ handle(CH.FFMPEG.TRIM, async (e, { input, out, start, duration, mode }) => {
    * 每次手动改文件名。代价是主进程这一层可以"覆盖任意非关键路径"——
    * 这与 video-press / target 的既有语义一致，不在这里单独收紧。 */
   if (path.resolve(String(out)) === path.resolve(String(input))) throw new Error('输出文件不能与源文件相同');
+  /* 字符串比较挡不住 symlink / junction / 短名 / 大小写变体：
+   * 输出路径若是指向源文件的链接，ffmpeg -y 会直接把源文件覆盖掉。 */
+  try {
+    if (pathGuard.canonical(input) === pathGuard.canonical(out)) throw new Error('输出文件不能与源文件相同（指向同一文件）');
+  } catch (err) {
+    if (String(err && err.message || '').includes('输出文件不能')) throw err;
+  }
   const bad = pathGuard.checkOverwritable(out);
   if (bad) throw pathGuard.err(bad.code, bad.reason);
 
@@ -1055,7 +1132,11 @@ handle(CH.FFMPEG.TRIM, async (e, { input, out, start, duration, mode }) => {
      * 【硬件加速开关同样作用于这里】用户开的是「视频编码用硬件」，
      * 裁剪重编码也是视频编码；如果只给转码页加速而裁剪页不动，
      * 用户会觉得那个开关时灵时不灵。 */
-    const trimEnc = await videoEncodeArgs({ vcodec: 'libx264', crf: 20, preset: 'veryfast' });
+    /* 句柄已经登记，用户可能在这一刻就点了取消。先看一次，别让已经作废的
+     * 任务继续探测编码器。 */
+    if (state.cancel) { jobs.delete(id); throw new Error('已取消'); }
+    const trimEnc = await videoEncodeArgs({ vcodec: 'libx264', crf: 20, preset: 'veryfast' })
+      .catch((err) => { jobs.delete(id); throw err; });
     args.push(...trimEnc.args);
     args.push('-pix_fmt', 'yuv420p');
     /* 音频：有音轨就重编码成 AAC。不选 copy —— 视频重编码时音频 copy 会
@@ -1090,6 +1171,10 @@ handle(CH.FFMPEG.TRIM, async (e, { input, out, start, duration, mode }) => {
   args.push('-progress', 'pipe:1');
   args.push(out);
 
+  /* 从登记 job 到真正 spawn 之间还可能隔着编码器探测（几百毫秒到数秒）。
+   * 取消若发生在这段窗口，原来仍会 spawn 完整跑一遍，最后才发现 state.cancel
+   * 并把成品删掉 —— 用户点了取消却看见 ffmpeg 继续满负载。这里再收一次口。 */
+  if (state.cancel) { jobs.delete(id); throw new Error('已取消'); }
   try {
     const r = await new Promise((resolve) => {
       const proc = spawn(ffmpeg, args, { windowsHide: true });
@@ -1152,18 +1237,34 @@ handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, ga
   // 输出路径不允许等于输入路径（否则会把源文件覆盖成剪辑结果）
   try {
     if (path.resolve(String(out)) === path.resolve(String(input))) throw new Error('输出文件不能与源文件相同');
+    /* 同 TRIM：字符串相等不够，链接/短名/大小写变体也可能指向源文件。 */
+    let sameCanon = false;
+    try { sameCanon = pathGuard.canonical(input) === pathGuard.canonical(out); } catch (err) {}
+    if (sameCanon) throw new Error('输出文件不能与源文件相同（指向同一文件）');
     const bad = pathGuard.checkOverwritable(out);
     if (bad) throw pathGuard.err(bad.code, bad.reason);
   } catch (err) { throw err; }
   const ac = format === 'mp3' ? 'libmp3lame' : format === 'wav' ? 'pcm_s16le' : format === 'flac' ? 'flac' : 'aac';
+  /* 三个时间参数都来自渲染层。旧实现只靠 `if (ss)` / `dur > 0` 的真值比较，
+   * 字符串/对象可以绕过数值判断；虽然最终只是一个 argv，不会拆成额外参数，
+   * 但会让 ffmpeg 收到 `NaN` / `1e999` / 负值而失败或产出意外时长。
+   * 统一转成有限非负数，再进入参数与滤镜。 */
+  const ssNum = (ss == null || String(ss).trim() === '') ? 0 : Number(ss);
+  if (!Number.isFinite(ssNum) || ssNum < 0) throw new Error('开始时间必须是非负数字（秒）');
+  const durNum = (dur == null || String(dur).trim() === '') ? 0 : Number(dur);
+  if (!Number.isFinite(durNum) || durNum < 0) throw new Error('截取时长必须是非负数字（秒）');
+  const fadeInNum = (fadeIn == null || String(fadeIn).trim() === '') ? 0 : Number(fadeIn);
+  if (!Number.isFinite(fadeInNum) || fadeInNum < 0) throw new Error('淡入时长必须是非负数字（秒）');
+  const fadeOutNum = (fadeOut == null || String(fadeOut).trim() === '') ? 0 : Number(fadeOut);
+  if (!Number.isFinite(fadeOutNum) || fadeOutNum < 0) throw new Error('淡出时长必须是非负数字（秒）');
   const args = ['-hide_banner', '-y'];
-  if (ss) args.push('-ss', String(ss));
+  if (ssNum > 0) args.push('-ss', String(ssNum));
   args.push('-i', input);
-  if (dur > 0) args.push('-t', String(dur));
+  if (durNum > 0) args.push('-t', String(durNum));
   const filters = [];
-  if (fadeIn > 0) filters.push(`afade=t=in:st=0:d=${fadeIn}`);
-  if (fadeOut > 0) {    // 淡出起点取「截取时长」或源时长减淡出长度
-    let total = dur > 0 ? dur : 0;
+  if (fadeInNum > 0) filters.push(`afade=t=in:st=0:d=${fadeInNum}`);
+  if (fadeOutNum > 0) {    // 淡出起点取「截取时长」或源时长减淡出长度
+    let total = durNum > 0 ? durNum : 0;
     if (total <= 0) {
       try {
         const ffprobe = findFfprobe();
@@ -1173,8 +1274,8 @@ handle(CH.FFMPEG.AUDIO_CUT, async (e, { input, out, ss, dur, fadeIn, fadeOut, ga
         }
       } catch (err) {}
     }
-    const st = Math.max(0, total - fadeOut);
-    filters.push(`afade=t=out:st=${st.toFixed(2)}:d=${fadeOut}`);
+    const st = Math.max(0, total - fadeOutNum);
+    filters.push(`afade=t=out:st=${st.toFixed(2)}:d=${fadeOutNum}`);
   }
   /* gain 直接来自渲染层输入，旧实现 `if (gain)` 会把任意真值字符串拼进
    * `-af`，逗号可追加额外滤镜（fadeIn/fadeOut/dur 都有 >0 数值比较挡着，
@@ -1386,13 +1487,29 @@ handle(CH.REC.START, async (e, { outPath, fps, rect, audio, camera, camPos, camS
   if (fs.existsSync(outPath) && !overwrite) {
     throw new Error('目标文件已存在，为避免覆盖已拒绝：' + outPath);
   }
-  recOut = outPath;
+  /* fps / rect / camScale 会直接进入 gdigrab 参数与 filter_complex：
+   * 旧实现用 Math.round(undefined) → NaN，`-video_size 0x0` 起动必失败；
+   * fps 若是字符串还会拼进 `fps=30,scale=...` 这样的滤镜串。
+   * 这里统一转数值并夹到合理范围，非法设备名直接拒绝。 */
+  const fpsNum = (fps == null || String(fps).trim() === '') ? 30 : Number(fps);
+  if (!Number.isFinite(fpsNum) || fpsNum < 1 || fpsNum > 120) throw new Error('录制帧率必须在 1–120 之间');
+  const camScaleNum = (camScale == null || String(camScale).trim() === '') ? 0.25 : Number(camScale);
+  if (!Number.isFinite(camScaleNum)) throw new Error('摄像头缩放比例无效');
+  if (audio != null && audio !== '' && typeof audio !== 'string') throw new Error('音频设备名无效');
+  if (camera != null && camera !== '' && typeof camera !== 'string') throw new Error('摄像头设备名无效');
+  const camPosSafe = ['lt', 'rt', 'lb', 'rb'].includes(camPos) ? camPos : 'rb';
   // yuv420p 要求偶数尺寸/偏移，框选结果向下取偶
   if (rect && typeof rect === 'object') {
-    rect = { x: Math.max(0, Math.round(rect.x)) & ~1, y: Math.max(0, Math.round(rect.y)) & ~1,
-      w: Math.max(64, Math.round(rect.w)) & ~1, h: Math.max(64, Math.round(rect.h)) & ~1 };
+    const nums = ['x', 'y', 'w', 'h'].map((k) => Number(rect[k]));
+    if (nums.some((n) => !Number.isFinite(n))) throw new Error('录制区域坐标无效');
+    const [rx, ry, rw, rh] = nums;
+    if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0) throw new Error('录制区域宽高必须为正数');
+    rect = { x: Math.max(0, Math.round(rx)) & ~1, y: Math.max(0, Math.round(ry)) & ~1,
+      w: Math.max(64, Math.round(rw)) & ~1, h: Math.max(64, Math.round(rh)) & ~1 };
   } else rect = null;
-  recOpts = { fps: fps || 30, rect, audio: audio || null, camera: camera || null, camPos: camPos || 'rb', camScale: camScale || 0.25 };
+  recOpts = { fps: Math.round(fpsNum), rect, audio: audio || null, camera: camera || null, camPos: camPosSafe,
+    camScale: Math.min(Math.max(camScaleNum, 0.1), 0.5) };
+  recOut = outPath;
   recOwner = recordingOwner(e);
   recSegs = [];
   recDeath = null;
@@ -1474,7 +1591,11 @@ async function recStopSeg() {
   });
   await new Promise(r => setTimeout(r, 300));
 }
-handle(CH.REC.PAUSE, (e) => withRecordingOperation(e, async () => { await recStopSeg(); return { ok: true, paused: true }; }));
+handle(CH.REC.PAUSE, (e) => withRecordingOperation(e, async () => {
+  if (!recOpts || !recSegDir) throw new Error('没有进行中的录制会话');
+  await recStopSeg();
+  return { ok: true, paused: true };
+}));
 handle(CH.REC.RESUME, (e) => withRecordingOperation(e, async () => {
   // rec:stop 的 finally 会把 recOpts/recSegDir 置空；只检查 recOpts 会漏掉 recSegDir 已失效的情况
   if (!recOpts || !recSegDir) throw new Error('没有进行中的录制会话');

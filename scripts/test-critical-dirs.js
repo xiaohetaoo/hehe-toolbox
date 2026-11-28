@@ -126,6 +126,16 @@ t('盘符相对写法 D: 必须被拒绝（resolve 后会变成 cwd）', () => {
   /* 对照：显式盘符根与普通路径的结论不变 */
   assert.strictEqual(pg.checkDeletable(p('D:/')).code, 'ROOT', 'D:\\ 仍应判盘符根');
   assert.strictEqual(pg.checkDeletable(p('D:/normal/file.txt')), null, '普通文件路径不该被误伤');
+  /* `D:foo` / `C:foo` 同样不是「D 盘根」，但原来的 /^[A-Za-z]:$/ 只认裸盘符，
+   * 于是它们会 resolve 成「盘符当前目录」并一路放行。 */
+  for (const bad of ['C:foo', 'D:foo', ' c:temp ']) {
+    const d = pg.checkDeletable(bad);
+    assert.ok(d && d.code === 'DRIVE_RELATIVE', 'checkDeletable 必须拒绝 ' + bad);
+    const o = pg.checkOverwritable(bad);
+    assert.ok(o && o.code === 'DRIVE_RELATIVE', 'checkOverwritable 必须拒绝 ' + bad);
+    assert.strictEqual(pg.isProtectedForModify(bad).protected, true,
+      'isProtectedForModify 必须拦 ' + bad);
+  }
 });
 
 t('\\\\?\\ 扩展长度前缀不能绕过关键目录闸门（realpath 失败时）', () => {

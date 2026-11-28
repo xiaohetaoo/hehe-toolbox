@@ -1,6 +1,6 @@
 # hehe-toolbox（核核工具箱）项目约定
 
-> 工作区：`D:\zcode\hehe` · 版本：`0.9.6` · 更新：2026-11-22
+> 工作区：`D:\zcode\hehe` · 版本：`0.9.7` · 更新：2026-11-26
 > 本文件记录**项目重要事项与协作约定**（协作规则第 3 条）。
 > 完整交接文档在 `D:\dsh\hehe-tool.md`（架构、逐域说明、踩坑大全、发版流程）。
 
@@ -77,15 +77,15 @@
 | `scripts/` | 测试 / 构建 / 发布脚本 |
 | `docs/review-round*.md` | 历轮审查记录（含证据与排除的误报） |
 | `docs/release-notes/` | 每版发布说明 |
-| `dist/` | 产物固定位置（勿删；当前为 0.9.3 的 Portable exe + zip，0.9.4 待下载） |
+| `dist/` | 产物固定位置（勿删；当前为 0.9.7 的 Portable exe + zip） |
 | `D:\dsh\hehe-tool.md` | 完整交接文档（外部，用户指定维护） |
 
 ## 六、当前状态（2026-11-26 核对）
 
-- 版本 `0.9.6`，tag `v0.9.6` → `17eef21`；HEAD 与 origin/main 同步。
+- 版本 `0.9.7`，tag `v0.9.7` → `979c03f`；`dist/` 为 0.9.7 的 Portable exe + zip。
 - **开源为 MIT**：新增 `LICENSE`（2026 hehe）、README 许可段、
   `build.files` 纳入 LICENSE（原来产物里没有许可声明）。
-- Release：https://github.com/xiaohetaoo/hehe-toolbox/releases/tag/v0.9.6
+- 上一版 Release（v0.9.6）：https://github.com/xiaohetaoo/hehe-toolbox/releases/tag/v0.9.6
   （zip 153.93 MB + Portable 99.17 MB，正文 3778 字，run 45562796271 success）
 - **v0.9.6 内容**：R18~R21 四轮审查共 **62 项**修复 ——
   P0 6 项（批量停止按钮未接线、running 不复位、无 per-run 序号并发写盘、
@@ -118,3 +118,58 @@
 - 新增测试：`test-round23-fixes.js`（2）、`test-archive-guard` +1、`test-disk-health` +2、`test-env-path` +1、`test-path-text` +1；`features.json` 登记 R23。
 - 门禁：`npm test` **218 脚本 / 2444 PASS / 0 失败 / 7 环境跳过**（371.1s，exit 0）；lint 0；typecheck 0；断言基线 **2444**（218 文件）；`HEHE_SMOKE=1` 111 页 PASS（cssRules=498）。
 - 提交状态：所有改动仍在工作区，未提交、未 push；`docs/copyright/` 为用户原有未跟踪资料，未触碰。
+
+## 十五、第 24 轮深度审查与修复（2026-11-26，v0.9.7）
+
+- 范围：6 路子代理分域只读审计（主进程/IPC、lib、渲染层、CSS/可访问性、工程脚本、媒体页补漏），主审交叉抽验；明细与逐项证据见 `docs/review-round24.md`。
+- 审计结论：**P0 0、P1 1、P2 9、P3 41，共 51 条**；R18–R23 已修项不重复上报。
+- 修复结果：**42 条全修、6 条部分修、3 条明确未修**。P1 电源门禁 `Start-Process`/`& $var` 绕过先修；P2 九项全落地：坏 store 四处归一、剪贴板双模态、dedupe 重入/进度串扰、dropzone 键盘、英文外壳、构建假成功、产物守卫假绿、office 离页复位、video-trim 离页暂停。
+- P3 重点：IPC 入参校验（net/http/scan、mkdir、office outDir、seven、port、hwnd、save-image、hosts realpath）、lib 边界（target-size/dir-move/archive-guard/restore-point/errors/acl/lan/sensitive）、渲染层离页序号与 KILL、PDF 共享 busy、错误 toast 口径、modal/表格/toast/cmdk/表单/搜索可访问性、对比度 token、长 toast 换行、死 CSS、reduced-motion、辅助窗 `lang`/`alt`/splash 语言。
+- 新增测试：`test-round24-fixes.js` **49 条**、`test-powergate` +6（83→89）；`features.json` 新增 `round24` 域并登记测试。基线 2444（218 文件）→ **2499（219 文件）**，只按实际新增上调。
+- 门禁：`npm run lint` 0；`npm run typecheck` 0；`npm test` **219 脚本 / 2499 PASS / 0 失败 / 7 环境跳过**（341.8s，exit 0）；`npm run test:count` 2499 PASS；`HEHE_SMOKE=1` **pages=111 cssRules=493 PASS**，`snip/pin/ruler` 均 `scripts=3, csp=on`。
+- 视觉/可访问性：未做逐页人工点击与读屏走查；用 CSS/源码契约 + 111 页 smoke 覆盖。`cssRules` 498→493 来自死规则清理，非解析中断。
+- 未修/风险：R24-45 release/updater 链路分叉、R24-46 asar 瘦身、R24-51 `jsconfig` 覆盖 3 项未修；R24-29/43/47/48/49/50 部分修；R24-18/19 未做真实 hosts 写入与长任务退出实测，只做代码级证实并记录，未夸大为已复现。
+- 测试环境限制：本机 Chromium 单实例锁文件创建失败（error 5），冒烟时临时绕过 `requestSingleInstanceLock`，跑完已恢复，`main.js` SHA256 与改前一致；仓库未保留临时改动。
+- 提交状态：本轮未 commit、未 push；`docs/copyright/` 未触碰；未跑 dist、未构建发布产物。
+
+## 十六、第 25 轮深度审查与修复（2026-11-26，未提交）
+
+- 范围：在 R24 未提交改动上继续做全仓静态审查，重点补路径闸门、任务生命周期、解压/下载边界、网络探测内存上限与窄窗布局；明细见 `docs/review-round25.md`。
+- 主要修复：盘符相对路径（`C:foo`）在删除/覆盖/改权限/改名四处一致拒绝；`walkDir`/空目录扫描/垃圾扫描/清理全部跳过 junction，清理链接只删链接本身；`scan-empty-dirs` 不再把用户选中的扫描根列进待删清单；媒体批处理先校验输出目录再登记 job，避免幽灵任务；`FFMPEG.DOWNLOAD` 先建 bin 目录再登记 job；更新包 PE 校验与 SHA-256 改用同一文件句柄；`notes:pdf` 直传已存在路径拒绝覆盖；静态服务修正 `D:\` 根前缀；`NET.HTTP` 加 64MB 流式上限；测速采满时间窗后取消响应流；`archive-process` 最终复查不容忍根目录缺失；`SCHED.ONCE_ADD` 拒绝未知动作；启动临时清扫跳过链接；`package.json` asar 排除 `.ts/.d.ts/README/CHANGELOG`。
+- 新增测试：`scripts/test-round25-fixes.js` **26 条**（全部 PASS）；`test-crypt-guard` 改为按完整 `cryptStream` 函数体取片段，6 条 PASS。
+- 门禁：`npm run lint` 0；`npm run typecheck` 0；`npm run test:unit` **188 脚本 / 2109 PASS / 0 失败 / 3 环境跳过**（114.3s）；`test-source-assertions` 6 条 PASS。
+- 未修/风险：R24-45 release/updater 分叉、R24-51 jsconfig 覆盖、R24-43 辅助窗逐字符串翻译仍留待后续；`test-i18n-assertions` 未递归；`HOSTS.BACKUP` 未并入 hosts 串行锁；UI 固定宽度候选已逐项核对，仍建议真实窗口截图复核。
+- 提交状态：本轮未 commit、未 push；`docs/copyright/` 未触碰；未跑 dist、未构建发布产物。
+
+## 十七、第 26 轮连续深查与修复（2026-11-27 凌晨，未提交）
+
+- 范围：承接 R25 工作区，继续静态审查搜索、Office 转换、媒体任务、hosts、辅助窗语言、局域网扫描与 i18n 守卫；明细见 `docs/review-round26.md`。
+- 主要修复：Office COM 在 `ps` 超时/抛异常时也清半截目标；四条搜索入口的 limit 统一为有限正数、空内容查询直接拒绝、`drive` 大小写归一；内容搜索 `walkDir` 失败也发 `done` 并在 `finally` 清任务；视频裁剪在探测前/探测失败/spawn 前补取消检查；LAN 扫描旧一趟不再拆新一趟订阅或藏进度条；`HOSTS.BACKUP` 并入 hosts 串行锁；辅助窗 `loadFile` 带 `lang` 且首次打开按语言渲染提示/按钮；实时坐标页离开时复位开关；i18n 源码断言守卫递归子目录。
+- 新增测试：`scripts/test-round26-fixes.js` **10 条**（全部 PASS）；`scripts/source-assertions-baseline.txt` 收紧 `test-single-instance` 的 B 计数 13→12。
+- 门禁：`npm run lint` 0；`npm run typecheck` 0；`scripts/test-round26-fixes.js` 10 条 PASS；`scripts/test-source-assertions.js` 6 条 PASS（源码断言 1724、1260 条已写「锁的是」）；`test-i18n-assertions` 224 条全过；`test:unit` 189 脚本 / 2119 PASS；完整 `test:count:write` 222 脚本 / 2537 PASS，基线已重拍，`--no-run` 核对无文件低于基线。
+- 未修/风险：R24-45 release/updater 分叉、R24-51 jsconfig 覆盖仍留待后续；辅助窗已打开后再切语言的问题已在 R27 补齐（见下）；`HOSTS.BACKUP` 未做真实 hosts 写入实测；UI 固定宽度仍建议真实窗口截图复核。
+- 提交状态：本轮未 commit、未 push；`docs/copyright/` 未触碰；未跑 dist、未构建发布产物。
+
+## 十八、第 27 轮连续深查续（2026-11-27 凌晨，未提交）
+
+- 范围：补齐 R26 遗留的「辅助窗已打开后切语言不更新」；继续复核网络测速上限与局域网扫描进度隔离。明细见 `docs/review-round27.md`。
+- 主要修复：`pin-1/ruler-1/snip-1` 收到 `UI_PREFS_CHANGED` 后只在语言真变时派发 `hehe-lang`；`pin` 提示文字、`ruler` 四个 title、`snip` 工具条/调色板/线宽提示即时重画；`snip` 的 `EN` 改为可变，重建工具条时保留 `tool/color/size`；截图工具 `TOOLS` 改为四元组按当前语言取 label；`NET.SPEEDTEST` 上行响应改用 `readHttpCapped` 截断并检查 `r.ok`；分片/合并/7z/ZIP 长操作按钮统一 `ui.guard` 防双击并发；`LAN.SCAN` 进度带本轮 token，旧一趟不能覆盖新一趟。
+- 新增测试：`scripts/test-round27-fixes.js` **7 条**（全部 PASS）；`scripts/test-aux-lang-live.js` 真实加载 pin/ruler/snip，验证 en→zh→en 往返。
+- 门禁：`npm run lint` 0；`npm run typecheck` 0；`test-snip-e2e` 9 条、`test-snip-toolbar-ui` 13 条、`test-aux-windows-csp` 18 条、`test-net-tools` 1 条全过；完整 `test:count:write` **224 脚本 / 2545 PASS**，基线已重拍，`--no-run` 核对无文件低于基线；`test-source-assertions` 6 条（源码断言 1751、1287 条已写「锁的是」）、`test-i18n-assertions` 226 条全过。
+- 提交状态：本轮未 commit、未 push；`docs/copyright/` 未触碰；未跑 dist、未构建发布产物。
+
+## 十九、第 28 轮五小时深查（2026-11-27 夜间，未提交）
+
+- 范围：只查代码，不手工实机；重点复核页面保活后的长任务状态、异步换文件竞态、窄窗布局。明细见 `docs/review-round28.md`。
+- 主要修复：磁盘分析页 cleanup/onEnter/finally 与进度序号复位，空目录扫描防双击；PDF 页面管理 `loadSeq` 防止旧读取覆盖新文档；压缩包预览 `pvSeq` 丢弃旧 LIST；文档预览捕获 `target` + `previewSeq` 停笔；PDF 水印/提取/瘦身捕获 `srcPath`；屏幕坐标 4 格、实时速率 5 格改 `auto-fit` 窄窗落列。
+- 新增测试：`scripts/test-round28-fixes.js` **10 条**（全部 PASS）。
+- 门禁：`npm run lint` 0；`npm run typecheck` 0；完整 `test:count:write` **225 脚本 / 2555 PASS**，基线重拍；`test-source-assertions` 6 条（源码断言 1784、1320 条已写「锁的是」）；`test-i18n-assertions` 227 条；`test-round28-fixes`、`test-pdf-pages`、`test-round16-behavior`、`test-round25-fixes` 全过。
+- 提交状态：未 commit、未 push；`docs/copyright/` 与 `dist/` 未触碰；7 个环境脚本按既有原因跳过。
+
+## 二十、第 29 轮继续深查（2026-11-28 凌晨，未提交）
+
+- 范围：承接第 28 轮继续查页面保活生命周期，重点看 `onCleanup` 后没有 `onEnter` 复位的页面。明细见 `docs/review-round29.md`。
+- 主要修复：网速测试页的 `disposed` 在切页后永久为 true，复用回来按钮静默失效；新增 `speedRunSeq` 每轮序号与 `onEnter` 复位，旧 await 结果、旧 `job:stream`、旧 `finally` 都不再碰当前轮。工具链 `runChain` 增加 `shouldStop`，离开页面后不再启动下一步（当前步无法中断）。
+- 新增测试：`scripts/test-round29-fixes.js` **7 条**（全部 PASS）。
+- 门禁：`npm run lint` 0；`npm run typecheck` 0；完整 `test:count:write` **226 脚本 / 2562 PASS**，基线重拍；`test-source-assertions` 6 条（源码断言 1795、1331 条已写「锁的是」）；`test-i18n-assertions` 228 条。
+- 提交状态：未 commit、未 push；`docs/copyright/` 与 `dist/` 未触碰；7 个环境脚本按既有原因跳过。

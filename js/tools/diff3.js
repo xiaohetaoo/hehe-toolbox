@@ -139,7 +139,7 @@
 
         const table = h('div', { style: { marginTop: '10px', fontFamily: 'Consolas, monospace', fontSize: '12px' } });
         // 表头
-        const head2 = h('div', { style: { display: 'grid', gridTemplateColumns: '44px 1fr 1fr 1fr', gap: '6px', color: 'var(--text-3)', padding: '4px 6px', borderBottom: '1px solid var(--border)' } },
+        const head2 = h('div', { style: { display: 'grid', gridTemplateColumns: '44px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)', gap: '6px', color: 'var(--text-3)', padding: '4px 6px', borderBottom: '1px solid var(--border)' } },
           h('div', null, T('行号')), h('div', null, 'A'), h('div', null, T('基准')), h('div', null, 'B'));
         table.appendChild(head2);
 
@@ -147,7 +147,7 @@
           const st = KIND_STYLE[r.kind] || KIND_STYLE.same;
           const row = h('div', {
             style: {
-              display: 'grid', gridTemplateColumns: '44px 1fr 1fr 1fr', gap: '6px',
+              display: 'grid', gridTemplateColumns: '44px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)', gap: '6px',
               padding: '2px 6px', background: st.bg, alignItems: 'start'
             }
           });

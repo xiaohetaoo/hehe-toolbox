@@ -21,7 +21,7 @@ function extractGuarded(zipPath, outDir) {
   const raw = zip.getEntries().map((en) => ({
     name: en.entryName,
     isDir: en.isDirectory,
-    size: en.header && typeof en.header.size === 'number' ? en.header.size : 0,
+    size: en.header && typeof en.header.size === 'number' ? en.header.size : undefined,
     isSymlink: false, isHardLink: false
   }));
   const verdict = guard.inspectEntries(raw);

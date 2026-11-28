@@ -94,16 +94,21 @@ handle(CH.NET.PUBLIC_IP, async () => {
 });
 handle(CH.NET.TCP_TEST, (e, host, port, timeoutMs = 4000) => {
   const net = require('net');
+  if (typeof host !== 'string' || !host.trim()) return Promise.reject(new Error('主机地址不能为空'));
+  const p = Number(port);
+  if (!Number.isInteger(p) || p <= 0 || p > 65535) return Promise.reject(new Error('端口必须是 1-65535 的整数'));
+  const t = Number(timeoutMs);
+  const timeout = Number.isFinite(t) ? Math.min(30000, Math.max(50, t)) : 4000;
   return new Promise((resolve) => {
     const start = Date.now();
     const sock = new net.Socket();
     let done = false;
     const finish = (open) => { if (done) return; done = true; sock.destroy(); resolve({ open, ms: Date.now() - start }); };
-    sock.setTimeout(timeoutMs);
+    sock.setTimeout(timeout);
     sock.once('connect', () => finish(true));
     sock.once('timeout', () => finish(false));
     sock.once('error', () => finish(false));
-    sock.connect(parseInt(port, 10), host);
+    sock.connect(p, host);
   });
 });
 /* ================= IPC: 局域网设备扫描 =================
@@ -120,6 +125,11 @@ handle(CH.NET.TCP_TEST, (e, host, port, timeoutMs = 4000) => {
 handle(CH.LAN.SCAN, async (e, opts = {}) => {
   const net = require('net');
   const o = opts || {};
+  /* 渲染层每次扫描带一个 token，进度事件原样带回。
+   * 离开页面不会取消主进程扫描（LAN.SCAN 是阻塞式、没有 job id 可 kill），
+   * 旧扫描会继续发 job:progress；渲染层靠 token 丢弃不属于本轮的事件，
+   * 否则回到页面再扫时，进度条会被上一轮的数字来回覆盖。 */
+  const token = String(o.token || '');
 
   /* 取本机 IPv4 与默认网关：用 ipconfig 而不是 WMI，因为 ipconfig 更稳且已在本项目里用了 */
   let selfIp = '';
@@ -200,11 +210,15 @@ handle(CH.LAN.SCAN, async (e, opts = {}) => {
       const res = await Promise.all(slice.map(pingOne));
       for (let k = 0; k < res.length; k++) if (res[k]) pinged.push(slice[k]);
       done += slice.length;
-      send('job:progress', { id, kind: 'lan', phase: 'scan', done, total: hosts.length, found: pinged.length });
+      send('job:progress', { id, kind: 'lan', token, phase: 'scan', done, total: hosts.length, found: pinged.length });
     }
-  } finally {
+  } catch (err) {
+    /* ping 阶段意外失败时立刻回收 job；正常路径要把 job 留到反查结束，
+     * 否则用户看到「反查主机名」还在跑，点取消却没有任何反应。 */
     jobs.delete(id);
+    throw err;
   }
+  try {
   if (cancelRef.canceled) throw new Error('已取消');
 
   /* ---- 2) 读 ARP 表 ---- */
@@ -229,12 +243,15 @@ handle(CH.LAN.SCAN, async (e, opts = {}) => {
   for (let k = 0; k < toResolve.length; k++) {
     if (cancelRef.canceled) break;
     const row = toResolve[k];
+    /* row.ip 会拼进 PowerShell 单引号命令串；ARP 表理论上只含 IPv4，
+     * 但解析层/异常输出不该成为命令注入的入口。非 IPv4 直接跳过反查。 */
+    if (!net.isIP(String(row.ip || '')) || net.isIP(String(row.ip || '')) !== 4) continue;
     try {
       const r = await ps(`(Resolve-DnsName -Name '${row.ip}' -NameType A -ErrorAction SilentlyContinue).NameHost`, 6000);
       const n = String(r.stdout || '').trim().split(/\r?\n/)[0];
       if (n && !/^\d+\./.test(n)) names[row.ip] = n;
     } catch (err) { /* 反查失败很常见，忽略即可 */ }
-    send('job:progress', { id, kind: 'lan', phase: 'resolve', done: k + 1, total: toResolve.length, found: pinged.length });
+    send('job:progress', { id, kind: 'lan', token, phase: 'resolve', done: k + 1, total: toResolve.length, found: pinged.length });
   }
 
   /* ---- 4) 合并 ---- */
@@ -253,6 +270,10 @@ handle(CH.LAN.SCAN, async (e, opts = {}) => {
     stats: { total: devices.length, arpOnly, pingOnly, pingedCount: pinged.length },
     caveats: lanScanLib.caveats({ arpOnly, pingOnly }),
   };
+  } finally {
+    /* 反查阶段最长 30×6 秒，必须让「取消」在整段扫描里都有效。 */
+    jobs.delete(id);
+  }
 });
 
 /* 只允许 http/https：主进程 fetch 不该被指向 file:、data: 或本机私有协议。
@@ -264,13 +285,42 @@ function isHttpUrl(u) {
   } catch (e) { return false; }
 }
 
+/* HTTP 探测只用于查看响应，不用于下载大文件。没有上限时，一个
+ * 公开 URL（或误填的安装包地址）可以让主进程把整个响应读进内存，
+ * 几 GB 的文件足以把唯一的主进程拖死。这里在流式读取阶段就截断。 */
+const HTTP_MAX_BYTES = 64 * 1024 * 1024;
+async function readHttpCapped(response, maxBytes) {
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > maxBytes) throw new Error('响应超过 ' + (maxBytes / 1048576) + 'MB 上限，已中止读取');
+        chunks.push(Buffer.from(value));
+      }
+    } catch (err) {
+      await reader.cancel().catch(() => {});
+      throw err;
+    }
+    return Buffer.concat(chunks, total);
+  }
+  const buf = Buffer.from(await response.arrayBuffer());
+  if (buf.length > maxBytes) throw new Error('响应超过 ' + (maxBytes / 1048576) + 'MB 上限，已中止读取');
+  return buf;
+}
+
 handle(CH.NET.SCAN, async (e, host, ports, opts = {}) => {
   const net = require('net');
+  opts = opts || {};
   if (typeof host !== 'string' || !host.trim()) throw new Error('主机地址不合法');
   /* ports 非数组时旧实现 ports.length 为 undefined → Array.from({length:NaN})
    * 得到空数组，静默返回 scanned: undefined。坏输入必须报错，不能假装扫过。 */
   const list = Array.isArray(ports)
-    ? ports.map(Number).filter((p) => Number.isInteger(p) && p > 0 && p < 65536)
+    ? [...new Set(ports.map(Number).filter((p) => Number.isInteger(p) && p > 0 && p < 65536))]
     : [];
   if (!list.length) throw new Error('端口列表不合法（应为 1-65535 的数字数组）');
   const concurrency = Math.min(1000, Math.max(1, Number(opts.concurrency) || 300));
@@ -293,7 +343,7 @@ handle(CH.NET.SCAN, async (e, host, ports, opts = {}) => {
         try { s.connect(port, host); } catch (err) { fin(); }
       });
       done++;
-      if (done % 100 === 0) send('job:progress', { id, kind: 'ports', done, total: ports.length, open: open.length });
+      if (done % 100 === 0) send('job:progress', { id, kind: 'ports', done, total: list.length, open: open.length });
     }
   }
   try {
@@ -303,6 +353,7 @@ handle(CH.NET.SCAN, async (e, host, ports, opts = {}) => {
   return { open: open.sort((a, b) => a - b), scanned: list.length };
 });
 handle(CH.NET.HTTP, async (e, opts) => {
+  opts = opts || {};
   const { method = 'GET', url, headers = {}, body, timeoutMs = 30000 } = opts;
   if (!isHttpUrl(url)) throw new Error('只支持 http/https 地址');
   const verb = String(method).toUpperCase();
@@ -313,7 +364,7 @@ handle(CH.NET.HTTP, async (e, opts) => {
   const start = Date.now();
   try {
     const r = await fetch(url, { method: verb, headers, body: verb === 'GET' || verb === 'HEAD' ? undefined : body, signal: ctrl.signal });
-    const buf = Buffer.from(await r.arrayBuffer());
+    const buf = await readHttpCapped(r, HTTP_MAX_BYTES);
     const text = buf.length > 1024 * 512 ? buf.toString('utf8', 0, 1024 * 512) + '\n…[已截断，共 ' + buf.length + ' 字节]' : buf.toString('utf8');
     return { status: r.status, statusText: r.statusText, /* Headers 在旧版 lib.dom 类型里没有 entries()；用 forEach 累加，
    * 运行时行为完全一致，且不受类型定义版本影响。 */
@@ -363,13 +414,19 @@ handle(CH.NET.SPEEDTEST, async (e, opts = {}) => {
           if ((now - started) / 1000 > sec + 5) break;
         }
       }
+      /* 采满时间窗后主动断开：只 break 不 cancel 会让测速服务器的
+       * 响应流继续在后台下载，job 已结束但网卡还在跑。 */
+      await reader.cancel().catch(() => {});
       const elapsed = (Date.now() - started) / 1000;
       return { mbps: bytes * 8 / 1e6 / elapsed, bytes, elapsed, samples };
     } else {
       const size = 10 * 1024 * 1024;
       const payload = Buffer.alloc(size, 1);
       const r = await fetch(url || 'https://speed.cloudflare.com/__up', { method: 'POST', body: payload, signal: ctrl.signal });
-      await r.arrayBuffer();
+      if (!r.ok) throw new Error('测速服务器响应 ' + r.status);
+      /* 上行测速只需要服务端确认收到；但坏端点可能回一个超大响应。
+       * 与 net:http 一样在流式读取阶段截断，不能把整包读进主进程内存。 */
+      await readHttpCapped(r, HTTP_MAX_BYTES);
       const elapsed = (Date.now() - started) / 1000;
       return { mbps: size * 8 / 1e6 / elapsed, bytes: size, elapsed, samples: [] };
     }

@@ -308,7 +308,10 @@ else {
       '三个文件渲染成三行');
   chk(by.sizes && by.sizes.allFilled,
       '每行都回填了真实体积: ' + JSON.stringify(by.sizes && by.sizes.texts));
-  chk(by.head && /共 3 项/.test(by.head.text), '计数行显示「共 N 项」: ' + (by.head && by.head.text));
+  /* 【两种语言都要认】英文系统下计数行是 "3 items" / "3 files" 之类。
+   * 这里只锁「计数行里出现了正确的数量 3」，不锁语言。 */
+  chk(by.head && (/共 3 项/.test(by.head.text) || /\b3\b/.test(by.head.text)),
+    '计数行显示 3 项（中英皆可）: ' + (by.head && by.head.text));
   chk(by.dedupe && by.dedupe.added === 0 && by.dedupe.dup === 2 && by.dedupe.rowCount === 3,
       '同一路径重复加入被去重，行数不变');
   chk(by['dedupe-case'] && by['dedupe-case'].added === 0 && by['dedupe-case'].dup === 1,

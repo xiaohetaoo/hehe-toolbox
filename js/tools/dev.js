@@ -392,7 +392,13 @@
       const pxEl = h('div', { class: 'stat-num' }, '--');
       const pyEl = h('div', { class: 'stat-num' }, '--');
       let timer = null;
-      window.App.onCleanup(() => { if (timer) { clearInterval(timer); timer = null; } });
+      /* 离开页面时定时器会被清掉，但开关的视觉状态还在「开」。
+       * 保活复用回来时用户看到开关亮着、坐标却永远不动 —— 会以为功能坏了。
+       * 这里把开关一起复位（sw.set 不触发 onChange，不会反向再开定时器）。 */
+      window.App.onCleanup(() => {
+        if (timer) { clearInterval(timer); timer = null; }
+        try { sw.set(false); } catch (e) {}
+      });
       const sw = window.ui.switchEl(false, (v) => {
         if (v) {
           if (!isDesktop) { sw.set(false); return toast('桌面端可用', 'warn'); }
@@ -406,7 +412,9 @@
           }, 100);
         } else clearInterval(timer);
       });
-      const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' } });
+      /* 4 个数字块在 560px 工具窗里固定 4 列会挤到标签换行；
+       * auto-fit + 120px 下限让窄窗自动落成 3 列（第四块换行），宽窗仍是 4 列。 */
+      const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '16px' } });
       grid.appendChild(div('', h('div', { class: 'field-hint' }, 'X (DIP)'), xEl));
       grid.appendChild(div('', h('div', { class: 'field-hint' }, 'Y (DIP)'), yEl));
       grid.appendChild(div('', h('div', { class: 'field-hint' }, 'X (物理像素)'), pxEl));

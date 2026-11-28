@@ -151,12 +151,20 @@ jobs:
           echo "要执行的测试步数：$(( $(wc -l < /tmp/steps.txt) ))"
           I=0
           FAILED=""
+          # 【把完整输出落盘，供后面的「断言数护栏」直接读】
+          # run-tests.js 逐文件打印 @@FILE 标记与全部 PASS 行，正好是护栏需要的格式。
+          # 以前这里只回显末尾 8 行、不落盘，于是护栏那一步只能**再完整跑一遍**
+          # 才拿到可解析的日志（实测 238s，整条 CI 的一多半）。
+          mkdir -p reports
+          : > reports/test-output.log
           while IFS= read -r C; do
             [ -z "$C" ] && continue
             I=$((I + 1))
             echo "----- [$I] $C"
             OUT=$($C 2>&1)
             RC=$?
+            # 追加完整输出（护栏要逐行数 PASS/@@FILE，不能只留末尾几行）
+            printf '%s\n' "$OUT" >> reports/test-output.log
             echo "$OUT" | tail -8
             if [ $RC -ne 0 ]; then
               FAILED="$C (exit $RC)"
@@ -202,16 +210,16 @@ jobs:
         shell: bash
         run: |
           set -e
-          # 【用 --no-run 读一份带 @@FILE 标记的日志，避免整套测试跑两遍】
-          # 前面那个 Test 步骤是按脚本循环的，输出只回显到 stdout、
-          # 不落盘也不带 @@FILE 标记，没法直接复用。
-          # 所以这里**先补一份可解析的日志**：run-tests.js 会逐文件打印
-          # @@FILE 标记与全部 PASS 行，正好是护栏需要的格式。
-          # 代价是这一份仍然是一次完整运行 —— 但它比无参数模式少一次
-          # （原来无参数模式自己内部又跑了一遍，等于同一批脚本跑三次）。
-          # 以后若把 Test 步骤改成直接落盘 + 带标记，这里删掉上一行即可。
-          mkdir -p reports
-          node scripts/run-tests.js > reports/test-output.log 2>&1 || true
+          # 【直接复用上一步落盘的日志，不再自己跑一遍】
+          # 历史：这步原来要 `node scripts/run-tests.js > reports/test-output.log`
+          # 自己生成一份，因为上一步的输出只回显、不落盘。那是同一批脚本
+          # 在一条 CI 里完整跑第二次（实测 238s）。
+          # 现在上一步已经把完整输出追加进 reports/test-output.log，
+          # 这里只做解析与比对 —— 同一份数据，不再重复劳动。
+          if [ ! -s reports/test-output.log ]; then
+            echo "::error::找不到 reports/test-output.log（上一步没落盘，护栏无法校验）"
+            exit 1
+          fi
           node scripts/check-assertion-count.js --no-run
           echo "断言数守卫通过（没有文件比基线少）"
 

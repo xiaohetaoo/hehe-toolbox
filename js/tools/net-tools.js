@@ -77,7 +77,9 @@
       const hostIn = h('input', { class: 'input mono', value: 'www.baidu.com', style: { flex: '1' } });
       const canvas = h('canvas', { style: { width: '100%', height: '180px' } });
       const term = div('term', '');
-      const statsEl = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px', margin: '12px 0' } });
+      /* 560px 工具窗里 5 个固定列每列只剩 ~90px，实时速率/累计流量会挤；
+       * auto-fit + 100px 下限在窄窗落成 4 列（最后一项换行），宽窗仍是一排 5 个。 */
+      const statsEl = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '12px', margin: '12px 0' } });
       let jobId = null, chart = window.ui.lineChart(canvas, { max: null });
       /* 【per-run token】start() 里 await EXEC.STREAM 期间用户可能离开页面
        * 或再点一次「开始」。离开/重开都递增序号，旧请求返回时发现序号不符：
@@ -543,11 +545,27 @@
       let unsub;
       let speedJobId = null;
       let disposed = false;
+      /* 【每轮测速的序号】切页只把 disposed 置 true 还不够：
+       * 页面保活复用回来后 disposed 必须复位，否则按钮永远静默失效；
+       * 可一旦复位，上一轮还没返回的 invoke 又会把旧结果写进新页面。
+       * 所以用序号区分“这一轮还算不算数”，disposed 只负责挡隐藏页。 */
+      let speedRunSeq = 0;
       if (window.App && App.onCleanup) {
         App.onCleanup(() => {
           disposed = true;
+          speedRunSeq++;
           if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
           if (speedJobId) { invoke(Channels.CHANNELS.JOB.KILL, speedJobId).catch(() => {}); speedJobId = null; }
+          /* 复用回来时按钮必须是可点的；这里先把“测试中”的假状态清掉。 */
+          try { status.textContent = ''; } catch (e) {}
+        });
+      }
+      /* 保活页切回来：复位隐藏标记和按钮，允许重新测速。
+       * 旧 invoke 由 speedRunSeq 判废，不会把上一轮结果写回这一页。 */
+      if (window.App && App.onEnter) {
+        App.onEnter(() => {
+          disposed = false;
+          downBtn.disabled = upBtn.disabled = false;
         });
       }
       const downBtn = btn('测下载', 'btn-primary', () => run('down'), 'download');
@@ -556,6 +574,7 @@
         if (disposed) return;
         if (!isDesktop) return toast('桌面端可用（需联网）', 'warn');
         if (unsub) { try { unsub(); } catch (e) {} unsub = null; } // 防连点：先退订上一轮
+        const myRun = ++speedRunSeq;
         downBtn.disabled = upBtn.disabled = true;
         status.textContent = '测试中…'; samples = [];
         /* job:stream 是全局通道，必须只认本次测速的 id，
@@ -574,12 +593,18 @@
         unsub = on('job:stream', (d) => {
           try {
             if (!d || !d.id) return;
+            if (myRun !== speedRunSeq || disposed) {
+              /* 这一轮已过期：若刚认领到 id，必须立刻杀掉，别留孤儿测速。 */
+              if (!speedId && window.JobPrefix && window.JobPrefix.belongsTo(String(d.id), SPEED_PREFIX)) {
+                try { invoke(Channels.CHANNELS.JOB.KILL, d.id).catch(() => {}); } catch (e) {}
+              }
+              return;
+            }
             if (speedId) {
               if (d.id !== speedId) return;          // 已认领：只认这一个
             } else if (window.JobPrefix && window.JobPrefix.belongsTo(String(d.id), SPEED_PREFIX)) {
               speedId = d.id;                        // 首次匹配到本前缀才认领
               speedJobId = d.id;
-              if (disposed) { try { invoke(Channels.CHANNELS.JOB.KILL, d.id).catch(() => {}); } catch (e) {} return; }
             } else {
               return;                                // 拿到真实 id 之前，别的一律不接管
             }
@@ -601,19 +626,23 @@
         try {
           const r = await invoke(Channels.CHANNELS.NET.SPEEDTEST, { direction: dir, seconds: 10 });
           const mbps = r.mbps;
-          if (disposed) return;
+          if (disposed || myRun !== speedRunSeq) return;
           if (dir === 'down') downEl.textContent = mbps.toFixed(1);
           else upEl.textContent = mbps.toFixed(1);
           status.textContent = `完成：${fmtBytes(r.bytes)} / ${r.elapsed.toFixed(1)}s`;
           if (r.samples && r.samples.length) { samples = r.samples.map(s => s.mbps); chart.draw(samples, { max: samples.reduce((a, b) => (a > b ? a : b), 10) * 1.3 }); }
         } catch (e) {
           /* 测速走 fetch，失败时 e.message 是 "fetch failed" —— 换成中文归因 */
-          if (!disposed) status.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message);
+          if (!disposed && myRun === speedRunSeq) status.textContent = '✗ ' + (window.NetError ? window.NetError.text(e) : e.message);
         }
         finally {
-          if (!disposed) { downBtn.disabled = upBtn.disabled = false; }
-          if (unsub) unsub();
-          speedJobId = null;
+          /* 过期轮的 finally 不能碰当前轮的按钮、订阅和 jobId：
+           * 否则会把用户刚发起的新测速退订掉，或把按钮重新点亮。 */
+          if (myRun === speedRunSeq && !disposed) { downBtn.disabled = upBtn.disabled = false; }
+          if (myRun === speedRunSeq) {
+            if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+            speedJobId = null;
+          }
         }
       }
       page.appendChild(div('card', div('card-title', '带宽测试'),

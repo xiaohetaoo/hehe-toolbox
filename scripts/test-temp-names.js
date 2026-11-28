@@ -176,6 +176,7 @@ t('17 全项目：凡是从 %TEMP% 提交到用户输出目录的地方，都不
     'fsp.rename(from, to)',             // fs:rename 通道本身
     'fsp.rename(cryptTmp, outPath)',    // 临时名与目标是同一个父目录（outPath + 后缀）
     'fsp.rename(partTmp, finalOut)',    // fsOps.tempPathFor(finalOut)：同目录
+    'fsp.rename(zipTmp, outZip)',       // zip 压缩：tempPathFor(outZip) 与目标同目录
     'fsp.rename(tmp, HOSTS_PATH)',      // hosts 临时文件在同目录
     'fsp.rename(tmp, dest)',            // downloadToFile：dest + '.part-...' 同目录
     /* FFmpeg 手动挑选的备用名分支：writeTmp(dest) 就在 dest 的父目录里，

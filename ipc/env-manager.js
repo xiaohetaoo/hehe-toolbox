@@ -45,14 +45,46 @@ module.exports = function register(ctx, deps) {
   } = deps;
 
   const ENV_ROOT = () => path.join(userDataDir(), 'envs');
+  /* manifest 有可能被页面通过 store:set 直接改写（STORE.SET 只挡了
+   * __proto__/constructor/updateCache，没有挡 envInstalled）。ENV.REMOVE
+   * 会按 m.dir 做递归删除 —— 若这里不验证，写入
+   * {envInstalled:{x:{dir:'C:\\Windows'}}} 就能让「删除环境」变成删系统目录。
+   * 这里让 manifestGet 只返回 dir 确实位于 ENV_ROOT 子目录下的条目；
+   * 其余条目视为损坏/伪造，忽略（安装流程会重建）。
+   * 注意：rel 不能为空（ENV_ROOT 本身不能当某个运行时的目录被删）。 */
+  function isSafeEnvDir(dir, id) {
+    if (typeof dir !== 'string' || !dir.trim()) return false;
+    if (typeof id !== 'string' || !id) return false;
+    const root = path.resolve(ENV_ROOT());
+    const abs = path.resolve(dir);
+    const rel = path.relative(root, abs);
+    if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return false;
+    /* 只允许 <ENV_ROOT>/<运行时 id>/...。否则伪造的 envInstalled 条目
+     * 可以指向 ENV_ROOT/downloads 或 .staging-xxx，ENV.REMOVE 会把它
+     * 整个递归删掉（虽然仍在 userData 下，但那是缓存/安装中的数据）。 */
+    return rel.split(path.sep)[0] === id;
+  }
   const manifestGet = () => {
     const m = storeGet('envInstalled', {});
-    return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
+    const out = {};
+    for (const [id, entry] of Object.entries(m)) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (!isSafeEnvDir(entry.dir, id)) continue;
+      out[id] = entry;
+    }
+    return out;
   };
   const manifestSet = (m) => storeSet('envInstalled', m);
   const appliedGet = () => {
     const a = storeGet('envApplied', null);
-    return a && typeof a === 'object' ? a : null;
+    if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
+    /* store 可以被本地编辑/旧版本写坏：ids 不是数组时后续 `ids.includes`
+     * 会直接 TypeError，撤销按钮就完全失效。这里统一成字符串数组。 */
+    return Object.assign({}, a, {
+      ids: Array.isArray(a.ids) ? a.ids.filter((x) => typeof x === 'string') : [],
+      entries: Array.isArray(a.entries) ? a.entries.filter((x) => typeof x === 'string') : [],
+    });
   };
   const appliedSet = (a) => storeSet('envApplied', a || null);
 
@@ -363,6 +395,9 @@ module.exports = function register(ctx, deps) {
     let entries;
     try { entries = await fsp.readdir(root, { withFileTypes: true }); } catch (e) { return; }
     for (const ent of entries) {
+      /* 不跟随链接：若 .staging-* 恰好是用户/恶意程序建的 junction，
+       * 下面的 rm recursive 会删到链接目标而不是链接本身。 */
+      if (ent.isSymbolicLink()) continue;
       const full = path.join(root, ent.name);
       const stale = now - ((await fsp.stat(full).catch(() => null)) || { mtimeMs: now }).mtimeMs > STALE;
       if (!stale) continue;

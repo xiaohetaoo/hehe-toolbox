@@ -702,7 +702,7 @@
       page.appendChild(div('card', div('card-title', '模式', tabBtn1, ' ', tabBtn2)));
       sp.appendChild(div('card', div('card-title', '分割'), spPicker.el,
         div('form-row', h('span', { class: 'form-label' }, '每片大小'), sizeIn, h('span', { class: 'field-hint' }, 'MB'),
-          btn('开始分割', 'btn-primary', async () => {
+          btn('开始分割', 'btn-primary', window.ui.guard(async () => {
             if (!spFile) return toast('请选择文件', 'warn');
             const outDir = spFile + '.parts';
             spProg.show(); spStatus.textContent = '';
@@ -713,7 +713,7 @@
               toast('分割完成', 'success');
             } catch (e) { spStatus.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; }
             finally { spProg.hide(); unsub(); }
-          })),
+          }))),
         spProg.el, spStatus));
       page.appendChild(sp);
 
@@ -728,7 +728,7 @@
       const mgProg = progressEl(); mgProg.hide();
       const mgStatus = div('field-hint', '');
       mg.appendChild(div('card', div('card-title', '合并'), mgPicker.el,
-        div('form-row', btn('开始合并', 'btn-primary', async () => {
+        div('form-row', btn('开始合并', 'btn-primary', window.ui.guard(async () => {
           if (!mgFile) return toast('请选择分片', 'warn');
           mgProg.show(); mgStatus.textContent = '';
           // 只认「合并」自己的进度事件：hash/split/加密共用 job:progress，不过滤会被别的任务串扰
@@ -748,7 +748,7 @@
             toast('合并完成', 'success');
           } catch (e) { mgStatus.innerHTML = `<span class="status-err">✗ ${escapeHtml(e.message)}</span>`; }
           finally { mgProg.hide(); unsub(); }
-        })),
+        }))),
         mgProg.el, mgStatus));
       page.appendChild(mg);
     }
@@ -886,7 +886,7 @@
         pickProps: ['openFile', 'openDirectory', 'multiSelections']
       });
       const zipName = h('input', { class: 'input input-sm', placeholder: '输出 zip 路径（留空自动命名）', style: { flex: '1' } });
-      const cBtn = btn('压缩', 'btn-primary', async () => {
+      const cBtn = btn('压缩', 'btn-primary', window.ui.guard(async () => {
         const cPaths = zipPicker.paths;
         if (!cPaths.length) return toast('请选择文件', 'warn');
         try {
@@ -915,21 +915,27 @@
           const r = await invoke(Channels.CHANNELS.ZIP.COMPRESS, cPaths, out);
           toast('压缩完成：' + fmtBytes(r.size), 'success');
         } catch (e) { toast(e.message, 'error'); }
-      });
+      }));
+      /* 单文件槽位：选到就解压（保持原来的「拖进去立刻解压」交互） */
+      const unzipDirs = new Set();
       const zipUnPicker = filePicker({
         text: '选择或拖入 zip 文件解压',
         single: true,
         emptyText: '还没有选择 zip',
         filters: [{ name: 'ZIP', extensions: ['zip'] }],
         onChange: async (items) => {
-          // 单文件槽位：选到就解压（保持原来的「拖进去立刻解压」交互）
           if (!items.length) return;
           const zip = items[0].path;
           const dir = zip.replace(/\.zip$/i, '') + '-extracted';
+          /* 同一个包再拖一次会并发写同一个目标目录；不同包目标不同，可以并行。
+           * 用目标目录集合占闸，而不是一个全局 busy —— 后者会把用户换包也挡掉。 */
+          if (unzipDirs.has(dir)) return toast('这个压缩包正在解压，请稍候', 'warn');
+          unzipDirs.add(dir);
           try {
             await invoke(Channels.CHANNELS.ZIP.EXTRACT, zip, dir);
             toast('解压完成：' + dir, 'success');
           } catch (e) { toast(e.message, 'error'); }
+          finally { unzipDirs.delete(dir); }
         }
       });
       page.appendChild(div('card', div('card-title', '压缩为 ZIP'), zipPicker.el,
@@ -1351,7 +1357,7 @@
       const zipName = h('input', { class: 'input input-sm', placeholder: '输出 .7z 路径（留空自动命名）', style: { flex: '1' } });
       const pwdIn = h('input', { class: 'input input-sm', placeholder: '密码（留空不加密）', style: { width: '140px' } });
       const volIn = h('input', { type: 'number', class: 'input input-sm', placeholder: '分卷MB', style: { width: '90px' }, title: '分卷大小（MB，留空不分卷）' });
-      const cBtn = btn('压缩', 'btn-primary', async () => {
+      const cBtn = btn('压缩', 'btn-primary', window.ui.guard(async () => {
         const cPaths = sevenPicker.paths;
         if (!cPaths.length) return toast('请选择文件', 'warn');
         try {
@@ -1368,7 +1374,7 @@
           const r = await invoke(Channels.CHANNELS.SEVEN.COMPRESS, { files: cPaths, out, password: pwdIn.value || '', volumeMB: volIn.value ? +volIn.value : 0 });
           toast('压缩完成：' + fmtBytes(r.size), 'success');
         } catch (e) { toast(e.message, 'error'); }
-      }, 'box');
+      }), 'box');
       /* 解压 */
       const exPath = { p: null };
       const exPicker = filePicker({
@@ -1379,14 +1385,14 @@
         onChange: (items) => { exPath.p = items.length ? items[0].path : null; }
       });
       const exPwd = h('input', { class: 'input input-sm', placeholder: '密码（如有）', style: { width: '140px' } });
-      const exBtn = btn('解压', 'btn-primary', async () => {
+      const exBtn = btn('解压', 'btn-primary', window.ui.guard(async () => {
         if (!exPath.p) return toast('请选择压缩包', 'warn');
         try {
           const outDir = exPath.p.replace(/\.\w+$/, '') + '_extracted';
           const r = await invoke(Channels.CHANNELS.SEVEN.EXTRACT, { archive: exPath.p, outDir, password: exPwd.value || '' });
           toast('已解压到：' + r.outDir, 'success');
         } catch (e) { toast(e.message, 'error'); }
-      }, 'folder');
+      }), 'folder');
       page.appendChild(div('card', div('card-title', '引擎'), engineLine,
         div('field-hint', '内置 7za 支持 7z/zip/tar/gz 等并支持密码与分卷；RAR 等更多格式需系统安装 7-Zip 完整版。')));
       page.appendChild(div('card', div('card-title', '压缩为 7z'), sevenPicker.el,
@@ -1396,6 +1402,7 @@
         div('form-row', exPwd, exBtn, h('span', { class: 'field-hint' }, '解压到压缩包旁的同名目录'))));
       /* 预览：不解压直接列出内容 */
       const pvPath = { p: null };
+      let pvSeq = 0;
       const pvPicker = filePicker({
         text: '拖入压缩包预览内容（不解压）',
         single: true,
@@ -1403,17 +1410,24 @@
         filters: [{ name: '压缩包', extensions: ['7z', 'zip', 'tar', 'gz', 'rar'] }],
         onChange: (items) => {
           pvPath.p = items.length ? items[0].path : null;
-          if (pvPath.p) listArchive(); else pvBox.innerHTML = '';
+          /* 换一个压缩包就把上一趟的读取作废：7z l 读大包可能几秒，
+           * 旧结果晚到会把新包的内容覆盖掉。 */
+          pvSeq++;
+          if (pvPath.p) listArchive(pvSeq); else pvBox.innerHTML = '';
         }
       });
       const pvPwd = h('input', { class: 'input input-sm', placeholder: '密码（如有）', style: { width: '130px' } });
       const pvBox = div('');
-      async function listArchive() {
+      async function listArchive(seqToken) {
         if (!pvPath.p) return;
+        const mySeq = typeof seqToken === 'number' ? seqToken : ++pvSeq;
+        const archive = pvPath.p;
         pvBox.innerHTML = '';
         pvBox.appendChild(window.ui.loadingBlock('读取压缩包…'));
         try {
-          const r = await invoke(Channels.CHANNELS.SEVEN.LIST, { archive: pvPath.p, password: pvPwd.value || '' });
+          const r = await invoke(Channels.CHANNELS.SEVEN.LIST, { archive, password: pvPwd.value || '' });
+          /* 旧包的 LIST 晚到、或用户已经换包：丢弃，不能覆盖新内容。 */
+          if (mySeq !== pvSeq || pvPath.p !== archive) return;
           pvBox.innerHTML = '';
           const rows = r.entries.slice(0, 300);
           pvBox.appendChild(div('field-hint', `共 ${r.total} 项${r.total > 300 ? '，显示前 300' : ''}`));
@@ -1426,6 +1440,7 @@
             rows
           }));
         } catch (e) {
+          if (mySeq !== pvSeq || pvPath.p !== archive) return;
           pvBox.innerHTML = '';
           pvBox.appendChild(div('field-err', '✗ ' + (e && e.message ? e.message : e)));
         }

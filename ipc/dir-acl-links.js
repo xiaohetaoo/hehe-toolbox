@@ -597,14 +597,32 @@ async function linkNatures(list) {
   };
 }
 
+/** 目录搬家的路径入口闸门（预检与执行必须用同一套）。
+ *  - 空串/非字符串不能落到 path.resolve('')（那会变成应用 cwd，被当成可搬目录）；
+ *  - `D:` / `D:foo` 是盘符相对写法，resolve 后与用户意图不符，必须在解析前拒绝。
+ * @param {any} src
+ * @param {any} dst
+ * @returns {{srcRaw:string, dstRaw:string}}
+ */
+function requireMovePaths(src, dst) {
+  if (typeof src !== 'string' || typeof dst !== 'string' || !src.trim() || !dst.trim()) {
+    throw new Error('源目录和目标目录都必须是非空路径');
+  }
+  if (pathGuard.isDriveRelativePath(src) || pathGuard.isDriveRelativePath(dst)) {
+    throw new Error('盘符相对路径有歧义（如 D:foo 指 D 盘当前目录），请写成 D:\\... 这样的完整路径');
+  }
+  return { srcRaw: src.trim(), dstRaw: dst.trim() };
+}
+
 async function dirMoveRun(opts) {
   /* 【为什么不用解构默认值】`{src, dst} = {}` 那种写法会让推断把整个参数
    * 当成空对象，src/dst/jobId 全部变成「不存在」。改成可选参数 + 显式解构，
    * 语义一模一样（不传时得到 undefined，下面都做了 || 兜底）。 */
   const { src, dst, jobId: clientJob } = opts || {};
+  const { srcRaw, dstRaw } = requireMovePaths(src, dst);
   const id = clientJob || nextJobId('dirmv');
-  const srcAbs = path.resolve(String(src || ''));
-  const dstAbs = path.resolve(String(dst || ''));
+  const srcAbs = path.resolve(srcRaw);
+  const dstAbs = path.resolve(dstRaw);
 
   const emit = (stage, extra) => {
     try { send('job:stream', { id, data: JSON.stringify(Object.assign({ stage }, extra || {})) }); } catch (err) {}
@@ -737,7 +755,24 @@ async function dirMoveRun(opts) {
     if (await pathExists(dstAbs)) {
       throw new Error('目标位置已存在，为避免覆盖已拒绝：' + dstAbs);
     }
-    dstOwned = true;   // 从这里往下，dstAbs 才可能是我们创建的
+    /* 【「目标是我们建的」这个标记必须在 mkdir 成功之后才置位】
+     * 原实现先置 dstOwned=true，再交给 copyTreeExcludingLinks 去
+     * mkdir({recursive:true})。若在「检查不存在」与「真正建目录」之间
+     * 有别的进程/用户在同一路径建了目录，recursive mkdir 会把 EEXIST
+     * 当成功、直接往别人的目录里合并写；随后任一步失败，catch 里按
+     * dstOwned=true 递归 rm 整个目标 —— 用户刚建好的目录被删掉。
+     * 现在先用非递归 mkdir 原子抢占，成功才算「本进程创建」；EEXIST
+     * 则明确拒绝，绝不回滚删除别人的目录。
+     * 父目录允许不存在（用户可能选了新位置），只对父目录用 recursive；
+     * 回滚仍只删 dstAbs 本身，不碰父目录。 */
+    try {
+      await fsp.mkdir(path.dirname(dstAbs), { recursive: true });
+      await fsp.mkdir(dstAbs);
+      dstOwned = true;
+    } catch (e) {
+      if (e && e.code === 'EEXIST') throw new Error('目标位置已存在，为避免覆盖已拒绝：' + dstAbs);
+      throw new Error('创建目标目录失败：' + (e && e.message ? e.message : e));
+    }
 
     /* 【必须先找出源目录树里的链接，复制时把它们排除掉】
      * fs.cp 对 reparse point 默认按符号链接处理，要调用 symlink() 重建，
@@ -1492,8 +1527,9 @@ handle(dirMoveCh.DIR_MOVE.PRECHECK, async (e, opts) => {
   /* 同上：不用解构默认值，避免参数类型退化成空对象 */
   const { src, dst } = opts || {};
   if (!dirMove) throw new Error('内部错误：搬家模块未加载');
-  const srcAbs = path.resolve(String(src || ''));
-  const dstAbs = path.resolve(String(dst || ''));
+  const { srcRaw, dstRaw } = requireMovePaths(src, dst);
+  const srcAbs = path.resolve(srcRaw);
+  const dstAbs = path.resolve(dstRaw);
 
   const sst = await fsp.stat(srcAbs).catch(() => null);
   const lst = links.linkStat(srcAbs);

@@ -81,7 +81,12 @@
       let rotations = {};      // { 页号: 累计角度 }
       /* 【per-run 序号】build / 保存框都是 await，切页后不该继续写盘与 toast */
       let pagesRunSeq = 0;
-      window.App.onCleanup(() => { pagesRunSeq++; });
+      /* 【选文件的加载也需要自己的序号】文件选择器可以连续换文件，
+       * 前一份 PDF 的 READ_FILE_B64 / PDFDocument.load 比后一份慢时，
+       * 旧结果会覆盖新文件：界面显示 B，doc/pageOrder 却是 A，
+       * 后续「删除这些页 / 另存为」会作用在错的文件上。 */
+      let loadSeq = 0;
+      window.App.onCleanup(() => { pagesRunSeq++; loadSeq++; });
 
       const fileHint = div('field-hint', '未选择文件');
       const pageList = div('pdfp-list');
@@ -100,6 +105,11 @@
           if (!items.length) { reset(); return; }
           pdfPath = items[0].path;
           fileHint.textContent = pdfPath;
+          /* 先清掉上一份文档的现场：加载期间 doc/srcB64 为 null，
+           * 操作按钮会被下面的 null 判据拦住，不会误作用于旧文件。 */
+          doc = null; srcB64 = null; pageOrder = []; rotations = {};
+          pageList.innerHTML = '';
+          status.textContent = '';
           await loadDoc();
         },
       });
@@ -108,10 +118,12 @@
        * 在同一对象上连续操作很容易拿错页。重新 load 一次的成本
        * （几毫秒到几十毫秒）远低于"删错页"的代价。 */
       async function loadDoc() {
+        const myLoad = ++loadSeq;
         const PDFLib = window.PDFLib;
         if (!PDFLib) {
           /* 退化路径也要清状态：否则上一次成功加载的 doc/页序还留着，
            * 界面却提示「pdf-lib 未加载」，点操作会作用在旧文档上。 */
+          if (myLoad !== loadSeq) return;
           doc = null; srcB64 = null; pageOrder = []; rotations = {};
           pageList.innerHTML = '';
           toast('pdf-lib 未加载', 'error');
@@ -120,8 +132,14 @@
         status.textContent = '读取中…';
         try {
           const r = await invoke(Channels.CHANNELS.FS.READ_FILE_B64, pdfPath);
-          srcB64 = r.b64;
-          doc = await PDFLib.PDFDocument.load(srcB64, { ignoreEncryption: true });
+          /* 旧一次选择的结果晚到：直接丢，不能覆盖新文件。 */
+          if (myLoad !== loadSeq) return;
+          const b64 = r.b64;
+          const loaded = await PDFLib.PDFDocument.load(b64, { ignoreEncryption: true });
+          if (myLoad !== loadSeq) return;
+          /* 两个 await 都过了才一次性提交，避免中途失败留下半更新的现场。 */
+          srcB64 = b64;
+          doc = loaded;
           pageOrder = Array.from({ length: doc.getPageCount() }, (_, i) => i + 1);
           rotations = {};
           renderList();
@@ -133,6 +151,7 @@
            * 直接 TypeError，事件处理器里没有 toast，界面毫无反应；
            * 若此前成功加载过另一份 PDF，则页序还是旧文档的，
            * fileHint 却已显示新路径 —— 用户会按错的页数操作。 */
+          if (myLoad !== loadSeq) return;
           doc = null; srcB64 = null; pageOrder = []; rotations = {};
           pageList.innerHTML = '';
           status.textContent = '';
@@ -141,6 +160,8 @@
       }
 
       function reset() {
+        /* 取消选择也要让在飞的旧读取作废，否则它仍会把文档塞回来。 */
+        loadSeq++;
         doc = null; srcB64 = null; pdfPath = null; pageOrder = []; rotations = {};
         fileHint.textContent = '未选择文件';
         pageList.innerHTML = '';

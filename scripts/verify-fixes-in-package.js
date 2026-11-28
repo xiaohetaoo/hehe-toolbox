@@ -471,6 +471,33 @@ const CHECKS_BY_VERSION = {
     ['css/app.css', 'M8 长 URL 卡片断行（不顶出 160px 栅格）',
       (s2) => /overflow-wrap:\s*anywhere/.test(s2)],
   ],
+  /* v0.9.8：R24~R29 —— 竞态收口、路径 / PATH 语义、归档预检 fail-closed */
+  '0.9.8': [
+    ['lib/path-guard.js', 'N1 盘符相对路径 C:foo 被拦（DRIVE_RELATIVE）',
+      (s2) => /DRIVE_RELATIVE/.test(s2)],
+    ['lib/archive-guard.js', 'N2 坏 size fail-closed（BAD_SIZE）',
+      (s2) => /BAD_SIZE/.test(s2) && /NEGATIVE_SIZE/.test(s2)],
+    ['lib/archive-guard.js', 'N3 文件/目录同名双向都拒',
+      (s2) => /FILE_DIR_CONFLICT/.test(s2)],
+    ['lib/path-text.js', 'N4 长路径前缀 \\\\?\\C: 与 UNC 共享根',
+      (s2) => /DRIVE_ROOT/.test(s2) && /UNC_ROOT/.test(s2)],
+    ['lib/env-path.js', 'N5 PATH 盘符根不剥成 C:',
+      (s2) => /stripTrailingSep/.test(s2)],
+    ['lib/disk-health.js', 'N6 空串 / NaN 不当 0 读数',
+      (s2) => /numOrNull/.test(s2)],
+    ['lib/sensitive.js', 'N7 纯小写长串不当密钥（避免误删 sha1）',
+      (s2) => /looksLikeBase64Secret/.test(s2)],
+    ['js/tools/net-tools.js', 'N8 网速页 per-run 序号 + onEnter 复位',
+      (s2) => /speedRunSeq/.test(s2) && /disposed = false/.test(s2)],
+    ['js/tools/chain.js', 'N9 链条在步骤边界可停',
+      (s2) => /shouldStop/.test(s2) && /canceled: true/.test(s2)],
+    ['ipc/fs-ops.js', 'N10 扫描返回绝对路径（相对根也能删）',
+      (s2) => /walkDir\(scanRoot/.test(s2)],
+    ['main.js', 'N11 TTS 长度上限 5000（IPC 层也拦）',
+      (s2) => /5000/.test(s2)],
+    ['lib/once-schedule.js', 'N12 坏 fireAt 不再启动即执行',
+      (s2) => /fireAtOf|decideOnce/.test(s2)],
+  ],
 };
 
 const CHECKS = CHECKS_BY_VERSION[version];

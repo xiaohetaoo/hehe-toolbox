@@ -128,10 +128,10 @@ t('7z 提交阶段拒绝目标内已有的目录联接', () => temporary(async r
   const code = extractFn(mainSrc, 'async function scanDirForGuard(') + '\n'
     + segFromHandler(mainSrc, 'seven:extract') + ');';
   new Function('handle', 'CH', 'findSevenFull', 'sevenZa', 'fsp', 'tempNames', 'runSeven',
-    'archiveGuard', 'pathGuard', 'path', 'uniqueTarget', code)(
+    'archiveGuard', 'pathGuard', 'path', 'uniqueTarget', 'fs', code)(
     (ch, fn) => { extract = fn; }, CH, () => 'test-7z', null,
     { ...fs.promises, stat: p => p === 'fixture.7z' ? Promise.resolve({ size: 100 }) : fs.promises.stat(p) },
-    require('../lib/temp-names'), runSeven, require('../lib/archive-guard'), pathGuard, path, uniqueTarget);
+    require('../lib/temp-names'), runSeven, require('../lib/archive-guard'), pathGuard, path, uniqueTarget, fs);
   await assert.rejects(() => extract({}, { archive: 'fixture.7z', outDir: dest }), /链接|超出/);
   assert.deepStrictEqual(fs.readdirSync(outside), []);
   assert.deepStrictEqual(fs.readdirSync(dest), ['linked'], 'staging 应已清理');

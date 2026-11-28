@@ -230,8 +230,9 @@ handle(CH.FS.MKDIR, async (e, p) => {
   if (typeof p !== 'string' || !p.trim()) throw new Error('缺少目录路径');
   /* 写文件/删除都有闸门，mkdir 原来裸跑：可以往受保护目录里建新目录。
    * 只拒绝系统保护位置，用户正常目录（含已存在）不受影响（R24-13）。 */
-  if (pathGuard.isProtectedForModify(p) || pathGuard.isCriticalPath(p)) {
-    throw new Error('该位置受系统保护，不能创建目录：' + p);
+  const prot = pathGuard.isProtectedForModify(p);
+  if (prot.protected || pathGuard.isCriticalPath(p)) {
+    throw new Error('该位置受系统保护，不能创建目录：' + (prot.reason || p));
   }
   await fsp.mkdir(p, { recursive: true });
   return true;
@@ -240,9 +241,21 @@ handle(CH.FS.MKDIR, async (e, p) => {
 // 批量改名/改后缀撞上已存在的同名文件时，会把别人的文件悄无声息地抹掉。
 // 这里默认拒绝覆盖（overwrite 需显式传 true），把“静默毁文件”变成可见的错误。
 handle(CH.FS.RENAME, async (e, from, to, overwrite) => {
-  if (!from || !to) throw new Error('缺少重命名路径');
+  if (typeof from !== 'string' || !from.trim() || typeof to !== 'string' || !to.trim()) throw new Error('缺少重命名路径');
+  /* 闸门必须在 path.resolve 之前看原始串：`D:foo` 会被 resolve 成
+   * 「D 盘当前目录\foo」，随后传给 checkDeletable/checkOverwritable 的
+   * 已经是一个正常的绝对路径，盘符相对检查就永远看不到了。 */
+  for (const [label, raw] of [['源路径', from], ['目标路径', to]]) {
+    if (pathGuard.isDriveRelativePath(raw.trim())) {
+      throw pathGuard.err('DRIVE_RELATIVE', label + '是盘符相对路径（如 D:foo），含义不明确，请使用 D:\\... 这样的完整路径');
+    }
+  }
   const rf = path.resolve(from), rt = path.resolve(to);
   if (rf === rt) return true;
+  /* 源侧也要过闸门：只校验目标会让「把 C:\Windows\System32\x 改名到用户目录」
+   * 变成可用操作 —— 文件没被覆盖，但被搬出了系统目录。 */
+  const srcGuard = pathGuard.checkDeletable(rf, false);
+  if (srcGuard) throw pathGuard.err(srcGuard.code, srcGuard.reason, '请换一个源路径（不要指向系统目录或盘符根）');
   /* 【纯大小写改名必须放行】Windows 文件系统大小写不敏感：
    * 磁盘上只有 FILE.TXT 时 fs.existsSync('file.txt') 同样返回 true，
    * 于是「批量转小写/转大写」「.JPG → .jpg」这类改名会被下面那句
@@ -302,15 +315,23 @@ handle(CH.FS.UNIQUE_PATH, async (e, p) => fsOps.uniquePath(p));
 /* recursive walk with cancel + progress */
 async function walkDir(root, opts, onItem) {
   const cancel = opts && opts._cancelRef;
+  /* maxDepth 来自渲染层且没有类型约束：`'abc'` 会让 `depth > 'abc'` 恒为 false，
+   * 从而完全失去深度上限。这里统一夹成非负整数，非法值退回默认 64。 */
+  const maxDepthRaw = Number(opts && opts.maxDepth);
+  const maxDepth = Number.isFinite(maxDepthRaw) ? Math.max(0, Math.floor(maxDepthRaw)) : 64;
   let dirs = 0, files = 0, total = 0;
   async function rec(dir, depth) {
     if (cancel && cancel.canceled) return;
-    if (depth > (opts.maxDepth || 64)) return;
+    if (depth > maxDepth) return;
     let entries;
     try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch (err) { return; }
     for (const d of entries) {
       if (cancel && cancel.canceled) return;
       const full = path.join(dir, d.name);
+      /* 链接一律不跟随：junction 指向祖先会形成无限循环，也会把目标卷的
+       * 内容重复计入本树。Dirent 的 isSymbolicLink 对 junction 同样为 true，
+       * 必须在 isDirectory 之前判断（否则 Windows 上会被当普通目录递归）。 */
+      if (d.isSymbolicLink()) continue;
       if (d.isDirectory()) {
         dirs++;
         if (onItem) await onItem({ type: 'dir', path: full, depth });
@@ -329,6 +350,11 @@ async function walkDir(root, opts, onItem) {
 
 /* disk/tree analysis job */
 handle(CH.FS.SCAN_TREE, async (e, root, opts = {}) => {
+  opts = opts || {};
+  /* 先归一、再登记 job。原来先 jobs.set()，随后 normalizeRootForScan()
+   * 抛错时 try/finally 还没进入，这个 id 会永久留在 jobs 里；后续
+   * 「取消全部任务」会拿到一个永远无法结束的任务。 */
+  const scanRoot = normalizeRootForScan(root);
   const id = 'scan' + ctx.nextJobSeq();
   const cancelRef = { canceled: false };
   jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
@@ -345,7 +371,6 @@ handle(CH.FS.SCAN_TREE, async (e, root, opts = {}) => {
    * 现在：先 path.resolve 归成绝对路径，再去掉尾随分隔符（盘符根本身除外）；
    * 包含判断改成 cur === root || cur.startsWith(root + sep)。
    * 返回的 root 也用归一后的值，界面显示才与实际统计口径一致。 */
-  const scanRoot = normalizeRootForScan(root);
   const dirSize = new Map();
   let files = 0, totalSize = 0, dirCount = 0, lastEmit = 0;
   const topFiles = [];
@@ -358,7 +383,7 @@ handle(CH.FS.SCAN_TREE, async (e, root, opts = {}) => {
      * 界面上的「目录占用排行」整块失真。实测（探针）：相对根返回
      *   topDirs: [{ path: "hehe-probe-xxx\\sub", size: 0 }]
      * 改成 scanRoot 之后，item.path 与聚合键出自同一套路径。 */
-    await walkDir(scanRoot, { maxDepth: opts.maxDepth || 64, _cancelRef: cancelRef }, async (item) => {
+    await walkDir(scanRoot, { maxDepth: opts.maxDepth ?? 64, _cancelRef: cancelRef }, async (item) => {
       if (item.type === 'dir') {
         dirCount++;
         dirSize.set(item.path, 0);
@@ -460,7 +485,13 @@ handle(CH.FS.DIR_CHILDREN, async (e, dir, opts = {}) => {
 
 /* 扫描用的根路径归一：绝对化 + 去尾随分隔符（盘符根本身保留 'X:\' 形态）。 */
 function normalizeRootForScan(root) {
-  let s = path.resolve(String(root == null ? '' : root));
+  /* 空串 / 非字符串 / `D:foo` 都不能落到 path.resolve('') 或盘符当前目录：
+   * 那样会把应用 cwd 当成扫描根，用户看到的是「为什么扫出来一堆陌生文件」，
+   * 空目录工具还可能把这些目录列进待删除清单。 */
+  if (typeof root !== 'string' || !root.trim()) throw new Error('扫描根目录不能为空');
+  const rawRoot = root.trim();
+  if (/^[A-Za-z]:(?![\\/])/.test(rawRoot)) throw new Error('盘符相对路径有歧义，请使用 D:\\... 这样的完整路径');
+  let s = path.resolve(rawRoot);
   const volRoot = path.parse(s).root;
   /* path.resolve 对 'D:\foo\' 已经会去掉尾斜杠；这里额外处理
    * 用户可能传的正斜杠与重复分隔符（'D:/foo//' 之类）。 */
@@ -479,18 +510,28 @@ handle(CH.FS.SCAN_EMPTY_DIRS, async (e, root) => {
   jobs.set(id, { cancel: () => { cancelRef.canceled = true; } });
   setLatestCancelable(() => { cancelRef.canceled = true; });
   const empty = [];
+  const isScanRoot = (p) => path.resolve(p) === scanRoot;
   async function rec(dir, depth) {
     if (cancelRef.canceled) return false;
     let entries;
     try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch (err) { return false; }
-    if (entries.length === 0) { empty.push({ path: dir, depth }); return true; }
+    if (entries.length === 0) {
+      /* 扫描根自身即使为空也不放进待删清单：用户是来清“根下的空目录”，
+       * 不是来删自己刚选中的根。否则点一次清理会把选中目录本身删掉。 */
+      if (!isScanRoot(dir)) empty.push({ path: dir, depth });
+      return true;
+    }
     let hasFile = false;
     for (const d of entries) {
       const full = path.join(dir, d.name);
+      /* 与 scan-tree / dedupe 同一口径：链接和 junction 一律不递归。
+       * 这里原来直接按 isDirectory() 下钻，junction 成环会把扫描卡死；
+       * 更糟的是把链接目标里的空目录列进「可删空目录」清单。 */
+      if (d.isSymbolicLink()) { hasFile = true; continue; }
       if (d.isDirectory()) { const childEmpty = await rec(full, depth + 1); if (!childEmpty) hasFile = true; }
       else hasFile = true;
     }
-    if (!hasFile && !cancelRef.canceled) { empty.push({ path: dir, depth }); return true; }
+    if (!hasFile && !cancelRef.canceled && !isScanRoot(dir)) { empty.push({ path: dir, depth }); return true; }
     return false;
   }
   try { await rec(scanRoot, 0); } finally { jobs.delete(id); }
@@ -551,6 +592,7 @@ async function dirSizeFast(p, maxFiles = 50000) {
     try { entries = await fsp.readdir(cur, { withFileTypes: true }); } catch (err) { continue; }
     for (const d of entries) {
       const full = path.join(cur, d.name);
+      if (d.isSymbolicLink()) continue;   // 链接不跟随：防 junction 环与跨卷重复计数
       if (d.isDirectory()) stack.push(full);
       else { try { size += (await fsp.stat(full)).size; files++; } catch (err) {} }
       if (files > maxFiles) return { size, files, truncated: true };
@@ -634,6 +676,7 @@ handle(CH.FS.SCAN_JUNK, async () => {
         try { entries = await fsp.readdir(p, { withFileTypes: true }); } catch (err) { continue; }
         for (const ent of entries) {
           const full = path.join(p, ent.name);
+          if (ent.isSymbolicLink()) continue;
           if (ent.isDirectory()) { if (d + 1 <= maxDepth) stack.push({ p: full, d: d + 1 }); }
           else if (ent.isFile() && c.filePattern.test(ent.name)) targets.push(full);
         }
@@ -654,6 +697,9 @@ handle(CH.FS.SCAN_JUNK, async () => {
         let entries; try { entries = await fsp.readdir(cur, { withFileTypes: true }); } catch (err) { continue; }
         for (const d of entries) {
           const full = path.join(cur, d.name);
+          /* Chrome/Edge 的 User Data 下可能出现 junction；这里不跳过会顺着
+           * 链接扫到别的卷，甚至成环。缓存清理只应命中扫描根内部真实目录。 */
+          if (d.isSymbolicLink()) continue;
           if (d.isDirectory()) { if (c.pattern.test(d.name)) targets.push(full); else stack.push(full); }
           else if (c.pattern.test(d.name)) targets.push(full);
         }
@@ -696,7 +742,8 @@ handle(CH.FS.CLEAN_JUNK, async (e, targets, keepRoot) => {
       // 最后一道防线：绝不允许把 %TEMP% 整体（或其子目录）当作清理目标。
       // %TEMP% 是全机器共享的，里面有别的程序正在用的文件。
       // 允许的只有「本应用自己的产物」这一项。
-      if (abs === tmpRoot || abs.startsWith(tmpRoot + path.sep)) {
+      const absKey = normForJunk(abs), tmpKey = normForJunk(tmpRoot);
+      if (absKey === tmpKey || absKey.startsWith(tmpKey + path.sep.toLowerCase())) {
         const base = path.basename(abs);
         if (!isOwnTempName(base)) {
           errors.push(`${t}: 拒绝清理非本应用产物（%TEMP% 是全机器共享的）`);
@@ -706,9 +753,19 @@ handle(CH.FS.CLEAN_JUNK, async (e, targets, keepRoot) => {
       // 系统关键目录也不许动
       const crit = pathGuard.checkDeletable(abs, true);
       if (crit) { errors.push(`${t}: ${crit.reason}`); continue; }
+      /* 链接目标必须先 lstat 看穿：`stat` 会跟随 junction，若目标恰好是
+       * 目录，下面的 keepRoot 分支会 readdir 进去，把**链接目标**里的内容
+       * 递归删掉 —— 这是清理通道最不该发生的事。链接本身只删链接。 */
+      const lst = await fsp.lstat(abs).catch(() => null);
+      if (!lst) { errors.push(`${t}: 路径不存在`); continue; }
+      if (lst.isSymbolicLink()) {
+        await fsp.rm(abs, { force: true });
+        cleaned++;
+        continue;
+      }
       const before = (await dirSizeFast(abs)).size;
-      const st = await fsp.stat(abs).catch(() => null);
-      if (st && st.isFile()) {
+      const st = lst;
+      if (st.isFile()) {
         await fsp.rm(abs, { force: true }); // 文件目标（缩略图缓存）直接删除
       } else if (keepRoot) {
         const entries = await fsp.readdir(abs).catch(() => []);
@@ -771,7 +828,8 @@ handle(CH.FS.HASH_FILE_MULTI, async (e, p, algos) => hashFileMulti(p, algos));
 // 一次算多个算法：文本页每次输入都要出 3 个摘要，逐个 invoke 会有 3 次 IPC 往返
 handle(CH.FS.HASH_TEXT_MULTI, (e, text, algos = ['md5', 'sha1', 'sha256']) => {
   const out = {};
-  for (const algo of algos) {
+  const list = Array.isArray(algos) && algos.length ? algos : ['sha256'];
+  for (const algo of list) {
     if (!HASH_ALGOS.includes(algo)) continue;
     out[algo] = crypto.createHash(algo).update(String(text ?? ''), 'utf8').digest('hex');
   }
@@ -854,8 +912,16 @@ async function cryptStream(p, outPath, password, decrypt) {
   ws.once('open', () => { cryptOwned = true; });
   if (header) ws.write(header);
   let done = 0;
+  let lastCryptEmit = 0;
   const total = Math.max(1, srcEnd - srcStart + 1);
-  rs.on('data', (chunk) => { done += chunk.length; send('job:progress', { id: p, kind: 'crypt', done, total }); });
+  rs.on('data', (chunk) => {
+    done += chunk.length;
+    const now = Date.now();
+    if (now - lastCryptEmit > 200) {
+      lastCryptEmit = now;
+      send('job:progress', { id: p, kind: 'crypt', done, total });
+    }
+  });
   try {
     await new Promise((resolve, reject) => {
       require('stream').pipeline(rs, cipher, ws, (err) => (err ? reject(err) : resolve()));
@@ -871,17 +937,27 @@ async function cryptStream(p, outPath, password, decrypt) {
   return { outPath, size: (await fsp.stat(outPath)).size, authenticated, legacy: decrypt && !authenticated };
 }
 handle(CH.FS.ENCRYPT_FILE, async (e, p, outPath, password) => {
-  if (!password) throw new Error('请输入密码');
+  if (typeof password !== 'string' || !password) throw new Error('请输入密码');
   return await cryptStream(p, outPath, password, false);
 });
 handle(CH.FS.DECRYPT_FILE, async (e, p, outPath, password) => {
+  if (typeof password !== 'string' || !password) throw new Error('请输入密码');
   return await cryptStream(p, outPath, password, true);
 });
 
 handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
+  if (typeof p !== 'string' || !p.trim()) throw new Error('源文件路径不能为空');
+  if (typeof outDir !== 'string' || !outDir.trim()) throw new Error('分片输出目录不能为空');
+  const outProtected = pathGuard.isProtectedForModify(outDir);
+  if (outProtected.protected) throw pathGuard.err('PROTECTED_TARGET', '拒绝把分片写入受保护位置：' + outProtected.reason);
+  /* chunkMB=Infinity / 'abc' 原来会得到 Infinity/NaN：parts 变成 1，
+   * chunkSize 进 JSON 后变成 null，清单与磁盘语义都不对。分片大小必须是
+   * 有限正数（UI 下限 1MB，这里按同一语义夹到至少 1MB）。 */
+  const mbRaw = Number(chunkMB);
+  if (!Number.isFinite(mbRaw) || mbRaw <= 0) throw new Error('分片大小无效：' + String(chunkMB));
   // 异步 stat：大文件分片期间不能阻塞主进程事件循环（UI 与 sys:stats 都要响应）
   const st = await fsp.stat(p);
-  const chunkSize = Math.max(1, chunkMB) * 1024 * 1024;
+  const chunkSize = Math.max(1, Math.floor(mbRaw)) * 1024 * 1024;
   const base = path.basename(p);  // 空文件没有可分割的内容：parts 记为 1 并与实际产生的 part1 保持一致，
   // 否则清单 parts=0 而磁盘上留着 0 字节 part1，合并时会按 0 片处理，分片成为孤儿文件。
   const parts = Math.max(1, Math.ceil(st.size / chunkSize));
@@ -1008,6 +1084,7 @@ handle(CH.FS.SPLIT_FILE, async (e, p, chunkMB, outDir) => {
 });
 handle(CH.FS.MERGE_PARTS, async (e, pickedPath, outPath) => {
   let manifestPath;
+  if (typeof pickedPath !== 'string' || !pickedPath.trim()) throw new Error('请选择分片文件或清单文件');
   if (pickedPath.endsWith('.manifest.hehe.json')) manifestPath = pickedPath;
   else {
     const m = pickedPath.match(/^(.*)\.part\d+$/);
@@ -1049,7 +1126,12 @@ handle(CH.FS.MERGE_PARTS, async (e, pickedPath, outPath) => {
     const ext = path.extname(safeName);
     const stem = path.basename(safeName, ext);
     finalOut = path.join(dir, `${stem}.merged${ext}`);
-    for (let i = 1; i < 1000 && fs.existsSync(finalOut); i++) finalOut = path.join(dir, `${stem}.merged(${i})${ext}`);
+    let found = !fs.existsSync(finalOut);
+    for (let i = 1; i < 1000 && !found; i++) {
+      const cand = path.join(dir, `${stem}.merged(${i})${ext}`);
+      if (!fs.existsSync(cand)) { finalOut = cand; found = true; }
+    }
+    if (!found) throw new Error('无法为合并结果找到不重名的输出文件名（已尝试 1000 个）');
   } else {
     // 用户显式指定了输出路径：仍要挡住系统关键目录
     const bad = pathGuard.checkOverwritable(finalOut);
@@ -1057,12 +1139,23 @@ handle(CH.FS.MERGE_PARTS, async (e, pickedPath, outPath) => {
     // 已存在的文件不静默覆盖，改名加序号（与默认路径的行为一致）
     if (fs.existsSync(finalOut)) {
       const ext = path.extname(finalOut), stem = path.basename(finalOut, ext);
+      let found = false;
       for (let i = 1; i < 1000; i++) {
         const cand = path.join(path.dirname(finalOut), `${stem}.merged(${i})${ext}`);
-        if (!fs.existsSync(cand)) { finalOut = cand; break; }
+        if (!fs.existsSync(cand)) { finalOut = cand; found = true; break; }
       }
+      /* 1000 个候选都被占用时原来会保留 finalOut = 已存在文件，
+       * rename 在 Windows 上直接覆盖它 —— 用户只是选了个输出名，
+       * 不该丢掉同目录里已有的第 1000 个同名变体。 */
+      if (!found) throw new Error('输出文件名冲突过多（已尝试 1000 个），请换一个目录或文件名');
     }
   }
+  /* 默认输出名同样要过闸门：清单文件可能位于受保护目录，不能因为
+   * “输出名是自动生成的”就绕过系统位置判断。 */
+  const outBad = pathGuard.checkOverwritable(finalOut);
+  if (outBad) throw pathGuard.err(outBad.code, outBad.reason);
+  const outNameBad = pathGuard.checkFileName(path.basename(finalOut));
+  if (outNameBad) throw pathGuard.err(outNameBad.code, outNameBad.reason);
   await fsp.mkdir(path.dirname(finalOut), { recursive: true });
   // 先写到临时名，全部合并成功后再改名到 finalOut。
   // 否则中途遇到缺失/损坏的分片，最终文件名下会留下一个「看起来正常」的半截文件，
@@ -1089,7 +1182,9 @@ handle(CH.FS.MERGE_PARTS, async (e, pickedPath, outPath) => {
     });
     // 合并后的字节数必须与清单声明一致：不一致说明分片被改过或清单过期，
     // 宁可报错也不要交出一个"看起来正常"的残缺文件。
-    if (declSize > 0 && mergedBytes !== declSize) {
+    // 空文件（declSize=0）同样必须严格为 0：原写法 `declSize > 0 && ...`
+    // 会让「清单说 0 字节、分片里却有内容」的损坏组合直接通过。
+    if (mergedBytes !== declSize) {
       throw new Error(`合并结果大小不符：实际 ${mergedBytes} 字节，清单声明 ${declSize} 字节（分片可能已被修改）`);
     }
     await fsp.rename(partTmp, finalOut);
@@ -1104,7 +1199,9 @@ handle(CH.FS.MERGE_PARTS, async (e, pickedPath, outPath) => {
 });
 
 handle(CH.FS.DEDUPE, async (e, root, opts = {}) => {
+  opts = opts || {};
   const mode = opts.mode || 'content';
+  if (!['content', 'name', 'size'].includes(mode)) throw new Error('不支持的查重模式：' + String(mode));
   /* 同 scan-tree：查重结果里的路径会被渲染层直接拿去删/打开，
    * 必须是绝对路径。相对根返回相对路径时，fs:delete 会按主进程 cwd 解析，
    * 对不上用户实际选的那棵树。 */
@@ -1161,9 +1258,15 @@ handle(CH.FS.DEDUPE, async (e, root, opts = {}) => {
         for (const f of group) {
           if (cancelRef.canceled) throw new Error('已取消');
           const h = crypto.createHash('md5');
-          await new Promise((res, rej) => {
-            fs.createReadStream(f).on('data', c => h.update(c)).on('end', res).on('error', rej);
-          });
+          try {
+            await new Promise((res, rej) => {
+              fs.createReadStream(f).on('data', c => h.update(c)).on('end', res).on('error', rej);
+            });
+          } catch (err) {
+            /* 单个文件在扫描期间被删除/锁定，不应让整轮查重失败；
+             * 与上面的快筛一致，跳过这一份即可。 */
+            continue;
+          }
           const k = h.digest('hex');
           if (!full.has(k)) full.set(k, []);
           full.get(k).push(f);
@@ -1200,9 +1303,13 @@ handle(CH.FS.DEDUPE, async (e, root, opts = {}) => {
 
 /* zip */
 handle(CH.ZIP.COMPRESS, async (e, paths, outZip) => {
+  if (!Array.isArray(paths) || !paths.length) throw new Error('请选择要压缩的文件或文件夹');
+  if (typeof outZip !== 'string' || !outZip.trim()) throw new Error('压缩输出路径不能为空');
   // 输出文件不得静默覆盖（outZip 来自渲染层，IPC 本身也要设闸门）
   const bad = pathGuard.checkOverwritable(outZip);
   if (bad) throw pathGuard.err(bad.code, bad.reason);
+  const outNameBad = pathGuard.checkFileName(path.basename(outZip));
+  if (outNameBad) throw pathGuard.err(outNameBad.code, outNameBad.reason);
   if (fs.existsSync(outZip)) throw new Error('输出文件已存在，为避免覆盖已拒绝：' + outZip);
   const zip = new AdmZip();
   /* 【目录也要做重名编号，不能只给文件编号】
@@ -1222,6 +1329,7 @@ handle(CH.ZIP.COMPRESS, async (e, paths, outZip) => {
     return base + '(' + Date.now() + ')';
   };
   for (const p of paths) {
+    if (typeof p !== 'string' || !p.trim()) throw new Error('压缩源路径必须是非空字符串');
     const st = await fsp.stat(p);
     if (st.isDirectory()) {
       zip.addLocalFolder(p, uniqEntryDir(path.basename(p)));
@@ -1239,10 +1347,31 @@ handle(CH.ZIP.COMPRESS, async (e, paths, outZip) => {
     }
   }
   if (!zip.getEntries().length) throw new Error('没有可压缩的文件');
-  zip.writeZip(outZip);
+  /* 【先写临时文件，成功后再改名】
+   * writeZip 直接写 outZip：中途磁盘满/权限失败会留下半截 zip，
+   * 而开头已经检查过「不存在」，用户看到的是一个损坏的产物，
+   * 下次再压缩又会因为「输出已存在」被拒。临时名 + rename 让失败
+   * 时目标路径保持原样（本通道在入口已拒绝覆盖，所以没有旧产物可保留）。
+   */
+  const zipTmp = tempNames.tempPathFor(outZip, 'ziptmp');
+  try {
+    zip.writeZip(zipTmp);
+    if (fs.existsSync(outZip)) throw new Error('输出文件已存在，为避免覆盖已拒绝：' + outZip);
+    await fsp.rename(zipTmp, outZip);
+  } catch (err) {
+    await fsp.rm(zipTmp, { force: true }).catch(() => {});
+    throw err;
+  }
   return { outZip, size: (await fsp.stat(outZip)).size };
 });
 handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
+  /* 解压是批量写盘：目标目录也必须过「系统位置」闸门，不能只依赖对话框。
+   * 否则构造一次 IPC 就能把整包内容写进 C:\Windows / 盘符根。 */
+  if (typeof outDir !== 'string' || !outDir.trim()) throw new Error('解压目标目录不能为空');
+  const outProtected = pathGuard.isProtectedForModify(outDir);
+  if (outProtected.protected) {
+    throw pathGuard.err('PROTECTED_TARGET', '拒绝解压到受保护位置：' + outProtected.reason);
+  }
   const zip = new AdmZip(zipPath);
   /* 安全预检：先枚举全部条目并做静态判定，通过后才真正写盘。
      原实现直接 extractAllTo(outDir, true)：overwrite=true（静默覆盖同名文件）
@@ -1251,7 +1380,11 @@ handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
   const raw = zip.getEntries().map((en) => ({
     name: en.entryName,
     isDir: en.isDirectory,
-    size: en.header && typeof en.header.size === 'number' ? en.header.size : 0,
+    /* 【缺失的 size 必须传 undefined，不能补 0】
+     * archive-guard 把「非安全整数 / 负数」判为 BAD_SIZE 并要求在写盘前失败。
+     * 这里若把缺失字段补成 0，缺失声明的条目就会被当成合法的 0 字节条目，
+     * 预检形同虚设；真正解压时才按 getData() 分配内存，可能已经太晚。 */
+    size: en.header && typeof en.header.size === 'number' ? en.header.size : undefined,
     // 压缩大小用于压缩比判定：zip bomb 的特征就是一个极小的压缩体
     // 声称解压出极大内容（adm-zip 会按声明 size 一次性 Buffer.alloc）
     compressedSize: en.header && typeof en.header.compressedSize === 'number' ? en.header.compressedSize : 0,
@@ -1265,6 +1398,7 @@ handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
    * 不要因为「看起来没用到」而删掉，也不要误以为这里有失败返回值分支。 */
   if (!verdict.ok) throw new Error('压缩包预检未通过');
 
+  const outDirExisted = fs.existsSync(outDir);
   await fsp.mkdir(outDir, { recursive: true });
   /* 两个必须同时成立的性质：
      1) 同名不覆盖（用户原有文件不能被归档内容冲掉）
@@ -1285,6 +1419,9 @@ handle(CH.ZIP.EXTRACT, async (e, zipPath, outDir) => {
        只能 rmdir 不能 rm -r：目录里可能有用户放进来的东西（极少但可能），
        非空就留着，交给用户处理。 */
   const createdDirs = [];   // 本次新建的目录，append 顺序即创建顺序
+  /* outDir 本身如果也是本次新建的，失败回滚也应把它删掉；
+   * 否则解压一半失败会在用户目标位置留下一个空目录。 */
+  if (!outDirExisted) createdDirs.push(path.resolve(outDir));
   const dirFor = async (rel) => {
     return pathGuard.ensureDirectoryInsideTracked(outDir, rel, createdDirs);
   };
