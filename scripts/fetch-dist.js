@@ -151,10 +151,27 @@ async function sha256File(file) {
   const rel = await (await fetch('https://api.github.com/repos/xiaohetaoo/hehe-toolbox/releases/tags/' + TAG, { headers: apiHeaders })).json();
   if (!rel.assets) throw new Error('拿不到 Release 资产列表（tag 不存在？）');
 
-  /* 【并行下载】两个资产串行时总耗时是两者之和（实测 zip 1198s + exe 696s
-   * = 19 分钟）。CDN 对单连接的限速约 100~150 KB/s，但两条连接各走各的，
-   * 并行后总耗时≈较慢那个（实测约 12 分钟，再叠加镜像可压到几分钟）。
-   * 每个资产的内部逻辑不变（校验/续传/镜像回退都在 download 里）。 */
+  /* 【开跑前清掉上次残留的 .part】
+   * 2026-11-28：我误判过一次"并行下载有 bug"——实际是调用方用
+   * `| Select-Object -First N` 截断输出，管道关闭把 Node 进程掐了，
+   * 留下 0 字节的 .part。代码本身没问题，但那种残留会一直躺在 dist/
+   * （下面的判断只看最终文件名，不看 .part）。
+   * 清理是安全的：.part 是未完成的临时文件，正式产物另有文件名。 */
+  for (const f of fs.readdirSync(DIST)) {
+    if (f.endsWith('.part')) {
+      try { fs.rmSync(path.join(DIST, f), { force: true }); console.log('[清理] 残留临时文件: ' + f); } catch (e) {}
+    }
+  }
+
+  /* 【并行下载】两个资产串行时总耗时是两者之和（实测 zip 409s + exe 227s）。
+   * CDN 对单连接的限速约 100~600 KB/s，两条连接各走各的，
+   * 并行后总耗时≈较慢那个（实测 409s，串行 706s，快 42%）。
+   * 每个资产的内部逻辑不变（校验/续传/镜像回退都在 download 里）。
+   *
+   * 【调用方注意】跑这个脚本时**不要**用 `| Select-Object -First N` 之类
+   * 会提前关闭管道的命令 —— 进程会被 SIGPIPE 掐掉，留下 0 字节的 .part，
+   * 看起来像"下载失败"。要限制输出请用 `| Select-Object -Last N`
+   * 或重定向到文件后读。 */
   const jobs = rel.assets.map(async (a) => {
     const dest = path.join(DIST, a.name);
     const expect = (a.digest || '').replace(/^sha256:/, '');
